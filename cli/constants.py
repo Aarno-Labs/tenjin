@@ -3,7 +3,7 @@
 WANT = {
     "10j-llvm": "18.1.8",
     "10j-opam": "2.3.0",
-    "10j-dune": "3.18.0",
+    "10j-dune": "3.19.0",
     "10j-ocaml": "5.2.0",
     "10j-cmake": "3.31.7",
     "10j-bullseye-sysroot-extras": "rev-03d4672c4",

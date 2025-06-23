@@ -24,12 +24,7 @@ from constants import WANT, SYSROOT_NAME
 class InstallationState(enum.Enum):
     NOT_INSTALLED = 0
     VERSION_OK = 1
-    VERSION_TOO_OLD = 2
-
-
-class CheckDepBy(enum.Enum):
-    VERSION = 0
-    EXACT_MATCH = 1
+    VERSION_MISMATCH = 2
 
 
 class TrackingWhatWeHave:
@@ -63,22 +58,17 @@ class TrackingWhatWeHave:
     def query(self, name: str) -> str | None:
         return self._have.get(name)
 
-    def compatible(self, name: str, by: CheckDepBy) -> InstallationState:
+    def compatible(self, name: str) -> InstallationState:
         assert name in WANT
         wanted_spec: str = WANT[name]
 
         if name not in self._have:
             return InstallationState.NOT_INSTALLED
 
-        match by:
-            case CheckDepBy.VERSION:
-                if Version(self._have[name]) >= Version(wanted_spec):
-                    return InstallationState.VERSION_OK
-            case CheckDepBy.EXACT_MATCH:
-                if self._have[name] == wanted_spec:
-                    return InstallationState.VERSION_OK
+        if self._have[name] == wanted_spec:
+            return InstallationState.VERSION_OK
 
-        return InstallationState.VERSION_TOO_OLD
+        return InstallationState.VERSION_MISMATCH
 
 
 HAVE = TrackingWhatWeHave()
@@ -212,29 +202,24 @@ class Provisioner(Protocol):
         """Provision the given version of the software into the given localdir."""
 
 
-def want_generic(
+def want(
     keyname: str,
     lowername: str,
     titlename: str,
-    by: CheckDepBy,
     provisioner: Provisioner,
 ):
-    match HAVE.compatible(keyname, by):
+    match HAVE.compatible(keyname):
         case InstallationState.VERSION_OK:
             return
-        case InstallationState.VERSION_TOO_OLD:
+        case InstallationState.VERSION_MISMATCH:
             sez(f"{titlename} version is outdated; re-provisioning...", ctx=f"({lowername}) ")
             provisioner(HAVE.localdir, version=WANT[keyname])
         case InstallationState.NOT_INSTALLED:
             provisioner(HAVE.localdir, version=WANT[keyname])
 
 
-def want_version_generic(keyname: str, lowername: str, titlename: str, provisioner: Provisioner):
-    want_generic(keyname, lowername, titlename, CheckDepBy.VERSION, provisioner)
-
-
 def want_cmake() -> None:
-    want_version_generic("10j-cmake", "cmake", "CMake", provision_cmake_into)
+    want("10j-cmake", "cmake", "CMake", provision_cmake_into)
     out: bytes = hermetic.run_shell_cmd("cmake --version", check=True, capture_output=True).stdout
     outstr = out.decode("utf-8")
     lines = outstr.splitlines()
@@ -249,19 +234,19 @@ def want_cmake() -> None:
 
 
 def want_dune():
-    want_version_generic("10j-dune", "dune", "Dune", provision_dune_into)
+    want("10j-dune", "dune", "Dune", provision_dune_into)
 
 
 def want_opam():
-    want_version_generic("10j-opam", "opam", "opam", provision_opam_into)
+    want("10j-opam", "opam", "opam", provision_opam_into)
 
 
 def want_ocaml():
-    want_version_generic("10j-ocaml", "ocaml", "OCaml", provision_ocaml_into)
+    want("10j-ocaml", "ocaml", "OCaml", provision_ocaml_into)
 
 
 def want_10j_llvm():
-    want_version_generic("10j-llvm", "llvm", "LLVM", provision_10j_llvm_into)
+    want("10j-llvm", "llvm", "LLVM", provision_10j_llvm_into)
     out = subprocess.check_output([
         hermetic.xj_llvm_root(HAVE.localdir) / "bin" / "llvm-config",
         "--version",
@@ -308,11 +293,10 @@ def want_10j_sysroot_extras():
 
         HAVE.note_we_have(key, specifier=version)
 
-    want_generic(
+    want(
         key,
         "sysroot-extras",
         "sysroot-extras",
-        CheckDepBy.EXACT_MATCH,
         provision_10j_sysroot_extras_into,
     )
 
@@ -322,32 +306,38 @@ def want_10j_deps():
         return
 
     key = "10j-build-deps"
-    want_generic(
+    want(
         key,
         "10j-build-deps",
         "Tenjin build deps",
-        CheckDepBy.EXACT_MATCH,
         provision_10j_deps_into,
     )
     HAVE.note_we_have(key, specifier=WANT[key])
 
 
+def grab_opam_stdout_for_provisioning(args: list[str]) -> str:
+    cp = hermetic.run_opam(
+        args,
+        check=True,
+        capture_output=True,
+        suppress_provisioning_check=True,
+    )
+    return cp.stdout.decode("utf-8").strip()
+
+
 # Prerequisite: opam provisioned.
 def grab_opam_version_str() -> str:
-    cp = hermetic.run_opam(["--version"], check=True, capture_output=True)
-    return cp.stdout.decode("utf-8").strip()
+    return grab_opam_stdout_for_provisioning(["--version"])
 
 
 # Prerequisite: opam and ocaml provisioned.
 def grab_ocaml_version_str() -> str:
-    cp = hermetic.run_opam(["exec", "--", "ocamlc", "--version"], check=True, capture_output=True)
-    return cp.stdout.decode("utf-8").strip()
+    return grab_opam_stdout_for_provisioning(["exec", "--", "ocamlc", "--version"])
 
 
 # Prerequisite: opam and dune provisioned.
 def grab_dune_version_str() -> str:
-    cp = hermetic.run_opam(["exec", "--", "dune", "--version"], check=True, capture_output=True)
-    return cp.stdout.decode("utf-8").strip()
+    return grab_opam_stdout_for_provisioning(["exec", "--", "dune", "--version"])
 
 
 def provision_ocaml_into(localdir: Path, version: str):
@@ -556,17 +546,19 @@ def provision_dune(dune_version: str):
     def say(msg: str):
         sez(msg, ctx="(opam) ")
 
-    cp = hermetic.run_opam(["exec", "--", "dune", "--version"], check=False, capture_output=True)
-    if cp.returncode == 0:
-        actual_version = Version(cp.stdout.decode("utf-8"))
-        if actual_version >= Version(dune_version):
+    try:
+        actual_version = Version(grab_dune_version_str())
+        if actual_version == Version(dune_version):
             # We only get here when the HAVE cache is incorrect: it thinks dune
             # is not installed or is out of date, but dune is in fact installed
-            # with a new enough version.
+            # with the desired version.
             say(f"Dune {actual_version} is already installed.")
             return
 
         say(f"Found dune version {actual_version}, but we need {dune_version}.")
+    except subprocess.CalledProcessError:
+        # This is expected if we don't have dune installed yet.
+        pass
 
     say("")
     say("================================================================")
