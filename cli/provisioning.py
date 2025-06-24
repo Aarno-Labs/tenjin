@@ -142,6 +142,8 @@ def require_rust_stuff():
     def say(msg: str):
         sez(msg, ctx="(rust) ")
 
+    rustup_installer = "rustup-installer.sh"
+
     # We don't run the installer ourselves because rustup pretty much requires
     # PATH modifications, and it's not our place to do that. In theory we could
     # have a hermetic copy of rustup + cargo etc but it seems silly because (A)
@@ -166,13 +168,13 @@ def require_rust_stuff():
                 say(f"Tenjin doesn't yet support {sysname}, sorry!")
                 sys.exit(1)
 
-        download("https://sh.rustup.rs", Path("rustup-installer.sh"))
-        subprocess.check_call(["chmod", "+x", "rustup-installer.sh"])
+        download("https://sh.rustup.rs", Path(rustup_installer))
+        subprocess.check_call(["chmod", "+x", rustup_installer])
 
         say("")
         say("For your convenience, I've downloaded the rustup installer script,")
         say("so you can just run")
-        say("                  ./rustup-installer.sh")
+        say(f"                  ./{rustup_installer}")
         say("")
         say("It will interactively prompt you for the details of how and where")
         say("to install Rust. Most people choose the default options.")
@@ -195,6 +197,10 @@ def require_rust_stuff():
     subprocess.check_call(
         ["rustup", "component", "add", "--toolchain", "stable", "clippy", "rustfmt", "rustc-dev"],
     )
+
+    # At this point, the installer's job is done.
+    if Path(rustup_installer).is_file():
+        os.remove(rustup_installer)
 
 
 class Provisioner(Protocol):
