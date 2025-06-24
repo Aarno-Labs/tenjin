@@ -674,13 +674,7 @@ impl Translation<'_> {
         let mut tokens: Vec<TokenTree> = vec![];
 
         let mut tied_operands = HashMap::new();
-        for (
-            input_idx,
-            AsmOperand {
-                constraints, ..
-            },
-        ) in inputs.iter().enumerate()
-        {
+        for (input_idx, AsmOperand { constraints, .. }) in inputs.iter().enumerate() {
             let constraints_digits = constraints.trim_matches(|c: char| !c.is_ascii_digit());
             if let Ok(output_idx) = constraints_digits.parse::<usize>() {
                 let output_key = (output_idx, true);

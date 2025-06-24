@@ -154,6 +154,7 @@ impl RelooperState {
             let mut flipped_map: IndexMap<Label, IndexSet<Label>> = IndexMap::new();
             for (lbl, vals) in map {
                 for val in vals {
+                    #[rustfmt::skip]
                     flipped_map
                         .entry(val)
                         .or_default()
@@ -458,6 +459,7 @@ impl RelooperState {
             })
             .collect();
 
+        #[rustfmt::skip]
         let unhandled_entries: IndexSet<Label> = entries
             .iter().filter(|&e| !handled_entries.contains_key(e)).cloned()
             .collect();
@@ -559,69 +561,66 @@ fn simplify_structure<Stmt: Clone>(structures: Vec<Structure<Stmt>>) -> Vec<Stru
             } => {
                 // Here, we ensure that all labels in a terminator are mentioned only once in the
                 // terminator.
-                let terminator: GenTerminator<StructureLabel<Stmt>> = if let Switch {
-                    expr,
-                    cases,
-                } = terminator
-                {
-                    // Here, we group patterns by the label they go to.
-                    type Merged = IndexMap<Label, Vec<Pat>>;
-                    let mut merged_goto: Merged = IndexMap::new();
-                    let mut merged_exit: Merged = IndexMap::new();
+                let terminator: GenTerminator<StructureLabel<Stmt>> =
+                    if let Switch { expr, cases } = terminator {
+                        // Here, we group patterns by the label they go to.
+                        type Merged = IndexMap<Label, Vec<Pat>>;
+                        let mut merged_goto: Merged = IndexMap::new();
+                        let mut merged_exit: Merged = IndexMap::new();
 
-                    for (pat, lbl) in cases {
-                        let (lbl, merged) = match lbl {
-                            StructureLabel::GoTo(lbl) => (lbl, &mut merged_goto),
-                            StructureLabel::ExitTo(lbl) => (lbl, &mut merged_exit),
-                            _ => panic!("simplify_structure: Nested precondition violated"),
-                        };
-                        merged
-                            .entry(lbl.clone())
-                            .or_insert(Default::default())
-                            .push(pat.clone());
-                    }
+                        for (pat, lbl) in cases {
+                            let (lbl, merged) = match lbl {
+                                StructureLabel::GoTo(lbl) => (lbl, &mut merged_goto),
+                                StructureLabel::ExitTo(lbl) => (lbl, &mut merged_exit),
+                                _ => panic!("simplify_structure: Nested precondition violated"),
+                            };
+                            merged
+                                .entry(lbl.clone())
+                                .or_insert(Default::default())
+                                .push(pat.clone());
+                        }
 
-                    // When converting these patterns back into a vector, we have to be careful to
-                    // preserve their initial order (so that the default pattern doesn't end up on
-                    // top).
-                    let mut cases_new = Vec::new();
-                    for (_, lbl) in cases.iter().rev() {
-                        use StructureLabel::*;
-                        match lbl {
-                            GoTo(lbl) => match merged_goto.swap_remove(lbl) {
-                                None => {}
-                                Some(mut pats) => {
-                                    let pat = if pats.len() == 1 {
-                                        pats.pop().unwrap()
-                                    } else {
-                                        mk().or_pat(pats)
-                                    };
-                                    cases_new.push((pat, GoTo(lbl.clone())))
-                                }
-                            },
-                            ExitTo(lbl) => match merged_exit.swap_remove(lbl) {
-                                None => {}
-                                Some(mut pats) => {
-                                    let pat = if pats.len() == 1 {
-                                        pats.pop().unwrap()
-                                    } else {
-                                        mk().or_pat(pats)
-                                    };
-                                    cases_new.push((pat, ExitTo(lbl.clone())))
-                                }
-                            },
-                            _ => panic!("simplify_structure: Nested precondition violated"),
-                        };
-                    }
-                    cases_new.reverse();
+                        // When converting these patterns back into a vector, we have to be careful to
+                        // preserve their initial order (so that the default pattern doesn't end up on
+                        // top).
+                        let mut cases_new = Vec::new();
+                        for (_, lbl) in cases.iter().rev() {
+                            use StructureLabel::*;
+                            match lbl {
+                                GoTo(lbl) => match merged_goto.swap_remove(lbl) {
+                                    None => {}
+                                    Some(mut pats) => {
+                                        let pat = if pats.len() == 1 {
+                                            pats.pop().unwrap()
+                                        } else {
+                                            mk().or_pat(pats)
+                                        };
+                                        cases_new.push((pat, GoTo(lbl.clone())))
+                                    }
+                                },
+                                ExitTo(lbl) => match merged_exit.swap_remove(lbl) {
+                                    None => {}
+                                    Some(mut pats) => {
+                                        let pat = if pats.len() == 1 {
+                                            pats.pop().unwrap()
+                                        } else {
+                                            mk().or_pat(pats)
+                                        };
+                                        cases_new.push((pat, ExitTo(lbl.clone())))
+                                    }
+                                },
+                                _ => panic!("simplify_structure: Nested precondition violated"),
+                            };
+                        }
+                        cases_new.reverse();
 
-                    Switch {
-                        expr: expr.clone(),
-                        cases: cases_new,
-                    }
-                } else {
-                    terminator.clone()
-                };
+                        Switch {
+                            expr: expr.clone(),
+                            cases: cases_new,
+                        }
+                    } else {
+                        terminator.clone()
+                    };
 
                 match acc_structures.pop() {
                     Some(Structure::Multiple {

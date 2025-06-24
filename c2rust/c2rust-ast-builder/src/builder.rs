@@ -863,7 +863,7 @@ impl Builder {
                     as_token: Token![as](self.span),
                     expr: inner.expr.clone(),
                     ty: t,
-                })))
+                })));
             }
         }
 
@@ -2419,18 +2419,16 @@ mod tenjin {
                             return value <= max;
                         }
                     }
-                },
+                }
                 _ => {}
             }
         }
         false
     }
 
-
     fn int_type_signed_max(ty: &Type) -> Option<i64> {
         match ty {
-            Type::Path(path) if path.qself.is_none() =>
-                int_type_path_signed_max(&path.path),
+            Type::Path(path) if path.qself.is_none() => int_type_path_signed_max(&path.path),
             _ => None,
         }
     }

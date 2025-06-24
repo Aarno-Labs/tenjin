@@ -567,6 +567,7 @@ impl Cfg<Label, StmtOrDecl> {
                 _ => None,
             })
         {
+            #[rustfmt::skip]
             c_label_to_goto
                 .entry(target)
                 .or_default()
@@ -1090,8 +1091,7 @@ impl DeclStmtStore {
     /// Extract the Rust statements for the full declaration and initializers. DEBUGGING ONLY.
     pub fn peek_decl_and_assign(&self, decl_id: CDeclId) -> TranslationResult<Vec<Stmt>> {
         let DeclStmtInfo {
-            decl_and_assign,
-            ..
+            decl_and_assign, ..
         } = self
             .store
             .get(&decl_id)

@@ -41,7 +41,7 @@ def do_check_rs():
         cwd=root / "c2rust",
         check=True,
     )
-    # do_check_rs_fmt()  # c2rust is not yet fmt-clean, will tackle later
+    do_check_rs_fmt()
 
 
 def do_test_unit_rs():
