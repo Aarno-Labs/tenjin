@@ -22,13 +22,19 @@ This ought to change in the future.
 
 Tenjin tries hard to be easy to install, in particular without requiring root/sudo access.
 We do not automatically install Rust, because `rustup` transparently manages Rust toolchains,
-and the details of how and where that happens should be left to the user.
+and the details of how and where that happens should be left to the user -- in particular,
+how to integrate with the user's shell, and where toolchains should be installed.
+Tenjin does require specific toolchains, both stable and nightly. These toolchains are
+selected and updated on demand.
+
 We also assume `git` is available (having been used to fetch this repo).
 Pretty much everything else is bootstrapped from a POSIX shell script, `cli/sh/provision.sh`.
 
 The `10j` code itself is a Python project, managed by `uv`, which is downloaded as needed.
 `10j check-py` will run Ruff lints and formatting checks. It will eventually run the `ty`
-type checker, but not quite yet.
+type checker, but not quite yet; for now we use `mypy`.
+
+### Transparent Dependency Updates
 
 Provisioning places project prerequisites within a subdirectory called `_local`.
 A file called `_local/config.10j-HAVE.json` lists the versions of each installed tool,

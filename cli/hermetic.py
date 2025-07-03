@@ -110,7 +110,15 @@ def run_shell_cmd(
 
 
 def cargo_toolchain_specifier() -> str:
-    return os.environ.get("XJ_CARGO_TOOLCHAIN_SPEC", "+stable")
+    spec = provisioning.HAVE.query("10j-xj-default-rust-toolchain")
+    if spec is None:
+        # We should not encounter this case because we call `provisioning.want_10j_rust_toolchains()`
+        # beforehand. But if we do, let's at least give a helpful warning & soldier on.
+        click.echo(
+            "WARNING: `10j provision` needs to be run, falling back to stable Rust.", err=True
+        )
+        spec = "stable"
+    return os.environ.get("XJ_CARGO_TOOLCHAIN_SPEC", "+" + spec)
 
 
 def cargo_encoded_rustflags_env_ext() -> dict:
@@ -147,6 +155,8 @@ def run_cargo_in(
     check=True,
     **kwargs,
 ) -> subprocess.CompletedProcess:
+    provisioning.want_10j_rust_toolchains()
+
     if not env_ext:
         env_ext = {}
 

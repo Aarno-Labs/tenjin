@@ -190,13 +190,7 @@ def require_rust_stuff():
     if shutil.which("rustup") is None:
         complain_about_tool_then_die("rustup")
 
-    # The rustup.sh installer defaults to the 'default' profile, which provides clippy,
-    # but the 'minimal' profile (as used in official Rust docker images) does not.
-    # The easiest thing to do is unconditionally add the clippy component to stable.
-    # This will also download stable if it is not already installed.
-    subprocess.check_call(
-        ["rustup", "component", "add", "--toolchain", "stable", "clippy", "rustfmt", "rustc-dev"],
-    )
+    want_10j_rust_toolchains()
 
     # At this point, the installer's job is done.
     if Path(rustup_installer).is_file():
@@ -242,6 +236,11 @@ def want_ocaml():
 
 def want_10j_llvm():
     want("10j-llvm", "llvm", "LLVM", provision_10j_llvm_with)
+
+
+def want_10j_rust_toolchains():
+    want("10j-xj-improve-multitool-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
+    want("10j-xj-default-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
 
 
 def want_10j_sysroot_extras():
@@ -303,6 +302,32 @@ def want_10j_deps():
         "Tenjin build deps",
         provision_10j_deps_with,
     )
+
+
+def provision_10j_rust_toolchain_with(version: str, keyname: str):
+    # Examples of expected toolchain specs: "1.88.0" or "nightly-2025-03-03".
+    # Specifying the point release helps avoid redundant downloads. Observe:
+    #     $ docker run --rm -it rust:1.88-alpine rustc +1.88.0 --version
+    #     rustc 1.88.0 (6b00bc388 2025-06-23)
+    #     $ docker run --rm -it rust:1.88-alpine rustc +1.88 --version
+    #     info: syncing channel updates for '1.88-x86_64-unknown-linux-musl'
+    #     ...
+    #     $ docker run --rm -it rust:1.88-alpine rustup toolchain list
+    #     1.88.0-x86_64-unknown-linux-musl (active, default)
+    toolchain_spec = version
+    assert not toolchain_spec.startswith("+")
+    assert not toolchain_spec == "stable"
+
+    # The rustup.sh installer defaults to the 'default' profile, which provides clippy,
+    # but the 'minimal' profile (as used in official Rust docker images) does not.
+    # The easiest thing to do is unconditionally add the clippy component.
+    # This will also download the requested toolchain if it is not already installed.
+    cmd = ["rustup", "component", "add", "--toolchain", toolchain_spec, "clippy", "rustfmt"]
+    if toolchain_spec.startswith("nightly"):
+        cmd.append("rustc-dev")
+    subprocess.check_call(cmd)
+
+    HAVE.note_we_have(keyname, specifier=toolchain_spec)
 
 
 def grab_opam_stdout_for_provisioning(args: list[str]) -> str:
@@ -861,7 +886,7 @@ def provision_10j_deps_with(version: str, keyname: str):
             # should have been provided already by Xcode Developer Tools.
             # Bubblewrap is Linux-only.
 
-    HAVE.note_we_have(keyname, specifier=WANT[keyname])
+    HAVE.note_we_have(keyname, specifier=version)
 
 
 def download_and_extract_tarball(
