@@ -1,7 +1,9 @@
 import shutil
 import tempfile
 from pathlib import Path
+import tomllib
 import re
+import os
 
 import hermetic
 
@@ -79,29 +81,36 @@ def do_translate(
                 "RUST_BACKTRACE": "1",
             },
         )
-        # Normalize the unmodified translation results to end up
-        # in a directory with a project-independent name.
-        renamed_output = resultsdir / "out_00"
-        output.rename(renamed_output)
 
-        # Eventually, we'll add improvement passes here which will
-        # generate additional intermediate `out_XX` directories.
+    # This is a nightly toolchain, which we'll use if needed due to unstable features.
+    toolchain = get_multitool_toolchain(root)
 
-        # Find the highest numbered output directory and copy its contents
-        # to the final output directory.
-        highest_out = find_highest_output_dir(resultsdir)
-        if highest_out is not None:
-            shutil.copytree(
-                highest_out,
-                resultsdir / "final",
-            )
+    # Normalize the unmodified translation results to end up
+    # in a directory with a project-independent name.
+    output = output.rename(output.with_name("00_out"))
+
+    # Verify that the initial translation is valid Rust code.
+    # If it has errors, we won't be able to run the improvement passes.
+    hermetic.run_cargo_in(["check"], cwd=output, check=True, toolchain=toolchain)
+    hermetic.run_cargo_in(["clean"], cwd=output, check=True)
+
+    run_improvement_passes(root, output, resultsdir, toolchain)
+
+    # Find the highest numbered output directory and copy its contents
+    # to the final output directory.
+    highest_out = find_highest_numbered_dir(resultsdir)
+    if highest_out is not None:
+        shutil.copytree(
+            highest_out,
+            resultsdir / "final",
+        )
 
 
-def find_highest_output_dir(base: Path) -> Path | None:
+def find_highest_numbered_dir(base: Path) -> Path | None:
     """
-    Find the directory matching pattern 'out_X' with the largest X.
+    Find the directory with the largest underscore-suffixed numeric prefix.
     """
-    pattern = re.compile(r"^out_(\d+)$")
+    pattern = re.compile(r"^(\d+)_.*$")
     base = Path(base)
 
     if not base.exists():
@@ -120,3 +129,71 @@ def find_highest_output_dir(base: Path) -> Path | None:
                     latest_dir = item
 
     return latest_dir if latest_dir else None
+
+
+def get_multitool_toolchain(root: Path) -> str:
+    with open(root / "xj-improve-multitool" / "rust-toolchain.toml", "rb") as f:
+        toolchain_dict = tomllib.load(f)
+        return "+" + toolchain_dict["toolchain"]["channel"]
+
+
+def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path):
+    # External Cargo tools need not be installed to be used, they only need to be on the PATH.
+    # Since rustc plugins like xj-improve-multitool are tied to a specific toolchain,
+    # it's not ideal to install them globally.
+    # We could unconditionally `cargo install` into the _local/bin directory,
+    # but it's a bit faster to just build & run from `target`.
+    hermetic.run_cargo_in(
+        ["xj-improve-multitool", "--tool", tool, *args],
+        cwd=dir,
+        toolchain=get_multitool_toolchain(root),
+        env_ext={
+            "PATH": os.pathsep.join([
+                str(root / "xj-improve-multitool" / "target" / "debug"),
+                os.environ["PATH"],
+            ]),
+        },
+        check=True,
+    )
+
+
+def run_improvement_passes(root: Path, output: Path, resultsdir: Path, toolchain: str):
+    improvement_passes = [
+        (
+            "fix",
+            lambda _root, dir: hermetic.run_cargo_in(
+                ["fix", "--allow-no-vcs", "--allow-dirty"],
+                cwd=dir,
+                check=True,
+                toolchain=toolchain,
+            ),
+        ),
+        (
+            "trimdead",
+            lambda root, dir: run_improve_multitool(
+                root, "TrimDeadItems", ["--modify-in-place"], dir
+            ),
+        ),
+        ("fmt", lambda _root, dir: hermetic.run_cargo_in(["fmt"], cwd=dir, check=True)),
+        (
+            "fix",
+            lambda _root, dir: hermetic.run_cargo_in(
+                ["fix", "--allow-no-vcs", "--allow-dirty"],
+                cwd=dir,
+                check=True,
+                toolchain=toolchain,
+            ),
+        ),
+    ]
+
+    prev = output
+    for counter, (tag, func) in enumerate(improvement_passes, start=1):
+        newdir = resultsdir / f"{counter:02d}_{tag}"
+        shutil.copytree(prev, newdir)
+        # Run the actual improvement pass, modifying the contents of `newdir`.
+        func(root, newdir)
+        # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
+        hermetic.run_cargo_in(["check"], cwd=newdir, check=True, toolchain=toolchain)
+        # Clean up the target directory so the next pass starts fresh.
+        hermetic.run_cargo_in(["clean"], cwd=newdir, check=True)
+        prev = newdir

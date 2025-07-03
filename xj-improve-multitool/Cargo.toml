@@ -1,0 +1,14 @@
+[package]
+name = "xj-improve-multitool"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[dependencies]
+rustc_plugin = "=0.13.0-nightly-2025-03-03"
+env_logger = {version = "0.10", default-features = false}
+clap = {version = "4.4", features = ["derive"]}
+serde = {version = "1", features = ["derive"]}
+petgraph = "0.8.2"

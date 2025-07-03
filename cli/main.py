@@ -48,8 +48,14 @@ def do_check_rs():
 
 def do_build_rs(root: Path):
     hermetic.run_cargo_in(
-        "build -p c2rust -p c2rust-transpile".split(),
+        "build --locked -p c2rust -p c2rust-transpile".split(),
         cwd=root / "c2rust",
+        check=True,
+    )
+    hermetic.run_cargo_in(
+        "build --locked --workspace".split(),
+        cwd=root / "xj-improve-multitool",
+        toolchain="",
         check=True,
     )
 

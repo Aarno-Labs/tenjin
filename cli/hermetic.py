@@ -135,13 +135,24 @@ def cargo_encoded_rustflags_env_ext() -> dict:
 
 
 def run_cargo_in(
-    args: Sequence[str], cwd: Path | None, env_ext=None, check=True, **kwargs
+    args: Sequence[str],
+    cwd: Path | None,
+    toolchain: str | None = None,
+    env_ext=None,
+    check=True,
+    **kwargs,
 ) -> subprocess.CompletedProcess:
     if not env_ext:
         env_ext = {}
 
+    if toolchain == "":
+        # Empty toolchain means use the default toolchain for the given cwd.
+        toolchain_arg = []
+    else:
+        toolchain_arg = [toolchain or cargo_toolchain_specifier()]
+
     return run(
-        ["cargo", cargo_toolchain_specifier(), *args],
+        ["cargo", *toolchain_arg, *args],
         cwd=cwd,
         check=check,
         with_tenjin_deps=True,
