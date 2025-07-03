@@ -73,10 +73,7 @@ impl SpanEraser {
                 outer_attr || (allow_whitespace && was_spaces)
             }
 
-            if !line_chars_looks_like_outer_attribute(
-                &srclines[(item_start_lineno - 1) as usize],
-                false,
-            ) {
+            if !line_chars_looks_like_outer_attribute(srclines[item_start_lineno - 1], false) {
                 // Looks like this item wasn't preceded by an attribute, so we'll short circuit.
                 continue;
             }
@@ -88,18 +85,16 @@ impl SpanEraser {
                     break;
                 }
 
-                if !line_chars_looks_like_outer_attribute(
-                    &srclines[current_lineno - 1 as usize],
-                    true,
-                ) {
+                if !line_chars_looks_like_outer_attribute(srclines[current_lineno - 1_usize], true)
+                {
                     break;
                 }
 
                 current_lineno -= 1;
             }
 
-            let attr_rel_start = srcfile.lines()[current_lineno as usize];
-            let attr_rel_end = srcfile.lines()[item_start_lineno as usize];
+            let attr_rel_start = srcfile.lines()[current_lineno];
+            let attr_rel_end = srcfile.lines()[item_start_lineno];
 
             erase_span_in_source(attr_rel_start, attr_rel_end, src);
         }
@@ -162,16 +157,15 @@ impl SourceBeingRewritten {
         span: Span,
     ) -> (std::sync::Arc<SourceFile>, &mut String) {
         let srcfile = tcx.sess.source_map().lookup_source_file(span.lo());
-        if !self.rewritten_source.contains_key(&srcfile.stable_id) {
-            self.rewritten_source.insert(
-                srcfile.stable_id,
+        self.rewritten_source
+            .entry(srcfile.stable_id)
+            .or_insert_with(|| {
                 srcfile
                     .src
                     .as_ref()
                     .expect("Source file should have... source...")
-                    .to_string(),
-            );
-        }
+                    .to_string()
+            });
         (
             srcfile.clone(),
             self.rewritten_source.get_mut(&srcfile.stable_id).unwrap(),

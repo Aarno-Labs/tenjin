@@ -91,7 +91,7 @@ impl rustc_driver::Callbacks for XjImproveMultitoolCallbacks {
         match determine_multitool_mode(&args) {
             MultitoolMode::NoToolSelected => {
                 eprintln!("No tool selected. Use --help to see available options.");
-                return rustc_driver::Compilation::Stop;
+                rustc_driver::Compilation::Stop
             }
             MultitoolMode::ArgConflict(note) => {
                 eprintln!(
@@ -136,7 +136,7 @@ enum MultitoolMode {
 fn determine_multitool_mode(args: &XjImproveMultitoolPluginArgs) -> MultitoolMode {
     match args.tool {
         Some(SelectedMultitool::TrimDeadItems) => {
-          if !args.modify_in_place && !args.print_to_stdout {
+            if !args.modify_in_place && !args.print_to_stdout {
                 return MultitoolMode::ArgConflict(
                     "TrimDeadItems should specify either --modify-in-place or --print-to-stdout.",
                 );
@@ -187,14 +187,12 @@ fn trim_dead_items(tcx: TyCtxt, args: XjImproveMultitoolPluginArgs) {
 
     // Collect unreachable crate-local definitions.
     let mut crate_dead = HashSet::new();
-    for (node, _idx) in &graf.grafnodes {
+    for node in graf.grafnodes.keys() {
         match node {
             GNode::Def(def_id) => {
                 let def = *def_id;
-                if def.is_local() {
-                    if !live.contains(&def) {
-                        crate_dead.insert(def);
-                    }
+                if def.is_local() && !live.contains(&def) {
+                    crate_dead.insert(def);
                 }
             }
             GNode::VirtualRoot => (),

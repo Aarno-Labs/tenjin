@@ -38,11 +38,13 @@ def do_check_py():
 def do_fmt_rs():
     root = repo_root.find_repo_root_dir_Path()
     hermetic.run_cargo_in(["fmt"], cwd=root / "c2rust", check=True)
+    hermetic.run_cargo_in(["fmt"], cwd=root / "xj-improve-multitool", check=True)
 
 
 def do_check_rs_fmt():
     root = repo_root.find_repo_root_dir_Path()
     hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "c2rust", check=True)
+    hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "xj-improve-multitool", check=True)
 
 
 def do_check_rs():
@@ -50,6 +52,12 @@ def do_check_rs():
     hermetic.run_cargo_in(
         "clippy --locked -p c2rust -p c2rust-transpile -- -Aclippy::needless_lifetimes".split(),
         cwd=root / "c2rust",
+        check=True,
+    )
+    hermetic.run_cargo_in(
+        "clippy --locked --workspace".split(),
+        cwd=root / "xj-improve-multitool",
+        toolchain="",
         check=True,
     )
     do_check_rs_fmt()

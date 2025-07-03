@@ -177,18 +177,16 @@ impl<'c> Visitor<'c> for GraphExtractionVisitor<'c> {
         self.saw_item_like(item.owner_id.to_def_id(), item.span, item.vis_span);
 
         self.scope.push(item.owner_id);
-        let res = intravisit::walk_item(self, item);
+        intravisit::walk_item(self, item);
         self.scope.pop();
-        res
     }
 
     fn visit_foreign_item(&mut self, item: &'c ForeignItem<'c>) -> Self::Result {
         self.saw_item_like(item.owner_id.to_def_id(), item.span, item.vis_span);
 
         self.scope.push(item.owner_id);
-        let res = intravisit::walk_foreign_item(self, item);
+        intravisit::walk_foreign_item(self, item);
         self.scope.pop();
-        res
     }
 
     fn visit_path(&mut self, path: &hir::Path<'c>, _id: HirId) -> Self::Result {
@@ -205,16 +203,13 @@ impl<'c> Visitor<'c> for GraphExtractionVisitor<'c> {
                     //     "Visiting unscoped path with defkind {:?} and def_id: {:?}",
                     //     _defkind, def_id
                     // );
-                    ()
                 }
             }
             Res::SelfCtor(_def_id) => {
                 // We ignore this case because c2rust doesn't generate it.
-                ()
             }
             Res::Local(_hir_id) => {
                 // References to locals cannot affect top-level item liveness/deadness.
-                ()
             }
             Res::PrimTy(_)
             | Res::ToolMod
