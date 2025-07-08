@@ -2367,10 +2367,23 @@ fn parenthesize_if_necessary(mut outer: Expr) -> Expr {
             }
         }
         Expr::MethodCall(ref mut emc) => {
-            parenthesize_if_gt(&mut emc.receiver);
+            if let Expr::Call(_) = *emc.receiver {
+                // Chaining a method call on a function call
+                // does not require parenthesization.
+            } else {
+                parenthesize_if_gt(&mut emc.receiver);
+            }
         }
         Expr::Call(ref mut ec) => {
-            parenthesize_if_gt(&mut ec.func);
+            if let Expr::Field(_) = *ec.func {
+                // If the function is a field, we must parenthesize it
+                // to avoid ambiguity with a method call.
+                // x.f() parses as a method call on x,
+                // but we need (x.f)() to get a call on the field f.
+                parenthesize_mut(&mut ec.func);
+            } else {
+                parenthesize_if_gt(&mut ec.func);
+            }
         }
         Expr::Cast(ref mut ec) => {
             if let Expr::If(_) = *ec.expr {
