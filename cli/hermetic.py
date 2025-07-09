@@ -85,7 +85,9 @@ type RunSpec = str | Sequence[str | bytes | os.PathLike[str] | os.PathLike[bytes
 
 
 def common_helper_for_run(cmd: RunSpec):
-    if provisioning.HAVE.provisioning_depth == 0:
+    if provisioning.HAVE.provisioning_depth == 0 and not running_in_ci():
+        # CI is careful to provision what it needs; doing more here
+        # would merely slow down the CI run with unnecessary work.
         provisioning.provision_desires("all")
 
     if os.environ.get("XJ_SHOW_CMDS", "0") != "0":
