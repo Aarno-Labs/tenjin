@@ -6,8 +6,8 @@ WANT = {
     "10j-dune": "3.19.0",
     "10j-ocaml": "5.2.0",
     "10j-cmake": "3.31.7",
-    "10j-bullseye-sysroot-extras": "rev-03d4672c4",
-    "10j-build-deps": "rev-03d4672c4",
+    "10j-bullseye-sysroot-extras": "rev-594c42279",
+    "10j-build-deps": "rev-594c42279",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
     "10j-xj-improve-multitool-toolchain": "nightly-2025-03-03",
     "10j-xj-default-rust-toolchain": "1.88.0",
