@@ -749,6 +749,9 @@ def validate_actual_cmake_version(expected_version: str):
 def provision_10j_llvm_with(version: str, keyname: str):
     localdir = HAVE.localdir
 
+    assert "@" in version, "Expected version of the form 'LLVM_VERSION@tenjin-build-deps-release'"
+    llvm_version, release = version.split("@", 1)
+
     def provision_clang_config_files(sysroot_path):
         match platform.system():
             case "Linux":
@@ -856,12 +859,12 @@ def provision_10j_llvm_with(version: str, keyname: str):
     if target.is_dir():
         shutil.rmtree(target)
 
-    tarball_name = f"LLVM-{version}-{platform.system()}-{machine_normalized()}.tar.xz"
+    tarball_name = f"LLVM-{llvm_version}-{platform.system()}-{machine_normalized()}.tar.xz"
     if Path(tarball_name).is_file():
         # A local tarball was likely manually downloaded. Use it if we've got it.
         extract_tarball(Path(tarball_name), target, ctx="(llvm) ")
     else:
-        url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/rev-03d4672c4/{tarball_name}"
+        url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{release}/{tarball_name}"
         download_and_extract_tarball(url, target, ctx="(llvm) ")
 
     match platform.system():
@@ -886,15 +889,18 @@ def provision_10j_llvm_with(version: str, keyname: str):
         hermetic.run_cargo_in(["clean"], hermetic.xj_upstream_c2rust(localdir))
         rebuild_10j_upstream_c2rust(hermetic.xj_upstream_c2rust(localdir))
 
-    update_10j_llvm_have(keyname)
+    update_10j_llvm_have(keyname, version, llvm_version)
 
 
-def update_10j_llvm_have(keyname: str):
+def update_10j_llvm_have(keyname: str, version: str, llvm_version: str):
     out = subprocess.check_output([
         hermetic.xj_llvm_root(HAVE.localdir) / "bin" / "llvm-config",
         "--version",
     ])
-    HAVE.note_we_have(keyname, version=Version(out.decode("utf-8")))
+    saw = out.decode("utf-8")
+    if Version(saw) != Version(llvm_version):
+        raise ProvisioningError(f"Expected LLVM version {llvm_version}, got {saw}.")
+    HAVE.note_we_have(keyname, specifier=version)
 
 
 #                COMMENTARY(pkg-config-paths)
