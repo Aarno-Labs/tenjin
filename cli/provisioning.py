@@ -680,11 +680,11 @@ def provision_dune(dune_version: str):
     say("Installing Dune; this will take a minute to compile...")
     say("      (subsequent output comes from `opam install dune`)")
     say("----------------------------------------------------------------")
-    
+
     # Try installing from opam registry first
     try:
         hermetic.check_call_opam(["install", f"dune.{dune_version}"])
-    except subprocess.CalledProcessError as e:
+    except subprocess.CalledProcessError:
         say("Failed to install dune from opam registry.")
         say("Falling back to source installation from GitHub releases...")
         provision_dune_from_source(dune_version, say)
@@ -695,42 +695,9 @@ def provision_dune_from_source(dune_version: str, say):
     Download and install dune from source when opam registry installation fails.
     """
     # GitHub releases URL pattern
-    tarball_url = f"https://github.com/ocaml/dune/releases/download/{dune_version}/dune-{dune_version}.tbz"
-    
-    localdir = HAVE.localdir
-    temp_dir = localdir / "tmp-dune-source"
-    
-    try:
-        # Clean up any existing temp directory
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
-        temp_dir.mkdir(parents=True)
-        
-        # Download the tarball
-        tarball_path = temp_dir / f"dune-{dune_version}.tbz"
-        say(f"Downloading dune {dune_version} from GitHub releases...")
-        download(tarball_url, tarball_path)
-        
-        # Extract the tarball
-        say("Extracting dune source...")
-        extract_dir = extract_tarball(tarball_path, temp_dir, ctx="(dune-source) ")
-        
-        # Find the dune.opam file in the extracted directory
-        dune_opam_path = extract_dir / "dune.opam"
-        if not dune_opam_path.exists():
-            raise ProvisioningError(f"Could not find dune.opam in extracted directory: {extract_dir}")
-        
-        # Install using the local opam file
-        say("Installing dune from local source...")
-        say("      (subsequent output comes from `opam install <path>/dune.opam`)")
-        hermetic.check_call_opam(["install", str(dune_opam_path)])
-        
-    except Exception as e:
-        raise ProvisioningError(f"Failed to install dune from source: {e}")
-    finally:
-        # Clean up temporary directory
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
+    say("Installing dune from source...")
+    dune_git_url = f"git+https://github.com/ocaml/dune.git#{dune_version}"
+    hermetic.check_call_opam(["pin", "add", "--yes", f"dune.{dune_version}", dune_git_url])
 
 
 def provision_opam_with(version: str, keyname: str):
