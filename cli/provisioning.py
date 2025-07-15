@@ -681,12 +681,11 @@ def provision_dune(dune_version: str):
     say("      (subsequent output comes from `opam install dune`)")
     say("----------------------------------------------------------------")
 
-    # Try installing from opam registry first
     try:
+        # Try installing from opam registry first
         hermetic.check_call_opam(["install", f"dune.{dune_version}"])
     except subprocess.CalledProcessError:
         say("Failed to install dune from opam registry.")
-        say("Falling back to source installation from GitHub releases...")
         provision_dune_from_source(dune_version, say)
 
 
