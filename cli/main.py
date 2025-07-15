@@ -264,6 +264,37 @@ def exec():
 
 
 @cli.command()
+@click.argument("args", nargs=-1)
+def run_c(args: list[str]):
+    if not args:
+        click.echo("Error: No input file specified", err=True)
+        sys.exit(1)
+
+    if "-o" in args:
+        click.echo("Error: Output file (-o) should not be specified", err=True)
+        sys.exit(1)
+
+    progargs = []
+    if "--" in args:
+        sep_index = args.index("--")
+        progargs = args[sep_index + 1 :]
+        args = args[:sep_index]
+
+    temp_path = Path(tempfile.gettempdir(), os.urandom(24).hex())
+    try:
+        cp = hermetic.run(["clang", "-o", temp_path, *args], check=False)
+        if cp.returncode != 0:
+            sys.exit(cp.returncode)
+        temp_path.chmod(0o755)
+        cp = hermetic.run([temp_path, *progargs], with_tenjin_deps=False)
+        if cp.returncode != 0:
+            sys.exit(cp.returncode)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    sys.exit(0)
+
+
+@cli.command()
 @click.argument("wanted", required=False, default="all")
 def provision(wanted: str):
     provisioning.provision_desires(wanted)
