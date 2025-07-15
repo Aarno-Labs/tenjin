@@ -1147,6 +1147,8 @@ def extract_tarball(
                 return ".tgz"
             elif filename.endswith(".tar.bz2"):
                 return ".tar.bz2"
+            elif filename.endswith(".tbz"):
+                return ".tbz"
             raise ValueError(f"Unknown tarball suffix for URL: {filename}")
 
         suffix = select_tarball_suffix(tarball_path.name)
