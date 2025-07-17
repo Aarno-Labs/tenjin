@@ -10,7 +10,7 @@ First, [install Rust](https://rustup.rs/). On Linux, you'll also need either `cu
 On Mac, we assume you already have Xcode tools installed, plus [`brew`](https://brew.sh/).
 Then:
 
-1. Run `sh cli/sh/provision.sh`
+1. Run `cli/10j provision`
 \
 \
 This will locally install compatible copies of the necessary prerequisites:
