@@ -8,7 +8,8 @@ esac
 # would result in script_path ending with "cli/./10j",
 # tenjdir ending with "cli/." and rootdir ending up
 # as the cli dir.
-tenjdir=$(dirname $(realpath "$script_path"))
+realscr=$(realpath "$script_path")
+tenjdir=$(dirname "$realscr")
 rootdir=$(dirname "$tenjdir")
 
 localuv="${rootdir}/_local/uv"
@@ -26,7 +27,7 @@ fi
 # If/when we want to update the uv binary, we should do that here.
 
 if [ -e "$localuv" ] && [ -e "$localcg" ]; then
-    exec "$localuv" run --project "$tenjdir" --config-file "$localcg" $tenjdir/main.py "$@"
+    exec "$localuv" run --project "$tenjdir" --config-file "$localcg" "$tenjdir/main.py" "$@"
 else
     echo "10j's provisioning failed -- sorry!" >&2
     exit 1
