@@ -5,6 +5,15 @@ on:
     branches: [ "test/**", "test-**" ]
   pull_request:
     branches: [ "main" ]
+  schedule:
+    # Run every day at 12:39 UTC (mid morning on the US East Coast).
+    # Daily runs are done for two reasons:
+    # 1. To ensure that GitHub Actions has a fresh cache to use.
+    #    See https://docs.github.com/en/actions/reference/dependency-caching-reference#restrictions-for-accessing-a-cache
+    # 2. To catch any issues arising from external changes.
+    - cron:  '39 12 * * *'
+  workflow_dispatch:
+    # No particular downsides to enabling manual workflow runs, afaik?
 
 env:
   CARGO_TERM_COLOR: always
