@@ -451,9 +451,6 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     cmd = ["rustup", "component", "add", "--toolchain", toolchain_spec, "clippy", "rustfmt"]
     if toolchain_spec.startswith("nightly"):
         cmd.append("rustc-dev")
-        # Removing the `llvm-tools` component will not break CI on GitHub Actions because the standard
-        # runners come with LLVM preinstalled. But it will break installs in a fresh VM/container
-        # when executing `10 build-rs` (when linking `xj-improve-multitool`).
         cmd.append("llvm-tools")
 
     say(f"Installing Rust toolchain {toolchain_spec}...")

@@ -62,7 +62,7 @@ jobs:
         run: cd c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES
 
       - name: Build c2rust binaries
-        run: cd c2rust && ../cli/10j cargo build --locked --release $C2RUST_TESTED_CRATES
+        run: XJ_BUILD_RS_PROFILE=release cli/10j build-rs
 
   not-rocket-science-rs-lint:
     runs-on: ubuntu-latest
