@@ -45,11 +45,12 @@ jobs:
       C2RUST_TESTED_CRATES: "-p c2rust -p c2rust-transpile -p c2rust-ast-printer"
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
         with:
           workspaces: c2rust
           prefix-key: release-
           key: ${{ matrix.runner }}
+          cache-workspace-crates: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Provision Rust
@@ -68,9 +69,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
         with:
           workspaces: c2rust
+          cache-workspace-crates: true
           # No need for key since we only run this on one runner.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
