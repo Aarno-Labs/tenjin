@@ -83,7 +83,7 @@ jobs:
         # See https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#exit-codes-and-error-action-preference
 
       - name: Code linting and formatting checks
-        run: cli/10j check-rs | ./tss
+        run: cli/10j check-rs |& ./tss
         shell: bash  # GitHub Actions applies pipefail only for explicitly requested bash shell.
 
   not-rocket-science-ocaml:
