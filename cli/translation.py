@@ -11,8 +11,6 @@ import shlex
 from platform import platform
 import hashlib
 
-import click
-
 from repo_root import find_repo_root_dir_Path, localdir
 import provisioning
 import ingest
@@ -84,22 +82,27 @@ def run_c2rust(
     flags: list[str],
 ) -> CompletedProcess:
     with tracker.tracking(tag, output) as step:
-        cp = hermetic.run(
-            [
-                str(c2rust_bin),
-                "transpile",
-                str(compdb),
-                "-o",
-                str(output),
-                *flags,
-            ],
-            check=True,
-            env_ext={
-                "RUST_BACKTRACE": "1",
-            },
-            capture_output=True,
-        )
-        step.update_sub(cp)
+        try:
+            cp = hermetic.run(
+                [
+                    str(c2rust_bin),
+                    "transpile",
+                    str(compdb),
+                    "-o",
+                    str(output),
+                    *flags,
+                ],
+                check=True,
+                env_ext={
+                    "RUST_BACKTRACE": "1",
+                },
+                capture_output=True,
+            )
+            step.update_sub(cp)
+        except CalledProcessError as e:
+            step.update_err(e)
+            raise
+
         return cp
 
 
@@ -152,8 +155,9 @@ def create_translation_snapshot(
     rust_snapshots = []
     for dirname in ["vanilla_c2rust", "00_out", "final"]:
         subdir = resultsdir / dirname
-        assert subdir.is_dir()
-        rust_snapshots.append(create_subdirectory_snapshot(True, subdir, dirname))
+        assert not subdir.is_file()
+        if subdir.is_dir():
+            rust_snapshots.append(create_subdirectory_snapshot(True, subdir, dirname))
 
     results_snapshot = ingest.TranslationResultsSnapshot(
         for_translation=record.translation_uuid,
@@ -268,6 +272,8 @@ def do_translate(
         json.dumps(guidance),
     ]
 
+    skip_remainder_of_translation = False
+
     with tempfile.TemporaryDirectory() as builddirname:
         builddir = Path(builddirname)
         with tracker.tracking("pretranslation", builddir) as _step:
@@ -300,56 +306,56 @@ def do_translate(
             _xj_cp = run_c2rust(
                 tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags
             )
-        except CalledProcessError as e:
-            click.echo("stdout:", err=True)
-            click.echo(e.stdout.decode("utf-8", errors="replace"), err=True)
-            click.echo("stderr:", err=True)
-            click.echo(e.stderr.decode("utf-8", errors="replace"), err=True)
-            raise
 
-        # Normalize the unmodified translation results to end up
-        # in a directory with a project-independent name.
-        output = output.rename(output.with_name("00_out"))
+            # Normalize the unmodified translation results to end up
+            # in a directory with a project-independent name.
+            output = output.rename(output.with_name("00_out"))
+        except CalledProcessError:
+            tracker.mark_translation_finished()
+            skip_remainder_of_translation = True
 
-    # Verify that the initial translation is valid Rust code.
-    # If it has errors, we won't be able to run the improvement passes.
-    initial_cp = hermetic.run_cargo_in(["check"], cwd=output, check=False)
-    # Ensure that subsequent passes start with a clean slate.
-    clean_p_cp = hermetic.run_cargo_in(["clean", "-p", cratename], cwd=output, check=False)
+    if not skip_remainder_of_translation:
+        # Verify that the initial translation is valid Rust code.
+        # If it has errors, we won't be able to run the improvement passes.
+        initial_cp = hermetic.run_cargo_in(["check"], cwd=output, check=False)
+        # Ensure that subsequent passes start with a clean slate.
+        clean_p_cp = hermetic.run_cargo_in(["clean", "-p", cratename], cwd=output, check=False)
 
-    if initial_cp.returncode == 0 and clean_p_cp.returncode == 0:
-        run_improvement_passes(root, output, resultsdir, cratename, tracker)
+        if initial_cp.returncode == 0 and clean_p_cp.returncode == 0:
+            run_improvement_passes(root, output, resultsdir, cratename, tracker)
 
-    # Find the highest numbered output directory and copy its contents
-    # to the final output directory.
-    highest_out = find_highest_numbered_dir(resultsdir)
-    if highest_out is not None:
-        shutil.copytree(
-            highest_out,
-            resultsdir / "final",
+        # Find the highest numbered output directory and copy its contents
+        # to the final output directory.
+        highest_out = find_highest_numbered_dir(resultsdir)
+        if highest_out is not None:
+            shutil.copytree(
+                highest_out,
+                resultsdir / "final",
+            )
+
+        tracker.mark_translation_finished()
+        print("Translation finished.")
+        print("Collecting static code quality measurements...")
+        baseline_metrics = static_measurements_rust.static_rust_metrics(
+            resultsdir / "vanilla_c2rust"
         )
+        xj_start_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "00_out")
+        xj_final_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "final")
 
-    tracker.mark_translation_finished()
-    print("Translation finished.")
-    print("Collecting static code quality measurements...")
-    baseline_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "vanilla_c2rust")
-    xj_start_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "00_out")
-    xj_final_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "final")
+        print("Baseline from upstream c2rust:")
+        pprint.pprint(baseline_metrics)
 
-    print("Baseline from upstream c2rust:")
-    pprint.pprint(baseline_metrics)
+        print("Tenjin's initial, un-improved Rust output:")
+        pprint.pprint(xj_start_metrics)
 
-    print("Tenjin's initial, un-improved Rust output:")
-    pprint.pprint(xj_start_metrics)
+        print("Tenjin's final, improved Rust output:")
+        pprint.pprint(xj_final_metrics)
 
-    print("Tenjin's final, improved Rust output:")
-    pprint.pprint(xj_final_metrics)
-
-    mb_mut_res = tracker.mb_mut_translation_results()
-    if mb_mut_res:
-        mb_mut_res.c2rust_baseline = baseline_metrics
-        mb_mut_res.tenjin_initial = xj_start_metrics
-        mb_mut_res.tenjin_final = xj_final_metrics
+        mb_mut_res = tracker.mb_mut_translation_results()
+        if mb_mut_res:
+            mb_mut_res.c2rust_baseline = baseline_metrics
+            mb_mut_res.tenjin_initial = xj_start_metrics
+            mb_mut_res.tenjin_final = xj_final_metrics
 
     record = tracker.finalize()
     if record is not None:

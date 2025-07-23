@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from subprocess import CompletedProcess
+from subprocess import CalledProcessError, CompletedProcess
 
 import ingest
 
@@ -69,6 +69,18 @@ class TimingRepo:
         )
         self._current_step.stdout_lines = (
             cp.stdout.decode("utf-8").splitlines() if cp.stdout is not None else None
+        )
+
+    def update_err(self, cpe: CalledProcessError):
+        """Update the current step with an error message"""
+        if self._current_step is None:
+            raise RuntimeError("No current step to update")
+        self._current_step.exit_code = cpe.returncode
+        self._current_step.stderr_lines = (
+            cpe.stderr.decode("utf-8").splitlines() if cpe.stderr is not None else None
+        )
+        self._current_step.stdout_lines = (
+            cpe.stdout.decode("utf-8").splitlines() if cpe.stdout is not None else None
         )
 
     def set_preprocessor_definitions(self, definitions: ingest.PerFilePreprocessorDefinitions):
