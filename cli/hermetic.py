@@ -78,13 +78,15 @@ def run_command_with_progress(
             env=mk_env_for(repo_root.localdir(), with_tenjin_deps=True, env_ext=env_ext),
         )
 
+        start_s = time.perf_counter()
         while proc.poll() is None:
             # Process is still running
             print(".", end="", flush=True)
             time.sleep(0.3)
+        elapsed_s = time.perf_counter() - start_s
 
-        # Final newline after progress dots
-        print()
+        # Overall time elapsed including final newline after progress dots
+        print(f" ({elapsed_s:.2f} s)")
         assert proc.returncode == 0, f"Command failed with return code {proc.returncode}"
 
 
