@@ -894,7 +894,9 @@ def provision_10j_llvm_with(version: str, keyname: str):
     def add_binutils_alike_symbolic_links():
         # Add symbolic links for the binutils-alike tools.
         # Tools not provided by LLVM: ranlib, size
-        binutils_names = ["ar", "as", "nm", "objcopy", "objdump", "readelf", "strings", "strip"]
+        # Tenjin's LLVM ships `as` as a wrapper around `llvm-mc`
+        #   because `llvm-as` is for assembling LLVM IR, not platform assembly.
+        binutils_names = ["ar", "nm", "objcopy", "objdump", "readelf", "strings", "strip"]
         for name in binutils_names:
             src = hermetic.xj_llvm_root(localdir) / "bin" / f"llvm-{name}"
             dst = hermetic.xj_llvm_root(localdir) / "bin" / f"{name}"
