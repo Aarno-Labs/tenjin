@@ -121,7 +121,7 @@ The intermediate TypedAstContext will have entries such as
 
 along with more for `FunctionToPointerDecay` and `ImplicitCast`. This output can be viewed by passing the `--dump-typed-clang-ast` flag to `c2rust transpile`.
 
-The structure can be viewed more compactly with a command like `10j exec clang -Xclang -ast-dump -fsyntax-only <SOME_FILE.c>`, for which the `puts(s)` statement will be shown with
+The structure can be viewed more compactly with `10j clang-ast-xml <SOME_FILE.c>`, for which the `puts(s)` statement will be shown with
 
 ```
 ...

@@ -283,6 +283,12 @@ def cargo():
     pass  # placeholder command
 
 
+@cli.command()
+def clang():
+    "Alias for `10j exec clang`"
+    pass  # placeholder command
+
+
 # placeholder command
 @cli.command()
 def exec():
@@ -314,6 +320,8 @@ if __name__ == "__main__":
             sys.exit(hermetic.run_opam(["exec", "--", "dune", *sys.argv[2:]]).returncode)
         if sys.argv[1] == "cargo":
             sys.exit(hermetic.run_cargo_in(sys.argv[2:], cwd=Path.cwd(), check=False).returncode)
+        if sys.argv[1] == "clang":
+            sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
         if sys.argv[1] == "exec":
             sys.exit(hermetic.run_shell_cmd(sys.argv[2:]).returncode)
         if sys.argv[1] == "true":

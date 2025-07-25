@@ -84,7 +84,12 @@ To see what that environment is, try `10j exec env`.
 
 ### Exec aliases
 
-A few commands (`cargo`, `opam` and `dune`) can be run as direct subcommands of `10j`, without going through `exec`.
+A few commands (`cargo`, `clang`, `opam` and `dune`) can be run as direct subcommands of `10j`, without going through `exec`.
+
+```
+~/tenjin$ 10j clang --version | head -n1
+Tenjin clang version 18.1.8
+```
 
 # Project Infrastructure
 
@@ -103,6 +108,8 @@ Debian Bullseye was chosen for glibc compatibility with most modern distros.
 The containers are built and pushed to both registries from [a manually-triggered GitHub workflow](https://github.com/Aarno-Labs/tenjin-build-deps/blob/main/.github/workflows/rebuildcontainer.yml).
 
 Another [manually-triggered GitHub workflow](https://github.com/Aarno-Labs/tenjin-build-deps/blob/main/.github/workflows/makerelease.yml) uses the containers to build the non-LLVM components and creates a corresponding GitHub release
-based on the current HEAD commit (example: [rev-03d4672c4](https://github.com/Aarno-Labs/tenjin-build-deps/releases/tag/rev-03d4672c4)). Tarballs are created for x86_64 and aarch64.
+based on the current HEAD commit (example: [rev-03d4672c4](https://github.com/Aarno-Labs/tenjin-build-deps/releases/tag/rev-03d4672c4)).
+Tarballs are created for x86\_64 and aarch64.
 
 A [third manually-triggered GitHub workflow](https://github.com/Aarno-Labs/tenjin-build-deps/blob/main/.github/workflows/buildllvm.yml) builds LLVM for Mac and Linux (using the bullseye builder on the latter), and uploads the resulting tarballs to an existing GitHub release.
+
