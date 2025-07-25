@@ -60,7 +60,8 @@ class TrackingWhatWeHave:
             self.save()
 
     def note_removed(self, name: str):
-        del self._have[name]
+        if name in self._have:
+            del self._have[name]
         self.save()
 
     def query(self, name: str) -> str | None:
