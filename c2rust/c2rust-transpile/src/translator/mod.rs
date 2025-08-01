@@ -4105,8 +4105,19 @@ impl<'c> Translation<'c> {
         &self,
         ctx: ExprContext,
         exprs: &[CExprId],
-        arg_guidances: Vec<Option<tenjin::GuidedType>>,
+        mut arg_guidances: Vec<Option<tenjin::GuidedType>>,
     ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
+        // arg_guidances, which is based on the called function signature,
+        // may be shorter than exprs, e.g. for variadic functions.
+        // If so, pad it out.
+        while arg_guidances.len() < exprs.len() {
+            arg_guidances.push(None);
+        }
+        // If arg_guidances is longer than exprs, truncate it.
+        // This indicates code which supplies too few arguments to a function.
+        while arg_guidances.len() > exprs.len() {
+            arg_guidances.pop();
+        }
         exprs
             .iter()
             .zip_eq(arg_guidances)
