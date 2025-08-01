@@ -1394,7 +1394,7 @@ mod refactor_format {
             macro_name,
             ln_macro_name,
             &fmt_args[1..],
-            cargs,
+            &cargs[1..],
             span,
             Some(old_fmt_str_expr.span()),
             fmt_string_span,
@@ -1407,7 +1407,7 @@ mod refactor_format {
         macro_name: &str,
         ln_macro_name: &str,
         args_after_fmt: &[Box<Expr>],
-        cargs: &[CExprId],
+        cargs_after_fmt: &[CExprId],
         span: Option<Span>,
         old_fmt_str_span: Option<Span>,
         fmt_string_span: Option<DisplaySrcSpan>,
@@ -1474,7 +1474,9 @@ mod refactor_format {
         macro_tts.push(expr_tt(new_fmt_str_expr));
         for (i, arg) in args_after_fmt.iter().enumerate() {
             if let Some(cast) = casts.get(&i) {
-                let cexpr = cargs.get(i).expect("missing CExprId for format argument");
+                let cexpr = cargs_after_fmt
+                    .get(i)
+                    .expect("missing CExprId for format argument");
                 let tt = expr_tt(cast.apply(x, arg.clone(), *cexpr, &fmt_string_span));
                 //macro_tts.push(TokenTree::Token(Token {kind: TokenKind::Comma, span: DUMMY_SP}));
                 macro_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
