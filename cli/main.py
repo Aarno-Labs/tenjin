@@ -335,7 +335,7 @@ def upload_results(directory: Path, host_port: str):
 
     if host_port.startswith("http"):
         url = f"{host_port}/ingest"
-    elif host_port.startswith("100."):  # Tailscale IP
+    elif host_port.startswith("localhost") or host_port.startswith("100."):  # Tailscale IP
         url = f"http://{host_port}/ingest"
     else:
         url = f"https://{host_port}/ingest"
