@@ -195,6 +195,7 @@ def do_translate(
     cratename: str,
     guidance_path_or_literal: str,
     c_main_in: str | None = None,
+    buildcmd: str | None = None,
 ):
     """
     Translate a codebase from C to Rust.
@@ -242,6 +243,28 @@ def do_translate(
                 builddir / "compile_commands.json", codebase, builddir
             )
             return builddir / "compile_commands.json"
+        elif buildcmd:
+            # If we have a build command, use it to generate a compile_commands.json file
+            # by invoking the build command from a temporary directory with a copy of the
+            # input codebase.
+            shutil.copytree(codebase, builddir, dirs_exist_ok=True)
+            hermetic.run(f"intercept-build {buildcmd}", cwd=builddir, shell=True, check=True)
+            # intercept-build will have generated this file, if all went well
+            extracted_compdb = builddir / "compile_commands.json"
+            extracted_compdb_bytes = extracted_compdb.read_bytes()
+            if extracted_compdb_bytes == b"[]":
+                # Perhaps the build command failed, or it cut off early,
+                # for example if the target binary already existed.
+                raise ValueError("Extracted compile_commands.json is empty")
+            else:
+                # Rewrite the compilation database to use the original codebase paths.
+                builddir_bytes = builddir.as_posix().encode("utf-8")
+                codebase_bytes = codebase.as_posix().encode("utf-8")
+                extracted_compdb.write_bytes(
+                    extracted_compdb_bytes.replace(builddir_bytes, codebase_bytes)
+                )
+
+            return extracted_compdb
         else:
             # Otherwise, we assume the compile_commands.json is already present
             return provided_compdb
