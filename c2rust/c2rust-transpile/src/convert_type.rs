@@ -2,6 +2,7 @@ use crate::c_ast::CDeclId;
 use crate::c_ast::*;
 use crate::diagnostics::TranslationResult;
 use crate::renamer::*;
+use crate::translator::tenjin::guide_type_name_path;
 use c2rust_ast_builder::{mk, properties::*};
 use failure::format_err;
 use std::collections::{HashMap, HashSet};
@@ -235,15 +236,16 @@ impl TypeConverter {
         ret: Option<CQualTypeId>,
         params: &[CQualTypeId],
         is_variadic: bool,
+        pg: &crate::translator::ParsedGuidance,
     ) -> TranslationResult<Box<Type>> {
         let barefn_inputs = params
             .iter()
-            .map(|x| mk().bare_arg(self.convert(ctxt, x.ctype).unwrap(), None::<Box<Ident>>))
+            .map(|x| mk().bare_arg(self.convert(ctxt, x.ctype, pg).unwrap(), None::<Box<Ident>>))
             .collect::<Vec<_>>();
 
         let output = match ret {
             None => mk().never_ty(),
-            Some(ret) => self.convert(ctxt, ret.ctype)?,
+            Some(ret) => self.convert(ctxt, ret.ctype, pg)?,
         };
 
         let variadic = is_variadic.then(|| mk().variadic_arg(vec![]));
@@ -260,6 +262,7 @@ impl TypeConverter {
         &mut self,
         ctxt: &TypedAstContext,
         qtype: CQualTypeId,
+        pg: &crate::translator::ParsedGuidance,
     ) -> TranslationResult<Box<Type>> {
         let mutbl = if qtype.qualifiers.is_const {
             Mutability::Immutable
@@ -278,20 +281,20 @@ impl TypeConverter {
                 while let CTypeKind::VariableArray(elt_, _) = ctxt.resolve_type(elt).kind {
                     elt = elt_
                 }
-                let child_ty = self.convert(ctxt, elt)?;
+                let child_ty = self.convert(ctxt, elt, pg)?;
                 Ok(mk().set_mutbl(mutbl).ptr_ty(child_ty))
             }
 
             // Function pointers are translated to Option applied to the function type
             // in order to support NULL function pointers natively
             CTypeKind::Function(..) => {
-                let fn_ty = self.convert(ctxt, qtype.ctype)?;
+                let fn_ty = self.convert(ctxt, qtype.ctype, pg)?;
                 let param = mk().angle_bracketed_args(vec![fn_ty]);
                 Ok(mk().path_ty(vec![mk().path_segment_with_args("Option", param)]))
             }
 
             _ => {
-                let child_ty = self.convert(ctxt, qtype.ctype)?;
+                let child_ty = self.convert(ctxt, qtype.ctype, pg)?;
                 Ok(mk().set_mutbl(mutbl).ptr_ty(child_ty))
             }
         }
@@ -303,6 +306,7 @@ impl TypeConverter {
         &mut self,
         ctxt: &TypedAstContext,
         ctype: CTypeId,
+        pg: &crate::translator::ParsedGuidance,
     ) -> TranslationResult<Box<Type>> {
         if self.translate_valist && ctxt.is_va_list(ctype) {
             let path = vec!["core", "ffi", "VaList"];
@@ -331,17 +335,17 @@ impl TypeConverter {
             CTypeKind::UInt128 => Ok(mk().path_ty(mk().path(vec!["u128"]))),
             CTypeKind::BFloat16 => Ok(mk().path_ty(mk().path(vec!["bf16"]))),
 
-            CTypeKind::Pointer(qtype) => self.convert_pointer(ctxt, qtype),
+            CTypeKind::Pointer(qtype) => self.convert_pointer(ctxt, qtype, pg),
 
-            CTypeKind::Elaborated(ref ctype) => self.convert(ctxt, *ctype),
-            CTypeKind::Decayed(ref ctype) => self.convert(ctxt, *ctype),
-            CTypeKind::Paren(ref ctype) => self.convert(ctxt, *ctype),
+            CTypeKind::Elaborated(ref ctype) => self.convert(ctxt, *ctype, pg),
+            CTypeKind::Decayed(ref ctype) => self.convert(ctxt, *ctype, pg),
+            CTypeKind::Paren(ref ctype) => self.convert(ctxt, *ctype, pg),
 
             CTypeKind::Struct(decl_id) => {
                 let new_name = self
                     .resolve_decl_name(decl_id)
                     .ok_or_else(|| format_err!("Unknown decl id {:?}", decl_id))?;
-                Ok(mk().path_ty(mk().path(vec![new_name])))
+                Ok(mk().path_ty(mk().path(guide_type_name_path(pg, &new_name))))
             }
 
             CTypeKind::Union(decl_id) => {
@@ -360,12 +364,12 @@ impl TypeConverter {
             }
 
             CTypeKind::ConstantArray(element, count) => {
-                let ty = self.convert(ctxt, element)?;
+                let ty = self.convert(ctxt, element, pg)?;
                 Ok(mk().array_ty(ty, mk().lit_expr(mk().int_unsuffixed_lit(count as u128))))
             }
 
             CTypeKind::IncompleteArray(element) => {
-                let ty = self.convert(ctxt, element)?;
+                let ty = self.convert(ctxt, element, pg)?;
                 let zero_lit = mk().int_unsuffixed_lit(0);
                 let zero = mk().lit_expr(zero_lit);
                 Ok(mk().array_ty(ty, zero))
@@ -375,27 +379,27 @@ impl TypeConverter {
                 while let CTypeKind::VariableArray(elt_, _) = ctxt.resolve_type(elt).kind {
                     elt = elt_
                 }
-                let child_ty = self.convert(ctxt, elt)?;
+                let child_ty = self.convert(ctxt, elt, pg)?;
                 Ok(mk().mutbl().ptr_ty(child_ty))
             }
 
-            CTypeKind::Attributed(ty, _) => self.convert(ctxt, ty.ctype),
+            CTypeKind::Attributed(ty, _) => self.convert(ctxt, ty.ctype, pg),
 
             // ANSI/ISO C-style function
             CTypeKind::Function(ret, ref params, is_var, is_noreturn, true) => {
                 let opt_ret = if is_noreturn { None } else { Some(ret) };
-                let fn_ty = self.convert_function(ctxt, opt_ret, params, is_var)?;
+                let fn_ty = self.convert_function(ctxt, opt_ret, params, is_var, pg)?;
                 Ok(fn_ty)
             }
 
             // K&R-style function
             CTypeKind::Function(ret, _, is_var, is_noreturn, false) => {
                 let opt_ret = if is_noreturn { None } else { Some(ret) };
-                let fn_ty = self.convert_function(ctxt, opt_ret, &[], is_var)?;
+                let fn_ty = self.convert_function(ctxt, opt_ret, &[], is_var, pg)?;
                 Ok(fn_ty)
             }
 
-            CTypeKind::TypeOf(ty) => self.convert(ctxt, ty),
+            CTypeKind::TypeOf(ty) => self.convert(ctxt, ty, pg),
 
             ref t => Err(format_err!("Unsupported type {:?}", t).into()),
         }
@@ -408,6 +412,7 @@ impl TypeConverter {
         ctxt: &TypedAstContext,
         ctype: CTypeId,
         params: &Vec<CParamId>,
+        pg: &crate::translator::ParsedGuidance,
     ) -> TranslationResult<Option<Box<Type>>> {
         match ctxt.index(ctype).kind {
             // ANSI/ISO C-style function
@@ -428,24 +433,24 @@ impl TypeConverter {
                     .collect::<Vec<_>>();
 
                 let opt_ret = if is_noreturn { None } else { Some(ret) };
-                let fn_ty = self.convert_function(ctxt, opt_ret, &params, is_var)?;
+                let fn_ty = self.convert_function(ctxt, opt_ret, &params, is_var, pg)?;
                 Ok(Some(fn_ty))
             }
 
             CTypeKind::Elaborated(ref ctype) => {
-                self.knr_function_type_with_parameters(ctxt, *ctype, params)
+                self.knr_function_type_with_parameters(ctxt, *ctype, params, pg)
             }
             CTypeKind::Decayed(ref ctype) => {
-                self.knr_function_type_with_parameters(ctxt, *ctype, params)
+                self.knr_function_type_with_parameters(ctxt, *ctype, params, pg)
             }
             CTypeKind::Paren(ref ctype) => {
-                self.knr_function_type_with_parameters(ctxt, *ctype, params)
+                self.knr_function_type_with_parameters(ctxt, *ctype, params, pg)
             }
-            CTypeKind::TypeOf(ty) => self.knr_function_type_with_parameters(ctxt, ty, params),
+            CTypeKind::TypeOf(ty) => self.knr_function_type_with_parameters(ctxt, ty, params, pg),
 
             CTypeKind::Typedef(decl) => match &ctxt.index(decl).kind {
                 CDeclKind::Typedef { typ, .. } => {
-                    self.knr_function_type_with_parameters(ctxt, typ.ctype, params)
+                    self.knr_function_type_with_parameters(ctxt, typ.ctype, params, pg)
                 }
                 _ => panic!("Typedef decl did not point to a typedef"),
             },

@@ -48,7 +48,7 @@ mod operators;
 pub mod parent_fn;
 mod simd;
 mod structs;
-mod tenjin;
+pub mod tenjin;
 mod tenjin_scanf;
 mod variadic;
 
@@ -244,7 +244,7 @@ struct MacroExpansion {
 }
 
 #[derive(Debug)]
-struct TenjinDeclSpecifier {
+pub struct TenjinDeclSpecifier {
     pub filespec: String,
     pub fnname: String,
     pub varname: String,
@@ -309,11 +309,12 @@ fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
     })
 }
 
-struct ParsedGuidance {
+pub struct ParsedGuidance {
     pub _raw: serde_json::Value,
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
     pub type_of_decl: HashMap<CDeclId, tenjin::GuidedType>,
     decls_without_type_guidance: HashSet<CDeclId>,
+    pub using_crates: HashSet<String>,
 }
 
 impl ParsedGuidance {
@@ -350,11 +351,23 @@ impl ParsedGuidance {
 
         //dbg!(&declspecs_of_type);
 
+        let mut using_crates = HashSet::new();
+        if let Some(crates) = raw.get("use_crates") {
+            if let Some(crates) = crates.as_array() {
+                for krate in crates {
+                    if let Some(krate_str) = krate.as_str() {
+                        using_crates.insert(krate_str.to_string());
+                    }
+                }
+            }
+        }
+
         ParsedGuidance {
             _raw: raw,
             declspecs_of_type,
             type_of_decl,
             decls_without_type_guidance: HashSet::new(),
+            using_crates,
         }
     }
 
@@ -3918,9 +3931,11 @@ impl<'c> Translation<'c> {
         if let Some(cur_file) = *self.cur_file.borrow() {
             self.import_type(type_id, cur_file);
         }
-        self.type_converter
-            .borrow_mut()
-            .convert(&self.ast_context, type_id)
+        self.type_converter.borrow_mut().convert(
+            &self.ast_context,
+            type_id,
+            &self.parsed_guidance.borrow(),
+        )
     }
 
     /// Construct an expression for a NULL at any type, including forward declarations,
@@ -3939,10 +3954,11 @@ impl<'c> Translation<'c> {
         if is_static && !pointee.qualifiers.is_const {
             let mut qtype = pointee;
             qtype.qualifiers.is_const = true;
-            let ty_ = self
-                .type_converter
-                .borrow_mut()
-                .convert_pointer(&self.ast_context, qtype)?;
+            let ty_ = self.type_converter.borrow_mut().convert_pointer(
+                &self.ast_context,
+                qtype,
+                &self.parsed_guidance.borrow(),
+            )?;
             zero = mk().cast_expr(zero, ty_);
         }
         Ok(mk().cast_expr(zero, ty))
@@ -4440,6 +4456,7 @@ impl<'c> Translation<'c> {
                                 &self.ast_context,
                                 qual_ty.ctype,
                                 parameters,
+                                &self.parsed_guidance.borrow(),
                             )?;
                         if let Some(actual_ty) = actual_ty {
                             // If we're casting a concrete function to

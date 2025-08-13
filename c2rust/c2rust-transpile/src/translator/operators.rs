@@ -878,10 +878,11 @@ impl Translation<'_> {
                             if let Mutability::Mutable = mutbl {
                                 let mut qtype = pointee_ty;
                                 qtype.qualifiers.is_const = true;
-                                let ty_ = self
-                                    .type_converter
-                                    .borrow_mut()
-                                    .convert_pointer(&self.ast_context, qtype)?;
+                                let ty_ = self.type_converter.borrow_mut().convert_pointer(
+                                    &self.ast_context,
+                                    qtype,
+                                    &self.parsed_guidance.borrow(),
+                                )?;
                                 addr_of_arg = mk().cast_expr(addr_of_arg, ty_);
                             }
                         } else {

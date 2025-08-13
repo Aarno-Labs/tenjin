@@ -1,6 +1,7 @@
 use super::*;
 use proc_macro2::Literal;
 use quote::ToTokens; // for to_token_stream()
+use std::str::FromStr;
 use syn::{Expr, Path, Type};
 
 #[derive(Debug, Clone)]
@@ -9,17 +10,21 @@ pub struct GuidedType {
     pub parsed: Type,
 }
 
+impl FromStr for GuidedType {
+    type Err = syn::parse::Error;
+
+    fn from_str(pretty: &str) -> Result<Self, Self::Err> {
+        let parsed = syn::parse_str(pretty)?;
+        Ok(GuidedType {
+            pretty: pretty.to_string(),
+            parsed,
+        })
+    }
+}
+
 impl GuidedType {
     pub fn new(pretty: String, parsed: Type) -> Self {
         GuidedType { pretty, parsed }
-    }
-
-    pub fn from_str(pretty: &str) -> Self {
-        let parsed = syn::parse_str(pretty).expect("Failed to parse type from string");
-        GuidedType {
-            pretty: pretty.to_string(),
-            parsed,
-        }
     }
 
     pub fn from_type(ty: Type) -> Self {
@@ -65,6 +70,15 @@ fn is_known_size_1_path(path: &Path) -> bool {
     }
 }
 
+pub fn type_get_bare_path(ty: &Type) -> Option<&Path> {
+    if let Type::Path(ref path) = *ty {
+        if path.qself.is_none() {
+            return Some(&path.path);
+        }
+    }
+    None
+}
+
 pub fn expr_get_path(expr: &Expr) -> Option<&Path> {
     if let Expr::Path(ref path) = *expr {
         Some(&path.path)
@@ -79,6 +93,15 @@ pub fn expr_is_ident(expr: &Expr, ident: &str) -> bool {
     } else {
         false
     }
+}
+
+pub fn expr_get_ident(expr: &Expr) -> Option<String> {
+    if let Expr::Path(ref path) = *expr {
+        if path.qself.is_none() && path.path.segments.len() == 1 {
+            return Some(path.path.segments[0].ident.to_string());
+        }
+    }
+    None
 }
 
 pub fn expr_is_stdout(expr: &Expr) -> bool {
@@ -148,6 +171,121 @@ pub fn cast_expr_guided(
         }
     }
     mk().cast_expr(e, t)
+}
+
+pub fn guide_type_name_path(pg: &ParsedGuidance, name: &str) -> Path {
+    if pg.using_crates.contains("libz-rs-sys") {
+        if name == "internal_state" || name == "gz_header" {
+            return mk().path(vec!["libz_rs_sys", name]);
+        }
+        // zlib has `typedef struct z_stream_s { ... } z_stream;`
+        // and libz-rs-sys names the struct z_stream, not z_stream_s.
+        if name == "z_stream_s" {
+            return mk().path(vec!["libz_rs_sys", "z_stream"]);
+        }
+    }
+    // Fallback to the original name
+    mk().path(vec![name.to_string()])
+}
+
+#[allow(clippy::borrowed_box)]
+fn libz_rs_sys_call_form_cases(
+    t: &Translation,
+    func: &Box<Expr>,
+    args: &[Box<Expr>],
+) -> Option<RecognizedCallForm> {
+    fn libz_rs_sys_fn_pred(ident: &str) -> bool {
+        // See https://docs.rs/libz-sys/latest/libz_sys/
+        matches!(
+            ident,
+            "adler32"
+                | "adler32_combine"
+                | "compress"
+                | "compress2"
+                | "compressBound"
+                | "crc32"
+                | "crc32_combine"
+                | "deflate"
+                | "deflateBound"
+                | "deflateCopy"
+                | "deflateEnd"
+                | "deflateInit2_"
+                | "deflateInit_"
+                | "deflateParams"
+                | "deflatePrime"
+                | "deflateReset"
+                | "deflateSetDictionary"
+                | "deflateSetHeader"
+                | "deflateTune"
+                | "gzclearerr"
+                | "gzclose"
+                | "gzdirect"
+                | "gzdopen"
+                | "gzeof"
+                | "gzerror"
+                | "gzflush"
+                | "gzgetc"
+                | "gzgets"
+                | "gzopen"
+                | "gzputc"
+                | "gzputs"
+                | "gzread"
+                | "gzrewind"
+                | "gzseek"
+                | "gzsetparams"
+                | "gztell"
+                | "gzungetc"
+                | "gzwrite"
+                | "inflate"
+                | "inflateBack"
+                | "inflateBackEnd"
+                | "inflateBackInit_"
+                | "inflateCopy"
+                | "inflateEnd"
+                | "inflateGetHeader"
+                | "inflateInit2_"
+                | "inflateInit_"
+                | "inflateMark"
+                | "inflatePrime"
+                | "inflateReset"
+                | "inflateReset2"
+                | "inflateSetDictionary"
+                | "inflateSync"
+                | "uncompress"
+                | "zlibCompileFlags"
+                | "zlibVersion"
+        )
+    }
+
+    if t.parsed_guidance
+        .borrow()
+        .using_crates
+        .contains("libz-rs-sys")
+    {
+        if let Some(ident) = expr_get_ident(func) {
+            if libz_rs_sys_fn_pred(&ident) {
+                t.use_crate(ExternCrate::LibzRsSys);
+                return Some(RecognizedCallForm::OtherCall(
+                    mk().path_expr(vec!["libz_rs_sys", &ident]),
+                    args.to_owned(),
+                ));
+            }
+        }
+
+        if tenjin::expr_is_ident(func, "crc32_z") {
+            // libz_rs_sys does not provide crc32_z, so we'll emulate it.
+            t.with_cur_file_item_store(|item_store| {
+                item_store.add_item_str_once(
+                    r#"unsafe fn crc32_zz(crc: libc::c_ulong, buf: *const Bytef, len: libc::c_ulong) -> libc::c_ulong { libz_rs_sys::crc32(crc, buf, libz_rs_sys::uInt::try_from(len).expect("crc32_z overflow")) }"#,
+                );
+            });
+            return Some(RecognizedCallForm::OtherCall(
+                mk().path_expr("crc32_zz"),
+                args.to_owned(),
+            ));
+        }
+    }
+    None
 }
 
 impl Translation<'_> {
@@ -367,6 +505,10 @@ impl Translation<'_> {
                     }
                 }
             }
+        }
+
+        if let Some(call_form) = libz_rs_sys_call_form_cases(self, &func, &args) {
+            return call_form;
         }
 
         RecognizedCallForm::OtherCall(func, args)
@@ -738,9 +880,10 @@ impl Translation<'_> {
                         ],
                     );
 
-                    self.type_overrides
-                        .borrow_mut()
-                        .insert(call_type_id, GuidedType::from_str("bool"));
+                    self.type_overrides.borrow_mut().insert(
+                        call_type_id,
+                        GuidedType::from_str("bool").expect("failed to parse 'bool'!?"),
+                    );
 
                     return Ok(Some(WithStmts::new_val(fgets_stdin_bool_call)));
                 }

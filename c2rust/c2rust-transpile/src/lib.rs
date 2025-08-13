@@ -143,6 +143,7 @@ pub enum ExternCrate {
     Memoffset,
     Libc,
     Scanf,
+    LibzRsSys,
 }
 
 #[derive(Serialize)]
@@ -174,6 +175,7 @@ impl From<ExternCrate> for ExternCrateDetails {
             ExternCrate::Memoffset => Self::new("memoffset", "0.5", true),
             ExternCrate::Libc => Self::new("libc", "0.2", false),
             ExternCrate::Scanf => Self::new("scanf", "1.3.1", true),
+            ExternCrate::LibzRsSys => Self::new("libz-rs-sys", "0.5.1", false),
         }
     }
 }

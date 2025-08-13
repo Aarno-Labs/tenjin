@@ -165,6 +165,7 @@ impl Translation<'_> {
                             opt_ret,
                             params,
                             is_variadic,
+                            &self.parsed_guidance.borrow(),
                         )?;
 
                         let m = if p.qualifiers.is_const {
