@@ -87,6 +87,12 @@ def run_command_with_progress(
 
         # Overall time elapsed including final newline after progress dots
         print(f" ({elapsed_s:.2f} s)")
+
+        # If something went wrong, show the error. The redirected files
+        # are, in general, an implementation detail, not for user consumption.
+        if proc.returncode != 0:
+            with open(stderr_file, encoding="utf-8") as f:
+                click.echo(f.read(), err=True)
         assert proc.returncode == 0, f"Command failed with return code {proc.returncode}"
 
 
