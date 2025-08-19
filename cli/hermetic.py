@@ -55,6 +55,10 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
             str(localdir / "cmake" / "bin"),
             env["PATH"],
         ])
+        env["LD_LIBRARY_PATH"] = os.pathsep.join([
+            str(xj_llvm_root(localdir) / "lib"),
+            env.get("LD_LIBRARY_PATH", ""),
+        ])
 
     return env
 
