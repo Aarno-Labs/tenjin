@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Callable, Sequence
 from subprocess import CompletedProcess
 
+import click
+
 import ingest_tracking
 import hermetic
 from speculative_rewriters import (
@@ -18,6 +20,17 @@ from speculative_rewriters import (
     SpeculativeSpansEraser,
 )
 import static_measurements_rust
+
+
+def quiet_cargo(args: list[str], cwd: Path, env_ext=None) -> CompletedProcess:
+    cp = hermetic.run_cargo_in(args, cwd=cwd, check=False, capture_output=True, env_ext=env_ext)
+    if cp.returncode != 0:
+        click.echo(
+            f"TENJIN: cargo invocation failed in {cwd.as_posix()}:\n\t" + " ".join(args), err=True
+        )
+        click.echo("TENJIN: stderr was:\n" + cp.stderr.decode(), err=True)
+        cp.check_returncode()
+    return cp
 
 
 def get_multitool_toolchain(root: Path) -> str:
@@ -30,7 +43,7 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path) -> 
     # it's not ideal to install them globally.
     # We could unconditionally `cargo install` into the _local/bin directory,
     # but it's a bit faster to just build & run from `target`.
-    return hermetic.run_cargo_in(
+    return quiet_cargo(
         ["xj-improve-multitool", "--tool", tool, *args],
         cwd=dir,
         env_ext={
@@ -39,7 +52,6 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path) -> 
                 os.environ["PATH"],
             ]),
         },
-        check=True,
     )
 
 
@@ -436,9 +448,9 @@ def run_improvement_passes(
                 _step.update_sub(cp_or_None)
             mid_ns = time.perf_counter_ns()
             # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
-            hermetic.run_cargo_in(["check"], cwd=newdir, check=True)
+            quiet_cargo(["check"], cwd=newdir)
             # Clean up the target directory so the next pass starts fresh.
-            hermetic.run_cargo_in(["clean", "-p", cratename], cwd=newdir, check=True)
+            quiet_cargo(["clean", "-p", cratename], cwd=newdir)
             end_ns = time.perf_counter_ns()
 
             core_ms = round(elapsed_ms_of_ns(start_ns, mid_ns))
