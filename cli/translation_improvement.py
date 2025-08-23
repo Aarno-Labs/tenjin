@@ -343,6 +343,14 @@ def run_improvement_passes(
             capture_output=True,
         )
 
+    def run_cargo_clippy_fix(_root: Path, dir: Path) -> CompletedProcess:
+        return hermetic.run_cargo_in(
+            ["clippy", "--fix", "--allow-no-vcs", "--allow-dirty"],
+            cwd=dir,
+            check=True,
+            capture_output=True,
+        )
+
     improvement_passes: list[tuple[str, Callable[[Path, Path], CompletedProcess | None]]] = [
         ("fmt", run_cargo_fmt),
         ("fix", run_cargo_fix),
@@ -358,6 +366,7 @@ def run_improvement_passes(
         # the block safe, and therefore subject to removal.
         # But if we format first, the block may not be removable by `fix`!
         ("fix", run_cargo_fix),
+        ("clippy-fix", run_cargo_clippy_fix),
         ("trim-allows", run_trim_allows),
         ("fmt", run_cargo_fmt),
     ]
