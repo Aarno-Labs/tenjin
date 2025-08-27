@@ -296,6 +296,10 @@ def do_translate(
         # so we create a subdirectory with the desired crate name.
         output = resultsdir / cratename
         output.mkdir(parents=True, exist_ok=False)
+
+        # We must explicitly pass c2rust our sysroot
+        compilation_database.munge_compile_commands_for_hermetic_translation(compdb)
+
         # First run the upstream c2rust tool to get a baseline translation.
         run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
 

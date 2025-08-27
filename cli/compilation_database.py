@@ -168,6 +168,23 @@ def extract_preprocessor_definitions_from_compile_commands(
     return definitions
 
 
+def munge_compile_commands_for_hermetic_translation(compile_commands_path: Path):
+    """Modify compile_commands.json to explicitly provide Tenjin's sysroot.
+    The clang driver automatically gets this via .cfg files, but c2rust doesn't."""
+    ccs = CompileCommands.from_json_file(compile_commands_path)
+    for cc in ccs.commands:
+        args = cc.get_command_parts()
+        if not args:
+            continue
+        if Path(args[0]).name in ("clang", "cc") and "-c" in args:
+            args.append("--sysroot")
+            args.append(str(hermetic.xj_llvm_root(repo_root.localdir()) / "sysroot"))
+
+        cc.set_command_parts(args)
+
+    ccs.to_json_file(compile_commands_path)
+
+
 def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     """Modify compile_commands.json to include Tenjin-specific declarations
     and block expansion of macros that Tenjin gives special treatment."""
