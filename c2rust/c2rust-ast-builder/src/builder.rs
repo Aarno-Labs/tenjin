@@ -2473,6 +2473,9 @@ mod tenjin {
             if path.segments[1].ident.to_string().as_str() == "c_int" {
                 return Some(i32::MAX as i64);
             }
+            if path.segments[1].ident.to_string().as_str() == "c_uint" {
+                return Some(i32::MAX as i64);
+            }
             if path.segments[1].ident.to_string().as_str() == "c_short" {
                 return Some(i16::MAX as i64);
             }
