@@ -269,6 +269,8 @@ def do_translate(
 
     if c_main_in:
         c2rust_transpile_flags.extend(["--binary", c_main_in.removesuffix(".c")])
+    else:
+        c2rust_transpile_flags.extend(["--emit-build-files"])
 
     xj_c2rust_transpile_flags = [
         *c2rust_transpile_flags,
