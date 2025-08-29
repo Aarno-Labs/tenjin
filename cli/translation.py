@@ -259,7 +259,8 @@ def do_translate(
     ]
 
     if not c_main_in and codebase.is_file() and codebase.suffix == ".c":
-        c_main_in = codebase.name
+        if b"main(" in codebase.read_bytes():
+            c_main_in = codebase.name
 
     if not c_main_in and (codebase / "main.c").is_file():
         c_main_in = "main.c"
