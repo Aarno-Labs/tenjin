@@ -229,6 +229,8 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         # print("unsafe spans:", unsafe_spans)
         # print("unsafe status:", unsafe_status)
 
+        called = set()
+
         # Use graphlib to collect ready nodes in topological order
         # from the *reverse* of the call graph -- we want to process
         # the leaves first, so we can remove unsafe blocks from them
@@ -239,11 +241,20 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             # which is already the reverse of the "conventional"
             # graph edge direction of src -> tgt / pred -> node.
             g.add(caller, callee)
+            called.add(callee)
+
+        # For library crates, public API functions may not have internal
+        # callers, so we must synthesize a virtual caller for them.
+        for scc in cacg.nodes:
+            for e in scc:
+                if e not in called:
+                    g.add(-1, e)
 
         g.prepare()
         while g.is_active():
             ready_nodes = g.get_ready()
-            process_function_sccs(cacg, ready_nodes, unsafe_spans, unsafe_status)
+            if ready_nodes != (-1,):
+                process_function_sccs(cacg, ready_nodes, unsafe_spans, unsafe_status)
             g.done(*ready_nodes)
 
     with tempfile.TemporaryDirectory() as cacgdir:
