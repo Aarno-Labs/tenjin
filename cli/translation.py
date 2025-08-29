@@ -323,7 +323,24 @@ def do_translate(
             # Normalize the unmodified translation results to end up
             # in a directory with a project-independent name.
             output = output.rename(output.with_name("00_out"))
-        except CalledProcessError:
+        except CalledProcessError as e:
+
+            def oops(msg: str):
+                click.secho("TENJIN: " + msg, err=True, fg="red", bg="white")
+
+            oops(
+                f"Tenjin's initial production of Rust via c2rust failed with error code {e.returncode}."
+            )
+            oops("The command we ran was:")
+            click.echo(" ".join(e.cmd))
+            oops("    but note that it was invoked in a modified environment.")
+            oops("The compilation database was:")
+            click.echo(compdb.read_text(encoding="utf-8"))
+            oops("Here was stdout:")
+            click.echo(e.stdout)
+            oops("and stderr:")
+            click.echo(e.stderr)
+
             tracker.mark_translation_finished()
             skip_remainder_of_translation = True
 
