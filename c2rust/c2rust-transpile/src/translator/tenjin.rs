@@ -33,6 +33,12 @@ impl GuidedType {
             parsed: ty,
         }
     }
+
+    pub fn pretty_sans_refs(&self) -> &str {
+        self.pretty
+            .trim_start_matches("& ")
+            .trim_start_matches("mut ")
+    }
 }
 
 pub fn is_known_size_1_type(ty: &Type) -> bool {

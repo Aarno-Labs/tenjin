@@ -6115,7 +6115,9 @@ impl<'c> Translation<'c> {
                 .borrow_mut()
                 .query_expr_type(self, c_ptr);
 
-            if guided_type.is_some_and(|g: tenjin::GuidedType| g.pretty.starts_with("Vec <")) {
+            if guided_type
+                .is_some_and(|g: tenjin::GuidedType| g.pretty_sans_refs().starts_with("Vec <"))
+            {
                 if neg {
                     offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
                 }
