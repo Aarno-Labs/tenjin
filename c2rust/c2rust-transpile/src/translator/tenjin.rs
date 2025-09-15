@@ -100,6 +100,13 @@ pub fn type_is_vec(ty: &Type) -> bool {
     false
 }
 
+pub fn type_is_mut_ref(ty: &Type) -> bool {
+    if let Type::Reference(ref tref) = *ty {
+        return tref.mutability.is_some();
+    }
+    false
+}
+
 pub fn expr_get_path(expr: &Expr) -> Option<&Path> {
     if let Expr::Path(ref path) = *expr {
         Some(&path.path)

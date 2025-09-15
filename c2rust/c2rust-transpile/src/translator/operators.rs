@@ -697,7 +697,21 @@ impl Translation<'_> {
                     } else if null_eq_fn {
                         mk().method_call_expr(rhs, "is_some", vec![])
                     } else {
-                        mk().binary_expr(BinOp::Ne(Default::default()), lhs, rhs)
+                        let lhs_guided_type = self
+                            .parsed_guidance
+                            .borrow_mut()
+                            .query_expr_type(self, lhs_expr_id);
+                        let rhs_guided_type = self
+                            .parsed_guidance
+                            .borrow_mut()
+                            .query_expr_type(self, rhs_expr_id);
+                        if lhs_guided_type.is_some_and(|g| tenjin::type_is_mut_ref(&g.parsed))
+                            || rhs_guided_type.is_some_and(|g| tenjin::type_is_mut_ref(&g.parsed))
+                        {
+                            mk().lit_expr(mk().int_unsuffixed_lit(1)) // mutable references never alias, so pointer inequality is true
+                        } else {
+                            mk().binary_expr(BinOp::Ne(Default::default()), lhs, rhs)
+                        }
                     }
                 } else {
                     mk().binary_expr(BinOp::Ne(Default::default()), lhs, rhs)
