@@ -8,6 +8,7 @@ import graphlib
 from pathlib import Path
 from typing import Callable, Sequence
 from subprocess import CompletedProcess
+from dataclasses import dataclass
 
 import click
 
@@ -103,13 +104,20 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             return FunctionUnsafeNecessity.UNKNOWN
         return FunctionUnsafeNecessity.SAFE
 
+    @dataclass(eq=True, frozen=True)
+    class SingletonSCC:
+        elt_not_node: int
+
     def process_function_scc(
         cacg: CondensedSpanGraph,
-        node: int,
+        node: int | SingletonSCC,
         unsafe_spans: list[ExplicitSpan | None],
         unsafe_status: list[FunctionUnsafeNecessity],
     ):
-        fnids = cacg.nodes[node]
+        if isinstance(node, SingletonSCC):
+            fnids = [node.elt_not_node]
+        else:
+            fnids = cacg.nodes[node]
         unknown_status_spans = []
         for fnid in fnids:
             if unsafe_status[fnid] == FunctionUnsafeNecessity.UNKNOWN:
@@ -165,7 +173,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
 
     def process_function_sccs(
         cacg: CondensedSpanGraph,
-        ready_nodes: Sequence[int],
+        ready_nodes: Sequence[int | SingletonSCC],
         unsafe_spans: list[ExplicitSpan | None],
         unsafe_status: list[FunctionUnsafeNecessity],
     ):
@@ -248,7 +256,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         for scc in cacg.nodes:
             for e in scc:
                 if e not in called:
-                    g.add(-1, e)
+                    g.add(-1, SingletonSCC(elt_not_node=e))
 
         g.prepare()
         while g.is_active():
