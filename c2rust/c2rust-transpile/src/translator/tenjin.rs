@@ -197,6 +197,41 @@ pub fn cast_expr_guided(
     mk().cast_expr(e, t)
 }
 
+/// This is called from a context that looks like *((T*) ...)
+/// so if the ... looks like &FOO, where T is int/float and FOO has type float/int,
+/// then the overall expression is a bitcast between int and float.
+pub fn is_bitcast_to_int_or_float(
+    t: &Translation,
+    argkind: &CExprKind,
+) -> Option<(CTypeKind, CExprId)> {
+    if let CExprKind::ExplicitCast(outer_cqt, exp, CastKind::BitCast, _opt_field_id, _lrvalue) =
+        argkind
+    {
+        if let CExprKind::Unary(_inner_cqt, c_ast::UnOp::AddressOf, inner_exp, _lrval) =
+            t.ast_context[*exp].kind
+        {
+            // TENJIN-TODO(intsizes): be more robust about determining actual int sizes
+            let outer_tykind = &t.ast_context.resolve_type(outer_cqt.ctype).kind;
+            let outer_ty = if let CTypeKind::Pointer(pointee) = outer_tykind {
+                &t.ast_context.resolve_type(pointee.ctype).kind
+            } else {
+                outer_tykind
+            };
+            // If the outer and inner types aren't the same bitwidth, it would correspond to code like
+            //            *(double *)&some_short_var
+            // or         *(float  *)&some_u64_var
+            // and we're OK for now with having code like that produce a Rust compilation error.
+            if matches!(
+                outer_ty,
+                CTypeKind::Double | CTypeKind::Float | CTypeKind::LongLong | CTypeKind::ULongLong
+            ) {
+                return Some((outer_ty.clone(), inner_exp));
+            }
+        }
+    }
+    None
+}
+
 pub fn guide_type_name_path(pg: &ParsedGuidance, name: &str) -> Path {
     if pg.using_crates.contains("libz-rs-sys") {
         if name == "internal_state" || name == "gz_header" {

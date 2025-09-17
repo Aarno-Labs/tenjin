@@ -937,31 +937,73 @@ impl Translation<'_> {
             c_ast::UnOp::PostIncrement => self.convert_post_increment(ctx, cqual_type, true, arg),
             c_ast::UnOp::PostDecrement => self.convert_post_increment(ctx, cqual_type, false, arg),
             c_ast::UnOp::Deref => {
-                match self.ast_context[arg].kind {
+                match &self.ast_context[arg].kind {
                     CExprKind::Unary(_, c_ast::UnOp::AddressOf, arg_, _) => {
-                        self.convert_expr(ctx.used(), arg_)
+                        self.convert_expr(ctx.used(), *arg_)
                     }
-                    _ => {
-                        self.convert_expr(ctx.used(), arg)?
-                            .result_map(|val: Box<Expr>| {
-                                if let CTypeKind::Function(..) =
-                                    self.ast_context.resolve_type(ctype).kind
-                                {
-                                    Ok(unwrap_function_pointer(val))
-                                } else if let Some(_vla) = self.compute_size_of_expr(ctype) {
-                                    Ok(val)
-                                } else {
-                                    let mut val =
-                                        mk().unary_expr(UnOp::Deref(Default::default()), val);
-
-                                    // If the type on the other side of the pointer we are dereferencing is volatile and
-                                    // this whole expression is not an LValue, we should make this a volatile read
-                                    if lrvalue.is_rvalue() && cqual_type.qualifiers.is_volatile {
-                                        val = self.volatile_read(val, cqual_type)?
+                    argkind => {
+                        if let Some((dst_tykind, inner_exp)) =
+                            tenjin::is_bitcast_to_int_or_float(self, argkind)
+                        {
+                            self.convert_expr(ctx.used(), inner_exp)?.result_map(|val| {
+                                match dst_tykind {
+                                    CTypeKind::Float => Ok(mk().call_expr(
+                                        // emit e.g. f32::from_bits(val)
+                                        mk().path_expr(vec!["f32".to_string(), "from_bits".into()]),
+                                        vec![val],
+                                    )),
+                                    CTypeKind::Double => Ok(mk().call_expr(
+                                        mk().path_expr(vec!["f64".to_string(), "from_bits".into()]),
+                                        vec![val],
+                                    )),
+                                    // TENJIN-TODO(intsizes): be more robust about determining actual int sizes
+                                    CTypeKind::ULongLong => {
+                                        // emit e.g. val.to_bits()
+                                        Ok(mk().method_call_expr(
+                                            val,
+                                            "to_bits".to_string(),
+                                            vec![],
+                                        ))
                                     }
-                                    Ok(val)
+                                    CTypeKind::LongLong => {
+                                        // emit e.g. val.to_bits() as i64
+                                        Ok(mk().cast_expr(
+                                            mk().method_call_expr(
+                                                val,
+                                                "to_bits".to_string(),
+                                                vec![],
+                                            ),
+                                            mk().path_ty(vec!["i64".to_string()]),
+                                        ))
+                                    }
+                                    _ => Err(TranslationError::generic(
+                                        "Unexpected type in bitcast deref",
+                                    )),
                                 }
                             })
+                        } else {
+                            self.convert_expr(ctx.used(), arg)?
+                                .result_map(|val: Box<Expr>| {
+                                    if let CTypeKind::Function(..) =
+                                        self.ast_context.resolve_type(ctype).kind
+                                    {
+                                        Ok(unwrap_function_pointer(val))
+                                    } else if let Some(_vla) = self.compute_size_of_expr(ctype) {
+                                        Ok(val)
+                                    } else {
+                                        let mut val =
+                                            mk().unary_expr(UnOp::Deref(Default::default()), val);
+
+                                        // If the type on the other side of the pointer we are dereferencing is volatile and
+                                        // this whole expression is not an LValue, we should make this a volatile read
+                                        if lrvalue.is_rvalue() && cqual_type.qualifiers.is_volatile
+                                        {
+                                            val = self.volatile_read(val, cqual_type)?
+                                        }
+                                        Ok(val)
+                                    }
+                                })
+                        }
                     }
                 }
             }
