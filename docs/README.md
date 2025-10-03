@@ -66,6 +66,10 @@ either from `git pull` or `bisect`, the support projects should be kept in sync 
   - `10j test-unit-rs` then `(cd c2rust ; 10j cargo insta review)`, or
   - `INSTA_UPDATE=always 10j test-unit-rs` then review the `*.rs` diffs
 
+### synchronize with upstream `c2rust`
+
+See the section below about `git-subrepo`.
+
 ## CLI Notes
 
 ### `10j exec`
@@ -122,3 +126,21 @@ Tarballs are created for x86\_64 and aarch64.
 
 A [third manually-triggered GitHub workflow](https://github.com/Aarno-Labs/tenjin-build-deps/blob/main/.github/workflows/buildllvm.yml) builds LLVM for Mac and Linux (using the bullseye builder on the latter), and uploads the resulting tarballs to an existing GitHub release.
 
+## `git-subrepo`
+
+The `c2rust/` directory is managed with [git-subrepo](https://github.com/ingydotnet/git-subrepo).
+This helps automate synchronization with upstream, without requiring extra software from most Tenjin users.
+Only folks who want to pull in new changes from upstream need to have `git-subrepo` installed.
+
+The `Aarno-Labs/tenjin` repository brings in the `tenjin` branch of
+[`Aarno-Labs/c2rust`](https://github.com/Aarno-Labs/c2rust/) as a subrepo.
+
+To sync with the latest changes from upstream (that is, `immunant/c2rust`):
+
+1. Sync `Aarno-Labs/c2rust`'s `master` branch with `immunant/c2rust`
+2. Merge `master` into the `tenjin` branch of `Aarno-Labs/c2rust` (and push)
+3. Check out a new branch in (your fork of) `Aarno-Labs/tenjin`, then do `git subrepo pull c2rust`
+4. If there are merge conflicts, follow the listed instrutions to address them
+5. Your new branch should eventually wind up with a commit like [this one](https://github.com/Aarno-Labs/tenjin/commit/8b6a2b94f73453f20f03e3aa58a6332a71a9638f ) for a conflict-free merge or [this one](https://github.com/Aarno-Labs/tenjin/commit/7be732b3260a9d2b08d36d53b2f262487af83c25) for a hand-resolved merge
+6. Make sure to run `10j check-rs` and address any issues raised. Do these as separate commits, to minimize changes in the merge commit.
+7. Push the branch!
