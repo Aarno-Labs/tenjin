@@ -111,20 +111,50 @@ def run_command_with_progress(
 type RunSpec = str | Sequence[str | bytes | os.PathLike[str] | os.PathLike[bytes]]
 
 
-def common_helper_for_run(cmd: RunSpec):
+def shellize(cmd: RunSpec) -> str:
+    if isinstance(cmd, str):
+        return cmd
+    else:
+        return " ".join(shlex.quote(str(x)) for x in cmd)
+
+
+def common_helper_for_run(cmd: RunSpec, cmd_cwd: Path | str | None = None):
     if provisioning.HAVE.provisioning_depth == 0 and not running_in_ci():
         # CI is careful to provision what it needs; doing more here
         # would merely slow down the CI run with unnecessary work.
         provisioning.provision_desires("all")
 
-    if os.environ.get("XJ_SHOW_CMDS", "0") != "0":
+    def print_cmd_only():
         click.echo(f": {cmd}")
+
+    def print_cmd_within(cdpath: Path):
+        click.echo(f": ( cd {cdpath.as_posix()} ; {shellize(cmd)} )")
+
+    if os.environ.get("XJ_SHOW_CMDS", "0") != "0":
+        if os.environ.get("PWD") is None:
+            print_cmd_only()
+            return
+
+        if cmd_cwd is None:
+            print_cmd_only()
+            return
+
+        invoked_from = Path(os.environ["PWD"]).resolve()
+        cmd_cwd = Path(cmd_cwd).resolve()
+        if cmd_cwd == invoked_from:
+            print_cmd_only()
+        else:
+            try:
+                cdpath = cmd_cwd.relative_to(invoked_from)
+                print_cmd_within(cdpath)
+            except ValueError:
+                print_cmd_within(cmd_cwd)
 
 
 def run(
     cmd: RunSpec, check=False, with_tenjin_deps=True, env_ext=None, **kwargs
 ) -> subprocess.CompletedProcess:
-    common_helper_for_run(cmd)
+    common_helper_for_run(cmd, kwargs.get("cwd", None))
 
     return subprocess.run(
         cmd,
@@ -137,11 +167,13 @@ def run(
 def run_shell_cmd(
     cmd: RunSpec, check=False, with_tenjin_deps=True, env_ext=None, **kwargs
 ) -> subprocess.CompletedProcess:
-    if not isinstance(cmd, str):
-        cmd = " ".join(shlex.quote(str(x)) for x in cmd)
-
     return run(
-        cmd, check=check, with_tenjin_deps=with_tenjin_deps, env_ext=env_ext, shell=True, **kwargs
+        shellize(cmd),
+        check=check,
+        with_tenjin_deps=with_tenjin_deps,
+        env_ext=env_ext,
+        shell=True,
+        **kwargs,
     )
 
 
