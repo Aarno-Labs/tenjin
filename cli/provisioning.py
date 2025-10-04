@@ -1268,7 +1268,14 @@ def provision_10j_deps_with(version: str, keyname: str):
                 subprocess.check_call(["brew", "install", "ninja"])
 
             if shutil.which("pkg-config") is None:
-                subprocess.check_call(["brew", "install", "pkg-config"])
+                try:
+                    subprocess.check_call(["brew", "install", "pkg-config"])
+                except subprocess.CalledProcessError:
+                    # Maybe homebrew removed this formula?
+                    pass
+
+            if shutil.which("pkgconf") is None:
+                subprocess.check_call(["brew", "install", "pkgconf"])
 
             # The other dependencies we need on Linux, like patch and make,
             # should have been provided already by Xcode Developer Tools.
