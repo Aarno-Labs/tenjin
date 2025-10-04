@@ -1095,6 +1095,13 @@ def provision_10j_llvm_with(version: str, keyname: str):
             if not dst.is_symlink():
                 os.symlink(src, dst)
 
+        # On macOS, `as` is provided by the system SDK, and expects flags
+        # which diverge from `llvm-mc`. So instead of trying to filter those out,
+        # we deactivate the `as` wrapper on macOS.
+        if platform.system() == "Darwin":
+            as_wrapper_path = hermetic.xj_llvm_root(localdir) / "bin" / "as"
+            as_wrapper_path.rename(as_wrapper_path.with_name("xj-as-wrapper-disabled"))
+
         # These symbolic links follow a different naming pattern.
         symlinks = [("clang", "cc"), ("clang++", "c++")]
         if platform.system() != "Darwin":
