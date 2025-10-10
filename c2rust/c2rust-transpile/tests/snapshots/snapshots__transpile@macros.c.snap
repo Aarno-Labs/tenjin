@@ -58,8 +58,8 @@ pub const PARENS: core::ffi::c_int = NESTED_INT * (LITERAL_CHAR + true_0);
 pub const PTR_ARITHMETIC: *const core::ffi::c_char = unsafe {
     LITERAL_STR
         .as_ptr()
-        .offset(5 as core::ffi::c_int as isize)
-        .offset(-(3 as core::ffi::c_int as isize))
+        .offset(5 as isize)
+        .offset(-(3 as isize))
 };
 pub const WIDENING_CAST: core::ffi::c_ulonglong = LITERAL_INT as core::ffi::c_ulonglong;
 pub const CONVERSION_CAST: core::ffi::c_double = LITERAL_INT as core::ffi::c_double;

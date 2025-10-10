@@ -2319,7 +2319,13 @@ mod tenjin {
     }
 
     fn int_type_path_signed_max(path: &Path) -> Option<i64> {
-        if path.segments.len() == 2 && path.segments[0].ident.to_string().as_str() == "libc" {
+        let prefixed_by_libc =
+            path.segments.len() == 2 && path.segments[0].ident.to_string().as_str() == "libc";
+        let prefixed_by_core_ffi = path.segments.len() == 3
+            && path.segments[0].ident.to_string().as_str() == "core"
+            && path.segments[1].ident.to_string().as_str() == "ffi";
+        if prefixed_by_libc || prefixed_by_core_ffi {
+            let final_segment_str = path.segments.last().unwrap().ident.to_string();
             //             COMMENTARY(TENJIN_C_INT_SIZES)
             // Technically the C standard places very lax requirements on the
             // size of these types. In practice we do not expect to compile
@@ -2336,34 +2342,34 @@ mod tenjin {
             // depending on the situation.
             //
             // So these values are chosen conservatively.
-            if path.segments[1].ident.to_string().as_str() == "c_longlong" {
+            if final_segment_str == "c_longlong" {
                 return Some(i64::MAX);
             }
-            if path.segments[1].ident.to_string().as_str() == "c_ulonglong" {
+            if final_segment_str == "c_ulonglong" {
                 return Some(i64::MAX);
             }
-            if path.segments[1].ident.to_string().as_str() == "c_ulong" {
+            if final_segment_str == "c_ulong" {
                 return Some(i32::MAX as i64);
             }
-            if path.segments[1].ident.to_string().as_str() == "c_long" {
+            if final_segment_str == "c_long" {
                 return Some(i32::MAX as i64);
             }
-            if path.segments[1].ident.to_string().as_str() == "c_int" {
+            if final_segment_str == "c_int" {
                 return Some(i32::MAX as i64);
             }
-            if path.segments[1].ident.to_string().as_str() == "c_uint" {
+            if final_segment_str == "c_uint" {
                 return Some(i32::MAX as i64);
             }
-            if path.segments[1].ident.to_string().as_str() == "c_short" {
+            if final_segment_str == "c_short" {
                 return Some(i16::MAX as i64);
             }
-            if path.segments[1].ident.to_string().as_str() == "c_ushort" {
+            if final_segment_str == "c_ushort" {
                 return Some(i16::MAX as i64);
             }
-            if path.segments[1].ident.to_string().as_str() == "c_char" {
+            if final_segment_str == "c_char" {
                 return Some(i8::MAX as i64);
             }
-            if path.segments[1].ident.to_string().as_str() == "c_schar" {
+            if final_segment_str == "c_schar" {
                 return Some(i8::MAX as i64);
             }
         }
