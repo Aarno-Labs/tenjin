@@ -78,9 +78,9 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
        `unsafe_status` but are not yet using it.
     """
 
-    def hacky_rewrite_fn_range(path: Path, lo: int, hi: int, replacement: str):
+    def hacky_rewrite_fn_range(path: Path, lo: int, hi: int, replacement: bytes):
         """Rewrite a range in a file to a replacement string."""
-        with path.open("r+") as f:
+        with path.open("rb+") as f:
             content = f.read()
             assert (hi - lo) == len(replacement)
             content = content[:lo] + replacement + content[hi:]
@@ -166,7 +166,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                         tgtpath = dir / j["message"]["spans"][0]["file_name"]
                         lo = j["message"]["spans"][0]["byte_start"]
                         hi = j["message"]["spans"][0]["byte_end"]
-                        hacky_rewrite_fn_range(tgtpath, lo, hi, " " * len("unsafe"))
+                        hacky_rewrite_fn_range(tgtpath, lo, hi, b" " * len("unsafe"))
                 except:  # noqa: E722
                     print("TENJIN WARNING: unexpected JSON message from cargo check:", j)
                     continue
