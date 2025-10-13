@@ -192,18 +192,23 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
     def find_unsafe_span_for_fn_sig(
         fnspan: ExplicitSpan,
     ) -> ExplicitSpan | None:
-        filepath = Path(dir / cacg.files[fnspan.fileid])
+        relpath = cacg.files[fnspan.fileid]
+        filepath = Path(dir / relpath)
         assert filepath.is_file(), "Expected a file at the path: " + str(filepath)
-        contents = filepath.read_text("utf-8")
+        # We need to read as bytes because the offsets will be wrong if the file
+        # contains any non-ASCII UTF-8 characters.
+        contents = filepath.read_bytes()
         snippet = contents[fnspan.lo : fnspan.hi]
         assert fnspan.hi > fnspan.lo, "Expected a non-empty span: " + str(fnspan)
-        assert len(snippet) > 0, "Expected a non-empty snippet: " + snippet
+        assert len(snippet) > 0, "Expected a non-empty snippet: " + snippet.decode(
+            "utf-8", errors="replace"
+        )
 
-        if snippet.startswith("fn") or snippet.startswith("\nfn"):
+        if snippet.startswith(b"fn") or snippet.startswith(b"\nfn"):
             # Can't be unsafe!
             return None
 
-        fnidx = snippet.find(" fn ")
+        fnidx = snippet.find(b" fn ")
         if fnidx == -1:
             print(
                 "WARNING: no fn signature found in span",
@@ -217,13 +222,13 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             )
             return None
         snippet = contents[fnspan.lo : fnspan.lo + fnidx + 1]
-        unsafe_idx = snippet.find("unsafe ")
+        unsafe_idx = snippet.find(b"unsafe ")
         if unsafe_idx == -1:
             return None
         return ExplicitSpan(
             fileid=fnspan.fileid,
             lo=fnspan.lo + unsafe_idx,
-            hi=fnspan.lo + unsafe_idx + len("unsafe"),
+            hi=fnspan.lo + unsafe_idx + len(b"unsafe"),
         )
 
     def remove_unsafe_blocks(cacg: CondensedSpanGraph):
