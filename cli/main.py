@@ -2,6 +2,7 @@ import subprocess
 import sys
 import os
 from pathlib import Path
+import shutil
 
 import click
 import requests
@@ -201,14 +202,29 @@ def cli():
     "--buildcmd",
     help="Build command (for in-tree build), will be run via `intercept-build`.",
 )
-def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd):
+@click.option(
+    "--reset-resultsdir",
+    help="If the results directory already exists, delete its contents.",
+    is_flag=True,
+)
+def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, reset_resultsdir):
     root = repo_root.find_repo_root_dir_Path()
     do_build_rs(root)
     if guidance is None:
         click.echo("Using empty guidance; pass `--guidance` to refine translation.", err=True)
         guidance = "{}"
+
+    resultsdir = Path(resultsdir)
+    if reset_resultsdir and resultsdir.is_dir():
+        # Remove contents but not the directory itself, so that open editors don't lose their place.
+        for item in resultsdir.iterdir():
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+
     translation.do_translate(
-        root, Path(codebase), Path(resultsdir), cratename, guidance, c_main_in, buildcmd
+        root, Path(codebase), resultsdir, cratename, guidance, c_main_in, buildcmd
     )
 
 
