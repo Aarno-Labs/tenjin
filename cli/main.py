@@ -104,10 +104,19 @@ def do_build_rs(root: Path):
 
 def do_test_unit_rs():
     root = repo_root.find_repo_root_dir_Path()
+
+    env_ext = {}
+    if "INSTA_UPDATE" not in os.environ and not hermetic.running_in_ci():
+        # INSTA_UPDATE=always has `insta` write updated snapshots directly,
+        # avoiding `.snap.new` files and a separate review step with the
+        # `cargo-insta` CLI tool. Net: review via version control.
+        env_ext["INSTA_UPDATE"] = "always"
+
     hermetic.run_cargo_in(
         "test --locked -p c2rust -p c2rust-transpile".split(),
         cwd=root / "c2rust",
         check=True,
+        env_ext=env_ext,
     )
 
 
