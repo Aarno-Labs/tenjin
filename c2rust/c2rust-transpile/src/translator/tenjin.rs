@@ -682,6 +682,11 @@ impl Translation<'_> {
         if tenjin::expr_is_ident(func, "snprintf")
             && args.len() >= 3
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[2]))
+            && self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, cargs[0])
+                .is_some_and(|g| g.pretty_sans_refs() == "Vec < u8 >")
         {
             return RecognizedCallForm::PrintfS {
                 fmt_string_idx: 2,
@@ -693,6 +698,11 @@ impl Translation<'_> {
         if tenjin::expr_is_ident(func, "sprintf")
             && args.len() >= 2
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
+            && self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, cargs[0])
+                .is_some_and(|g| g.pretty_sans_refs() == "Vec < u8 >")
         {
             return RecognizedCallForm::PrintfS {
                 fmt_string_idx: 1,
