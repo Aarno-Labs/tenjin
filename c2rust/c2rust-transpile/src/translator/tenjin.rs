@@ -967,6 +967,9 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "isblank") => {
                     self.recognize_ctype_is_1(ctx, "isblank", "(c == ' ' || c == '\\t')", cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "iswprint") => {
+                    self.recognize_preconversion_call_iswprint(ctx, func, cargs)
+                }
                 _ if tenjin::is_path_exactly_1(path, "tolower") => {
                     self.recognize_preconversion_call_tolower_guided(ctx, func, cargs)
                 }
@@ -1389,6 +1392,37 @@ impl Translation<'_> {
                 vec![expr_foo.to_expr()],
             );
             return Ok(Some(WithStmts::new_val(call)));
+        }
+
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_iswprint(
+        &self,
+        ctx: ExprContext,
+        func: &Box<Expr>,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if tenjin::expr_is_ident(func, "iswprint") && cargs.len() == 1 {
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_item_str_once(
+                    "fn xj_iswprint(wc: u32) -> core::ffi::c_int {
+                                if wc < 0 { return 0; }
+                                match std::char::from_u32(wc) {
+                                    Some(ch) if !ch.is_control() => 1,
+                                    _ => 0,
+                                }
+                            }",
+                );
+            });
+
+            let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let iswprint_call = mk().call_expr(
+                mk().path_expr(vec!["xj_iswprint"]),
+                vec![mk().cast_expr(expr_foo.to_expr(), mk().path_ty(mk().path("u32")))],
+            );
+            return Ok(Some(WithStmts::new_val(iswprint_call)));
         }
 
         Ok(None)
