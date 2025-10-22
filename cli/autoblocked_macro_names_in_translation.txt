@@ -24,3 +24,11 @@ isprint
 ispunct
 tolower
 toupper
+toascii
+
+# Apple's <math.h> defines macro implementations of these functions
+isnormal
+isfinite
+isinf
+isnan
+signbit

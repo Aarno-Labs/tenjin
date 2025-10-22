@@ -198,8 +198,9 @@ def do_translate(
 
     tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
-    def perform_pre_translation(builddir: Path) -> Path:
-        """Returns the path to the provided-or-generated compile_commands.json file."""
+    def perform_pre_translation(builddir: Path):
+        """Leaves a copy of a provided-or-generated compile_commands.json file
+        in the given build directory."""
         provided_compdb = codebase / "compile_commands.json"
         provided_cmakelists = codebase / "CMakeLists.txt"
 
@@ -218,14 +219,12 @@ def do_translate(
                 capture_output=True,
             )
             tracker.update_sub(cp)
-            return builddir / "compile_commands.json"
         elif codebase.is_file() and codebase.suffix == ".c":
             # If we have a single C file, we can trivially generate a compile_commands.json
             # with a single entry for it.
             compilation_database.write_synthetic_compile_commands_to(
                 builddir / "compile_commands.json", codebase, builddir
             )
-            return builddir / "compile_commands.json"
         elif buildcmd:
             # If we have a build command, use it to generate a compile_commands.json file
             # by invoking the build command from a temporary directory with a copy of the
@@ -246,14 +245,14 @@ def do_translate(
                 extracted_compdb.write_bytes(
                     extracted_compdb_bytes.replace(builddir_bytes, codebase_bytes)
                 )
-
-            return extracted_compdb
         else:
-            # Otherwise, we assume the compile_commands.json is already present
-            return provided_compdb
+            # Otherwise, we assume the compile_commands.json is already present.
+            # We must make a copy to freely munge without affecting the original.
+            return shutil.copyfile(provided_compdb, builddir / "compile_commands.json")
 
     c2rust_transpile_flags = [
         "--translate-const-macros",
+        "conservative",
         "--reduce-type-annotations",
         "--disable-refactoring",
     ]
@@ -286,7 +285,8 @@ def do_translate(
     with tempfile.TemporaryDirectory() as builddirname:
         builddir = Path(builddirname)
         with tracker.tracking("pretranslation", builddir) as _step:
-            compdb = perform_pre_translation(builddir)
+            perform_pre_translation(builddir)
+            compdb = builddir / "compile_commands.json"
 
         tracker.set_preprocessor_definitions(
             compilation_database.extract_preprocessor_definitions_from_compile_commands(

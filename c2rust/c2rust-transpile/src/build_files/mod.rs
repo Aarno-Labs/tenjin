@@ -260,10 +260,8 @@ fn emit_lib_rs(
 /// on a nightly toolchain until the `c_variadics` feature is stable.
 fn emit_rust_toolchain(tcfg: &TranspilerConfig, build_dir: &Path) {
     let output_path = build_dir.join("rust-toolchain.toml");
-    let output = r#"[toolchain]
-channel = "nightly-2025-03-03"
-"#;
-    maybe_write_to_file(&output_path, output.to_string(), tcfg.overwrite_existing);
+    let output = include_str!("generated-rust-toolchain.toml").to_string();
+    maybe_write_to_file(&output_path, output, tcfg.overwrite_existing);
 }
 
 fn emit_cargo_toml(
@@ -319,11 +317,11 @@ fn maybe_write_to_file(output_path: &Path, output: String, overwrite: bool) -> O
 
     let mut file = match File::create(output_path) {
         Ok(file) => file,
-        Err(e) => panic!("Unable to open file for writing: {}", e),
+        Err(e) => panic!("Unable to open file for writing: {e}"),
     };
     match file.write_all(output.as_bytes()) {
         Ok(()) => (),
-        Err(e) => panic!("Unable to write translation to file: {}", e),
+        Err(e) => panic!("Unable to write translation to file: {e}"),
     };
 
     Some(PathBuf::from(output_path))

@@ -89,8 +89,7 @@ impl IdMapper {
                 let inserted = self.old_to_new.insert(old_id, new_id).is_some();
                 assert!(
                     !inserted,
-                    "get_or_create_new: overwrote an old id at {}",
-                    old_id
+                    "get_or_create_new: overwrote an old id at {old_id}"
                 );
                 new_id
             }
@@ -109,8 +108,7 @@ impl IdMapper {
             let inserted = self.old_to_new.insert(other_old_id, new_id).is_some();
             assert!(
                 !inserted,
-                "get_or_create_new: overwrote an old id at {}",
-                other_old_id
+                "get_or_create_new: overwrote an old id at {other_old_id}"
             );
         })
     }
@@ -161,7 +159,9 @@ fn parse_cast_kind(kind: &str) -> CastKind {
         "BuiltinFnToFnPtr" => CastKind::BuiltinFnToFnPtr,
         "ConstCast" => CastKind::ConstCast,
         "VectorSplat" => CastKind::VectorSplat,
-        k => panic!("Unsupported implicit cast: {}", k),
+        "AtomicToNonAtomic" => CastKind::AtomicToNonAtomic,
+        "NonAtomicToAtomic" => CastKind::NonAtomicToAtomic,
+        k => panic!("Unsupported implicit cast: {k}"),
     }
 }
 
@@ -227,9 +227,15 @@ pub struct ConversionContext {
     visit_as: Vec<(ClangId, NodeType)>,
 
     /// Typed context we are building up during the conversion
-    pub typed_context: TypedAstContext,
+    typed_context: TypedAstContext,
 
     pub invalid_clang_ast: bool,
+}
+
+impl ConversionContext {
+    pub fn into_typed_context(self) -> TypedAstContext {
+        self.typed_context
+    }
 }
 
 fn display_loc(ctx: &AstContext, loc: &Option<SrcSpan>) -> Option<DisplaySrcSpan> {
@@ -248,7 +254,7 @@ fn has_packed_attribute(attrs: Vec<Value>) -> bool {
 
 impl ConversionContext {
     /// Create a new 'ConversionContext' seeded with top-level nodes from an 'AstContext'.
-    pub fn new(untyped_context: &AstContext) -> ConversionContext {
+    pub fn new(input_path: &Path, untyped_context: &AstContext) -> ConversionContext {
         let mut invalid_clang_ast = false;
 
         // This starts out as all of the top-level nodes, which we expect to be 'DECL's
@@ -262,7 +268,7 @@ impl ConversionContext {
                     "{}",
                     TranslationError::new(
                         None,
-                        err_msg(format!("Missing top-level node with id: {}", top_node)).context(
+                        err_msg(format!("Missing top-level node with id: {top_node}")).context(
                             TranslationErrorKind::InvalidClangAst(
                                 ClangAstParseErrorKind::MissingNode,
                             )
@@ -281,10 +287,11 @@ impl ConversionContext {
                         "{}",
                         TranslationError::new(
                             display_loc(untyped_context, &Some(node.loc)),
-                            err_msg(format!("Missing child {} of node {:?}", child, node,))
-                                .context(TranslationErrorKind::InvalidClangAst(
+                            err_msg(format!("Missing child {child} of node {node:?}",)).context(
+                                TranslationErrorKind::InvalidClangAst(
                                     ClangAstParseErrorKind::MissingChild,
-                                )),
+                                )
+                            ),
                         ),
                     );
                     invalid_clang_ast = true;
@@ -299,10 +306,11 @@ impl ConversionContext {
                         "{}",
                         TranslationError::new(
                             display_loc(untyped_context, &Some(node.loc)),
-                            err_msg(format!("Missing type {} for node: {:?}", type_id, node,))
-                                .context(TranslationErrorKind::InvalidClangAst(
+                            err_msg(format!("Missing type {type_id} for node: {node:?}",)).context(
+                                TranslationErrorKind::InvalidClangAst(
                                     ClangAstParseErrorKind::MissingType,
-                                )),
+                                )
+                            ),
                         ),
                     );
                     invalid_clang_ast = true;
@@ -314,7 +322,7 @@ impl ConversionContext {
             id_mapper: IdMapper::new(),
             processed_nodes: HashMap::new(),
             visit_as,
-            typed_context: TypedAstContext::new(&untyped_context.files),
+            typed_context: TypedAstContext::new(input_path, &untyped_context.files),
             invalid_clang_ast,
         };
 
@@ -434,6 +442,14 @@ impl ConversionContext {
             self.typed_context.comments.push(comment);
         }
 
+        // Add Rust fixed-size types.
+        for rust_type_kind in CTypeKind::PULLBACK_KINDS {
+            let new_id = self.id_mapper.fresh_id();
+            self.add_type(new_id, not_located(rust_type_kind));
+            self.processed_nodes
+                .insert(new_id, self::node_types::OTHER_TYPE);
+        }
+
         // Continue popping Clang nodes off of the stack of nodes we have promised to visit
         while let Some((node_id, expected_ty)) = self.visit_as.pop() {
             // Check if we've already processed this node. If so, ascertain that it has the right
@@ -463,6 +479,67 @@ impl ConversionContext {
             self.visit_node(untyped_context, node_id, new_id, expected_ty)
         }
 
+        // Function declarations' types look through typedefs, but we want to use the types with
+        // typedefs intact in some cases during translation. To ensure that these types exist in the
+        // `TypedAstContext`, iterate over all function decls, compute their adjusted type using
+        // argument types from arg declarations, and then ensure the existence of both this type and
+        // the type of pointers to it.
+        for (_decl_id, located_kind) in self.typed_context.c_decls.iter() {
+            if let kind @ CDeclKind::Function { .. } = &located_kind.kind {
+                let new_kind = self.typed_context.fn_decl_ty_with_declared_args(kind);
+                if self.typed_context.type_for_kind(&new_kind).is_none() {
+                    // Create and insert fn type
+                    let new_id = CTypeId(self.id_mapper.fresh_id());
+                    self.typed_context
+                        .c_types
+                        .insert(new_id, not_located(new_kind));
+                    // Create and insert fn ptr type
+                    let ptr_kind = CTypeKind::Pointer(CQualTypeId::new(new_id));
+                    let ptr_id = CTypeId(self.id_mapper.fresh_id());
+                    self.typed_context
+                        .c_types
+                        .insert(ptr_id, not_located(ptr_kind));
+                }
+            }
+        }
+
+        // Adjust macro expansions to skip any implicit casts added at the expansion site. These
+        // casts should not be considered part of the macro when we re-fold const macros.
+
+        // We *do* need to consider implicit casts in case expressions to be part of the macro,
+        // because the type of the `match` scrutinee must match the type of the cases in Rust.
+        // If we translated switch-case labels to use const macros, those would need to prefer the
+        // type of the match scrutinee, to which the macro is implicitly cast in case expressions.
+        let is_case_expr = {
+            let case_exprs: HashSet<_> = self
+                .typed_context
+                .c_stmts
+                .values()
+                .filter_map(|c| {
+                    if let &CStmtKind::Case(expr, _, _) = &c.kind {
+                        Some(expr)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            move |e| case_exprs.contains(&e)
+        };
+
+        self.typed_context.macro_invocations = mem::take(&mut self.typed_context.macro_invocations)
+            .into_iter()
+            .map(|(expr_id, macro_ids)| {
+                (
+                    if is_case_expr(expr_id) {
+                        expr_id
+                    } else {
+                        self.typed_context.beneath_implicit_casts(expr_id)
+                    },
+                    macro_ids,
+                )
+            })
+            .collect();
+
         // Invert the macro invocations to get a list of macro expansion expressions
         for (expr_id, macro_ids) in &self.typed_context.macro_invocations {
             for mac_id in macro_ids {
@@ -476,6 +553,33 @@ impl ConversionContext {
 
         self.typed_context.va_list_kind = untyped_context.va_list_kind;
         self.typed_context.target = untyped_context.target.clone();
+    }
+
+    /// Visit child nodes of a `RecordDecl` (`struct` or `union`) and collect `FieldDecl` node IDs.
+    fn visit_record_children<'a>(
+        &'a mut self,
+        untyped_context: &'a AstContext,
+        node: &'a AstNode,
+        new_id: ImporterId,
+    ) -> impl Iterator<Item = CDeclId> + 'a {
+        use self::node_types::*;
+
+        node.children.iter().filter_map(move |id| {
+            let decl = id.expect("Record decl not found");
+            let decl_node = untyped_context
+                .ast_nodes
+                .get(&decl)
+                .expect("child node not found");
+
+            let id = CDeclId(self.visit_node_type(decl, FIELD_DECL | ENUM_DECL | RECORD_DECL));
+            self.typed_context.parents.insert(id, CDeclId(new_id));
+
+            if decl_node.tag == ASTEntryTag::TagFieldDecl {
+                Some(id)
+            } else {
+                None
+            }
+        })
     }
 
     /// Visit one node.
@@ -678,6 +782,14 @@ impl ConversionContext {
                         CTypeKind::Function(ret, arguments, is_variadic, is_noreturn, has_proto);
                     self.add_type(new_id, not_located(function_ty));
                     self.processed_nodes.insert(new_id, FUNC_TYPE);
+
+                    // In addition to creating the function type for this node, ensure that a
+                    // corresponding function pointer type is created. We may need to reference this
+                    // type depending on how uses of functions of this type are translated.
+                    let pointer_ty = CTypeKind::Pointer(CQualTypeId::new(CTypeId(new_id)));
+                    let new_id = self.id_mapper.fresh_id();
+                    self.add_type(new_id, not_located(pointer_ty));
+                    self.processed_nodes.insert(new_id, OTHER_TYPE);
                 }
 
                 TypeTag::TagTypeOfType if expected_ty & TYPE != 0 => {
@@ -751,7 +863,7 @@ impl ConversionContext {
                         Some("noreturn") => Some(Attribute::NoReturn),
                         Some("nullable") => Some(Attribute::Nullable),
                         Some("notnull") => Some(Attribute::NotNull),
-                        Some(other) => panic!("Unknown type attribute: {}", other),
+                        Some(other) => panic!("Unknown type attribute: {other}"),
                     };
 
                     let ty = CTypeKind::Attributed(ty, kind);
@@ -812,6 +924,12 @@ impl ConversionContext {
                     self.processed_nodes.insert(new_id, OTHER_TYPE);
                 }
 
+                TypeTag::TagFloat128 => {
+                    let ty = CTypeKind::Float128;
+                    self.add_type(new_id, not_located(ty));
+                    self.processed_nodes.insert(new_id, OTHER_TYPE);
+                }
+
                 TypeTag::TagVectorType => {
                     let elt =
                         from_value(ty_node.extras[0].clone()).expect("Vector child not found");
@@ -823,10 +941,15 @@ impl ConversionContext {
                     self.processed_nodes.insert(new_id, OTHER_TYPE);
                 }
 
-                t => panic!(
-                    "Type conversion not implemented for {:?} expecting {:?}",
-                    t, expected_ty
-                ),
+                TypeTag::TagAtomicType => {
+                    let qty = from_value(ty_node.extras[0].clone()).expect("Inner type not found");
+                    let qty_new = self.visit_qualified_type(qty);
+                    let atomic_ty = CTypeKind::Atomic(qty_new);
+                    self.add_type(new_id, not_located(atomic_ty));
+                    self.processed_nodes.insert(new_id, OTHER_TYPE);
+                }
+
+                t => panic!("Type conversion not implemented for {t:?} expecting {expected_ty:?}"),
             }
         } else {
             // Convert the node
@@ -953,7 +1076,7 @@ impl ConversionContext {
                         Some("fallthrough") | Some("__fallthrough__") => {
                             attributes.push(Attribute::Fallthrough)
                         }
-                        Some(str) => panic!("Unknown statement attribute: {}", str),
+                        Some(str) => panic!("Unknown statement attribute: {str}"),
                         None => panic!("Invalid statement attribute"),
                     };
 
@@ -1025,8 +1148,7 @@ impl ConversionContext {
                         .insert(CStmtId(new_id), label_name.clone())
                     {
                         panic!(
-                            "Duplicate label name with id {}. Old name: {}. New name: {}",
-                            new_id, old_label_name, label_name,
+                            "Duplicate label name with id {new_id}. Old name: {old_label_name}. New name: {label_name}",
                         );
                     }
 
@@ -1186,7 +1308,7 @@ impl ConversionContext {
                         8 => IntBase::Oct,
                         10 => IntBase::Dec,
                         16 => IntBase::Hex,
-                        _ => panic!("Invalid base: {}", base),
+                        _ => panic!("Invalid base: {base}"),
                     };
 
                     let ty_old = node.type_id.expect("Expected expression to have type");
@@ -1266,7 +1388,7 @@ impl ConversionContext {
                         "__imag" => UnOp::Imag,
                         "__extension__" => UnOp::Extension,
                         "co_await" => UnOp::Coawait,
-                        o => panic!("Unexpected operator: {}", o),
+                        o => panic!("Unexpected operator: {o}"),
                     };
 
                     let operand_old = node.children[0].expect("Expected operand");
@@ -1508,7 +1630,7 @@ impl ConversionContext {
                         "sizeof" => UnTypeOp::SizeOf,
                         "alignof" => UnTypeOp::AlignOf,
                         "preferredalignof" => UnTypeOp::PreferredAlignOf,
-                        str => panic!("Unsupported operation: {}", str),
+                        str => panic!("Unsupported operation: {str}"),
                     };
 
                     let arg_ty = from_value(node.extras[1].clone()).expect("expected type id");
@@ -1609,7 +1731,7 @@ impl ConversionContext {
                                     from_value(entry[1].clone()).expect("expected array start"),
                                     from_value(entry[2].clone()).expect("expected array end"),
                                 ),
-                                n => panic!("invalid designator tag: {}", n),
+                                n => panic!("invalid designator tag: {n}"),
                             }
                         })
                         .collect();
@@ -1679,6 +1801,58 @@ impl ConversionContext {
                     let ty = self.visit_qualified_type(ty_old);
 
                     let e = CExprKind::ConvertVector(ty, kids);
+
+                    self.expr_possibly_as_stmt(expected_ty, new_id, node, e)
+                }
+
+                ASTEntryTag::TagBuiltinBitCastExpr => {
+                    let expression_old = node.children[0].expect("Expected expression for bitcast");
+                    let expression = self.visit_expr(expression_old);
+
+                    let ty_old = node.type_id.expect("Expected type for bitcast");
+                    let ty = self.visit_qualified_type(ty_old);
+
+                    let e = CExprKind::ExplicitCast(
+                        ty,
+                        expression,
+                        CastKind::BitCast,
+                        None,
+                        node.rvalue,
+                    );
+
+                    self.expr_possibly_as_stmt(expected_ty, new_id, node, e)
+                }
+
+                ASTEntryTag::TagMaterializeTemporaryExpr => {
+                    let expression_old = node.children[0]
+                        .expect("Expected expression for materialize-temporary expr");
+                    let expression = self.visit_expr(expression_old);
+
+                    let ty_old = node
+                        .type_id
+                        .expect("Expected type for materialize-temporary expr");
+                    let ty = self.visit_qualified_type(ty_old);
+
+                    // C does not use this expression type (it has to do with C++ references), but
+                    // it nonetheless shows up in some system SIMD intrinsic headers even when
+                    // parsing as C. For now, just treat it as a trivial wrapper, i.e. parentheses.
+                    let e = CExprKind::Paren(ty, expression);
+
+                    self.expr_possibly_as_stmt(expected_ty, new_id, node, e)
+                }
+
+                ASTEntryTag::TagExprWithCleanups => {
+                    let expression_old =
+                        node.children[0].expect("Expected expression for expr with cleanups");
+                    let expression = self.visit_expr(expression_old);
+
+                    let ty_old = node.type_id.expect("Expected type for expr with cleanups");
+                    let ty = self.visit_qualified_type(ty_old);
+
+                    // C does not use this expression type, but it nonetheless shows up in some
+                    // system SIMD intrinsic headers even when parsing as C. For now, just treat it
+                    // as a trivial wrapper, i.e. parentheses.
+                    let e = CExprKind::Paren(ty, expression);
 
                     self.expr_possibly_as_stmt(expected_ty, new_id, node, e)
                 }
@@ -1763,6 +1937,11 @@ impl ConversionContext {
 
                     let typ = node.type_id.expect("Expected expression to have type");
                     let typ = self.visit_qualified_type(typ);
+
+                    // Perhaps as an optimization since atomic_init has no order,
+                    // clang stores val1 in the position otherwise used for order
+                    let is_atomic = name == "__c11_atomic_init" || name == "__opencl_atomic_init";
+                    let val1 = if is_atomic { Some(order) } else { val1 };
 
                     let e = CExprKind::Atomic {
                         typ,
@@ -1854,12 +2033,121 @@ impl ConversionContext {
                     let typ_old = node
                         .type_id
                         .expect("Expected to find type on typedef declaration");
-                    let typ = self.visit_qualified_type(typ_old);
+                    let mut typ = self.visit_qualified_type(typ_old);
+
+                    // Clang injects definitions of the form `#define __SIZE_TYPE__ unsigned int` into
+                    // compilation units based on the target. (See lib/Frontend/InitPreprocessor.cpp
+                    // in Clang).
+                    //
+                    // Later, headers contain defns like: `typedef __SIZE_TYPE__ size_t;`
+                    //
+                    // We detect these typedefs and alter them replacing the type to which the macro
+                    // expands with a synthetic, portable `CTypeKind` chosen from the macro's name.
+                    //
+                    // This allows us to generate platform-independent Rust types like u64 or usize
+                    // despite the C side internally working with a target-specific type.
+                    let target_dependent_macro: Option<String> = from_value(node.extras[2].clone())
+                        .expect("Expected to find optional target-dependent macro name");
+
+                    typ = target_dependent_macro
+                        .as_deref()
+                        .and_then(|macro_name| {
+                            let kind = match macro_name {
+                                // Match names in the order Clang defines them.
+                                "__INTMAX_TYPE__" => CTypeKind::IntMax,
+                                "__UINTMAX_TYPE__" => CTypeKind::UIntMax,
+                                "__PTRDIFF_TYPE__" => CTypeKind::PtrDiff,
+                                "__INTPTR_TYPE__" => CTypeKind::IntPtr,
+                                "__SIZE_TYPE__" => CTypeKind::Size,
+                                "__WCHAR_TYPE__" => CTypeKind::WChar,
+                                // __WINT_TYPE__ is defined by Clang but has no obvious translation
+                                // __CHARn_TYPE__ for n ∈ {8, 16, 32} also lack obvious translation
+                                "__UINTPTR_TYPE__" => CTypeKind::UIntPtr,
+                                _ => {
+                                    log::debug!("Unknown target-dependent macro {macro_name}!");
+                                    return None;
+                                }
+                            };
+                            log::trace!("Selected kind {kind} for typedef {name}");
+                            Some(CQualTypeId::new(
+                                self.typed_context.type_for_kind(&kind).unwrap(),
+                            ))
+                        })
+                        .unwrap_or(typ);
+
+                    // Other fixed-size types are defined without special compiler involvement, by
+                    // standard headers and their transitive includes. In these contexts, we
+                    // recognize these typedefs by the name of the typedef type.
+                    let id_for_name = |name| -> Option<_> {
+                        let kind = match name {
+                            "intmax_t" => CTypeKind::IntMax,
+                            "uintmax_t" => CTypeKind::UIntMax,
+                            "intptr_t" => CTypeKind::IntPtr,
+                            "uintptr_t" => CTypeKind::UIntPtr,
+                            // unlike `size_t`, `ssize_t` does not have a clang-provided `#define`.
+                            "ssize_t" => CTypeKind::SSize,
+                            // macOS defines `ssize_t` from `__darwin_ssize_t` in many headers,
+                            // so we should handle `__darwin_ssize_t` itself.
+                            "__darwin_ssize_t" => CTypeKind::SSize,
+                            "__uint8_t" => CTypeKind::UInt8,
+                            "__uint16_t" => CTypeKind::UInt16,
+                            "__uint32_t" => CTypeKind::UInt32,
+                            "__uint64_t" => CTypeKind::UInt64,
+                            "__uint128_t" => CTypeKind::UInt128,
+                            "__int8_t" => CTypeKind::Int8,
+                            "__int16_t" => CTypeKind::Int16,
+                            "__int32_t" => CTypeKind::Int32,
+                            "__int64_t" => CTypeKind::Int64,
+                            "__int128_t" => CTypeKind::Int128,
+                            // macOS stdint.h typedefs [u]intN_t directly:
+                            "int8_t" => CTypeKind::Int8,
+                            "int16_t" => CTypeKind::Int16,
+                            "int32_t" => CTypeKind::Int32,
+                            "int64_t" => CTypeKind::Int64,
+                            "uint8_t" => CTypeKind::UInt8,
+                            "uint16_t" => CTypeKind::UInt16,
+                            "uint32_t" => CTypeKind::UInt32,
+                            "uint64_t" => CTypeKind::UInt64,
+                            _ => {
+                                log::debug!("Unknown fixed-size type typedef {name}!");
+                                return None;
+                            }
+                        };
+                        log::trace!("Selected kind {kind} for typedef {name}");
+                        Some(CQualTypeId::new(
+                            self.typed_context.type_for_kind(&kind).unwrap(),
+                        ))
+                    };
+                    let file = self
+                        .typed_context
+                        .files
+                        .get(self.typed_context.file_map[node.loc.fileid as usize]);
+                    let file = file.unwrap();
+                    if let Some(path) = file.path.as_ref() {
+                        if let Some(filename) = path.file_name() {
+                            if filename == "stdint.h"
+                                || filename == "types.h"
+                                || filename
+                                    .to_str()
+                                    .map(|s| s.starts_with("__stddef_"))
+                                    .unwrap_or(false)
+                            // for macos
+                                || filename == "_types.h"
+                                || filename
+                                    .to_str()
+                                    .map(|s| s.starts_with("_int") || s.starts_with("_uint"))
+                                    .unwrap_or(false)
+                            {
+                                typ = id_for_name(&*name).unwrap_or(typ);
+                            }
+                        }
+                    }
 
                     let typdef_decl = CDeclKind::Typedef {
                         name,
                         typ,
                         is_implicit,
+                        target_dependent_macro,
                     };
 
                     self.add_decl(new_id, located(node, typdef_decl));
@@ -1931,8 +2219,7 @@ impl ConversionContext {
 
                     assert!(
                         has_static_duration || has_thread_duration || !is_externally_visible,
-                        "Variable cannot be extern without also being static or thread-local: {}",
-                        ident
+                        "Variable cannot be extern without also being static or thread-local: {ident}"
                     );
 
                     let initializer = node
@@ -1983,14 +2270,7 @@ impl ConversionContext {
 
                     let fields: Option<Vec<CDeclId>> = if has_def {
                         Some(
-                            node.children
-                                .iter()
-                                .map(|id| {
-                                    let field = id.expect("Record field decl not found");
-                                    let id = CDeclId(self.visit_node_type(field, FIELD_DECL));
-                                    self.typed_context.parents.insert(id, CDeclId(new_id));
-                                    id
-                                })
+                            self.visit_record_children(untyped_context, node, new_id)
                                 .collect(),
                         )
                     } else {
@@ -2021,14 +2301,7 @@ impl ConversionContext {
                         .expect("Expected attribute array on record");
                     let fields: Option<Vec<CDeclId>> = if has_def {
                         Some(
-                            node.children
-                                .iter()
-                                .map(|id| {
-                                    let field = id.expect("Record field decl not found");
-                                    let id = CDeclId(self.visit_node_type(field, FIELD_DECL));
-                                    self.typed_context.parents.insert(id, CDeclId(new_id));
-                                    id
-                                })
+                            self.visit_record_children(untyped_context, node, new_id)
                                 .collect(),
                         )
                     } else {
@@ -2134,13 +2407,19 @@ impl ConversionContext {
                 }
 
                 ASTEntryTag::TagStaticAssertDecl if expected_ty & DECL != 0 => {
-                    let assert_expr = CExprId(
-                        node.children[0].expect("StaticAssert must point to an expression"),
-                    );
+                    let assert_expr =
+                        node.children[0].expect("StaticAssert must point to an expression");
+                    let assert_expr = self.visit_expr(assert_expr);
+
                     let message = if node.children.len() > 1 {
-                        Some(CExprId(
-                            node.children[1].expect("Expected static assert message"),
-                        ))
+                        let message = node.children[1].expect("Expected static assert message");
+                        let message = untyped_context
+                            .ast_nodes
+                            .get(&message)
+                            .expect("Expected string literal node");
+                        let message = from_value::<String>(message.extras[2].clone())
+                            .expect("string literal bytes");
+                        Some(message)
                     } else {
                         None
                     };
@@ -2149,9 +2428,10 @@ impl ConversionContext {
                         message,
                     };
                     self.add_decl(new_id, located(node, static_assert));
+                    self.processed_nodes.insert(new_id, OTHER_DECL);
                 }
 
-                t => panic!("Could not translate node {:?} as type {}", t, expected_ty),
+                t => panic!("Could not translate node {t:?} as type {expected_ty}"),
             }
         }
     }

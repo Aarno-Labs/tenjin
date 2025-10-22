@@ -26,10 +26,8 @@ pub fn structured_cfg(
     // If the very last statement in the vector is a `return`, we can either cut it out or replace
     // it with the returned value.
     if cut_out_trailing_ret {
-        if let Some(Stmt::Expr(ret) | Stmt::Semi(ret, _)) = stmts.last() {
-            if let Expr::Return(ExprReturn { expr: None, .. }) = ret {
-                stmts.pop();
-            }
+        if let Some(Stmt::Expr(Expr::Return(ExprReturn { expr: None, .. }), _)) = stmts.last() {
+            stmts.pop();
         }
     }
 
@@ -530,7 +528,7 @@ impl StructureState {
                     }
                     (false, false) => {
                         fn is_expr(kind: &Stmt) -> bool {
-                            matches!(kind, Stmt::Expr(Expr::If(..) | Expr::Block(..)))
+                            matches!(kind, Stmt::Expr(Expr::If(..) | Expr::Block(..), None))
                         }
 
                         // Do the else statements contain a single If, IfLet or
@@ -542,7 +540,7 @@ impl StructureState {
                             let stmt_expr = els_stmts.swap_remove(0);
                             let stmt_expr_span = stmt_expr.span();
                             let mut els_expr = match stmt_expr {
-                                Stmt::Expr(e) => e,
+                                Stmt::Expr(e, None) => e,
                                 _ => panic!("is_els_expr out of sync"),
                             };
                             els_expr.set_span(stmt_expr_span);
@@ -572,12 +570,12 @@ impl StructureState {
                     .map(|(lbl, stmts)| -> Arm {
                         let (stmts, stmts_span) = self.to_stmt(stmts, comment_store);
 
-                        let lbl_expr = if self.debug_labels {
-                            lbl.to_string_expr()
+                        let lbl_lit = if self.debug_labels {
+                            lbl.to_string_lit()
                         } else {
-                            lbl.to_num_expr()
+                            lbl.to_int_lit()
                         };
-                        let pat = mk().lit_pat(lbl_expr);
+                        let pat = mk().lit_pat(lbl_lit);
                         let body = mk().block_expr(mk().span(stmts_span).block(stmts));
                         mk().arm(pat, None, body)
                     })
@@ -605,7 +603,7 @@ impl StructureState {
                 let (body, body_span) = self.to_stmt(*body, comment_store);
 
                 // TODO: this is ugly but it needn't be. We are just pattern matching on particular ASTs.
-                if let Some(stmt @ Stmt::Expr(expr)) = body.first() {
+                if let Some(stmt @ &Stmt::Expr(ref expr, None)) = body.first() {
                     let stmt_span = stmt.span();
                     let span = if !stmt_span.is_dummy() {
                         stmt_span
@@ -619,13 +617,13 @@ impl StructureState {
                         ..
                     }) = expr
                     {
-                        if let [Stmt::Semi(
+                        if let [Stmt::Expr(
                             syn::Expr::Break(ExprBreak {
                                 label: None,
                                 expr: None,
                                 ..
                             }),
-                            _token,
+                            Some(_),
                         )] = then_branch.stmts.as_slice()
                         {
                             let e = mk().while_expr(
@@ -669,12 +667,13 @@ impl StructureState {
 ///   * Negating something of the form `!<expr>` produces `<expr>`
 ///
 fn not(bool_expr: &Expr) -> Box<Expr> {
+    use syn::UnOp;
     match *bool_expr {
         Expr::Unary(ExprUnary {
-            op: syn::UnOp::Not(_),
+            op: UnOp::Not(_),
             ref expr,
             ..
         }) => Box::new(unparen(expr).clone()),
-        _ => mk().unary_expr("!", Box::new(bool_expr.clone())),
+        _ => mk().unary_expr(UnOp::Not(Default::default()), Box::new(bool_expr.clone())),
     }
 }

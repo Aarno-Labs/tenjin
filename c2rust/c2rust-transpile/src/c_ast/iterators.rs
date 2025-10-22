@@ -184,16 +184,7 @@ fn immediate_decl_children(kind: &CDeclKind) -> Vec<SomeId> {
         Field { typ, .. } => intos![typ.ctype],
         MacroObject { .. } | MacroFunction { .. } => vec![],
         NonCanonicalDecl { canonical_decl } => intos![canonical_decl],
-        StaticAssert {
-            assert_expr,
-            message,
-        } => {
-            if let Some(message) = message {
-                intos![assert_expr, message]
-            } else {
-                intos![assert_expr]
-            }
-        }
+        StaticAssert { assert_expr, .. } => intos![assert_expr],
     }
 }
 
@@ -285,7 +276,9 @@ fn immediate_type_children(kind: &CTypeKind) -> Vec<SomeId> {
         TypeOfExpr(e) => intos![e],
         Void | Bool | Short | Int | Long | LongLong | UShort | UInt | ULong | ULongLong | SChar
         | UChar | Char | Double | LongDouble | Float | Int128 | UInt128 | BuiltinFn | Half
-        | BFloat16 | UnhandledSveType => {
+        | BFloat16 | UnhandledSveType | Float128 | Int8 | Int16 | Int32 | Int64 | IntPtr
+        | UInt8 | UInt16 | UInt32 | UInt64 | UIntPtr | IntMax | UIntMax | Size | SSize
+        | PtrDiff | WChar => {
             vec![]
         }
 
@@ -293,7 +286,8 @@ fn immediate_type_children(kind: &CTypeKind) -> Vec<SomeId> {
         | Reference(qtype)
         | Attributed(qtype, _)
         | BlockPointer(qtype)
-        | Vector(qtype, _) => {
+        | Vector(qtype, _)
+        | Atomic(qtype) => {
             intos![qtype.ctype]
         }
 
@@ -326,7 +320,7 @@ fn immediate_type_children(kind: &CTypeKind) -> Vec<SomeId> {
 fn immediate_children(context: &TypedAstContext, s_or_e: SomeId) -> Vec<SomeId> {
     match s_or_e {
         SomeId::Stmt(stmt_id) => immediate_stmt_children(&context[stmt_id].kind),
-        SomeId::Expr(expr_id) => immediate_expr_children(&context[expr_id].kind),
+        SomeId::Expr(expr_id) => immediate_expr_children(&context.c_exprs[&expr_id].kind),
         SomeId::Decl(decl_id) => immediate_decl_children(&context[decl_id].kind),
         SomeId::Type(type_id) => immediate_type_children(&context[type_id].kind),
     }
@@ -335,7 +329,7 @@ fn immediate_children(context: &TypedAstContext, s_or_e: SomeId) -> Vec<SomeId> 
 pub fn immediate_children_all_types(context: &TypedAstContext, s_or_e: SomeId) -> Vec<SomeId> {
     match s_or_e {
         SomeId::Stmt(stmt_id) => immediate_stmt_children(&context[stmt_id].kind),
-        SomeId::Expr(expr_id) => immediate_expr_children_all_types(&context[expr_id].kind),
+        SomeId::Expr(expr_id) => immediate_expr_children_all_types(&context.c_exprs[&expr_id].kind),
         SomeId::Decl(decl_id) => immediate_decl_children(&context[decl_id].kind),
         SomeId::Type(type_id) => immediate_type_children(&context[type_id].kind),
     }
@@ -425,14 +419,22 @@ impl VisitNode {
 }
 
 pub trait NodeVisitor {
-    /// Visit nodes in pre-order traversal. Returns true if we should traverse
+    /// Return the immediate child nodes of a given node.
+    ///
+    /// Generally implemented via `immediate_children[_all_types]`.
+    fn children(&mut self, _id: SomeId) -> Vec<SomeId>;
+    /// Visits nodes in pre-order traversal. Returns true if we should traverse
     /// children. If we are not traversing children, the node will still be
     /// visited by `post`.
     fn pre(&mut self, _id: SomeId) -> bool {
         true
     }
+    /// Visits nodes in post-order traversal.
     fn post(&mut self, _id: SomeId) {}
-    fn visit_tree(&mut self, context: &TypedAstContext, root: SomeId) {
+    /// Perform a traversal of the nodes in the AST starting at the given root node.
+    /// The `pre` method will be called on each node before visiting its children, and the `post`
+    /// method afterward.
+    fn visit_tree(&mut self, root: SomeId) {
         let mut stack = vec![VisitNode::new(root)];
         while let Some(mut node) = stack.pop() {
             if !node.seen {
@@ -441,9 +443,8 @@ pub trait NodeVisitor {
                 stack.push(node);
 
                 if self.pre(id) {
-                    let children = immediate_children_all_types(context, id);
                     // Add children in reverse order since we visit the end of the stack first
-                    stack.extend(children.into_iter().rev().map(VisitNode::new));
+                    stack.extend(self.children(id).into_iter().rev().map(VisitNode::new));
                 }
             } else {
                 self.post(node.id);

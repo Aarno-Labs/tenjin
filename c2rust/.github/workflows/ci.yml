@@ -1,0 +1,125 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            os: Linux
+            arch: x86_64
+            clang-version: 18
+          - runner: ubuntu-22.04
+            os: Linux
+            arch: x86_64
+            clang-version: 15
+          - runner: macos-15
+            os: macOS
+            arch: aarch64
+            clang-version: 17
+      fail-fast: false
+    name: "test (${{ matrix.runner }}: ${{ matrix.os }} ${{ matrix.arch}}, Clang ${{ matrix.clang-version }})"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install Python Packages
+        run: |
+          uv venv
+          uv pip install -r ./scripts/requirements.txt
+
+      # rust-cache very carefully caches toolchains and target directories,
+      # based on the job and toolchain and other factors. See
+      # https://github.com/Swatinem/rust-cache#cache-details for what gets
+      # cached, what gets used as part of the key, and what additional handling
+      # happens to make the cache reliable and smaller.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-workspace-crates: true
+
+      # Run after `rust-cache` so that this is cached.
+      - run: rustup component add rustfmt rustc-dev
+
+      - name: cargo fmt --check
+        run: |
+          export RUSTFLAGS="-D warnings"
+          export RUSTDOCFLAGS="-D warnings"
+          cargo fmt --check
+
+      - name: Install packages (Ubuntu)
+        if: runner.os == 'Linux'
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: |
+            clang
+            clang-tools
+            cmake
+            curl
+            git
+            gperf
+            libbrotli-dev
+            libclang-${{ matrix.clang-version }}-dev
+            libgcrypt20
+            libreadline-dev
+            libidn2-dev
+            libldap2-dev
+            libncurses5-dev
+            libnghttp2-dev
+            libpcre3-dev
+            libpsl-dev
+            librtmp-dev
+            libssl-dev
+            libtool
+            libz3-dev
+            llvm
+            llvm-dev
+            luarocks
+            ninja-build
+            pkg-config
+            rcs
+            strace
+            unzip
+            zlib1g-dev
+
+      - name: Install packages (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # `cmake` needed, but should be already installed.
+          # `bash` needed b/c macOS ships with bash 3, which doesn't support arrays properly.
+          brew install -q ninja gpg llvm@${{ matrix.clang-version }} bash z3
+          echo "Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h" >> $GITHUB_ENV
+
+      - name: cargo build --release
+        run: |
+          export RUSTFLAGS="-D warnings"
+          export RUSTDOCFLAGS="-D warnings"
+          # Don't build with `--all-features` as `--all-features` includes `--features llvm-static`,
+          # which we don't want to test here (see https://github.com/immunant/c2rust/issues/500).
+          cargo build --release
+      - name: cargo test --release --workspace
+        run: |
+          export RUSTFLAGS="-D warnings"
+          # add homebrew library path for z3; z3-sys 0.9.4 supports the
+          # Z3_LIBRARY_PATH_OVERRIDE environment variable that would let
+          # us override the library path, but that crate version is too new
+          # for nightly-2022-08-08 (requires 2024 edition). On our nightly rustc
+          # on Mac OS, we have to pass in the exact library path directly to RUSTFLAGS.
+          export RUSTFLAGS="$RUSTFLAGS -Clink-arg=-L/opt/homebrew/lib -Clink-arg=-Wl,-rpath,/opt/homebrew/lib"
+          export RUSTDOCFLAGS="-D warnings"
+          cargo test --release --workspace
+      - name: Test translator
+        run: |
+          # `test_translator.py` compiles translated code,
+          # which has tons of warnings.
+          # `RUSTFLAGS="-D warnings"` would be inherited by that,
+          # causing tons of errors, so don't set that.
+          # `test_translator.py` does not rebuild,
+          # so changing `RUSTFLAGS` will not trigger a full rebuild.
+          uv run ./scripts/test_translator.py tests/

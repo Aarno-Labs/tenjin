@@ -1,15 +1,24 @@
+use crate::c_ast::iterators::{immediate_children_all_types, NodeVisitor};
+use crate::iterators::{DFNodes, SomeId};
 use c2rust_ast_exporter::clang_ast::LRValue;
 use indexmap::{IndexMap, IndexSet};
+use itertools::Itertools;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug, Display};
-use std::mem;
 use std::ops::Index;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::{iter, mem};
 
+pub use self::conversion::*;
+pub use self::print::Printer;
 pub use c2rust_ast_exporter::clang_ast::{BuiltinVaListKind, SrcFile, SrcLoc, SrcSpan};
+
+mod conversion;
+pub mod iterators;
+mod print;
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Copy, Clone)]
 pub struct CTypeId(pub u64);
@@ -33,57 +42,53 @@ pub type CTypedefId = CDeclId; // Typedef types need to point to 'DeclKind::Type
 pub type CEnumId = CDeclId; // Enum types need to point to 'DeclKind::Enum'
 pub type CEnumConstantId = CDeclId; // Enum's need to point to child 'DeclKind::EnumConstant's
 
-pub use self::conversion::*;
-pub use self::print::Printer;
-
-mod conversion;
-pub mod iterators;
-mod print;
-
-use iterators::{DFNodes, SomeId};
-
 /// AST context containing all of the nodes in the Clang AST
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TypedAstContext {
+    main_file: PathBuf,
+
     c_types: HashMap<CTypeId, CType>,
     c_exprs: HashMap<CExprId, CExpr>,
     c_stmts: HashMap<CStmtId, CStmt>,
 
-    // Decls require a stable iteration order as this map will be
-    // iterated over export all defined types during translation.
+    /// Decls require a stable iteration order as this map will be
+    /// iterated over export all defined types during translation.
     c_decls: IndexMap<CDeclId, CDecl>,
 
     pub c_decls_top: Vec<CDeclId>,
     pub c_main: Option<CDeclId>,
-    pub parents: HashMap<CDeclId, CDeclId>, // record fields and enum constants
 
-    // Mapping from FileId to SrcFile. Deduplicated by file path.
+    /// record fields and enum constants
+    pub parents: HashMap<CDeclId, CDeclId>,
+
+    /// Mapping from [`FileId`] to [`SrcFile`]. Deduplicated by file path.
     files: Vec<SrcFile>,
-    // Mapping from clang file id to translator FileId
+
+    /// Mapping from clang `fileid` to translator [`FileId`].
     file_map: Vec<FileId>,
 
-    // Vector of include paths, indexed by FileId. Each include path is the
-    // sequence of #include statement locations and the file being included at
-    // that location.
+    /// Vector of include paths, indexed by [`FileId`]. Each include path is the
+    /// sequence of `#include` statement locations and the file being included at
+    /// that location.
     include_map: Vec<Vec<SrcLoc>>,
 
-    // Names of the labels defined in the C source code.
+    /// Names of the labels defined in the C source code.
     pub label_names: IndexMap<CLabelId, Rc<str>>,
 
-    // map expressions to the stack of macros they were expanded from
-    pub macro_invocations: HashMap<CExprId, Vec<CDeclId>>,
+    /// map expressions to the stack of macros they were expanded from
+    pub macro_invocations: IndexMap<CExprId, Vec<CDeclId>>,
 
-    // map macro decls to the expressions they expand to
-    pub macro_expansions: HashMap<CDeclId, Vec<CExprId>>,
+    /// map macro decls to the expressions they expand to
+    pub macro_expansions: IndexMap<CDeclId, Vec<CExprId>>,
 
-    // map expressions to the text of the macro invocation they expanded from,
-    // if any
-    pub macro_expansion_text: HashMap<CExprId, String>,
+    /// map expressions to the text of the macro invocation they expanded from,
+    /// if any
+    pub macro_expansion_text: IndexMap<CExprId, String>,
 
     pub comments: Vec<Located<String>>,
 
-    // The key is the typedef decl being squashed away,
-    // and the value is the decl id to the corresponding structure
+    /// The key is the typedef decl being squashed away,
+    /// and the value is the decl id to the corresponding structure
     pub prenamed_decls: IndexMap<CDeclId, CDeclId>,
 
     pub va_list_kind: BuiltinVaListKind,
@@ -139,7 +144,26 @@ impl<T> Located<T> {
 impl TypedAstContext {
     // TODO: build the TypedAstContext during initialization, rather than
     // building an empty one and filling it later.
-    pub fn new(clang_files: &[SrcFile]) -> TypedAstContext {
+    pub fn new(input_path: &Path, clang_files: &[SrcFile]) -> TypedAstContext {
+        let main_file = input_path.to_owned();
+
+        let mut include_map = vec![];
+        for mut cur in clang_files {
+            let mut include_path = vec![];
+            while let Some(include_loc) = &cur.include_loc {
+                include_path.push(*include_loc);
+                cur = &clang_files[include_loc.fileid as usize];
+            }
+            include_path.reverse();
+            // The first include should be from the input file.
+            // If this is false, then we haven't found the full, correct include path.
+            if let Some(root_include_path) = cur.path.as_deref() {
+                assert_eq!(root_include_path, input_path);
+            }
+            include_map.push(include_path);
+        }
+
+        // Deduplicate paths, converting clang `fileid`s to our `FileId`s.
         let mut files: Vec<SrcFile> = vec![];
         let mut file_map: Vec<FileId> = vec![];
         for file in clang_files {
@@ -151,42 +175,12 @@ impl TypedAstContext {
             }
         }
 
-        let mut include_map = vec![];
-        for (fileid, mut cur) in files.iter().enumerate() {
-            let mut include_path = vec![];
-            while let Some(include_loc) = &cur.include_loc {
-                include_path.push(SrcLoc {
-                    fileid: fileid as u64,
-                    line: include_loc.line,
-                    column: include_loc.column,
-                });
-                cur = &clang_files[include_loc.fileid as usize];
-            }
-            include_path.reverse();
-            include_map.push(include_path);
-        }
-
         TypedAstContext {
-            c_types: HashMap::new(),
-            c_exprs: HashMap::new(),
-            c_decls: IndexMap::new(),
-            c_stmts: HashMap::new(),
-
-            c_decls_top: Vec::new(),
-            c_main: None,
+            main_file,
             files,
             file_map,
             include_map,
-            parents: HashMap::new(),
-            macro_invocations: HashMap::new(),
-            macro_expansions: HashMap::new(),
-            macro_expansion_text: HashMap::new(),
-            label_names: Default::default(),
-
-            comments: Vec::new(),
-            prenamed_decls: IndexMap::new(),
-            va_list_kind: BuiltinVaListKind::CharPtrBuiltinVaList,
-            target: String::new(),
+            ..Default::default()
         }
     }
 
@@ -206,7 +200,42 @@ impl TypedAstContext {
         self.files[id].path.as_deref()
     }
 
-    /// Compare two [`SrcLoc`]s based on their import path
+    /// Lookup the include path for `loc`.
+    /// The first [`SrcLoc`] returned should have been included from the input/main file.
+    pub fn include_path(&self, loc: SrcLoc) -> &[SrcLoc] {
+        let includes = &self.include_map[self.file_map[loc.fileid as usize]][..];
+        if cfg!(debug_assertions) {
+            if let Some(root_include) = includes.first() {
+                let file_id = self.file_map[root_include.fileid as usize];
+                let file = &self.files[file_id];
+                assert_eq!(file.path.as_deref(), Some(self.main_file.as_path()));
+            }
+        }
+        includes
+    }
+
+    pub fn loc_to_string(&self, loc: SrcLoc) -> String {
+        let SrcLoc {
+            fileid,
+            line,
+            column,
+        } = loc;
+        let file_id = self.file_map[fileid as usize];
+        let path = self
+            .get_file_path(file_id)
+            .unwrap_or_else(|| Path::new("?"));
+        let path = path.display();
+        format!("(fileid {fileid}) {path}:{line}:{column}")
+    }
+
+    pub fn loc_to_string_with_include_path(&self, loc: SrcLoc) -> String {
+        iter::once(&loc)
+            .chain(self.include_path(loc))
+            .map(|&loc| self.loc_to_string(loc))
+            .join("\n    included from ")
+    }
+
+    /// Compare two [`SrcLoc`]s based on their include path.
     pub fn compare_src_locs(&self, a: &SrcLoc, b: &SrcLoc) -> Ordering {
         /// Compare without regard to `fileid`.
         fn cmp_pos(a: &SrcLoc, b: &SrcLoc) -> Ordering {
@@ -214,8 +243,8 @@ impl TypedAstContext {
         }
 
         use Ordering::*;
-        let path_a = &self.include_map[self.file_map[a.fileid as usize]][..];
-        let path_b = &self.include_map[self.file_map[b.fileid as usize]][..];
+        let path_a = self.include_path(*a);
+        let path_b = self.include_path(*b);
 
         // Find the first include that does not match between the two
         let common_len = path_a.len().min(path_b.len());
@@ -270,11 +299,11 @@ impl TypedAstContext {
         }
     }
 
-    pub fn iter_decls(&self) -> indexmap::map::Iter<CDeclId, CDecl> {
+    pub fn iter_decls(&self) -> indexmap::map::Iter<'_, CDeclId, CDecl> {
         self.c_decls.iter()
     }
 
-    pub fn iter_mut_decls(&mut self) -> indexmap::map::IterMut<CDeclId, CDecl> {
+    pub fn iter_mut_decls(&mut self) -> indexmap::map::IterMut<'_, CDeclId, CDecl> {
         self.c_decls.iter_mut()
     }
 
@@ -434,6 +463,16 @@ impl TypedAstContext {
         }
     }
 
+    /// Find underlying expression beneath any implicit casts.
+    pub fn beneath_implicit_casts(&self, expr_id: CExprId) -> CExprId {
+        let expr = &self.index(expr_id).kind;
+        if let CExprKind::ImplicitCast(_, subexpr, _, _, _) = expr {
+            self.beneath_implicit_casts(*subexpr)
+        } else {
+            expr_id
+        }
+    }
+
     /// Resolve true expression type, iterating through any casts and variable
     /// references.
     pub fn resolve_expr_type_id(&self, expr_id: CExprId) -> Option<(CExprId, CTypeId)> {
@@ -464,6 +503,12 @@ impl TypedAstContext {
         ty.map(|ty| (expr_id, ty))
     }
 
+    pub fn type_for_kind(&self, kind: &CTypeKind) -> Option<CTypeId> {
+        self.c_types
+            .iter()
+            .find_map(|(id, k)| if kind == &k.kind { Some(*id) } else { None })
+    }
+
     pub fn resolve_type_id(&self, typ: CTypeId) -> CTypeId {
         use CTypeKind::*;
         let ty = match self.index(typ).kind {
@@ -484,6 +529,69 @@ impl TypedAstContext {
     pub fn resolve_type(&self, typ: CTypeId) -> &CType {
         let resolved_typ_id = self.resolve_type_id(typ);
         self.index(resolved_typ_id)
+    }
+
+    /// Extract decl of referenced function.
+    /// Looks for ImplicitCast(FunctionToPointerDecay, DeclRef(function_decl))
+    pub fn fn_declref_decl(&self, func_expr: CExprId) -> Option<&CDeclKind> {
+        use CastKind::FunctionToPointerDecay;
+        if let CExprKind::ImplicitCast(_, fexp, FunctionToPointerDecay, _, _) = self[func_expr].kind
+        {
+            if let CExprKind::DeclRef(_ty, decl_id, _rv) = &self[fexp].kind {
+                let decl = &self.index(*decl_id).kind;
+                assert!(matches!(decl, CDeclKind::Function { .. }));
+                return Some(decl);
+            }
+        }
+        None
+    }
+
+    /// Return the list of types for a list of declared function parameters.
+    ///
+    /// Returns `None` if one of the parameters is not a `CDeclKind::Variable`, e.g. if it was not a
+    /// function parameter but actually some other kind of declaration.
+    pub fn tys_of_params(&self, parameters: &[CDeclId]) -> Option<Vec<CQualTypeId>> {
+        parameters
+            .iter()
+            .map(|p| match self.index(*p).kind {
+                CDeclKind::Variable { typ, .. } => Some(CQualTypeId::new(typ.ctype)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Return the most precise possible CTypeKind for the given function declaration.
+    /// Specifically, ensures that arguments' types are not resolved to underlying types if they were
+    /// declared as typedefs, but returned as those typedefs.
+    ///
+    /// The passed CDeclId must refer to a function declaration.
+    pub fn fn_decl_ty_with_declared_args(&self, func_decl: &CDeclKind) -> CTypeKind {
+        if let CDeclKind::Function {
+            typ, parameters, ..
+        } = func_decl
+        {
+            let typ = self.resolve_type_id(*typ);
+            let decl_arg_tys = self.tys_of_params(parameters).unwrap();
+            let typ_kind = &self[typ].kind;
+            if let &CTypeKind::Function(ret, ref _arg_tys, a, b, c) = typ_kind {
+                return CTypeKind::Function(ret, decl_arg_tys, a, b, c);
+            }
+            panic!("expected {typ:?} to be CTypeKind::Function, but it was {typ_kind:?}")
+        }
+        panic!("expected a CDeclKind::Function, but passed {func_decl:?}")
+    }
+
+    /// Return the id of the most precise possible type for the function referenced by the given
+    /// expression, if any.
+    pub fn fn_declref_ty_with_declared_args(&self, func_expr: CExprId) -> Option<CQualTypeId> {
+        if let Some(func_decl @ CDeclKind::Function { .. }) = self.fn_declref_decl(func_expr) {
+            let kind_with_declared_args = self.fn_decl_ty_with_declared_args(func_decl);
+            let specific_typ = self
+                .type_for_kind(&kind_with_declared_args)
+                .unwrap_or_else(|| panic!("no type for kind {kind_with_declared_args:?}"));
+            return Some(CQualTypeId::new(specific_typ));
+        }
+        None
     }
 
     /// Pessimistically try to check if an expression has side effects. If it does, or we can't tell
@@ -532,8 +640,8 @@ impl TypedAstContext {
         }
     }
 
-    // Pessimistically try to check if an expression doesn't return. If it does, or we can't tell
-    /// that it doesn't, return `false`.
+    /// Pessimistically try to check if an expression doesn't return.
+    /// If it does, or we can't tell that it doesn't, return `false`.
     pub fn expr_diverges(&self, expr_id: CExprId) -> bool {
         let func_id = match self.index(expr_id).kind {
             CExprKind::Call(_, func_id, _) => func_id,
@@ -552,6 +660,127 @@ impl TypedAstContext {
         match self.index(pointed_id).kind {
             CTypeKind::Function(_, _, _, no_return, _) => no_return,
             _ => false,
+        }
+    }
+
+    /// Pessimistically try to check if an expression is `const`.
+    /// If it's not, or we can't tell if it is, return `false`.
+    ///
+    /// This should be a top-down, pessimistic/conservative analysis.
+    pub fn is_const_expr(&self, expr: CExprId) -> bool {
+        let is_const = |expr| self.is_const_expr(expr);
+
+        use CExprKind::*;
+        match self[expr].kind {
+            // A literal is always `const`.
+            Literal(_, _) => true,
+            // Unary ops should be `const`.
+            // TODO handle `f128` or use the primitive type.
+            Unary(_, _, expr, _) => is_const(expr),
+            // Not sure what a `None` `CExprId` means here
+            // or how to detect a `sizeof` of a VLA, which is non-`const`,
+            // although it seems we don't handle `sizeof(VLAs)`
+            // correctly in macros elsewhere already.
+            UnaryType(_, _, expr, _) => expr.is_none_or(is_const),
+            // Not sure what a `OffsetOfKind::Variable` means.
+            OffsetOf(_, _) => true,
+            // `ptr::offset` (ptr `BinOp::Add`) was `const` stabilized in `1.61.0`.
+            // `ptr::offset_from` (ptr `BinOp::Subtract`) was `const` stabilized in `1.65.0`.
+            // TODO `f128` is not yet handled, as we should eventually
+            // switch to the (currently unstable) `f128` primitive type (#1262).
+            Binary(_, _, lhs, rhs, _, _) => is_const(lhs) && is_const(rhs),
+            // `as` casts are always `const`.
+            ImplicitCast(_, expr, _, _, _) => is_const(expr),
+            // `as` casts are always `const`.
+            // TODO This is `const`, although there's a bug #853.
+            ExplicitCast(_, expr, _, _, _) => is_const(expr),
+            // This is used in `const` locations like `match` patterns and array lengths, so it must be `const`.
+            ConstantExpr(_, _, _) => true,
+            // A reference in an already otherwise `const` context should be `const` itself.
+            DeclRef(_, _, _) => true,
+            Call(_, fn_expr, ref args) => {
+                let is_const_fn = false; // TODO detect which `fn`s are `const`.
+                is_const(fn_expr) && args.iter().copied().all(is_const) && is_const_fn
+            }
+            Member(_, expr, _, _, _) => is_const(expr),
+            ArraySubscript(_, array, index, _) => is_const(array) && is_const(index),
+            Conditional(_, cond, if_true, if_false) => {
+                is_const(cond) && is_const(if_true) && is_const(if_false)
+            }
+            BinaryConditional(_, cond, if_false) => is_const(cond) && is_const(if_false),
+            InitList(_, ref inits, _, _) => inits.iter().copied().all(is_const),
+            ImplicitValueInit(_) => true,
+            Paren(_, expr) => is_const(expr),
+            CompoundLiteral(_, expr) => is_const(expr),
+            Predefined(_, expr) => is_const(expr),
+            Statements(_, stmt) => self.is_const_stmt(stmt),
+            VAArg(_, expr) => is_const(expr),
+            // SIMD is not yet `const` in Rust.
+            ShuffleVector(_, _) | ConvertVector(_, _) => false,
+            DesignatedInitExpr(_, _, expr) => is_const(expr),
+            Choose(_, cond, if_true, if_false, _) => {
+                is_const(cond) && is_const(if_true) && is_const(if_false)
+            }
+            // Atomics are not yet `const` in Rust.
+            Atomic { .. } => false,
+            BadExpr => false,
+        }
+    }
+
+    pub fn is_const_stmt(&self, stmt: CStmtId) -> bool {
+        let is_const = |stmt| self.is_const_stmt(stmt);
+        let is_const_expr = |expr| self.is_const_expr(expr);
+
+        use CStmtKind::*;
+        match self[stmt].kind {
+            Case(expr, stmt, _const_expr) => is_const_expr(expr) && is_const(stmt),
+            Default(stmt) => is_const(stmt),
+            Compound(ref stmts) => stmts.iter().copied().all(is_const),
+            Expr(expr) => is_const_expr(expr),
+            Empty => true,
+            If {
+                scrutinee,
+                true_variant,
+                false_variant,
+            } => {
+                is_const_expr(scrutinee)
+                    && is_const(true_variant)
+                    && false_variant.is_none_or(is_const)
+            }
+            Switch { scrutinee, body } => is_const_expr(scrutinee) && is_const(body),
+            While { condition, body } => is_const_expr(condition) && is_const(body),
+            DoWhile { body, condition } => is_const(body) && is_const_expr(condition),
+            ForLoop {
+                init,
+                condition,
+                increment,
+                body,
+            } => {
+                init.is_none_or(is_const)
+                    && condition.is_none_or(is_const_expr)
+                    && increment.is_none_or(is_const_expr)
+                    && is_const(body)
+            }
+            Break => true,
+            Continue => true,
+            Return(expr) => expr.is_none_or(is_const_expr),
+            Decls(ref _decls) => true,
+            Asm { .. } => false,
+            Attributed {
+                attributes: _,
+                substatement,
+            } => is_const(substatement),
+            // `goto`s are tricky, because they can be non-local
+            // and jump out of the context of the macro.
+            // A `goto` and its labels are `const` if the whole state machine
+            // we compile to has all `const` statements,
+            // but determining what that is exactly is trickier,
+            // and might depend on the context in which the macro is used.
+            // This is probably fairly uncommon, so we just assume it's not `const` for now.
+            // Note that in C, labels are for `goto`s.
+            // There are no labeled `break`s and `continue`s.
+            Label(_stmt) => false,
+            Goto(_label) => false,
         }
     }
 
@@ -679,8 +908,115 @@ impl TypedAstContext {
         self.c_decls_top.retain(|x| wanted.contains(x));
     }
 
-    pub fn sort_top_decls(&mut self) {
-        // Group and sort declarations by file and by position
+    /// Bubble types of unary and binary operators up from their args into the expression type.
+    ///
+    /// In Clang 15 and below, the Clang AST resolves typedefs in the expression type of unary and
+    /// binary expressions. For example, a BinaryExpr node adding two `size_t` expressions will be
+    /// given an `unsigned long` type rather than the `size_t` typedef type. This behavior changed
+    /// in Clang 16. This method adjusts AST node types to match those produced by Clang 16 and
+    /// newer; on these later Clang versions, it should have no effect.
+    ///
+    /// This pass is necessary because we reify some typedef types (such as `size_t`) into their own
+    /// distinct Rust types. As such, we need to make sure we know the exact type to generate when
+    /// we translate an expr, not just its resolved type (looking through typedefs).
+    pub fn bubble_expr_types(&mut self) {
+        struct BubbleExprTypes<'a> {
+            ast_context: &'a mut TypedAstContext,
+        }
+
+        impl<'a> NodeVisitor for BubbleExprTypes<'a> {
+            fn children(&mut self, id: SomeId) -> Vec<SomeId> {
+                immediate_children_all_types(self.ast_context, id)
+            }
+
+            fn post(&mut self, id: SomeId) {
+                let e = match id {
+                    SomeId::Expr(e) => e,
+                    _ => return,
+                };
+
+                let new_ty = match self.ast_context.c_exprs[&e].kind {
+                    CExprKind::Conditional(_ty, _cond, lhs, rhs) => {
+                        let lhs_type_id =
+                            self.ast_context.c_exprs[&lhs].kind.get_qual_type().unwrap();
+                        let rhs_type_id =
+                            self.ast_context.c_exprs[&rhs].kind.get_qual_type().unwrap();
+
+                        let lhs_resolved_ty = self.ast_context.resolve_type(lhs_type_id.ctype);
+                        let rhs_resolved_ty = self.ast_context.resolve_type(rhs_type_id.ctype);
+
+                        if CTypeKind::PULLBACK_KINDS.contains(&lhs_resolved_ty.kind) {
+                            Some(lhs_type_id)
+                        } else if CTypeKind::PULLBACK_KINDS.contains(&rhs_resolved_ty.kind) {
+                            Some(rhs_type_id)
+                        } else {
+                            None
+                        }
+                    }
+                    CExprKind::Binary(_ty, op, lhs, rhs, _, _) => {
+                        let rhs_type_id =
+                            self.ast_context.c_exprs[&rhs].kind.get_qual_type().unwrap();
+                        let lhs_kind = &self.ast_context.c_exprs[&lhs].kind;
+                        let lhs_type_id = lhs_kind.get_qual_type().unwrap();
+
+                        let lhs_resolved_ty = self.ast_context.resolve_type(lhs_type_id.ctype);
+                        let rhs_resolved_ty = self.ast_context.resolve_type(rhs_type_id.ctype);
+
+                        let neither_ptr = !lhs_resolved_ty.kind.is_pointer()
+                            && !rhs_resolved_ty.kind.is_pointer();
+
+                        if op.all_types_same() && neither_ptr {
+                            if CTypeKind::PULLBACK_KINDS.contains(&lhs_resolved_ty.kind) {
+                                Some(lhs_type_id)
+                            } else {
+                                Some(rhs_type_id)
+                            }
+                        } else if op == BinOp::ShiftLeft || op == BinOp::ShiftRight {
+                            Some(lhs_type_id)
+                        } else {
+                            return;
+                        }
+                    }
+                    CExprKind::Unary(_ty, op, e, _idk) => op.expected_result_type(
+                        self.ast_context,
+                        self.ast_context.c_exprs[&e].kind.get_qual_type().unwrap(),
+                    ),
+                    CExprKind::Paren(_ty, e) => self.ast_context.c_exprs[&e].kind.get_qual_type(),
+                    CExprKind::UnaryType(_, op, _, _) => {
+                        // All of these `UnTypeOp`s should return `size_t`.
+                        let kind = match op {
+                            UnTypeOp::SizeOf => CTypeKind::Size,
+                            UnTypeOp::AlignOf => CTypeKind::Size,
+                            UnTypeOp::PreferredAlignOf => CTypeKind::Size,
+                        };
+                        let ty = self
+                            .ast_context
+                            .type_for_kind(&kind)
+                            .expect("CTypeKind::Size should be size_t");
+                        Some(CQualTypeId::new(ty))
+                    }
+                    _ => return,
+                };
+                let ty = self
+                    .ast_context
+                    .c_exprs
+                    .get_mut(&e)
+                    .and_then(|e| e.kind.get_qual_type_mut());
+                if let (Some(ty), Some(new_ty)) = (ty, new_ty) {
+                    *ty = new_ty;
+                };
+            }
+        }
+
+        for decl in self.c_decls_top.clone() {
+            BubbleExprTypes { ast_context: self }.visit_tree(SomeId::Decl(decl));
+        }
+    }
+
+    /// Sort the top-level declarations by file and source location
+    /// so that we preserve the ordering of all declarations in each file.
+    /// This preserves the order when we emit the converted declarations.
+    pub fn sort_top_decls_for_emitting(&mut self) {
         let mut decls_top = mem::take(&mut self.c_decls_top);
         decls_top.sort_unstable_by(|a, b| {
             let a = self.index(*a);
@@ -845,7 +1181,7 @@ impl Index<CTypeId> for TypedAstContext {
 
     fn index(&self, index: CTypeId) -> &CType {
         match self.c_types.get(&index) {
-            None => panic!("Could not find {:?} in TypedAstContext", index),
+            None => panic!("Could not find {index:?} in TypedAstContext"),
             Some(ty) => ty,
         }
     }
@@ -877,7 +1213,7 @@ impl Index<CDeclId> for TypedAstContext {
 
     fn index(&self, index: CDeclId) -> &CDecl {
         match self.c_decls.get(&index) {
-            None => panic!("Could not find {:?} in TypedAstContext", index),
+            None => panic!("Could not find {index:?} in TypedAstContext"),
             Some(ty) => ty,
         }
     }
@@ -888,7 +1224,7 @@ impl Index<CStmtId> for TypedAstContext {
 
     fn index(&self, index: CStmtId) -> &CStmt {
         match self.c_stmts.get(&index) {
-            None => panic!("Could not find {:?} in TypedAstContext", index),
+            None => panic!("Could not find {index:?} in TypedAstContext"),
             Some(ty) => ty,
         }
     }
@@ -946,6 +1282,7 @@ pub enum CDeclKind {
         name: String,
         typ: CQualTypeId,
         is_implicit: bool,
+        target_dependent_macro: Option<String>,
     },
 
     // Struct
@@ -991,7 +1328,7 @@ pub enum CDeclKind {
 
     StaticAssert {
         assert_expr: CExprId,
-        message: Option<CExprId>,
+        message: Option<String>,
     },
 }
 
@@ -1026,6 +1363,9 @@ pub enum OffsetOfKind {
 
 /// Represents an expression in C (6.5 Expressions)
 ///
+/// This is modeled on Clang's APIs, so where documentation
+/// is lacking here, look at Clang.
+///
 /// We've kept a qualified type on every node since Clang has this information available, and since
 /// the semantics of translations of certain constructs often depend on the type of the things they
 /// are given.
@@ -1033,19 +1373,19 @@ pub enum OffsetOfKind {
 /// As per the C standard, qualifiers on types make sense only on lvalues.
 #[derive(Debug, Clone)]
 pub enum CExprKind {
-    // Literals
+    /// Literal.
     Literal(CQualTypeId, CLiteral),
 
-    // Unary operator.
+    /// Unary operator.
     Unary(CQualTypeId, UnOp, CExprId, LRValue),
 
-    // Unary type operator.
+    /// Unary type operator.
     UnaryType(CQualTypeId, UnTypeOp, Option<CExprId>, CQualTypeId),
 
-    // Offsetof expression.
+    /// `offsetof` expression.
     OffsetOf(CQualTypeId, OffsetOfKind),
 
-    // Binary operator
+    /// Binary operator.
     Binary(
         CQualTypeId,
         BinOp,
@@ -1055,67 +1395,80 @@ pub enum CExprKind {
         Option<CQualTypeId>,
     ),
 
-    // Implicit cast
+    /// Implicit cast.
     ImplicitCast(CQualTypeId, CExprId, CastKind, Option<CFieldId>, LRValue),
 
-    // Explicit cast
+    /// Explicit cast.
     ExplicitCast(CQualTypeId, CExprId, CastKind, Option<CFieldId>, LRValue),
 
-    // Constant context expression
+    /// Constant context expression.
     ConstantExpr(CQualTypeId, CExprId, Option<ConstIntExpr>),
 
-    // Reference to a decl (a variable, for instance)
+    /// Reference to a decl (a variable, for instance).
     // TODO: consider enforcing what types of declarations are allowed here
     DeclRef(CQualTypeId, CDeclId, LRValue),
 
-    // Function call
+    /// Function call.
     Call(CQualTypeId, CExprId, Vec<CExprId>),
 
-    // Member access
+    /// Member access.
     Member(CQualTypeId, CExprId, CDeclId, MemberKind, LRValue),
 
-    // Array subscript access
+    /// Array subscript access.
     ArraySubscript(CQualTypeId, CExprId, CExprId, LRValue),
 
-    // Ternary conditional operator
+    /// Ternary conditional operator.
     Conditional(CQualTypeId, CExprId, CExprId, CExprId),
 
-    // Binary conditional operator ?: GNU extension
+    /// Binary conditional operator `?:` (GNU extension).
     BinaryConditional(CQualTypeId, CExprId, CExprId),
 
-    // Initializer list - type, initializers, union field, syntactic form
+    /// Initializer list.
+    ///
+    /// * type
+    /// * initializers
+    /// * union field
+    /// * syntactic form
     InitList(CQualTypeId, Vec<CExprId>, Option<CFieldId>, Option<CExprId>),
 
-    // Designated initializer
+    /// Designated initializer.
     ImplicitValueInit(CQualTypeId),
 
-    // Parenthesized expression (ignored, but needed so we have a corresponding
-    // node)
+    /// Parenthesized expression.
+    ///
+    /// Ignored, but needed so we have a corresponding node.
     Paren(CQualTypeId, CExprId),
 
-    // Compound literal
+    /// Compound literal.
     CompoundLiteral(CQualTypeId, CExprId),
 
-    // Predefined expr
+    /// Predefined expression.
     Predefined(CQualTypeId, CExprId),
 
-    // Statement expression
+    /// Statement expression.
     Statements(CQualTypeId, CStmtId),
 
-    // Variable argument list
+    /// Variable argument list.
     VAArg(CQualTypeId, CExprId),
 
-    // Unsupported vector operations,
+    /// Unsupported shuffle vector operation.
     ShuffleVector(CQualTypeId, Vec<CExprId>),
+
+    /// Unsupported convert vector operation.
     ConvertVector(CQualTypeId, Vec<CExprId>),
 
-    // From syntactic form of initializer list expressions
+    /// From syntactic form of initializer list expressions.
     DesignatedInitExpr(CQualTypeId, Vec<Designator>, CExprId),
 
-    // GNU choose expr. Condition, true expr, false expr, was condition true?
+    /// GNU choose expression.
+    ///
+    /// * condition
+    /// * true expr
+    /// * false expr
+    /// * was condition true?
     Choose(CQualTypeId, CExprId, CExprId, CExprId, bool),
 
-    // GNU/C11 atomic expr
+    /// GNU/C11 atomic expression.
     Atomic {
         typ: CQualTypeId,
         name: String,
@@ -1150,7 +1503,11 @@ impl CExprKind {
     }
 
     pub fn get_qual_type(&self) -> Option<CQualTypeId> {
-        match *self {
+        self.clone().get_qual_type_mut().copied()
+    }
+
+    pub fn get_qual_type_mut(&mut self) -> Option<&mut CQualTypeId> {
+        match self {
             CExprKind::BadExpr => None,
             CExprKind::Literal(ty, _)
             | CExprKind::OffsetOf(ty, _)
@@ -1226,6 +1583,8 @@ pub enum CastKind {
     BuiltinFnToFnPtr,
     ConstCast,
     VectorSplat,
+    AtomicToNonAtomic,
+    NonAtomicToAtomic,
 }
 
 /// Represents a unary operator in C (6.5.3 Unary operators) and GNU C extensions
@@ -1266,6 +1625,42 @@ impl UnOp {
             Extension => "__extension__",
             Coawait => "co_await",
         }
+    }
+
+    /// Obtain the expected type of a unary expression based on the operator and its argument type
+    pub fn expected_result_type(
+        &self,
+        ast_context: &TypedAstContext,
+        arg_type: CQualTypeId,
+    ) -> Option<CQualTypeId> {
+        use UnOp::*;
+        let resolved_ty = ast_context.resolve_type(arg_type.ctype);
+        Some(match self {
+            // We could construct CTypeKind::Pointer here, but it is not guaranteed to have a
+            // corresponding `CTypeId` in the `TypedAstContext`, so bail out instead
+            AddressOf => return None,
+            Deref => {
+                if let CTypeKind::Pointer(inner) = resolved_ty.kind {
+                    inner
+                } else {
+                    panic!("dereferencing non-pointer type!")
+                }
+            }
+            Not => {
+                return ast_context
+                    .type_for_kind(&CTypeKind::Int)
+                    .map(CQualTypeId::new)
+            }
+            Real | Imag => {
+                if let CTypeKind::Complex(inner) = resolved_ty.kind {
+                    CQualTypeId::new(inner)
+                } else {
+                    panic!("__real or __imag applied to non-complex type!")
+                }
+            }
+            Coawait => panic!("trying to propagate co_await type"),
+            _ => CQualTypeId::new(arg_type.ctype),
+        })
     }
 }
 
@@ -1381,6 +1776,29 @@ impl BinOp {
             Assign => "=",
             Comma => ", ",
         }
+    }
+
+    /// Does the rust equivalent of this operator have type (T, T) -> U?
+    #[rustfmt::skip]
+    pub fn input_types_same(&self) -> bool {
+        use BinOp::*;
+        self.all_types_same() || matches!(self,
+            Less | Greater | LessEqual | GreaterEqual | EqualEqual | NotEqual
+            | And | Or
+            | AssignAdd | AssignSubtract | AssignMultiply | AssignDivide | AssignModulus
+            | AssignBitXor | AssignShiftLeft | AssignShiftRight | AssignBitOr | AssignBitAnd
+            | Assign
+        )
+    }
+
+    /// Does the rust equivalent of this operator have type (T, T) -> T?
+    /// This ignores cases where one argument is a pointer and we translate to `.offset()`.
+    pub fn all_types_same(&self) -> bool {
+        use BinOp::*;
+        matches!(
+            self,
+            Multiply | Divide | Modulus | Add | Subtract | BitAnd | BitXor | BitOr
+        )
     }
 }
 
@@ -1651,7 +2069,7 @@ pub enum CTypeKind {
     // Function type (6.7.5.3)
     //
     // Note a function taking no arguments should have one `void` argument. Functions without any
-    // arguments and in K&R format.
+    // arguments are in K&R format.
     // Flags: is_variable_argument, is_noreturn, has prototype
     Function(CQualTypeId, Vec<CQualTypeId>, bool, bool, bool),
 
@@ -1688,9 +2106,39 @@ pub enum CTypeKind {
     // ARM Scalable Vector Extension types
     // TODO: represent all the individual types in AArch64SVEACLETypes.def
     UnhandledSveType,
+
+    Float128,
+    // Atomic types (6.7.2.4)
+    Atomic(CQualTypeId),
+
+    // Rust sized types, pullback'd into C so that we can treat uint16_t, etc. as real types.
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    IntPtr,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    UIntPtr,
+    IntMax,
+    UIntMax,
+    Size,
+    SSize,
+    PtrDiff,
+    WChar,
 }
 
 impl CTypeKind {
+    pub const PULLBACK_KINDS: [CTypeKind; 16] = {
+        use CTypeKind::*;
+        [
+            Int8, Int16, Int32, Int64, IntPtr, UInt8, UInt16, UInt32, UInt64, UIntPtr, IntMax,
+            UIntMax, Size, SSize, PtrDiff, WChar,
+        ]
+    };
+
     pub fn as_str(&self) -> &'static str {
         use CTypeKind::*;
         match self {
@@ -1714,6 +2162,25 @@ impl CTypeKind {
             UInt128 => "unsigned __int128",
             Half => "half",
             BFloat16 => "bfloat16",
+            Float128 => "__float128",
+
+            Int8 => "int8_t",
+            Int16 => "int16_t",
+            Int32 => "int32_t",
+            Int64 => "int64_t",
+            IntPtr => "intptr_t",
+            UInt8 => "uint8_t",
+            UInt16 => "uint16_t",
+            UInt32 => "uint32_t",
+            UInt64 => "uint64_t",
+            UIntPtr => "uintptr_t",
+            IntMax => "intmax_t",
+            UIntMax => "uintmax_t",
+            Size => "size_t",
+            SSize => "ssize_t",
+            PtrDiff => "ptrdiff_t",
+            WChar => "wchar_t",
+
             _ => unimplemented!("Printer::print_type({:?})", self),
         }
     }
@@ -1779,14 +2246,43 @@ impl CTypeKind {
         use CTypeKind::*;
         matches!(
             self,
-            Bool | UChar | UInt | UShort | ULong | ULongLong | UInt128
+            Bool | UChar
+                | UInt
+                | UShort
+                | ULong
+                | ULongLong
+                | UInt128
+                | UInt8
+                | UInt16
+                | UInt32
+                | UInt64
+                | UIntPtr
+                | UIntMax
+                | Size
+                | WChar
         )
     }
 
     pub fn is_signed_integral_type(&self) -> bool {
         use CTypeKind::*;
         // `Char` is true on the platforms we handle
-        matches!(self, Char | SChar | Int | Short | Long | LongLong | Int128)
+        matches!(
+            self,
+            Char | SChar
+                | Int
+                | Short
+                | Long
+                | LongLong
+                | Int128
+                | Int8
+                | Int16
+                | Int32
+                | Int64
+                | IntPtr
+                | IntMax
+                | SSize
+                | PtrDiff
+        )
     }
 
     pub fn is_floating_type(&self) -> bool {
@@ -1876,23 +2372,64 @@ impl CTypeKind {
         };
         Some(ty)
     }
+
+    /// Return the element type of a pointer or array
+    pub fn element_ty(&self) -> Option<CTypeId> {
+        Some(match *self {
+            Self::Pointer(ty) => ty.ctype,
+            Self::ConstantArray(ty, _) => ty,
+            Self::IncompleteArray(ty) => ty,
+            Self::VariableArray(ty, _) => ty,
+            _ => return None,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[track_caller]
+    fn check_transitivity<T, F, G>(elements: &[T], mut compare: F, fmt: G)
+    where
+        F: FnMut(&T, &T) -> Ordering,
+        G: Fn(&T) -> String,
+    {
+        fn ord_to_str(ord: Ordering) -> &'static str {
+            match ord {
+                Ordering::Less => "<",
+                Ordering::Equal => "==",
+                Ordering::Greater => ">",
+            }
+        }
+
+        let n = elements.len();
+        for i in 0..n {
+            let a = &elements[i];
+            for j in 0..n {
+                let b = &elements[j];
+                for c in elements.iter().take(n) {
+                    let ab = compare(a, b);
+                    let bc = compare(b, c);
+                    let ac = compare(a, c);
+                    if ab == bc {
+                        let [ab, bc, ac] = [ab, bc, ac].map(ord_to_str);
+                        let [a, b, c] =
+                            [a, b, c].map(|e| if ab == ac { String::new() } else { fmt(e) });
+                        assert_eq!(ab, ac, "Total order (transitivity) has been violated: a {ab} b and b {bc} c, but a {ac} c
+a = {a}
+b = {b}
+c = {c}
+");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_compare_src_locs_ord() {
         let ctx = TypedAstContext {
-            c_types: Default::default(),
-            c_exprs: Default::default(),
-            c_stmts: Default::default(),
-            c_decls: Default::default(),
-            c_decls_top: vec![],
-            c_main: None,
-            parents: Default::default(),
-            files: vec![],
             file_map: vec![0, 1, 2, 3, 4, 5, 4, 5],
             include_map: vec![
                 vec![],
@@ -1910,14 +2447,14 @@ mod tests {
                     column: 10,
                 }],
             ],
-            label_names: Default::default(),
-            macro_invocations: Default::default(),
-            macro_expansions: Default::default(),
-            macro_expansion_text: Default::default(),
-            comments: vec![],
-            prenamed_decls: Default::default(),
-            va_list_kind: BuiltinVaListKind::CharPtrBuiltinVaList,
-            target: "".to_string(),
+            files: vec![
+                SrcFile {
+                    path: Some(PathBuf::new()),
+                    include_loc: None,
+                };
+                6
+            ],
+            ..Default::default()
         };
         let locs = &mut [
             SrcLoc {
@@ -2097,30 +2634,13 @@ mod tests {
             },
         ];
 
-        let n = locs.len();
-        for i in 0..n {
-            let a = locs[i];
-            for j in 0..n {
-                let b = locs[j];
-                #[allow(clippy::needless_range_loop)]
-                for k in 0..n {
-                    let c = locs[k];
-                    let ab = ctx.compare_src_locs(&a, &b);
-                    let bc = ctx.compare_src_locs(&b, &c);
-                    let ac = ctx.compare_src_locs(&a, &c);
-                    if ab == bc {
-                        let [ab, bc, ac] = [ab, bc, ac].map(|ord| match ord {
-                            Ordering::Less => "<",
-                            Ordering::Equal => "==",
-                            Ordering::Greater => ">",
-                        });
-                        assert_eq!(ab, ac, "Total order (transitivity) has been violated: {a} {ab} {b} and {b} {bc} {c}, but {a} {ac} {c}");
-                    }
-                }
-            }
-        }
+        check_transitivity(
+            locs,
+            |a, b| ctx.compare_src_locs(a, b),
+            |loc| format!("{loc}"),
+        );
 
-        // This should not panic
+        // This should not panic.
         locs.sort_unstable_by(|a, b| ctx.compare_src_locs(a, b));
     }
 }

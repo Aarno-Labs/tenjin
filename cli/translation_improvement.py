@@ -1,6 +1,7 @@
 import os
 import enum
 import json
+
 import time
 import shutil
 import tempfile
@@ -78,9 +79,9 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
        `unsafe_status` but are not yet using it.
     """
 
-    def hacky_rewrite_fn_range(path: Path, lo: int, hi: int, replacement: str):
+    def hacky_rewrite_fn_range(path: Path, lo: int, hi: int, replacement: bytes):
         """Rewrite a range in a file to a replacement string."""
-        with path.open("r+") as f:
+        with path.open("rb+") as f:
             content = f.read()
             assert (hi - lo) == len(replacement)
             content = content[:lo] + replacement + content[hi:]
@@ -166,7 +167,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                         tgtpath = dir / j["message"]["spans"][0]["file_name"]
                         lo = j["message"]["spans"][0]["byte_start"]
                         hi = j["message"]["spans"][0]["byte_end"]
-                        hacky_rewrite_fn_range(tgtpath, lo, hi, " " * len("unsafe"))
+                        hacky_rewrite_fn_range(tgtpath, lo, hi, b" " * len("unsafe"))
                 except:  # noqa: E722
                     print("TENJIN WARNING: unexpected JSON message from cargo check:", j)
                     continue
@@ -192,18 +193,23 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
     def find_unsafe_span_for_fn_sig(
         fnspan: ExplicitSpan,
     ) -> ExplicitSpan | None:
-        filepath = Path(dir / cacg.files[fnspan.fileid])
+        relpath = cacg.files[fnspan.fileid]
+        filepath = Path(dir / relpath)
         assert filepath.is_file(), "Expected a file at the path: " + str(filepath)
-        contents = filepath.read_text("utf-8")
+        # We need to read as bytes because the offsets will be wrong if the file
+        # contains any non-ASCII UTF-8 characters.
+        contents = filepath.read_bytes()
         snippet = contents[fnspan.lo : fnspan.hi]
         assert fnspan.hi > fnspan.lo, "Expected a non-empty span: " + str(fnspan)
-        assert len(snippet) > 0, "Expected a non-empty snippet: " + snippet
+        assert len(snippet) > 0, "Expected a non-empty snippet: " + snippet.decode(
+            "utf-8", errors="replace"
+        )
 
-        if snippet.startswith("fn") or snippet.startswith("\nfn"):
+        if snippet.startswith(b"fn") or snippet.startswith(b"\nfn"):
             # Can't be unsafe!
             return None
 
-        fnidx = snippet.find(" fn ")
+        fnidx = snippet.find(b" fn ")
         if fnidx == -1:
             print(
                 "WARNING: no fn signature found in span",
@@ -217,13 +223,13 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             )
             return None
         snippet = contents[fnspan.lo : fnspan.lo + fnidx + 1]
-        unsafe_idx = snippet.find("unsafe ")
+        unsafe_idx = snippet.find(b"unsafe ")
         if unsafe_idx == -1:
             return None
         return ExplicitSpan(
             fileid=fnspan.fileid,
             lo=fnspan.lo + unsafe_idx,
-            hi=fnspan.lo + unsafe_idx + len("unsafe"),
+            hi=fnspan.lo + unsafe_idx + len(b"unsafe"),
         )
 
     def remove_unsafe_blocks(cacg: CondensedSpanGraph):
@@ -402,6 +408,184 @@ def run_whiteout_clippy_no_effect_paths(root: Path, dir: Path) -> None:
     rewriter.erase_spans()
 
 
+def run_trivial_numeric_casts_improvement(root: Path, dir: Path) -> None:
+    """Remove trivial numeric casts, as reported by clippy."""
+
+    # Stats
+    cargo_check_runs = 0
+    cargo_check_failures = 0
+    cargo_clippy_runs = 0
+
+    def run_check(cwd: Path) -> bool:
+        nonlocal cargo_check_runs, cargo_check_failures
+        cargo_check_runs += 1
+        cp = hermetic.run_cargo_in(
+            ["check"],
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+        )
+        if cp.returncode != 0:
+            cargo_check_failures += 1
+            return False
+        return True
+
+    def get_trivial_casts(cwd: Path) -> list[dict]:
+        nonlocal cargo_clippy_runs
+        cargo_clippy_runs += 1
+
+        allowed_lints = [
+            "unused",
+            "static_mut_refs",
+            "clippy::missing_safety_doc",
+            "clippy::if_same_then_else",
+        ]
+        clippy_args = ["clippy", "--message-format=json", "--", "-W", "trivial_numeric_casts"]
+        for lint in allowed_lints:
+            clippy_args.extend(["-A", lint])
+
+        cp = hermetic.run_cargo_in(
+            clippy_args,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+        )
+
+        messages = []
+        if cp.stdout:
+            for line in cp.stdout.decode("utf-8").splitlines():
+                try:
+                    messages.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+        trivial_casts = []
+        file_contents: dict[str, str] = {}
+
+        for msg in messages:
+            if msg.get("reason") != "compiler-message":
+                continue
+            message = msg.get("message", {})
+            if message.get("code", {}).get("code") != "trivial_numeric_casts":
+                continue
+
+            for span in message.get("spans", []):
+                if not span.get("is_primary"):
+                    continue
+
+                file_path = dir / span["file_name"]
+                if str(file_path) not in file_contents:
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            file_contents[str(file_path)] = f.read()
+                    except FileNotFoundError:
+                        continue
+
+                content = file_contents[str(file_path)]
+                span_text = content[span["byte_start"] : span["byte_end"]]
+
+                if " as " in span_text:
+                    val_part = span_text.split(" as ")[0].strip()
+                    cleaned_val = val_part.replace("_", "")
+                    try:
+                        int(cleaned_val, base=0)
+                        trivial_casts.append(span)
+                    except ValueError:
+                        continue
+        return trivial_casts
+
+    def apply_removals(casts: list[dict]) -> dict[str, SpeculativeFileRewriter]:
+        rewriters: dict[str, SpeculativeFileRewriter] = {}
+        for span in casts:
+            file_name = span["file_name"]
+            if file_name not in rewriters:
+                rewriters[file_name] = SpeculativeFileRewriter(dir / file_name)
+
+            rewriter = rewriters[file_name]
+
+            def create_replacer(span_to_replace):
+                def replacer(content: str) -> str:
+                    start = span_to_replace["byte_start"]
+                    end = span_to_replace["byte_end"]
+                    original_snippet = content[start:end]
+
+                    as_index = original_snippet.find(" as ")
+                    if as_index != -1:
+                        value_part = original_snippet[:as_index]
+                        padding = " " * (len(original_snippet) - len(value_part))
+                        new_snippet = value_part + padding
+                        return content[:start] + new_snippet + content[end:]
+                    return content
+
+                return replacer
+
+            rewriter.update_content_via(create_replacer(span))
+
+        for rewriter in rewriters.values():
+            rewriter.write()
+        return rewriters
+
+    def revert_removals(rewriters: dict[str, SpeculativeFileRewriter]):
+        for rewriter in rewriters.values():
+            rewriter.restore()
+
+    def span_to_tuple(span) -> tuple[str, int, int]:
+        return (span["file_name"], span["byte_start"], span["byte_end"])
+
+    def find_all_bad_and_apply_good(casts: list[dict]) -> list[dict]:
+        if not casts:
+            return []
+
+        rewriters = apply_removals(casts)
+        if run_check(dir):
+            # All good, leave applied.
+            return []
+
+        revert_removals(rewriters)
+
+        if len(casts) == 1:
+            return casts
+
+        mid = len(casts) // 2
+        h1 = casts[:mid]
+        h2 = casts[mid:]
+
+        bad1 = find_all_bad_and_apply_good(h1)
+        # Good ones from h1 are now applied.
+
+        bad2 = find_all_bad_and_apply_good(h2)
+        # Good ones from h2 are now applied.
+
+        return bad1 + bad2
+
+    removed_count = 0
+    known_failing_spans: set[tuple[str, int, int]] = set()
+    while True:
+        current_casts = get_trivial_casts(dir)
+        current_spans = {span_to_tuple(c) for c in current_casts}
+
+        if not current_spans or current_spans.issubset(known_failing_spans):
+            break
+
+        casts_to_try = [c for c in current_casts if span_to_tuple(c) not in known_failing_spans]
+
+        new_failures = find_all_bad_and_apply_good(casts_to_try)
+
+        removed_count += len(casts_to_try) - len(new_failures)
+
+        for failure in new_failures:
+            known_failing_spans.add(span_to_tuple(failure))
+
+        # Even if we had no new failures, we must loop and check again
+        # in case clippy didn't feed us all the trivial casts in one go.
+
+    print(
+        f"TENJIN: Trivial numeric cast removal: Ran cargo clippy+check {cargo_clippy_runs}+{cargo_check_runs} times,"
+        f" with {cargo_check_failures} failures."
+    )
+    print(f"TENJIN: Trivial numeric cast removal: Removed {removed_count} casts.")
+
+
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     """Calculate elapsed time in milliseconds from nanoseconds."""
     return (end_ns - start_ns) / 1_000_000.0
@@ -449,6 +633,10 @@ def run_improvement_passes(
         # the block safe, and therefore subject to removal.
         # But if we format first, the block may not be removable by `fix`!
         ("fix", run_cargo_fix),
+        # Numeric cast removal should come before `clippy fix` because the latter
+        # can collapse literal casts into suffixed literals, which won't be counted
+        # as fixable.
+        ("trivial-numeric-casts", run_trivial_numeric_casts_improvement),
         ("clippy-fix", run_cargo_clippy_fix),
         ("clippy-whiteout-no-effect-paths", run_whiteout_clippy_no_effect_paths),
         ("trim-allows", run_trim_allows),

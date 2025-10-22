@@ -71,16 +71,8 @@ fn add_arch_use(store: &mut ItemStore, arch_name: &str, item_name: &str) {
     store.add_use_with_attr(
         vec!["core".into(), "arch".into(), arch_name.into()],
         item_name,
-        mk().meta_item_attr(
-            AttrStyle::Outer,
-            mk().meta_list(
-                "cfg",
-                vec![NestedMeta::Meta(
-                    mk().meta_namevalue("target_arch", arch_name),
-                )],
-            ),
-        )
-        .pub_(),
+        mk().call_attr("cfg", vec![mk().meta_namevalue("target_arch", arch_name)])
+            .pub_(),
     );
 }
 
@@ -145,6 +137,13 @@ impl Translation<'_> {
             | "__mm_loadl_pi_v2f32" => true,
             _ => false,
         })
+    }
+
+    /// Import a function from [`core::arch`] with a `#[cfg(target_arch = "{arch_name})]`.
+    pub fn import_arch_function(&self, arch_name: &str, name: &str) {
+        self.with_cur_file_item_store(|item_store| {
+            add_arch_use(item_store, arch_name, name);
+        });
     }
 
     /// Determine if a particular function name is an SIMD primitive. If so an appropriate
@@ -219,7 +218,7 @@ impl Translation<'_> {
                 .map(|arg| self.clean_int_or_vector_param(*arg)),
         );
 
-        let param_translation = self.convert_exprs(ctx.used(), &processed_args)?;
+        let param_translation = self.convert_exprs(ctx.used(), &processed_args, None)?;
         param_translation.and_then(|call_params| {
             let call = mk().call_expr(mk().ident_expr(fn_name), call_params);
 
@@ -295,7 +294,7 @@ impl Translation<'_> {
         ctype: CTypeId,
         len: usize,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let param_translation = self.convert_exprs(ctx, ids)?;
+        let param_translation = self.convert_exprs(ctx, ids, None)?;
         param_translation.and_then(|mut params| {
             // When used in a static, we cannot call the standard functions since they
             // are not const and so we are forced to transmute
@@ -382,8 +381,11 @@ impl Translation<'_> {
         }
 
         let mask_expr_id = self.get_shuffle_vector_mask(&child_expr_ids[2..])?;
-        let param_translation =
-            self.convert_exprs(ctx.used(), &[first_expr_id, second_expr_id, mask_expr_id])?;
+        let param_translation = self.convert_exprs(
+            ctx.used(),
+            &[first_expr_id, second_expr_id, mask_expr_id],
+            None,
+        )?;
         param_translation.and_then(|params| {
             let [first, second, third]: [_; 3] = params
                 .try_into()

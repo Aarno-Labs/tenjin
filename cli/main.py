@@ -2,6 +2,7 @@ import subprocess
 import sys
 import os
 from pathlib import Path
+import shutil
 
 import click
 import requests
@@ -103,10 +104,19 @@ def do_build_rs(root: Path):
 
 def do_test_unit_rs():
     root = repo_root.find_repo_root_dir_Path()
+
+    env_ext = {}
+    if "INSTA_UPDATE" not in os.environ and not hermetic.running_in_ci():
+        # INSTA_UPDATE=always has `insta` write updated snapshots directly,
+        # avoiding `.snap.new` files and a separate review step with the
+        # `cargo-insta` CLI tool. Net: review via version control.
+        env_ext["INSTA_UPDATE"] = "always"
+
     hermetic.run_cargo_in(
         "test --locked -p c2rust -p c2rust-transpile".split(),
         cwd=root / "c2rust",
         check=True,
+        env_ext=env_ext,
     )
 
 
@@ -201,14 +211,29 @@ def cli():
     "--buildcmd",
     help="Build command (for in-tree build), will be run via `intercept-build`.",
 )
-def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd):
+@click.option(
+    "--reset-resultsdir",
+    help="If the results directory already exists, delete its contents.",
+    is_flag=True,
+)
+def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, reset_resultsdir):
     root = repo_root.find_repo_root_dir_Path()
     do_build_rs(root)
     if guidance is None:
         click.echo("Using empty guidance; pass `--guidance` to refine translation.", err=True)
         guidance = "{}"
+
+    resultsdir = Path(resultsdir)
+    if reset_resultsdir and resultsdir.is_dir():
+        # Remove contents but not the directory itself, so that open editors don't lose their place.
+        for item in resultsdir.iterdir():
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+
     translation.do_translate(
-        root, Path(codebase), Path(resultsdir), cratename, guidance, c_main_in, buildcmd
+        root, Path(codebase), resultsdir, cratename, guidance, c_main_in, buildcmd
     )
 
 

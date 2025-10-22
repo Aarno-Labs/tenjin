@@ -1,7 +1,7 @@
 //! extern_crate_c2rust_asm_casts
 
 use crate::asm::rust_entry;
-use libc::{c_int, c_uint};
+use std::ffi::{c_int, c_uint};
 
 #[link(name = "test")]
 extern "C" {
@@ -10,6 +10,7 @@ extern "C" {
 
 const BUFFER_SIZE: usize = 6;
 
+#[test]
 pub fn test_buffer() {
     let mut buffer = [0; BUFFER_SIZE];
     let mut rust_buffer = [0; BUFFER_SIZE];

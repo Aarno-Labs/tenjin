@@ -16,6 +16,16 @@ impl Translation<'_> {
         let memorder = &self.ast_context[expr];
         let i = match memorder.kind {
             CExprKind::Literal(_, CLiteral::Integer(i, _)) => Some(i),
+            CExprKind::DeclRef(_, decl_id, LRValue::RValue) => {
+                let decl = self.ast_context.get_decl(&decl_id).unwrap();
+                match decl.kind {
+                    CDeclKind::EnumConstant { name: _, value: v } => match v {
+                        ConstIntExpr::I(i) => Some(i.try_into().unwrap()),
+                        ConstIntExpr::U(u) => Some(u),
+                    },
+                    _ => unimplemented!(),
+                }
+            }
             _ => None,
         }?;
         use Ordering::*;
@@ -42,14 +52,14 @@ impl Translation<'_> {
         val2_id: Option<CExprId>,
         weak_id: Option<CExprId>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let ptr = self.convert_expr(ctx.used(), ptr_id)?;
+        let ptr = self.convert_expr(ctx.used(), ptr_id, None)?;
         let order = self.convert_memordering(order_id);
         let val1 = val1_id
-            .map(|x| self.convert_expr(ctx.used(), x))
+            .map(|x| self.convert_expr(ctx.used(), x, None))
             .transpose()?;
         let order_fail = order_fail_id.and_then(|x| self.convert_memordering(x));
         let val2 = val2_id
-            .map(|x| self.convert_expr(ctx.used(), x))
+            .map(|x| self.convert_expr(ctx.used(), x, None))
             .transpose()?;
         let weak = weak_id.and_then(|x| self.convert_constant_bool(x));
 
@@ -76,7 +86,7 @@ impl Translation<'_> {
         }
 
         match name {
-            "__atomic_load" | "__atomic_load_n" => ptr.and_then(|ptr| {
+            "__atomic_load" | "__atomic_load_n" | "__c11_atomic_load" => ptr.and_then(|ptr| {
                 let intrinsic_name = format!("atomic_load_{}", order_name(static_order(order)));
 
                 self.use_feature("core_intrinsics");
@@ -105,7 +115,7 @@ impl Translation<'_> {
                 }
             }),
 
-            "__atomic_store" | "__atomic_store_n" => {
+            "__atomic_store" | "__atomic_store_n" | "__c11_atomic_store" => {
                 let val = val1.expect("__atomic_store must have a val argument");
                 ptr.and_then(|ptr| {
                     val.and_then(|val| {
@@ -131,7 +141,25 @@ impl Translation<'_> {
                 })
             }
 
-            "__atomic_exchange" | "__atomic_exchange_n" => {
+            // NOTE: there is no corresponding __atomic_init builtin in clang
+            "__c11_atomic_init" => {
+                let val = val1.expect("__atomic_init must have a val argument");
+                ptr.and_then(|ptr| {
+                    val.and_then(|val| {
+                        let assignment = mk().assign_expr(
+                            mk().unary_expr(UnOp::Deref(Default::default()), ptr),
+                            val,
+                        );
+                        self.convert_side_effects_expr(
+                            ctx,
+                            WithStmts::new_val(assignment),
+                            "Builtin is not supposed to be used",
+                        )
+                    })
+                })
+            }
+
+            "__atomic_exchange" | "__atomic_exchange_n" | "__c11_atomic_exchange" => {
                 let val = val1.expect("__atomic_store must have a val argument");
                 ptr.and_then(|ptr| {
                     val.and_then(|val| {
@@ -151,7 +179,7 @@ impl Translation<'_> {
                         if name == "__atomic_exchange" {
                             // LLVM stores the ret pointer in the order_fail slot
                             order_fail_id
-                                .map(|x| self.convert_expr(ctx.used(), x))
+                                .map(|x| self.convert_expr(ctx.used(), x, None))
                                 .transpose()?
                                 .expect("__atomic_exchange must have a ret pointer argument")
                                 .and_then(|ret| {
@@ -176,10 +204,20 @@ impl Translation<'_> {
                 })
             }
 
-            "__atomic_compare_exchange" | "__atomic_compare_exchange_n" => {
+            "__atomic_compare_exchange"
+            | "__atomic_compare_exchange_n"
+            | "__c11_atomic_compare_exchange_strong"
+            | "__c11_atomic_compare_exchange_weak" => {
                 let expected =
                     val1.expect("__atomic_compare_exchange must have a expected argument");
                 let desired = val2.expect("__atomic_compare_exchange must have a desired argument");
+                // Some C11 atomic operations encode the weak property in the name
+                let weak = match (name, weak) {
+                    ("__c11_atomic_compare_exchange_strong", None) => Some(false),
+                    ("__c11_atomic_compare_exchange_weak", None) => Some(true),
+                    _ => weak,
+                };
+
                 ptr.and_then(|ptr| {
                     expected.and_then(|expected| {
                         desired.and_then(|desired| {
@@ -216,10 +254,11 @@ impl Translation<'_> {
                             self.use_feature("core_intrinsics");
                             let expected =
                                 mk().unary_expr(UnOp::Deref(Default::default()), expected);
-                            let desired = if name == "__atomic_compare_exchange_n" {
-                                desired
-                            } else {
-                                mk().unary_expr(UnOp::Deref(Default::default()), desired)
+                            let desired = match name {
+                                "__atomic_compare_exchange_n"
+                                | "__c11_atomic_compare_exchange_strong"
+                                | "__c11_atomic_compare_exchange_weak" => desired,
+                                _ => mk().unary_expr(UnOp::Deref(Default::default()), desired),
                             };
 
                             let atomic_cxchg =
@@ -258,7 +297,13 @@ impl Translation<'_> {
             | "__atomic_fetch_and"
             | "__atomic_fetch_xor"
             | "__atomic_fetch_or"
-            | "__atomic_fetch_nand" => {
+            | "__atomic_fetch_nand"
+            | "__c11_atomic_fetch_add"
+            | "__c11_atomic_fetch_sub"
+            | "__c11_atomic_fetch_and"
+            | "__c11_atomic_fetch_xor"
+            | "__c11_atomic_fetch_or"
+            | "__c11_atomic_fetch_nand" => {
                 let intrinsic_name = if name.contains("_add") {
                     "atomic_xadd"
                 } else if name.contains("_sub") {
@@ -276,7 +321,8 @@ impl Translation<'_> {
                 let intrinsic_suffix = order_name(static_order(order));
                 let intrinsic_name = format!("{intrinsic_name}_{intrinsic_suffix}");
 
-                let fetch_first = name.starts_with("__atomic_fetch");
+                let fetch_first =
+                    name.starts_with("__atomic_fetch") || name.starts_with("__c11_atomic_fetch");
                 let val = val1.expect("__atomic arithmetic operations must have a val argument");
                 ptr.and_then(|ptr| {
                     val.and_then(|val| {
@@ -285,7 +331,7 @@ impl Translation<'_> {
                 })
             }
 
-            _ => unimplemented!("atomic not implemented"),
+            _ => unimplemented!("atomic not implemented: {}", name),
         }
     }
 
@@ -346,7 +392,7 @@ impl Translation<'_> {
             } else if func_name.starts_with("atomic_and") {
                 (BinOp::BitAnd(Default::default()), false)
             } else {
-                panic!("Unexpected atomic intrinsic name: {}", func_name)
+                panic!("Unexpected atomic intrinsic name: {func_name}")
             };
 
             // Since the value of `arg1` is used twice, we need to copy

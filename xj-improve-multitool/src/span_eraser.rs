@@ -61,19 +61,18 @@ impl SpanEraser {
                 continue;
             }
 
-            fn line_chars_looks_like_outer_attribute(line: &str, allow_whitespace: bool) -> bool {
+            fn line_chars_looks_like_outer_attribute(line: &str) -> bool {
                 if line.len() < 2 {
                     return false;
                 }
                 let mut chars = line.chars();
                 let first_char = chars.next().unwrap();
                 let second_char = chars.next().unwrap();
-                let outer_attr = first_char == '#' && second_char == '[';
-                let was_spaces = first_char.is_whitespace() && second_char.is_whitespace();
-                outer_attr || (allow_whitespace && was_spaces)
+
+                first_char == '#' && second_char == '['
             }
 
-            if !line_chars_looks_like_outer_attribute(srclines[item_start_lineno - 1], false) {
+            if !line_chars_looks_like_outer_attribute(srclines[item_start_lineno - 1]) {
                 // Looks like this item wasn't preceded by an attribute, so we'll short circuit.
                 continue;
             }
@@ -85,8 +84,7 @@ impl SpanEraser {
                     break;
                 }
 
-                if !line_chars_looks_like_outer_attribute(srclines[current_lineno - 1_usize], true)
-                {
+                if !line_chars_looks_like_outer_attribute(srclines[current_lineno - 1_usize]) {
                     break;
                 }
 

@@ -76,6 +76,15 @@ jobs:
           # No need for key since we only run this on one runner.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Avoid man-db slowdown when installing ccache
+        run: |
+          echo 'set man-db/auto-update false' | sudo debconf-communicate > /dev/null
+          sudo dpkg-reconfigure man-db
+
+      - uses: hendrikmuhs/ccache-action@63069e3931dedbf3b63792097479563182fe70d1
+        with:
+          append-timestamp: false
+
       - name: Install tss utility for showing timestamps
         run: curl --silent --location --output tss https://github.com/kevinburke/tss/releases/download/1.3/tss-linux-amd64 && chmod +x tss
 
@@ -85,7 +94,7 @@ jobs:
         # See https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#exit-codes-and-error-action-preference
 
       - name: Code linting and formatting checks
-        run: cli/10j check-rs |& ./tss
+        run: CMAKE_CXX_COMPILER_LAUNCHER=ccache cli/10j check-rs |& ./tss
         shell: bash  # GitHub Actions applies pipefail only for explicitly requested bash shell.
 
   not-rocket-science-ocaml:

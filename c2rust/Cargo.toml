@@ -11,20 +11,20 @@ members = [
     "c2rust-bitfields",
     "c2rust-bitfields-derive",
     "c2rust-build-paths",
+    "c2rust-macros",
+    "c2rust-refactor",
     "c2rust-transpile",
     "dynamic_instrumentation",
     "pdg",
 ]
 exclude = [
     "analysis/tests",
-    "c2rust-macros",
-    "c2rust-refactor",
     "examples",
     "tests",
 ]
 
 [workspace.package]
-version = "0.20.0"
+version = "0.21.0"
 authors = ["The C2Rust Project Developers <c2rust@immunant.com>"]
 edition = "2021"
 rust-version = "1.65"

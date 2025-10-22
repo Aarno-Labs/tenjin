@@ -14,8 +14,8 @@ use crate::with_stmts::WithStmts;
 use c2rust_ast_builder::mk;
 use c2rust_ast_printer::pprust;
 use syn::{
-    self, AttrStyle, BinOp as RBinOp, Expr, ExprAssign, ExprAssignOp, ExprBinary, ExprBlock,
-    ExprCast, ExprMethodCall, ExprUnary, Field, Meta, NestedMeta, Stmt, Type,
+    self, BinOp as RBinOp, Expr, ExprAssign, ExprBinary, ExprBlock, ExprCast, ExprMethodCall,
+    ExprUnary, Field, Stmt, Type,
 };
 
 use itertools::EitherOrBoth::{Both, Right};
@@ -50,9 +50,7 @@ fn contains_block(expr_kind: &Expr) -> bool {
     use Expr::*;
     match expr_kind {
         Block(..) => true,
-        Assign(ExprAssign { left, right, .. })
-        | AssignOp(ExprAssignOp { left, right, .. })
-        | Binary(ExprBinary { left, right, .. }) => {
+        Assign(ExprAssign { left, right, .. }) | Binary(ExprBinary { left, right, .. }) => {
             [left, right].iter().any(|expr| contains_block(expr))
         }
         Unary(ExprUnary { expr, .. }) | Cast(ExprCast { expr, .. }) => contains_block(expr),
@@ -61,19 +59,7 @@ fn contains_block(expr_kind: &Expr) -> bool {
     }
 }
 
-fn assignment_metaitem(lhs: &str, rhs: &str) -> NestedMeta {
-    use c2rust_ast_builder::Make;
-    let token = rhs.make(&mk());
-    let meta_item = Meta::NameValue(syn::MetaNameValue {
-        path: mk().path(lhs),
-        eq_token: Default::default(),
-        lit: token,
-    });
-
-    NestedMeta::Meta(meta_item)
-}
-
-impl Translation<'_> {
+impl<'a> Translation<'a> {
     /// This method aggregates bitfield struct field information by way of:
     /// 1. Collecting consecutive bytes of bitfields into a single FieldType::BitfieldGroup
     /// 2. Summing up the number of padding bytes between fields (or at the end of a struct)
@@ -239,7 +225,7 @@ impl Translation<'_> {
 
                         let bit_start = platform_bit_offset - start_bit;
                         let bit_end = bit_start + bitfield_width - 1;
-                        let bit_range = format!("{}..={}", bit_start, bit_end);
+                        let bit_range = format!("{bit_start}..={bit_end}");
 
                         attrs.push((field_name.clone(), ty, bit_range));
                     }
@@ -299,8 +285,8 @@ impl Translation<'_> {
     /// #[derive(BitfieldStruct, Clone, Copy)]
     /// #[repr(C, align(2))]
     /// struct Foo {
-    ///     #[bitfield(name = "bf1", ty = "libc::c_char", bits = "0..=9")]
-    ///     #[bitfield(name = "bf2", ty = "libc::c_uchar",bits = "10..=15")]
+    ///     #[bitfield(name = "bf1", ty = "std::ffi::c_char", bits = "0..=9")]
+    ///     #[bitfield(name = "bf2", ty = "std::ffi::c_uchar",bits = "10..=15")]
     ///     bf1_bf2: [u8; 2],
     ///     non_bf: u64,
     ///     _pad: [u8; 2],
@@ -342,25 +328,21 @@ impl Translation<'_> {
                 } => {
                     let ty = mk().array_ty(
                         mk().ident_ty("u8"),
-                        mk().lit_expr(mk().int_unsuffixed_lit(bytes.into())),
+                        mk().lit_expr(mk().int_unsuffixed_lit(bytes)),
                     );
                     let mut field = mk();
-                    let field_attrs = attrs.iter().map(|attr| {
+                    for attr in attrs {
                         let ty_str = match &*attr.1 {
                             Type::Path(syn::TypePath { path, .. }) => pprust::path_to_string(path),
                             _ => unreachable!("Found type other than path"),
                         };
                         let field_attr_items = vec![
-                            assignment_metaitem("name", &attr.0),
-                            assignment_metaitem("ty", &ty_str),
-                            assignment_metaitem("bits", &attr.2),
+                            mk().meta_namevalue("name", &attr.0),
+                            mk().meta_namevalue("ty", &ty_str),
+                            mk().meta_namevalue("bits", &attr.2),
                         ];
 
-                        mk().meta_list("bitfield", field_attr_items)
-                    });
-
-                    for field_attr in field_attrs {
-                        field = field.meta_item_attr(AttrStyle::Outer, field_attr);
+                        field = field.call_attr("bitfield", field_attr_items)
                     }
 
                     field_entries.push(field.pub_().struct_field(field_name, ty));
@@ -369,15 +351,12 @@ impl Translation<'_> {
                     let field_name = next_padding_field();
                     let ty = mk().array_ty(
                         mk().ident_ty("u8"),
-                        mk().lit_expr(mk().int_unsuffixed_lit(bytes.into())),
+                        mk().lit_expr(mk().int_unsuffixed_lit(bytes)),
                     );
 
                     // Mark it with `#[bitfield(padding)]`
-                    let field_padding_inner = NestedMeta::Meta(mk().meta_path("padding"));
-                    let field_padding_inner = vec![mk().nested_meta_item(field_padding_inner)];
-                    let field_padding_outer = mk().meta_list("bitfield", field_padding_inner);
                     let field = mk()
-                        .meta_item_attr(AttrStyle::Outer, field_padding_outer)
+                        .call_attr("bitfield", vec!["padding"])
                         .pub_()
                         .struct_field(field_name, ty);
 
@@ -407,8 +386,8 @@ impl Translation<'_> {
     /// # #[derive(BitfieldStruct, Clone, Copy)]
     /// # #[repr(C, align(2))]
     /// # struct Foo {
-    /// #     #[bitfield(name = "bf1", ty = "libc::c_char", bits = "0..=9")]
-    /// #     #[bitfield(name = "bf2", ty = "libc::c_uchar",bits = "10..=15")]
+    /// #     #[bitfield(name = "bf1", ty = "std::ffi::c_char", bits = "0..=9")]
+    /// #     #[bitfield(name = "bf2", ty = "std::ffi::c_uchar",bits = "10..=15")]
     /// #     bf1_bf2: [u8; 2],
     /// #     non_bf: u64,
     /// #     _pad: [u8; 2],
@@ -421,7 +400,7 @@ impl Translation<'_> {
     ///         non_bf: 32,
     ///         _pad: [0; 2],
     ///     };
-    ///     init.set_bf1(-12);
+    ///     init.set_bf1(-12i8 as _);
     ///     init.set_bf2(34);
     ///     init
     /// }
@@ -473,7 +452,7 @@ impl Translation<'_> {
                 } => {
                     let array_expr = mk().repeat_expr(
                         mk().lit_expr(mk().int_unsuffixed_lit(0)),
-                        mk().lit_expr(mk().int_unsuffixed_lit(bytes.into())),
+                        mk().lit_expr(mk().int_unsuffixed_lit(bytes)),
                     );
                     let field = mk().field(field_name, array_expr);
 
@@ -483,7 +462,7 @@ impl Translation<'_> {
                     let field_name = next_padding_field();
                     let array_expr = mk().repeat_expr(
                         mk().lit_expr(mk().int_unsuffixed_lit(0)),
-                        mk().lit_expr(mk().int_unsuffixed_lit(bytes.into())),
+                        mk().lit_expr(mk().int_unsuffixed_lit(bytes)),
                     );
                     let field = mk().field(field_name, array_expr);
 
@@ -556,8 +535,8 @@ impl Translation<'_> {
                     let field = init.map(|init| mk().field(field_name, init));
                     fields.push(field);
                 }
-                Both(field_id, (field_name, _, bitfield_width, use_inner_type)) => {
-                    let mut expr = self.convert_expr(ctx.used(), *field_id)?;
+                Both(field_id, (field_name, ty, bitfield_width, use_inner_type)) => {
+                    let mut expr = self.convert_expr(ctx.used(), *field_id, Some(ty))?;
 
                     if use_inner_type {
                         // See comment above
@@ -588,7 +567,7 @@ impl Translation<'_> {
 
                 // Now we must use the bitfield methods to initialize bitfields
                 for (field_name, val) in bitfield_inits {
-                    let field_name_setter = format!("set_{}", field_name);
+                    let field_name_setter = format!("set_{field_name}");
                     let struct_ident = mk().ident_expr("init");
                     is_unsafe |= val.is_unsafe();
                     let val = val
@@ -643,7 +622,7 @@ impl Translation<'_> {
                 } => {
                     let array_expr = mk().repeat_expr(
                         mk().lit_expr(mk().int_unsuffixed_lit(0)),
-                        mk().lit_expr(mk().int_unsuffixed_lit(bytes.into())),
+                        mk().lit_expr(mk().int_unsuffixed_lit(bytes)),
                     );
                     let field = mk().field(field_name, array_expr);
 
@@ -653,7 +632,7 @@ impl Translation<'_> {
                     let field_name = next_padding_field();
                     let array_expr = mk().repeat_expr(
                         mk().lit_expr(mk().int_unsuffixed_lit(0)),
-                        mk().lit_expr(mk().int_unsuffixed_lit(bytes.into())),
+                        mk().lit_expr(mk().int_unsuffixed_lit(bytes)),
                     );
                     let field = mk().field(field_name, array_expr);
 
@@ -728,7 +707,7 @@ impl Translation<'_> {
                     .borrow()
                     .resolve_field_name(None, field_id)
                     .ok_or("Could not find bitfield name")?;
-                let setter_name = format!("set_{}", field_name);
+                let setter_name = format!("set_{field_name}");
                 let lhs_expr_read = mk().method_call_expr(lhs_expr.clone(), field_name, Vec::new());
                 // Allow the value of this assignment to be used as the RHS of other assignments
                 let val = lhs_expr_read.clone();
@@ -789,7 +768,7 @@ impl Translation<'_> {
                         }
 
                         let last_expr = match block.stmts[last] {
-                            Stmt::Expr(ref expr) => expr.clone(),
+                            Stmt::Expr(ref expr, None) => expr.clone(),
                             _ => return Err(TranslationError::generic("Expected Expr Stmt")),
                         };
                         let method_call =

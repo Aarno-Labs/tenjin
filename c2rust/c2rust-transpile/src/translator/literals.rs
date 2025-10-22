@@ -15,9 +15,9 @@ impl Translation<'_> {
         base: IntBase,
     ) -> TranslationResult<Box<Expr>> {
         let lit = match base {
-            IntBase::Dec => mk().int_unsuffixed_lit(val.into()),
-            IntBase::Hex => mk().float_unsuffixed_lit(&format!("0x{:x}", val)),
-            IntBase::Oct => mk().float_unsuffixed_lit(&format!("0o{:o}", val)),
+            IntBase::Dec => mk().int_unsuffixed_lit(val),
+            IntBase::Hex => mk().float_unsuffixed_lit(&format!("0x{val:x}")),
+            IntBase::Oct => mk().float_unsuffixed_lit(&format!("0o{val:o}")),
         };
 
         let target_ty = self.convert_type(ty.ctype)?;
@@ -29,7 +29,7 @@ impl Translation<'_> {
     pub fn enum_for_i64(&self, enum_type_id: CTypeId, value: i64) -> Box<Expr> {
         let def_id = match self.ast_context.resolve_type(enum_type_id).kind {
             CTypeKind::Enum(def_id) => def_id,
-            _ => panic!("{:?} does not point to an `enum` type", enum_type_id),
+            _ => panic!("{enum_type_id:?} does not point to an `enum` type"),
         };
 
         let (variants, underlying_type_id) = match self.ast_context[def_id].kind {
@@ -38,7 +38,7 @@ impl Translation<'_> {
                 integral_type,
                 ..
             } => (variants, integral_type),
-            _ => panic!("{:?} does not point to an `enum` declaration", def_id),
+            _ => panic!("{def_id:?} does not point to an `enum` declaration"),
         };
 
         for &variant_id in variants {
@@ -48,13 +48,13 @@ impl Translation<'_> {
                         let name = self.renamer.borrow().get(&variant_id).unwrap();
 
                         // Import the enum variant if needed
-                        if let Some(cur_file) = *self.cur_file.borrow() {
+                        if let Some(cur_file) = self.cur_file.get() {
                             self.add_import(cur_file, variant_id, &name);
                         }
                         return mk().path_expr(vec![name]);
                     }
                 }
-                _ => panic!("{:?} does not point to an enum variant", variant_id),
+                _ => panic!("{variant_id:?} does not point to an enum variant"),
             }
         }
 
@@ -71,17 +71,35 @@ impl Translation<'_> {
         mk().cast_expr(value, target_ty)
     }
 
+    /// Return whether the literal can be directly translated as this type. This does not check
+    /// that the literal fits into the type's range of values (as doing so is in general dependent
+    /// on the target platform), just that it is the appropriate kind for the type.
+    pub fn literal_kind_matches_ty(&self, lit: &CLiteral, ty: CQualTypeId) -> bool {
+        let ty_kind = &self.ast_context.resolve_type(ty.ctype).kind;
+        match *lit {
+            CLiteral::Integer(..) if ty_kind.is_integral_type() && !ty_kind.is_bool() => true,
+            // `convert_literal` always casts these to i32.
+            CLiteral::Character(..) => matches!(ty_kind, CTypeKind::Int32),
+            CLiteral::Floating(..) if ty_kind.is_floating_type() => true,
+            _ => false,
+        }
+    }
+
     /// Convert a C literal expression to a Rust expression
     pub fn convert_literal(
         &self,
-        _ctx: ExprContext,
+        ctx: ExprContext,
         ty: CQualTypeId,
-        kind: &CLiteral,
+        lit: &CLiteral,
         guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        match *kind {
+        match *lit {
+            CLiteral::Integer(val, _)
+                if guided_type.as_ref().is_some_and(|g| g.pretty == "char") =>
+            {
+                self.convert_literal(ctx, ty, &CLiteral::Character(val), guided_type)
+            }
             CLiteral::Integer(val, base) => Ok(WithStmts::new_val(self.mk_int_lit(ty, val, base)?)),
-
             CLiteral::Character(val) => {
                 let val = val as u32;
                 let expr = match char::from_u32(val) {
@@ -100,7 +118,7 @@ impl Translation<'_> {
                         // Fallback for characters outside of the valid Unicode range
                         if (val as i32) < 0 {
                             mk().unary_expr(
-                                "-",
+                                UnOp::Neg(Default::default()),
                                 mk().lit_expr(
                                     mk().int_lit((val as i32).unsigned_abs() as u128, "i32"),
                                 ),
@@ -122,6 +140,13 @@ impl Translation<'_> {
                 };
                 let val = match self.ast_context.resolve_type(ty.ctype).kind {
                     CTypeKind::LongDouble => {
+                        if ctx.is_const {
+                            return Err(format_translation_err!(
+                                None,
+                                "f128 cannot be used in constants because `f128::f128::new` is not `const`",
+                            ));
+                        }
+
                         self.use_crate(ExternCrate::F128);
 
                         let fn_path = mk().path_expr(vec!["f128", "f128", "new"]);
@@ -131,7 +156,7 @@ impl Translation<'_> {
                     }
                     CTypeKind::Double => mk().lit_expr(mk().float_lit(&str, "f64")),
                     CTypeKind::Float => mk().lit_expr(mk().float_lit(&str, "f32")),
-                    ref k => panic!("Unsupported floating point literal type {:?}", k),
+                    ref k => panic!("Unsupported floating point literal type {k:?}"),
                 };
                 Ok(WithStmts::new_val(val))
             }
@@ -152,10 +177,10 @@ impl Translation<'_> {
         let mut val = val.to_owned();
 
         let num_elems = match self.ast_context.resolve_type(ty.ctype).kind {
-            // Match the literal size to the expected size padding with zeros as needed
-            CTypeKind::ConstantArray(_elem_ty, size) => size,
-            // zero terminator
-            _ => 1,
+            CTypeKind::ConstantArray(_elem_ty, num_elems) => num_elems,
+            ref kind => {
+                panic!("String literal with unknown size: {val:?}, kind = {kind:?}")
+            }
         };
 
         log::trace!(
@@ -171,23 +196,19 @@ impl Translation<'_> {
             ));
         }
 
+        // Match the literal size to the expected size padding with zeros as needed
         let size = num_elems * (width as usize);
         val.resize(size, 0);
 
+        // std::mem::transmute::<[u8; size], ctype>(*b"xxxx")
         let u8_ty = mk().path_ty(vec!["u8"]);
         let width_lit = mk().lit_expr(mk().int_unsuffixed_lit(val.len() as u128));
-        let array_ty = mk().array_ty(u8_ty, width_lit);
-        let source_ty = mk().ref_ty(array_ty);
-        let mutbl = if ty.qualifiers.is_const {
-            Mutability::Immutable
-        } else {
-            Mutability::Mutable
-        };
-        let target_ty = mk().set_mutbl(mutbl).ref_ty(self.convert_type(ty.ctype)?);
-        let byte_literal = mk().lit_expr(val);
-        let pointer = transmute_expr(source_ty, target_ty, byte_literal);
-        let array = mk().unary_expr(UnOp::Deref(Default::default()), pointer);
-        Ok(WithStmts::new_unsafe_val(array))
+
+        Ok(WithStmts::new_unsafe_val(transmute_expr(
+            mk().array_ty(u8_ty, width_lit),
+            self.convert_type(ty.ctype)?,
+            mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(val)),
+        )))
     }
 
     /// Convert a C string literal to a Rust expression of type `String`
@@ -231,63 +252,95 @@ impl Translation<'_> {
             CTypeKind::ConstantArray(ty, n) => {
                 // Convert all of the provided initializer values
 
-                // Need to check to see if the next item is a string literal,
-                // if it is need to treat it as a declaration, rather than
-                // an init list. https://github.com/GaloisInc/C2Rust/issues/40
-                let mut is_string = false;
+                let to_array_element = |id: CExprId| -> TranslationResult<_> {
+                    self.convert_expr(ctx.used(), id, None)?.result_map(|x| {
+                        // Array literals require all of their elements to be
+                        // the correct type; they will not use implicit casts to
+                        // change mut to const. This becomes a problem when an
+                        // array literal is used in a position where there is no
+                        // type information available to force its type to the
+                        // correct const or mut variation. To avoid this issue
+                        // we manually insert the otherwise elided casts in this
+                        // particular context.
+                        if let CExprKind::ImplicitCast(ty, _, CastKind::ConstCast, _, _) =
+                            self.ast_context[id].kind
+                        {
+                            let t = self.convert_type(ty.ctype)?;
+                            Ok(mk().cast_expr(x, t))
+                        } else {
+                            Ok(x)
+                        }
+                    })
+                };
 
-                if ids.len() == 1 {
-                    let v = ids.first().unwrap();
-                    if let CExprKind::Literal(_, CLiteral::String { .. }) =
-                        self.ast_context.index(*v).kind
-                    {
-                        is_string = true;
+                // We need to handle the 4 cases in `str_init.c` with identical initializers:
+                // * `ptr_extra_braces`
+                // * `array_extra_braces`
+                // * `array_of_ptrs`
+                // * `array_of_arrays`
+                // All 4 have different types, but the same initializer,
+                // which is possible because C allows extra braces around any initializer element.
+                // For non-string literal elements, the clang AST already fixes this up,
+                // but doesn't for string literals, so we need to handle them specially.
+                // The existing logic below this special case handles all except `array_extra_braces`.
+                // `array_extra_braces` is uniquely identified by:
+                // * there being only one element in the initializer list
+                // * the element type of the array being `CTypeKind::Char` (w/o this, `array_of_arrays` is included)
+                // * the expr kind being a string literal (`CExprKind::Literal` of a `CLiteral::String`).
+                let is_string_literal = |id: CExprId| {
+                    let ty_kind = &self.ast_context.resolve_type(ty).kind;
+                    let expr_kind = &self.ast_context.index(id).kind;
+                    let is_char_array = matches!(*ty_kind, CTypeKind::Char);
+                    let is_str_literal =
+                        matches!(*expr_kind, CExprKind::Literal(_, CLiteral::String { .. }));
+                    is_char_array && is_str_literal
+                };
+
+                let is_zero_literal = |id: CExprId| {
+                    matches!(
+                        self.ast_context.index(id).kind,
+                        CExprKind::Literal(_, CLiteral::Integer(0, _base))
+                    )
+                };
+
+                match ids {
+                    [] => {
+                        // This was likely a C array of the form `int x[16] = {}`.
+                        // We'll emit that as [0; 16].
+                        let len = mk().lit_expr(mk().int_unsuffixed_lit(n as u128));
+                        let zeroed = self.implicit_default_expr(ty, ctx.is_static)?;
+                        Ok(zeroed.map(|default_value| mk().repeat_expr(default_value, len)))
                     }
-                }
-
-                if is_string {
-                    let v = ids.first().unwrap();
-                    self.convert_expr(ctx.used(), *v)
-                } else if ids.is_empty() {
-                    // this was likely a C array of the form `int x[16] = {}`,
-                    // we'll emit that as [0; 16].
-                    let len = mk().lit_expr(mk().int_unsuffixed_lit(n as u128));
-                    self.implicit_default_expr(ty, ctx.is_static)?
-                        .and_then(|default_value| {
-                            Ok(WithStmts::new_val(mk().repeat_expr(default_value, len)))
-                        })
-                } else {
-                    Ok(ids
-                        .iter()
-                        .map(|id| {
-                            self.convert_expr(ctx.used(), *id)?.result_map(|x| {
-                                // Array literals require all of their elements to be
-                                // the correct type; they will not use implicit casts to
-                                // change mut to const. This becomes a problem when an
-                                // array literal is used in a position where there is no
-                                // type information available to force its type to the
-                                // correct const or mut variation. To avoid this issue
-                                // we manually insert the otherwise elided casts in this
-                                // particular context.
-                                if let CExprKind::ImplicitCast(ty, _, CastKind::ConstCast, _, _) =
-                                    self.ast_context[*id].kind
-                                {
-                                    let t = self.convert_type(ty.ctype)?;
-                                    Ok(mk().cast_expr(x, t))
-                                } else {
-                                    Ok(x)
-                                }
-                            })
-                        })
-                        .chain(
-                            // Pad out the array literal with default values to the desired size
-                            std::iter::repeat_n(
-                                self.implicit_default_expr(ty, ctx.is_static),
-                                n - ids.len(),
-                            ),
-                        )
-                        .collect::<TranslationResult<WithStmts<_>>>()?
-                        .map(|vals| mk().array_expr(vals)))
+                    &[single] if is_string_literal(single) => {
+                        // See comment on `is_string_literal`.
+                        // This detects these cases from `str_init.c`:
+                        // * `ptr_extra_braces`
+                        // * `array_of_ptrs`
+                        // * `array_of_arrays`
+                        self.convert_expr(ctx.used(), single, None)
+                    }
+                    &[single] if is_zero_literal(single) && n > 1 => {
+                        // This was likely a C array of the form `int x[16] = { 0 }`.
+                        // We'll emit that as [0; 16].
+                        let len = mk().lit_expr(mk().int_unsuffixed_lit(n as u128));
+                        Ok(to_array_element(single)?
+                            .map(|default_value| mk().repeat_expr(default_value, len)))
+                    }
+                    [..] => {
+                        Ok(ids
+                            .iter()
+                            .copied()
+                            .map(to_array_element)
+                            .chain(
+                                // Pad out the array literal with default values to the desired size
+                                std::iter::repeat_n(
+                                    self.implicit_default_expr(ty, ctx.is_static),
+                                    n - ids.len(),
+                                ),
+                            )
+                            .collect::<TranslationResult<WithStmts<_>>>()?
+                            .map(|vals| mk().array_expr(vals)))
+                    }
                 }
             }
             CTypeKind::Struct(struct_id) => {
@@ -312,18 +365,18 @@ impl Translation<'_> {
             }
             CTypeKind::Pointer(_) => {
                 let id = ids.first().unwrap();
-                self.convert_expr(ctx.used(), *id)
+                self.convert_expr(ctx.used(), *id, None)
             }
             CTypeKind::Enum(_) => {
                 let id = ids.first().unwrap();
-                self.convert_expr(ctx.used(), *id)
+                self.convert_expr(ctx.used(), *id, None)
             }
             CTypeKind::Vector(CQualTypeId { ctype, .. }, len) => {
                 self.vector_list_initializer(ctx, ids, ctype, len)
             }
             ref kind if kind.is_integral_type() => {
                 let id = ids.first().unwrap();
-                self.convert_expr(ctx.used(), *id)
+                self.convert_expr(ctx.used(), *id, None)
             }
             ref t => Err(format_err!("Init list not implemented for {:?}", t).into()),
         }
@@ -351,7 +404,7 @@ impl Translation<'_> {
                         let val = if ids.is_empty() {
                             self.implicit_default_expr(field_ty.ctype, ctx.is_static)?
                         } else {
-                            self.convert_expr(ctx.used(), ids[0])?
+                            self.convert_expr(ctx.used(), ids[0], None)?
                         };
 
                         Ok(val.map(|v| {

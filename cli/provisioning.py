@@ -338,13 +338,14 @@ def want_10j_reference_c2rust_tag():
                 [
                     "git",
                     "clone",
-                    "--branch",
-                    version,
                     "https://github.com/immunant/c2rust.git",
                     str(xj_upstream_c2rust),
                 ],
                 stdout_file=stdout_path,
                 stderr_file=stderr_path,
+            )
+            subprocess.check_call(
+                ["git", "switch", "--detach", version], cwd=str(xj_upstream_c2rust)
             )
 
         rebuild_10j_upstream_c2rust(xj_upstream_c2rust)
@@ -1094,6 +1095,13 @@ def provision_10j_llvm_with(version: str, keyname: str):
             if not dst.is_symlink():
                 os.symlink(src, dst)
 
+        # On macOS, `as` is provided by the system SDK, and expects flags
+        # which diverge from `llvm-mc`. So instead of trying to filter those out,
+        # we deactivate the `as` wrapper on macOS.
+        if platform.system() == "Darwin":
+            as_wrapper_path = hermetic.xj_llvm_root(localdir) / "bin" / "as"
+            as_wrapper_path.rename(as_wrapper_path.with_name("xj-as-wrapper-disabled"))
+
         # These symbolic links follow a different naming pattern.
         symlinks = [("clang", "cc"), ("clang++", "c++")]
         if platform.system() != "Darwin":
@@ -1155,9 +1163,13 @@ def update_10j_llvm_have(keyname: str, version: str, llvm_version: str):
         hermetic.xj_llvm_root(HAVE.localdir) / "bin" / "llvm-config",
         "--version",
     ])
+    # If our requested LLVM version looks like "X.Y.Z+foo", we'll compare the tool's reported
+    # version against the X.Y.Z part only.
+    comparable_llvm_version = llvm_version.split("+")[0]
     saw = out.decode("utf-8")
-    if Version(saw) != Version(llvm_version):
-        raise ProvisioningError(f"Expected LLVM version {llvm_version}, got {saw}.")
+    if Version(saw) != Version(comparable_llvm_version):
+        raise ProvisioningError(f"Expected LLVM version {comparable_llvm_version}, got {saw}.")
+    # But the HAVE database needs the full version.
     HAVE.note_we_have(keyname, specifier=version)
 
 
@@ -1267,7 +1279,14 @@ def provision_10j_deps_with(version: str, keyname: str):
                 subprocess.check_call(["brew", "install", "ninja"])
 
             if shutil.which("pkg-config") is None:
-                subprocess.check_call(["brew", "install", "pkg-config"])
+                try:
+                    subprocess.check_call(["brew", "install", "pkg-config"])
+                except subprocess.CalledProcessError:
+                    # Maybe homebrew removed this formula?
+                    pass
+
+            if shutil.which("pkgconf") is None:
+                subprocess.check_call(["brew", "install", "pkgconf"])
 
             # The other dependencies we need on Linux, like patch and make,
             # should have been provided already by Xcode Developer Tools.

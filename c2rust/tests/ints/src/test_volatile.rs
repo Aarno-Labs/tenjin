@@ -1,5 +1,5 @@
 use crate::volatile::rust_entry3;
-use libc::{c_int, c_uint};
+use std::ffi::{c_int, c_uint};
 
 #[link(name = "test")]
 extern "C" {
@@ -8,6 +8,7 @@ extern "C" {
 
 const BUFFER_SIZE: usize = 9;
 
+#[test]
 pub fn test_buffer() {
     let mut buffer = [0; BUFFER_SIZE];
     let mut rust_buffer = [0; BUFFER_SIZE];

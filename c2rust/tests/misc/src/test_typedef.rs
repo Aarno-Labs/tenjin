@@ -1,12 +1,13 @@
 use crate::typedef::{int_ptr, my_int, rust_entry};
 
-use libc::c_int;
+use std::ffi::c_int;
 
 #[link(name = "test")]
 extern "C" {
     fn entry() -> c_int;
 }
 
+#[test]
 pub fn test_typedef() {
     let ret = unsafe { entry() };
     let rust_ret = unsafe { rust_entry() };

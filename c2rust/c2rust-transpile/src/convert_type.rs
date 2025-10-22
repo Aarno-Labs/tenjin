@@ -3,8 +3,10 @@ use crate::c_ast::*;
 use crate::diagnostics::TranslationResult;
 use crate::renamer::*;
 use crate::translator::tenjin::guide_type_name_path;
+use crate::{CrateSet, ExternCrate};
 use c2rust_ast_builder::{mk, properties::*};
 use failure::format_err;
+use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 use syn::*;
@@ -21,6 +23,7 @@ pub struct TypeConverter {
     fields: HashMap<CDeclId, Renamer<FieldKey>>,
     suffix_names: HashMap<(CDeclId, &'static str), String>,
     features: HashSet<&'static str>,
+    extern_crates: CrateSet,
 }
 
 pub const RESERVED_NAMES: [&str; 103] = [
@@ -147,11 +150,20 @@ impl TypeConverter {
             fields: HashMap::new(),
             suffix_names: HashMap::new(),
             features: HashSet::new(),
+            extern_crates: IndexSet::new(),
         }
+    }
+
+    fn use_crate(&mut self, extern_crate: ExternCrate) {
+        self.extern_crates.insert(extern_crate);
     }
 
     pub fn features_used(&self) -> &HashSet<&'static str> {
         &self.features
+    }
+
+    pub fn extern_crates_used(&self) -> &CrateSet {
+        &self.extern_crates
     }
 
     pub fn declare_decl_name(&mut self, decl_id: CDeclId, name: &str) -> String {
@@ -248,7 +260,7 @@ impl TypeConverter {
             Some(ret) => self.convert(ctxt, ret.ctype, pg)?,
         };
 
-        let variadic = is_variadic.then(|| mk().variadic_arg(vec![]));
+        let variadic = is_variadic.then(|| mk().bare_variadic_arg());
 
         let fn_ty = (
             barefn_inputs,
@@ -275,7 +287,7 @@ impl TypeConverter {
             // in the case of pointers.
             CTypeKind::Void => Ok(mk()
                 .set_mutbl(mutbl)
-                .ptr_ty(mk().path_ty(vec!["libc", "c_void"]))),
+                .ptr_ty(mk().path_ty(vec!["core", "ffi", "c_void"]))),
 
             CTypeKind::VariableArray(mut elt, _len) => {
                 while let CTypeKind::VariableArray(elt_, _) = ctxt.resolve_type(elt).kind {
@@ -317,23 +329,52 @@ impl TypeConverter {
         match ctxt.index(ctype).kind {
             CTypeKind::Void => Ok(mk().tuple_ty(vec![])),
             CTypeKind::Bool => Ok(mk().path_ty(mk().path(vec!["bool"]))),
-            CTypeKind::Short => Ok(mk().path_ty(mk().path(vec!["libc", "c_short"]))),
-            CTypeKind::Int => Ok(mk().path_ty(mk().path(vec!["libc", "c_int"]))),
-            CTypeKind::Long => Ok(mk().path_ty(mk().path(vec!["libc", "c_long"]))),
-            CTypeKind::LongLong => Ok(mk().path_ty(mk().path(vec!["libc", "c_longlong"]))),
-            CTypeKind::UShort => Ok(mk().path_ty(mk().path(vec!["libc", "c_ushort"]))),
-            CTypeKind::UInt => Ok(mk().path_ty(mk().path(vec!["libc", "c_uint"]))),
-            CTypeKind::ULong => Ok(mk().path_ty(mk().path(vec!["libc", "c_ulong"]))),
-            CTypeKind::ULongLong => Ok(mk().path_ty(mk().path(vec!["libc", "c_ulonglong"]))),
-            CTypeKind::SChar => Ok(mk().path_ty(mk().path(vec!["libc", "c_schar"]))),
-            CTypeKind::UChar => Ok(mk().path_ty(mk().path(vec!["libc", "c_uchar"]))),
-            CTypeKind::Char => Ok(mk().path_ty(mk().path(vec!["libc", "c_char"]))),
-            CTypeKind::Double => Ok(mk().path_ty(mk().path(vec!["libc", "c_double"]))),
-            CTypeKind::LongDouble => Ok(mk().path_ty(mk().path(vec!["f128", "f128"]))),
-            CTypeKind::Float => Ok(mk().path_ty(mk().path(vec!["libc", "c_float"]))),
+            CTypeKind::Short => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_short"]))),
+            CTypeKind::Int => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_int"]))),
+            CTypeKind::Long => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_long"]))),
+            CTypeKind::LongLong => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_longlong"]))),
+            CTypeKind::UShort => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_ushort"]))),
+            CTypeKind::UInt => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_uint"]))),
+            CTypeKind::ULong => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_ulong"]))),
+            CTypeKind::ULongLong => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_ulonglong"]))),
+            CTypeKind::SChar => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_schar"]))),
+            CTypeKind::UChar => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_uchar"]))),
+            CTypeKind::Char => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_char"]))),
+            CTypeKind::Double => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_double"]))),
+            CTypeKind::LongDouble | CTypeKind::Float128 => {
+                self.use_crate(ExternCrate::F128);
+                Ok(mk().path_ty(mk().path(vec!["f128", "f128"])))
+            }
+            CTypeKind::Float => Ok(mk().path_ty(mk().path(vec!["core", "ffi", "c_float"]))),
             CTypeKind::Int128 => Ok(mk().path_ty(mk().path(vec!["i128"]))),
             CTypeKind::UInt128 => Ok(mk().path_ty(mk().path(vec!["u128"]))),
             CTypeKind::BFloat16 => Ok(mk().path_ty(mk().path(vec!["bf16"]))),
+
+            CTypeKind::Int8 => Ok(mk().path_ty(mk().path(vec!["i8"]))),
+            CTypeKind::Int16 => Ok(mk().path_ty(mk().path(vec!["i16"]))),
+            CTypeKind::Int32 => Ok(mk().path_ty(mk().path(vec!["i32"]))),
+            CTypeKind::Int64 => Ok(mk().path_ty(mk().path(vec!["i64"]))),
+            CTypeKind::IntPtr => Ok(mk().path_ty(mk().path(vec!["isize"]))),
+            CTypeKind::UInt8 => Ok(mk().path_ty(mk().path(vec!["u8"]))),
+            CTypeKind::UInt16 => Ok(mk().path_ty(mk().path(vec!["u16"]))),
+            CTypeKind::UInt32 => Ok(mk().path_ty(mk().path(vec!["u32"]))),
+            CTypeKind::UInt64 => Ok(mk().path_ty(mk().path(vec!["u64"]))),
+            CTypeKind::UIntPtr => Ok(mk().path_ty(mk().path(vec!["usize"]))),
+            CTypeKind::IntMax => {
+                self.use_crate(ExternCrate::Libc);
+                Ok(mk().path_ty(mk().path(vec!["libc", "intmax_t"])))
+            }
+            CTypeKind::UIntMax => {
+                self.use_crate(ExternCrate::Libc);
+                Ok(mk().path_ty(mk().path(vec!["libc", "uintmax_t"])))
+            }
+            CTypeKind::Size => Ok(mk().path_ty(mk().path(vec!["usize"]))),
+            CTypeKind::SSize => Ok(mk().path_ty(mk().path(vec!["isize"]))),
+            CTypeKind::PtrDiff => Ok(mk().path_ty(mk().path(vec!["isize"]))),
+            CTypeKind::WChar => {
+                self.use_crate(ExternCrate::Libc);
+                Ok(mk().path_ty(mk().path(vec!["libc", "wchar_t"])))
+            }
 
             CTypeKind::Pointer(qtype) => self.convert_pointer(ctxt, qtype, pg),
 
@@ -384,6 +425,7 @@ impl TypeConverter {
             }
 
             CTypeKind::Attributed(ty, _) => self.convert(ctxt, ty.ctype, pg),
+            CTypeKind::Atomic(ty) => self.convert(ctxt, ty.ctype, pg),
 
             // ANSI/ISO C-style function
             CTypeKind::Function(ret, ref params, is_var, is_noreturn, true) => {
@@ -455,7 +497,7 @@ impl TypeConverter {
                 _ => panic!("Typedef decl did not point to a typedef"),
             },
 
-            ref kind => panic!("ctype parameter must be a function instead of {:?}", kind),
+            ref kind => panic!("ctype parameter must be a function instead of {kind:?}"),
         }
     }
 }

@@ -154,11 +154,7 @@ impl RelooperState {
             let mut flipped_map: IndexMap<Label, IndexSet<Label>> = IndexMap::new();
             for (lbl, vals) in map {
                 for val in vals {
-                    #[rustfmt::skip]
-                    flipped_map
-                        .entry(val)
-                        .or_default()
-                        .insert(lbl.clone());
+                    flipped_map.entry(val).or_default().insert(lbl.clone());
                 }
             }
             flipped_map
@@ -461,7 +457,9 @@ impl RelooperState {
 
         #[rustfmt::skip]
         let unhandled_entries: IndexSet<Label> = entries
-            .iter().filter(|&e| !handled_entries.contains_key(e)).cloned()
+            .iter()
+            .filter(|&e| !handled_entries.contains_key(e))
+            .cloned()
             .collect();
 
         let mut handled_blocks: StructuredBlocks = IndexMap::new();

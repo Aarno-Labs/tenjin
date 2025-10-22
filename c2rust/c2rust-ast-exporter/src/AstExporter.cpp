@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <clang/AST/Type.h>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -98,7 +100,6 @@ Optional<APSInt> getIntegerConstantExpr(const Expr &E, const ASTContext &Ctx) {
 #endif // CLANG_VERSION_MAJOR
 }
 #else
-#include <optional>
 std::optional<APSInt> getIntegerConstantExpr(const Expr &E,
                                              const ASTContext &Ctx) {
     return E.getIntegerConstantExpr(Ctx);
@@ -281,6 +282,8 @@ class TypeEncoder final : public TypeVisitor<TypeEncoder> {
 
     void VisitVariableArrayType(const VariableArrayType *T);
 
+    void VisitAtomicType(const AtomicType *AT);
+
     void VisitIncompleteArrayType(const IncompleteArrayType *T) {
         auto t = T->getElementType();
         auto qt = encodeQualType(t);
@@ -423,6 +426,7 @@ class TypeEncoder final : public TypeVisitor<TypeEncoder> {
             case BuiltinType::SveBool: return TagSveBool;
             case BuiltinType::SveBoolx2: return TagSveBoolx2;
             case BuiltinType::SveBoolx4: return TagSveBoolx4;
+            case BuiltinType::Float128: return TagFloat128;
 #endif
             default:
                 auto pol = clang::PrintingPolicy(Context->getLangOpts());
@@ -586,6 +590,7 @@ class TranslateASTVisitor final
     }
 
     bool evaluateConstantInt(Expr *E, APSInt &constant) {
+        assert(E != nullptr);
         auto value = getIntegerConstantExpr(*E, *Context);
 
         if (value) {
@@ -601,7 +606,9 @@ class TranslateASTVisitor final
 #if CLANG_VERSION_MAJOR < 8
             constant = eval_result;
 #else
-            constant = eval_result.Val.getInt();
+            if (hasValue) {
+                constant = eval_result.Val.getInt();
+            }
 #endif // CLANG_VERSION_MAJOR
             return hasValue;
         }
@@ -1145,7 +1152,13 @@ class TranslateASTVisitor final
                     // into); clang does this conversion, but rustc doesn't
                     convertedConstraint += '*';
                 }
+
+#if CLANG_VERSION_MAJOR < 21
                 convertedConstraint += SimplifyConstraint(constraint.str());
+#else
+                convertedConstraint += SimplifyConstraint(constraint);
+#endif
+
                 outputs.push_back(convertedConstraint);
                 output_infos.push_back(std::move(info));
             }
@@ -1159,7 +1172,11 @@ class TranslateASTVisitor final
                     // See above
                     convertedConstraint += '*';
                 }
+#if CLANG_VERSION_MAJOR < 21
                 convertedConstraint += SimplifyConstraint(constraint.str());
+#else
+                convertedConstraint += SimplifyConstraint(constraint);
+#endif
                 inputs.emplace_back(convertedConstraint);
             }
             for (unsigned i = 0, num = E->getNumClobbers(); i < num; ++i) {
@@ -1736,6 +1753,28 @@ class TranslateASTVisitor final
         return true;
     }
 
+#if CLANG_VERSION_MAJOR >= 9
+    bool VisitBuiltinBitCastExpr(BuiltinBitCastExpr *E) {
+        auto children = E->children();
+        std::vector<void *> childIds(std::begin(children), std::end(children));
+        encode_entry(E, TagBuiltinBitCastExpr, childIds);
+        return true;
+    }
+#endif
+
+    bool VisitMaterializeTemporaryExpr(MaterializeTemporaryExpr *E) {
+        auto children = E->children();
+        std::vector<void *> childIds(std::begin(children), std::end(children));
+        encode_entry(E, TagMaterializeTemporaryExpr, childIds);
+        return true;
+    }
+    bool VisitExprWithCleanups(ExprWithCleanups *E) {
+        auto children = E->children();
+        std::vector<void *> childIds(std::begin(children), std::end(children));
+        encode_entry(E, TagExprWithCleanups, childIds);
+        return true;
+    }
+
 #if CLANG_VERSION_MAJOR >= 8
     bool VisitConstantExpr(ConstantExpr *E) {
         auto children = E->children();
@@ -1772,7 +1811,11 @@ class TranslateASTVisitor final
                              case AtomicExpr::AO ## ID:                 \
                                  cbor_encode_string(array, #ID);       \
                                  break;
+#if CLANG_VERSION_MAJOR >= 19
+#include "clang/Basic/Builtins.inc"
+#else
 #include "clang/Basic/Builtins.def"
+#endif
                          default: printError("Unknown atomic builtin: " +
                                              std::to_string(E->getOp()), E);
                          };
@@ -1830,6 +1873,15 @@ class TranslateASTVisitor final
         auto body =
             FD->getBody(paramsFD); // replaces its argument if body exists
 
+        // Avoid getting params from an implicit decl if a subsequent non-implicit decl exists.
+        // Implicit decls will not have names for params, but more importantly, they will never
+        // reference header-declared typedefs, so we would miss the fact that e.g. malloc is
+        // declared to accept `size_t` in its stdlib.h declaration, while its implicit declaration
+        // accepts the built-in `unsigned long`.
+        if (FD->isImplicit()) {
+            paramsFD = FD->getMostRecentDecl();
+        }
+
         std::vector<void *> childIds;
         for (auto x : paramsFD->parameters()) {
             auto cd = x->getCanonicalDecl();
@@ -1839,7 +1891,8 @@ class TranslateASTVisitor final
 
         childIds.push_back(body);
 
-        auto functionType = FD->getType();
+        // We prefer non-implicit decls for their type information.
+        auto functionType = paramsFD->getType();
         auto span = paramsFD->getSourceRange();
         encode_entry(
             FD, TagFunctionDecl, span, childIds, functionType,
@@ -1960,10 +2013,6 @@ class TranslateASTVisitor final
         // Use the type from the definition in case the extern was an incomplete
         // type
         auto T = def->getType();
-        if (isa<AtomicType>(T)) {
-            printC11AtomicError(def);
-            abort();
-        }
 
         auto loc = is_defn ? def->getLocation() : VD->getLocation();
 
@@ -2049,17 +2098,20 @@ class TranslateASTVisitor final
         auto byteSize = 0;
 
         auto t = D->getTypeForDecl();
-        if (isa<AtomicType>(t)) {
-            printC11AtomicError(D);
-            abort();
-        }
 
         auto loc = D->getLocation();
         std::vector<void *> childIds;
         if (def) {
-            for (auto x : def->fields()) {
-                childIds.push_back(x->getCanonicalDecl());
+            for (auto decl : def->decls()) {
+                auto kind = decl->getKind();
+                // Note: We skip `Decl::Kind::IndirectField`.
+                if (kind == Decl::Kind::Field 
+                    || kind == Decl::Kind::Enum 
+                    || kind == Decl::Kind::Record) {
+                    childIds.push_back(decl->getCanonicalDecl());
+                }
             }
+            
             // Since the RecordDecl D isn't the complete definition,
             // the actual location should be given. This should handle opaque
             // types.
@@ -2127,10 +2179,6 @@ class TranslateASTVisitor final
         // exit early via code like `if (!D->isCompleteDefinition()) return true;`.
 
         auto t = D->getTypeForDecl();
-        if (isa<AtomicType>(t)) {
-            printC11AtomicError(D);
-            abort();
-        }
 
         std::vector<void *> childIds;
         for (auto x : D->enumerators()) {
@@ -2190,10 +2238,6 @@ class TranslateASTVisitor final
 
         std::vector<void *> childIds;
         auto t = D->getType();
-        if (isa<AtomicType>(t)) {
-            printC11AtomicError(D);
-            abort();
-        }
 
         auto record = D->getParent();
         const ASTRecordLayout &layout =
@@ -2209,8 +2253,12 @@ class TranslateASTVisitor final
 
                          // 2. Encode bitfield width if any
                          if (D->isBitField()) {
-                             cbor_encode_uint(
-                                 array, D->getBitWidthValue(*this->Context));
+#if LLVM_VERSION_MAJOR >= 20
+                             const auto bitWidthValue = D->getBitWidthValue();
+#else
+                             const auto bitWidthValue = D->getBitWidthValue(*this->Context);
+#endif
+                             cbor_encode_uint(array, bitWidthValue);
                          } else {
                              cbor_encode_null(array);
                          };
@@ -2231,6 +2279,38 @@ class TranslateASTVisitor final
 
     bool VisitTypedefNameDecl(TypedefNameDecl *D) {
         auto typeForDecl = D->getUnderlyingType();
+        // If this typedef is to a compiler-builtin macro with target-dependent definition, note the
+        // macro's name so we can map to the appropriate target-independent name (e.g. `size_t`).
+        auto targetDependentMacro = [&]() -> std::optional<std::string> {
+            TypeSourceInfo *TSI = D->getTypeSourceInfo();
+            if (!TSI) {
+                return std::nullopt;
+            }
+
+            TypeLoc typeLoc = TSI->getTypeLoc();
+            SourceLocation loc = typeLoc.getBeginLoc();
+
+            if (loc.isInvalid()) {
+                return std::nullopt;
+            }
+
+            // Check if the location is from a macro expansion
+            if (!loc.isMacroID()) {
+                return std::nullopt;
+            }
+
+            auto macroName = Lexer::getImmediateMacroName(loc, Context->getSourceManager(), Context->getLangOpts());
+            // Double-underscore indicates that name is reserved for the implementation,
+            // so this should not interfere with user code.
+#if CLANG_VERSION_MAJOR >= 18
+            if (!macroName.starts_with("__")) {
+#else
+            if (!macroName.startswith("__")) {
+#endif // CLANG_VERSION_MAJOR
+                return std::nullopt;
+            }
+            return std::make_optional(std::string(macroName));
+        }();
         if (!D->isCanonicalDecl()) {
             // Emit non-canonical decl so we have a placeholder to attach comments to
             std::vector<void *> childIds = {D->getCanonicalDecl()};
@@ -2241,11 +2321,17 @@ class TranslateASTVisitor final
 
         std::vector<void *> childIds;
         encode_entry(D, TagTypedefDecl, childIds, typeForDecl,
-                     [D](CborEncoder *array) {
+                     [D, targetDependentMacro](CborEncoder *array) {
                          auto name = D->getNameAsString();
                          cbor_encode_string(array, name);
 
                          cbor_encode_boolean(array, D->isImplicit());
+
+                         if (targetDependentMacro) {
+                             cbor_encode_string(array, targetDependentMacro->data());
+                         } else {
+                             cbor_encode_null(array);
+                         }
                      });
 
         typeEncoder.VisitQualType(typeForDecl);
@@ -2435,11 +2521,6 @@ class TranslateASTVisitor final
             CharSourceRange::getCharRange(E->getSourceRange()));
     }
 
-    void printC11AtomicError(Decl *D) {
-        std::string msg = "C11 Atomics are not supported. Aborting.";
-        printError(msg, D);
-    }
-
     void printError(std::string Message, Decl *D) {
         auto DiagBuilder =
                 getDiagBuilder(D->getLocation(), DiagnosticsEngine::Error);
@@ -2467,7 +2548,7 @@ void TypeEncoder::VisitEnumType(const EnumType *T) {
         cbor_encode_uint(local, uintptr_t(ed));
     });
 
-    if (ed != nullptr) astEncoder->VisitEnumDecl(ed);
+    if (ed != nullptr) astEncoder->TraverseDecl(ed);
 }
 
 void TypeEncoder::VisitRecordType(const RecordType *T) {
@@ -2525,15 +2606,17 @@ void TypeEncoder::VisitVariableArrayType(const VariableArrayType *T) {
 
     VisitQualType(t);
 }
-//
-//void TypeEncoder::VisitAtomicType(const AtomicType *AT) {
-//    std::string msg =
-//            "C11 Atomic types are not supported. Aborting.";
-////    auto horse = AT->get
-////    astEncoder->printError(msg, AT);
-//    AT->getValueType()->dump();
-//    abort();
-//}
+
+void TypeEncoder::VisitAtomicType(const AtomicType *AT) {
+  auto t = AT->getValueType();
+  auto qt = encodeQualType(t);
+
+  encodeType(AT, TagAtomicType, [qt](CborEncoder *local) {
+      cbor_encode_uint(local, qt);
+  });
+
+  VisitQualType(t);
+}
 
 class TranslateConsumer : public clang::ASTConsumer {
     Outputs *outputs;
@@ -2723,6 +2806,8 @@ constexpr size_t size(const _Tp (&)[_Sz]) noexcept {
 // parsed and string literals are always treated as constant.
 static std::vector<const char *> augment_argv(int argc, const char *argv[]) {
     const char *const extras[] = {
+        "-extra-arg=-fno-builtin-strlen",  // builtin strlen wrongly returns
+                                           // unsigned long despite declaration
         "-extra-arg=-fparse-all-comments", // always parse comments
         "-extra-arg=-Wwrite-strings",      // string literals are constant
         "-extra-arg=-D_FORTIFY_SOURCE=0",  // we don't want to use checked

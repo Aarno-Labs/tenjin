@@ -1,11 +1,19 @@
 use serde_cbor::{from_slice, Value};
 use std::collections::HashMap;
-use std::ffi::{CStr, CString};
+use std::ffi::{c_char, c_int, CStr, CString};
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 use std::slice;
 
+use crate::clang_ast::BuiltinVaListKind;
+
 pub mod clang_ast;
+
+impl Default for BuiltinVaListKind {
+    fn default() -> Self {
+        Self::CharPtrBuiltinVaList
+    }
+}
 
 pub fn get_clang_major_version() -> Option<u32> {
     let s = unsafe { CStr::from_ptr(clang_version()) };
@@ -37,10 +45,7 @@ pub fn get_untyped_ast(
 
     let items: Value = from_slice(&buffer[..]).unwrap();
 
-    match clang_ast::process(items) {
-        Ok(cxt) => Ok(cxt),
-        Err(e) => Err(Error::new(ErrorKind::InvalidData, format!("{:}", e))),
-    }
+    clang_ast::process(items).map_err(|e| Error::new(ErrorKind::InvalidData, format!("{}", e)))
 }
 
 fn get_ast_cbors(
@@ -60,12 +65,12 @@ fn get_ast_cbors(
         args_owned.push(CString::new(["-extra-arg=", arg].join("")).unwrap())
     }
 
-    let args_ptrs: Vec<*const libc::c_char> = args_owned.iter().map(|x| x.as_ptr()).collect();
+    let args_ptrs: Vec<*const c_char> = args_owned.iter().map(|x| x.as_ptr()).collect();
 
     let hashmap;
     unsafe {
         let ptr = ast_exporter(
-            args_ptrs.len() as libc::c_int,
+            args_ptrs.len() as c_int,
             args_ptrs.as_ptr(),
             debug.into(),
             &mut res,
@@ -86,16 +91,16 @@ mod ffi {
 extern "C" {
     // ExportResult *ast_exporter(int argc, char *argv[]);
     fn ast_exporter(
-        argc: libc::c_int,
-        argv: *const *const libc::c_char,
-        debug: libc::c_int,
-        res: *mut libc::c_int,
+        argc: c_int,
+        argv: *const *const c_char,
+        debug: c_int,
+        res: *mut c_int,
     ) -> *mut ffi::ExportResult;
 
     // void drop_export_result(ExportResult *result);
     fn drop_export_result(ptr: *mut ffi::ExportResult);
 
-    fn clang_version() -> *const libc::c_char;
+    fn clang_version() -> *const c_char;
 }
 
 unsafe fn marshal_result(result: *const ffi::ExportResult) -> HashMap<String, Vec<u8>> {
@@ -112,11 +117,8 @@ unsafe fn marshal_result(result: *const ffi::ExportResult) -> HashMap<String, Ve
         // Convert CBOR bytes
         let csize = *res.sizes.offset(i) as u64;
         let cbytes = *res.bytes.offset(i);
-        let csize_usize: usize = csize
-            .try_into()
-            .expect("c2rust-ast-exporter(cbor): csize too large for usize!");
-
-        let bytes = slice::from_raw_parts(cbytes, csize_usize);
+        #[allow(clippy::unnecessary_cast /*, reason = "needed on x86_64-unknown-linux-gnu" */)]
+        let bytes = slice::from_raw_parts(cbytes, csize as usize);
         let mut v = Vec::new();
         v.extend_from_slice(bytes);
 

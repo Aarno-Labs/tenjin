@@ -91,7 +91,7 @@ impl ItemStore {
     pub fn add_item_str_once(&mut self, srctext: &str) {
         if !self.singleton_items.contains_key(srctext) {
             let item: Item = syn::parse_str(srctext)
-                .unwrap_or_else(|_| panic!("Failed to parse item: {}", srctext));
+                .unwrap_or_else(|_| panic!("Failed to parse item: {srctext}"));
             self.singleton_items
                 .insert(srctext.to_string(), Box::new(item));
         }

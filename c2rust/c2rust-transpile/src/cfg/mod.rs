@@ -30,6 +30,7 @@ use std::io;
 use std::io::Write;
 use std::ops::Deref;
 use std::ops::Index;
+use syn::Lit;
 use syn::{spanned::Spanned, Arm, Expr, Pat, Stmt};
 
 use failure::format_err;
@@ -72,8 +73,8 @@ impl Label {
     pub fn pretty_print(&self) -> String {
         match self {
             Label::FromC(_, Some(s)) => format!("_{}", s.as_ref()),
-            Label::FromC(CStmtId(label_id), None) => format!("c_{}", label_id),
-            Label::Synthetic(syn_id) => format!("s_{}", syn_id),
+            Label::FromC(CStmtId(label_id), None) => format!("c_{label_id}"),
+            Label::Synthetic(syn_id) => format!("s_{syn_id}"),
         }
     }
 
@@ -91,6 +92,17 @@ impl Label {
 
     fn to_string_expr(&self) -> Box<Expr> {
         mk().lit_expr(self.debug_print())
+    }
+
+    fn to_int_lit(&self) -> Lit {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        let as_num = s.finish();
+        mk().int_lit(as_num as u128, "")
+    }
+
+    fn to_string_lit(&self) -> Lit {
+        mk().str_lit(&self.debug_print())
     }
 }
 
@@ -555,7 +567,9 @@ impl Cfg<Label, StmtOrDecl> {
         translator: &Translation,
         ctx: ExprContext,
         stmt_ids: &[CStmtId],
+        name: &str,
         ret: ImplicitReturnType,
+        ret_ty: Option<CQualTypeId>,
     ) -> TranslationResult<(Self, DeclStmtStore)> {
         let mut c_label_to_goto: IndexMap<CLabelId, IndexSet<CStmtId>> = IndexMap::new();
         for (target, x) in stmt_ids
@@ -567,14 +581,10 @@ impl Cfg<Label, StmtOrDecl> {
                 _ => None,
             })
         {
-            #[rustfmt::skip]
-            c_label_to_goto
-                .entry(target)
-                .or_default()
-                .insert(x);
+            c_label_to_goto.entry(target).or_default().insert(x);
         }
 
-        let mut cfg_builder = CfgBuilder::new(c_label_to_goto);
+        let mut cfg_builder = CfgBuilder::new(c_label_to_goto, name);
         let entry = cfg_builder.entry.clone();
         cfg_builder.per_stmt_stack.push(PerStmt::new(
             stmt_ids.first().cloned(),
@@ -589,6 +599,7 @@ impl Cfg<Label, StmtOrDecl> {
                 stmt_ids,
                 Some(ret.clone()),
                 entry,
+                ret_ty,
             )?;
 
             if let Some(body_exit) = body_exit {
@@ -613,7 +624,9 @@ impl Cfg<Label, StmtOrDecl> {
                         wip.body.push(StmtOrDecl::Stmt(mk().semi_stmt(ret_expr)));
                     }
                     ImplicitReturnType::StmtExpr(ctx, expr_id, brk_label) => {
-                        let (stmts, val) = translator.convert_expr(ctx, expr_id)?.discard_unsafe();
+                        let (stmts, val) = translator
+                            .convert_expr(ctx, expr_id, None)?
+                            .discard_unsafe();
 
                         wip.body.extend(stmts.into_iter().map(StmtOrDecl::Stmt));
                         wip.body.push(StmtOrDecl::Stmt(mk().semi_stmt(
@@ -790,6 +803,7 @@ impl<Lbl: Clone + Ord + Hash + Debug, Stmt> Cfg<Lbl, Stmt> {
 struct CfgBuilder {
     /// Identifies the 'BasicBlock' to start with in the graph
     entry: Label,
+    fn_name: String,
 
     per_stmt_stack: Vec<PerStmt>,
 
@@ -1174,7 +1188,7 @@ impl CfgBuilder {
             .insert(lbl.clone(), bb)
         {
             None => {}
-            Some(_) => panic!("Label {:?} cannot identify two basic blocks", lbl),
+            Some(_) => panic!("Label {lbl:?} cannot identify two basic blocks"),
         }
 
         if let Some((_, loop_vec)) = self.loops.last_mut() {
@@ -1211,7 +1225,7 @@ impl CfgBuilder {
     /// know the terminators of a block by visiting it.
     fn update_terminator(&mut self, lbl: Label, new_term: GenTerminator<Label>) {
         match self.last_per_stmt_mut().nodes.get_mut(&lbl) {
-            None => panic!("Cannot find label {:?} to update", lbl),
+            None => panic!("Cannot find label {lbl:?} to update"),
             Some(bb) => bb.terminator = new_term,
         }
     }
@@ -1308,11 +1322,12 @@ impl CfgBuilder {
     }
 
     /// Create a new `CfgBuilder` with a single entry label.
-    fn new(c_label_to_goto: IndexMap<CLabelId, IndexSet<CStmtId>>) -> CfgBuilder {
+    fn new(c_label_to_goto: IndexMap<CLabelId, IndexSet<CStmtId>>, fn_name: &str) -> CfgBuilder {
         let entry = Label::Synthetic(0);
 
         CfgBuilder {
             entry,
+            fn_name: fn_name.to_string(),
 
             per_stmt_stack: vec![],
 
@@ -1340,6 +1355,7 @@ impl CfgBuilder {
         stmt_ids: &[CStmtId],                // C statements to translate
         in_tail: Option<ImplicitReturnType>, // Are we in tail position (is there anything to fallthrough to)?
         entry: Label,                        // Current WIP block
+        ret_ty: Option<CQualTypeId>,
     ) -> TranslationResult<Option<Label>> {
         self.with_scope(translator, |slf| -> TranslationResult<Option<Label>> {
             let mut lbl = Some(entry);
@@ -1349,7 +1365,8 @@ impl CfgBuilder {
             for stmt in stmt_ids {
                 let new_label: Label = lbl.unwrap_or_else(|| slf.fresh_label());
                 let sub_in_tail = in_tail.clone().filter(|_| Some(stmt) == last);
-                lbl = slf.convert_stmt_help(translator, ctx, *stmt, sub_in_tail, new_label)?;
+                lbl =
+                    slf.convert_stmt_help(translator, ctx, *stmt, sub_in_tail, new_label, ret_ty)?;
             }
 
             Ok(lbl)
@@ -1377,6 +1394,10 @@ impl CfgBuilder {
 
         // Entry label
         entry: Label,
+
+        // The type this statement should return. May differ from the type the C AST is returning,
+        // in which case we must cast.
+        ret_ty: Option<CQualTypeId>,
     ) -> TranslationResult<Option<Label>> {
         // Add to the per_stmt_stack
         let live_in: IndexSet<CDeclId> = self.currently_live.last().unwrap().clone();
@@ -1411,7 +1432,13 @@ impl CfgBuilder {
             }
 
             CStmtKind::Return(expr) => {
-                let val = match expr.map(|i| translator.convert_expr(ctx.used(), i)) {
+                let val = match expr.map(|i| {
+                    let ret_ty_guidance = translator
+                        .parsed_guidance
+                        .borrow_mut()
+                        .query_fn_return_type(self.fn_name.as_str());
+                    translator.convert_expr_guided(ctx.used(), i, ret_ty, &ret_ty_guidance)
+                }) {
                     Some(r) => Some(r?),
                     None => None,
                 };
@@ -1462,6 +1489,7 @@ impl CfgBuilder {
                     true_variant,
                     in_tail.clone(),
                     then_entry,
+                    ret_ty,
                 )?;
                 if let Some(then_end) = then_stuff {
                     let wip_then = self.new_wip_block(then_end);
@@ -1478,6 +1506,7 @@ impl CfgBuilder {
                         false_var,
                         in_tail.clone(),
                         else_entry,
+                        ret_ty,
                     )?;
                     if let Some(else_end) = else_stuff {
                         let wip_else = self.new_wip_block(else_end);
@@ -1529,7 +1558,7 @@ impl CfgBuilder {
                 self.continue_labels.push(cond_entry.clone());
 
                 let body_stuff =
-                    self.convert_stmt_help(translator, ctx, body_stmt, None, body_entry)?;
+                    self.convert_stmt_help(translator, ctx, body_stmt, None, body_entry, ret_ty)?;
                 if let Some(body_end) = body_stuff {
                     let wip_body = self.new_wip_block(body_end);
                     self.add_wip_block(wip_body, Jump(cond_entry));
@@ -1562,8 +1591,14 @@ impl CfgBuilder {
                 self.break_labels.push(next_entry.clone());
                 self.continue_labels.push(cond_entry.clone());
 
-                let body_stuff =
-                    self.convert_stmt_help(translator, ctx, body_stmt, None, body_entry.clone())?;
+                let body_stuff = self.convert_stmt_help(
+                    translator,
+                    ctx,
+                    body_stmt,
+                    None,
+                    body_entry.clone(),
+                    ret_ty,
+                )?;
                 if let Some(body_end) = body_stuff {
                     let wip_body = self.new_wip_block(body_end);
                     self.add_wip_block(wip_body, Jump(cond_entry.clone()));
@@ -1614,7 +1649,7 @@ impl CfgBuilder {
                     let init_stuff: Option<Label> = match init {
                         None => Some(init_entry),
                         Some(init) => {
-                            slf.convert_stmt_help(translator, ctx, init, None, init_entry)?
+                            slf.convert_stmt_help(translator, ctx, init, None, init_entry, ret_ty)?
                         }
                     };
                     if let Some(init_end) = init_stuff {
@@ -1651,7 +1686,7 @@ impl CfgBuilder {
                     slf.continue_labels.push(incr_entry.clone());
 
                     let body_stuff =
-                        slf.convert_stmt_help(translator, ctx, body, None, body_entry)?;
+                        slf.convert_stmt_help(translator, ctx, body, None, body_entry, ret_ty)?;
 
                     if let Some(body_end) = body_stuff {
                         let wip_body = slf.new_wip_block(body_end);
@@ -1667,8 +1702,9 @@ impl CfgBuilder {
                     match increment {
                         None => slf.add_block(incr_entry, BasicBlock::new_jump(cond_entry)),
                         Some(incr) => {
-                            let incr_stmts =
-                                translator.convert_expr(ctx.unused(), incr)?.into_stmts();
+                            let incr_stmts = translator
+                                .convert_expr(ctx.unused(), incr, None)?
+                                .into_stmts();
                             let mut incr_wip = slf.new_wip_block(incr_entry);
                             incr_wip.extend(incr_stmts);
                             slf.add_wip_block(incr_wip, Jump(cond_entry));
@@ -1696,8 +1732,14 @@ impl CfgBuilder {
                 self.last_per_stmt_mut().c_labels_defined.insert(stmt_id);
 
                 // Sub stmt
-                let sub_stmt_next =
-                    self.convert_stmt_help(translator, ctx, sub_stmt, in_tail.clone(), this_label)?;
+                let sub_stmt_next = self.convert_stmt_help(
+                    translator,
+                    ctx,
+                    sub_stmt,
+                    in_tail.clone(),
+                    this_label,
+                    ret_ty,
+                )?;
                 Ok(sub_stmt_next.map(|l| self.new_wip_block(l)))
             }
 
@@ -1737,6 +1779,7 @@ impl CfgBuilder {
                     comp_stmts.as_slice(),
                     in_tail.clone(),
                     comp_entry,
+                    ret_ty,
                 )?;
 
                 Ok(next_lbl.map(|l| self.new_wip_block(l)))
@@ -1758,6 +1801,7 @@ impl CfgBuilder {
                             stmtid,
                             in_tail.clone(),
                             comp_entry,
+                            ret_ty,
                         )?;
 
                         Ok(next_lbl.map(|l| self.new_wip_block(l)))
@@ -1771,7 +1815,11 @@ impl CfgBuilder {
                 match blk_or_wip {
                     Ok(blk) => Ok(blk),
                     Err(mut wip) => {
-                        wip.extend(translator.convert_expr(ctx.unused(), expr)?.into_stmts());
+                        wip.extend(
+                            translator
+                                .convert_expr(ctx.unused(), expr, None)?
+                                .into_stmts(),
+                        );
 
                         // If we can tell the expression is going to diverge, there is no falling through to
                         // the next block.
@@ -1831,11 +1879,12 @@ impl CfgBuilder {
                 let branch = match resolved.1 {
                     CExprKind::Literal(..) | CExprKind::ConstantExpr(_, _, Some(_)) => {
                         match translator
-                            .convert_expr(ctx.used(), resolved.0)?
+                            .convert_expr(ctx.used(), resolved.0, None)?
                             .to_pure_expr()
                         {
                             Some(expr) => match *expr {
-                                Expr::Lit(..) | Expr::Path(..) => Some(expr),
+                                Expr::Lit(lit) => Some(mk().lit_pat(lit.lit)),
+                                Expr::Path(path) => Some(mk().path_pat(path.path, path.qself)),
                                 _ => None,
                             },
                             _ => None,
@@ -1843,10 +1892,15 @@ impl CfgBuilder {
                     }
                     _ => None,
                 };
-                let branch = match branch {
-                    Some(expr) => expr,
-                    None => translator.convert_constant(cie)?,
+
+                let pat = match branch {
+                    Some(pat) => pat,
+                    None => match cie {
+                        ConstIntExpr::U(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
+                        ConstIntExpr::I(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
+                    },
                 };
+
                 self.switch_expr_cases
                     .last_mut()
                     .ok_or_else(|| {
@@ -1856,11 +1910,17 @@ impl CfgBuilder {
                         )
                     })?
                     .cases
-                    .push((mk().lit_pat(branch), this_label.clone()));
+                    .push((pat, this_label.clone()));
 
                 // Sub stmt
-                let sub_stmt_next =
-                    self.convert_stmt_help(translator, ctx, sub_stmt, in_tail.clone(), this_label)?;
+                let sub_stmt_next = self.convert_stmt_help(
+                    translator,
+                    ctx,
+                    sub_stmt,
+                    in_tail.clone(),
+                    this_label,
+                    ret_ty,
+                )?;
                 Ok(sub_stmt_next.map(|l| self.new_wip_block(l)))
             }
 
@@ -1877,8 +1937,14 @@ impl CfgBuilder {
                     .get_or_insert(this_label.clone());
 
                 // Sub stmt
-                let sub_stmt_next =
-                    self.convert_stmt_help(translator, ctx, sub_stmt, in_tail.clone(), this_label)?;
+                let sub_stmt_next = self.convert_stmt_help(
+                    translator,
+                    ctx,
+                    sub_stmt,
+                    in_tail.clone(),
+                    this_label,
+                    ret_ty,
+                )?;
                 Ok(sub_stmt_next.map(|l| self.new_wip_block(l)))
             }
 
@@ -1891,7 +1957,7 @@ impl CfgBuilder {
 
                 // Convert the condition
                 let (stmts, val) = translator
-                    .convert_expr(ctx.used(), scrutinee)?
+                    .convert_expr(ctx.used(), scrutinee, None)?
                     .discard_unsafe();
                 wip.extend(stmts);
 
@@ -1911,6 +1977,7 @@ impl CfgBuilder {
                     switch_body,
                     in_tail.clone(),
                     body_label,
+                    ret_ty,
                 )?;
                 if let Some(body_end) = body_stuff {
                     let body_wip = self.new_wip_block(body_end);
@@ -2057,7 +2124,7 @@ impl CfgBuilder {
 
         // Run relooper
         let mut stmts = translator.convert_cfg(
-            &format!("<substmt_{:?}>", stmt_id),
+            &format!("<substmt_{stmt_id:?}>"),
             graph,
             store,
             live_in,

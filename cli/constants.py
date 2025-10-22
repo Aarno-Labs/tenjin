@@ -1,7 +1,7 @@
 # Note: the keys in this dict are not command names, or file names,
 # just arbitrary labels for the things we are tracking.
 WANT = {
-    "10j-llvm": "18.1.8@tenjin-llvm-4256d1483",
+    "10j-llvm": "18.1.8+refold@rev-b578a0937",
     "10j-opam": "2.3.0",
     "10j-dune": "3.19.1",
     "10j-ocaml": "5.2.0",
@@ -13,7 +13,7 @@ WANT = {
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
     "10j-xj-improve-multitool-toolchain": "nightly-2025-03-03",
     "10j-xj-default-rust-toolchain": "1.88.0",
-    "10j-reference-c2rust-tag": "v0.20.0",
+    "10j-reference-c2rust-tag": "55e1c24d5f3cbe0f3ef29717eeed77ea4c51867a",
 }
 
 # Subdirectory of hermetic.xj_llvm_root()

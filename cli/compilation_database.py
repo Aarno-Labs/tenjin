@@ -198,8 +198,15 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
             args.append(
                 str(repo_root.find_repo_root_dir_Path() / "cli" / "autoincluded_tenjin_decls.h")
             )
-            args.append("--block-macro")
-            args.append("assert")
+
+            macros_file = (
+                repo_root.find_repo_root_dir_Path()
+                / "cli"
+                / "autoblocked_macro_names_in_translation.txt"
+            )
+            args.append("--block-macros-file=" + macros_file.as_posix())
+            # See https://github.com/Aarno-Labs/llvm-project/commit/4256d14834810a78a1a61679316441172e0f0dd2
+
         cc.set_command_parts(args)
 
     ccs.to_json_file(compile_commands_path)

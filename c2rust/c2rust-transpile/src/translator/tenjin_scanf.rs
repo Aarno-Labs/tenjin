@@ -213,7 +213,7 @@ fn parse_conversion_spec(
                 return Err("Empty bracket expression".to_string());
             }
         }
-        _ => return Err(format!("Invalid conversion specifier: {}", specifier)),
+        _ => return Err(format!("Invalid conversion specifier: {specifier}")),
     }
 
     // Validate flag combinations
@@ -359,7 +359,7 @@ fn parse_conversion_spec_with_prefix(
                 return Err("Empty bracket expression".to_string());
             }
         }
-        _ => return Err(format!("Invalid conversion specifier: {}", specifier)),
+        _ => return Err(format!("Invalid conversion specifier: {specifier}")),
     }
 
     // Validate flag combinations

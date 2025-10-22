@@ -1,5 +1,5 @@
 use crate::no_float_wrapping_neg::{rust_double_inc_dec, rust_float_inc_dec, rust_no_wrapping_neg};
-use libc::{c_double, c_float};
+use std::ffi::{c_double, c_float};
 
 #[link(name = "test")]
 extern "C" {
@@ -8,6 +8,7 @@ extern "C" {
     fn double_inc_dec() -> c_double;
 }
 
+#[test]
 pub fn test_buffer() {
     unsafe {
         assert_eq!(no_wrapping_neg(), -1.);
@@ -15,6 +16,7 @@ pub fn test_buffer() {
     }
 }
 
+#[test]
 pub fn test_inc_dec_op() {
     unsafe {
         assert_eq!(float_inc_dec(), -0.79999995);

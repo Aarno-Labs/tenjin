@@ -1,6 +1,6 @@
 use crate::chars::rust_multibyte_chars;
 use crate::size_t::rust_entry;
-use libc::{c_int, c_uint};
+use std::ffi::{c_int, c_uint};
 
 #[link(name = "test")]
 extern "C" {
@@ -11,6 +11,7 @@ extern "C" {
 
 const BUFFER_SIZE: usize = 10;
 
+#[test]
 pub fn test_size_t_buffer() {
     let mut buffer = [0; BUFFER_SIZE];
     let mut rust_buffer = [0; BUFFER_SIZE];
@@ -25,6 +26,7 @@ pub fn test_size_t_buffer() {
     assert_eq!(buffer, expected_buffer);
 }
 
+#[test]
 pub fn test_chars_buffer() {
     let mut buffer = [0; BUFFER_SIZE];
     let mut rust_buffer = [0; BUFFER_SIZE];

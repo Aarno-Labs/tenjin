@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
 use log::LevelFilter;
 use regex::Regex;
-use std::{fs, path::PathBuf};
+use std::{ffi::OsStr, fs, path::PathBuf};
 
 use c2rust_transpile::{Diagnostic, ReplaceMode, TranspilerConfig};
 
@@ -40,13 +40,13 @@ struct Args {
     #[clap(short = 'v', long)]
     verbose: bool,
 
-    /// Enable translation of some C macros into consts
-    #[clap(long)]
-    translate_const_macros: bool,
+    /// Enable translation of some C macros into consts.
+    #[clap(long, value_enum, default_value_t)]
+    translate_const_macros: TranslateMacros,
 
-    /// Enable translation of some C function macros into invalid Rust code. WARNING: resulting code will not compile.
-    #[clap(long)]
-    translate_fn_macros: bool,
+    /// Enable translation of some C function macros.
+    #[clap(long, value_enum, default_value_t)]
+    translate_fn_macros: TranslateMacros,
 
     /// Disable relooping function bodies incrementally
     #[clap(long)]
@@ -161,6 +161,34 @@ struct Args {
     fail_on_multiple: bool,
 }
 
+// TODO Eventually move this code into `c2rust-transpile`
+// so that it doesn't have to be duplicated for the `clap` derives.
+#[derive(Default, Debug, PartialEq, Eq, ValueEnum, Clone)]
+pub enum TranslateMacros {
+    /// Don't translate any macros.
+    None,
+
+    /// Translate the conservative subset of macros known to always work.
+    #[default]
+    Conservative,
+
+    /// Try to translate more, but this is experimental and not guaranteed to work.
+    ///
+    /// For const-like macros, this works in some cases.
+    /// For function-like macros, this doesn't really work at all yet.
+    Experimental,
+}
+
+impl From<TranslateMacros> for c2rust_transpile::TranslateMacros {
+    fn from(this: TranslateMacros) -> Self {
+        match this {
+            TranslateMacros::None => c2rust_transpile::TranslateMacros::None,
+            TranslateMacros::Conservative => c2rust_transpile::TranslateMacros::Conservative,
+            TranslateMacros::Experimental => c2rust_transpile::TranslateMacros::Experimental,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, ValueEnum, Clone)]
 #[clap(rename_all = "snake_case")]
 enum InvalidCodes {
@@ -222,8 +250,8 @@ fn main() {
         // stable rust output.
         translate_valist: true,
 
-        translate_const_macros: args.translate_const_macros,
-        translate_fn_macros: args.translate_fn_macros,
+        translate_const_macros: args.translate_const_macros.into(),
+        translate_fn_macros: args.translate_fn_macros.into(),
         disable_refactoring: args.disable_refactoring,
         preserve_unused_functions: args.preserve_unused_functions,
 
@@ -252,28 +280,34 @@ fn main() {
         tcfg.emit_modules = true
     };
 
-    let mut created_temp_compile_commands = false;
+    let mut temp_compile_commands_dir = None;
 
-    let compile_commands = if args.compile_commands.len() == 1
-        && args.compile_commands[0].extension() == Some(std::ffi::OsStr::new("json"))
-    {
-        // Only one file provided and it's a JSON file
-        match fs::canonicalize(&args.compile_commands[0]) {
-            Ok(canonical_path) => canonical_path,
-            Err(e) => panic!("Failed to canonicalize path: {:?}", e),
-        }
-    } else if args
+    let compile_commands = if args
         .compile_commands
         .iter()
-        .any(|path| path.extension() == Some(std::ffi::OsStr::new("json")))
+        .any(|path| path.extension() == Some(OsStr::new("json")))
     {
-        // More than one file provided and at least one is a JSON file
-        panic!("Compile commands JSON and multiple sources provided.
+        if args.compile_commands.len() != 1 {
+            // More than one file provided and at least one is a JSON file
+            panic!("Compile commands JSON and multiple sources provided.
                 Exactly one compile_commands.json file should be provided, or a list of source files, but not both.");
+        }
+        let cc_json_path = &args.compile_commands[0];
+        // Only one file provided and it's a JSON file
+        match fs::canonicalize(cc_json_path) {
+            Ok(canonical_path) => canonical_path,
+            Err(e) => panic!(
+                "Failed to canonicalize path {}: {:?}",
+                cc_json_path.display(),
+                e
+            ),
+        }
     } else {
         // Handle as a list of source files
-        created_temp_compile_commands = true;
-        c2rust_transpile::create_temp_compile_commands(&args.compile_commands)
+        let (temp_dir, temp_path) =
+            c2rust_transpile::create_temp_compile_commands(&args.compile_commands);
+        temp_compile_commands_dir = Some(temp_dir);
+        temp_path
     };
 
     let extra_args = args
@@ -285,8 +319,8 @@ fn main() {
     c2rust_transpile::transpile(tcfg, &compile_commands, &extra_args);
 
     // Remove the temporary compile_commands.json if it was created
-    if created_temp_compile_commands {
-        std::fs::remove_file(&compile_commands)
+    if let Some(temp) = temp_compile_commands_dir {
+        temp.close()
             .expect("Failed to remove temporary compile_commands.json");
     }
 }

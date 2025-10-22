@@ -144,7 +144,7 @@ impl Translation<'_> {
         val_id: CExprId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         if self.tcfg.translate_valist {
-            let val = self.convert_expr(ctx.expect_valistimpl().used(), val_id)?;
+            let val = self.convert_expr(ctx.expect_valistimpl().used(), val_id, None)?;
 
             // The current implementation of the C-variadics feature doesn't allow us to
             // return `Option<fn(...) -> _>` from `VaList::arg`, so we detect function pointers
@@ -192,7 +192,9 @@ impl Translation<'_> {
                 .is_some_and(|ty| self.ast_context.is_forward_declared_type(ty.ctype))
             {
                 real_arg_ty = Some(arg_ty.clone());
-                arg_ty = mk().mutbl().ptr_ty(mk().path_ty(vec!["libc", "c_void"]));
+                arg_ty = mk()
+                    .mutbl()
+                    .ptr_ty(mk().path_ty(vec!["core", "ffi", "c_void"]));
             }
 
             val.and_then(|val| {

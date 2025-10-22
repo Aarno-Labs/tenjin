@@ -75,6 +75,10 @@ enum ASTEntryTag {
     TagConvertVectorExpr,
     TagDesignatedInitExpr,
 
+    TagBuiltinBitCastExpr,
+    TagMaterializeTemporaryExpr,
+    TagExprWithCleanups,
+
     // Wrapper expressions
     TagFullExpr, // unused
     TagConstantExpr,
@@ -147,6 +151,9 @@ enum TypeTag {
     TagSveBool,
     TagSveBoolx2,
     TagSveBoolx4,
+
+    TagFloat128,
+    TagAtomicType,
 };
 
 enum StringTypeTag {
