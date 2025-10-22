@@ -9,7 +9,7 @@ WANT = {
     "10j-bullseye-sysroot-extras": "rev-b578a0937",
     "10j-build-deps": "rev-b578a0937",
     "10j-codehawk": "d7904d71d7743369fab9020fcaf3e8b15482152b",
-    "10j-codehawk-c": "55c7beb8606fe8d67eeb06a97d4038ff810191f9",
+    "10j-codehawk-c": "b605621cf9779d47ec10eebcd41dd84383e8bbad",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
     "10j-xj-improve-multitool-toolchain": "nightly-2025-03-03",
     "10j-xj-default-rust-toolchain": "1.88.0",
