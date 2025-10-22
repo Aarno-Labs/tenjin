@@ -1163,9 +1163,13 @@ def update_10j_llvm_have(keyname: str, version: str, llvm_version: str):
         hermetic.xj_llvm_root(HAVE.localdir) / "bin" / "llvm-config",
         "--version",
     ])
+    # If our requested LLVM version looks like "X.Y.Z+foo", we'll compare the tool's reported
+    # version against the X.Y.Z part only.
+    comparable_llvm_version = llvm_version.split("+")[0]
     saw = out.decode("utf-8")
-    if Version(saw) != Version(llvm_version):
-        raise ProvisioningError(f"Expected LLVM version {llvm_version}, got {saw}.")
+    if Version(saw) != Version(comparable_llvm_version):
+        raise ProvisioningError(f"Expected LLVM version {comparable_llvm_version}, got {saw}.")
+    # But the HAVE database needs the full version.
     HAVE.note_we_have(keyname, specifier=version)
 
 
