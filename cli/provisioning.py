@@ -484,14 +484,18 @@ def want_codehawk():
 def want_codehawk_c():
     want_codehawk()
 
+    def copy_and_make_executable(src: Path, dst: Path):
+        shutil.copyfile(src, dst)
+        dst.chmod(0o755)
+
     def rebuild_codehawk_c(xj_codehawk_c: Path):
         ch_os_name = "linux" if platform.system() == "Linux" else "macOS"
         destdir = xj_codehawk_c / "chc" / "bin" / ch_os_name
         ch_build_dir = hermetic.xj_codehawk(HAVE.localdir) / "CodeHawk" / "_build"
         ch_bin_dir = ch_build_dir / "install" / "default" / "bin"
 
-        shutil.copyfile(ch_bin_dir / "canalyzer", destdir / "canalyzer")
-        shutil.copyfile(ch_bin_dir / "parseFile", destdir / "parseFile")
+        copy_and_make_executable(ch_bin_dir / "canalyzer", destdir / "canalyzer")
+        copy_and_make_executable(ch_bin_dir / "parseFile", destdir / "parseFile")
 
     def provision_codehawk_c_with(
         version: str,
