@@ -192,6 +192,7 @@ def provision_desires(wanted: str):
     want_10j_deps()
     want_10j_llvm()
     want_cmake()
+    want_10j_more_deps()
 
     if wanted in ("all", "rust"):
         want_10j_rust_toolchains()
@@ -484,14 +485,18 @@ def want_codehawk():
 def want_codehawk_c():
     want_codehawk()
 
+    def copy_and_make_executable(src: Path, dst: Path):
+        shutil.copyfile(src, dst)
+        dst.chmod(0o755)
+
     def rebuild_codehawk_c(xj_codehawk_c: Path):
         ch_os_name = "linux" if platform.system() == "Linux" else "macOS"
         destdir = xj_codehawk_c / "chc" / "bin" / ch_os_name
         ch_build_dir = hermetic.xj_codehawk(HAVE.localdir) / "CodeHawk" / "_build"
         ch_bin_dir = ch_build_dir / "install" / "default" / "bin"
 
-        shutil.copyfile(ch_bin_dir / "canalyzer", destdir / "canalyzer")
-        shutil.copyfile(ch_bin_dir / "parseFile", destdir / "parseFile")
+        copy_and_make_executable(ch_bin_dir / "canalyzer", destdir / "canalyzer")
+        copy_and_make_executable(ch_bin_dir / "parseFile", destdir / "parseFile")
 
     def provision_codehawk_c_with(
         version: str,
@@ -593,6 +598,26 @@ def want_10j_deps():
         "10j-build-deps",
         "Tenjin build deps",
         provision_10j_deps_with,
+    )
+
+
+def want_10j_more_deps():
+    def provision_10j_more_deps_with(version: str, keyname: str):
+        loweros = {"Linux": "linux", "Darwin": "macos"}[platform.system()]
+        filename = f"xj-more-deps_{loweros}-{machine_normalized()}.tar.xz"
+        url = f"https://github.com/Aarno-Labs/tenjin-build-deps/releases/download/{version}/{filename}"
+        target = hermetic.xj_more_deps(HAVE.localdir)
+        if target.is_dir():
+            shutil.rmtree(target)
+        download_and_extract_tarball(url, target, ctx="(builddeps) ")
+
+        HAVE.note_we_have(keyname, specifier=version)
+
+    want(
+        "10j-more-deps",
+        "10j-more-deps",
+        "Tenjin more deps",
+        provision_10j_more_deps_with,
     )
 
 
@@ -1274,9 +1299,6 @@ def provision_10j_deps_with(version: str, keyname: str):
                 raise ProvisioningError(
                     "Homebrew is not installed. Please install it from https://brew.sh"
                 )
-
-            if shutil.which("ninja") is None:
-                subprocess.check_call(["brew", "install", "ninja"])
 
             if shutil.which("pkg-config") is None:
                 try:

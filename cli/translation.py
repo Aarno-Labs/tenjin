@@ -22,6 +22,7 @@ import hermetic
 import vcs_helpers
 import static_measurements_rust
 from translation_improvement import run_improvement_passes
+import llvm_bitcode_linking
 
 
 def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationRecord | None:
@@ -294,6 +295,29 @@ def do_translate(
                 codebase,
             ),
         )
+
+        # Compile and link LLVM bitcode module
+        bitcode_module_path = builddir / "linked_module.bc"
+        try:
+            llvm_bitcode_linking.compile_and_link_bitcode(compdb, bitcode_module_path)
+            if bitcode_module_path.exists():
+                json_out_path = resultsdir / "xj-cclyzer.json"
+                hermetic.run(
+                    [
+                        "cc2json",
+                        str(bitcode_module_path),
+                        "--datalog-analysis=unification",
+                        "--debug-datalog=false",
+                        "--context-sensitivity=insensitive",
+                        f"--json-out={json_out_path}",
+                    ],
+                    check=True,
+                )
+                click.echo(json_out_path.read_text())
+            else:
+                click.echo("Warning: Bitcode module was not created")
+        except Exception as e:
+            click.echo(f"Warning: Failed to create LLVM bitcode module: {e}")
 
         # The crate name that c2rust uses is based on the directory stem,
         # so we create a subdirectory with the desired crate name.

@@ -28,6 +28,10 @@ def xj_build_deps(localdir: Path) -> Path:
     return localdir / "xj-build-deps"
 
 
+def xj_more_deps(localdir: Path) -> Path:
+    return localdir / "xj-more-deps"
+
+
 def xj_llvm_root(localdir: Path) -> Path:
     return localdir / "xj-llvm"
 
@@ -59,6 +63,7 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
         env["LLVM_LIB_DIR"] = str(xj_llvm_root(localdir) / "lib")
         env["PATH"] = os.pathsep.join([
             str(xj_build_deps(localdir) / "bin"),
+            str(xj_more_deps(localdir) / "bin"),
             str(xj_llvm_root(localdir) / "bin"),
             str(localdir / "cmake" / "bin"),
             env["PATH"],
