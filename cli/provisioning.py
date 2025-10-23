@@ -1300,9 +1300,6 @@ def provision_10j_deps_with(version: str, keyname: str):
                     "Homebrew is not installed. Please install it from https://brew.sh"
                 )
 
-            if shutil.which("ninja") is None:
-                subprocess.check_call(["brew", "install", "ninja"])
-
             if shutil.which("pkg-config") is None:
                 try:
                     subprocess.check_call(["brew", "install", "pkg-config"])
