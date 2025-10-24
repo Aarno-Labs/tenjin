@@ -467,6 +467,9 @@ def want_codehawk():
         else:
             provision_codehawk_source_with(version, xj_codehawk)
             rebuild_codehawk(xj_codehawk)
+            # If we update the pinned CodeHawk hash but not CodeHawk-C's,
+            # we must re-synchronize here or CodeHawk-C will use stale binaries.
+            try_sync_codehawk_artifacts_into_codehawk_c()
 
         HAVE.note_we_have(keyname, specifier=version)
 
@@ -478,21 +481,28 @@ def want_codehawk():
     )
 
 
-def want_codehawk_c():
-    want_codehawk()
-
+def try_sync_codehawk_artifacts_into_codehawk_c():
     def copy_and_make_executable(src: Path, dst: Path):
         shutil.copyfile(src, dst)
         dst.chmod(0o755)
 
-    def rebuild_codehawk_c(xj_codehawk_c: Path):
-        ch_os_name = "linux" if platform.system() == "Linux" else "macOS"
-        destdir = xj_codehawk_c / "chc" / "bin" / ch_os_name
-        ch_build_dir = hermetic.xj_codehawk(HAVE.localdir) / "CodeHawk" / "_build"
-        ch_bin_dir = ch_build_dir / "install" / "default" / "bin"
+    ch_os_name = "linux" if platform.system() == "Linux" else "macOS"
+    destdir = hermetic.xj_codehawk_c(HAVE.localdir) / "chc" / "bin" / ch_os_name
+    if not destdir.is_dir():
+        return
 
-        copy_and_make_executable(ch_bin_dir / "canalyzer", destdir / "canalyzer")
-        copy_and_make_executable(ch_bin_dir / "parseFile", destdir / "parseFile")
+    ch_build_dir = hermetic.xj_codehawk(HAVE.localdir) / "CodeHawk" / "_build"
+    ch_bin_dir = ch_build_dir / "install" / "default" / "bin"
+
+    copy_and_make_executable(ch_bin_dir / "canalyzer", destdir / "canalyzer")
+    copy_and_make_executable(ch_bin_dir / "parseFile", destdir / "parseFile")
+
+
+def want_codehawk_c():
+    want_codehawk()
+
+    def rebuild_codehawk_c():
+        try_sync_codehawk_artifacts_into_codehawk_c()
 
     def provision_codehawk_c_source_with(
         version: str,
@@ -529,7 +539,7 @@ def want_codehawk_c():
     ):
         xj_codehawk = hermetic.xj_codehawk_c(HAVE.localdir)
         provision_codehawk_c_source_with(version, xj_codehawk)
-        rebuild_codehawk_c(xj_codehawk)
+        rebuild_codehawk_c()
 
         HAVE.note_we_have(keyname, specifier=version)
 
