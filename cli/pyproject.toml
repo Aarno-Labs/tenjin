@@ -2,7 +2,7 @@
 name = "10j"
 version = "0.1.0"
 description = "Add your description here"
-requires-python = ">=3.12.3"
+requires-python = ">=3.13.0"
 dependencies = [
     "bencode-py==4.0.0",
     "clang==18.1.8",
