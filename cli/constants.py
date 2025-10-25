@@ -8,9 +8,9 @@ WANT = {
     "10j-cmake": "3.31.7",
     "10j-bullseye-sysroot-extras": "rev-b578a0937",
     "10j-build-deps": "rev-b578a0937",
-    # Note that 10j-more-deps is tied to 10j-llvm; when updating the latter,
-    # be sure to also update the former.
-    "10j-more-deps": "rev-8c18c80f9",
+    # Note that 10j-more-deps builds against a specific version LLVM, so before
+    # upgrading the major version of 10j-llvm, update 10j-more-deps first.
+    "10j-more-deps": "rev-3b85e47e7",
     "10j-codehawk": "d7904d71d7743369fab9020fcaf3e8b15482152b",
     "10j-codehawk-c": "92b9bbd0220281e2931bd66b83c0f6c8ab911cde",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
