@@ -48,7 +48,9 @@ def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationR
     assert codebase_wcs.origin is not None, "Codebase working copy has no origin URL?!?"
     assert codebase_wcs.commit is not None, "Codebase working copy has no commit hash?!?"
 
-    codebase_relative_path = codebase.relative_to(vcs_helpers.vcs_root(codebase_vcs_dir))
+    codebase_relative_path = codebase
+    if codebase_relative_path.is_absolute() and codebase_vcs_dir is not None:
+        codebase_relative_path = codebase.relative_to(vcs_helpers.vcs_root(codebase_vcs_dir))
     upstream_c2rust = provisioning.HAVE.query("10j-reference-c2rust-tag")
     return ingest.TranslationRecord(
         translation_uuid=uuid.uuid4(),
