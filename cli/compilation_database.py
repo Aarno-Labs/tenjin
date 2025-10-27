@@ -114,6 +114,13 @@ class CompileCommands:
         """Get all unique directories"""
         return list(set(cmd.directory_path for cmd in self.commands))
 
+    def get_commands_for_path(self, path: Path) -> list[CompileCommand]:
+        """Get all commands for a specific source file, which should be an absolute path."""
+        assert path.is_absolute(), (
+            "To avoid ambiguity from duplicate file names, queried path must be absolute"
+        )
+        return [cmd for cmd in self.commands if cmd.absolute_file_path == path]
+
 
 def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddir: Path):
     """Write a synthetic compile_commands.json file for a single C file."""
