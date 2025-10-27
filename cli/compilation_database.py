@@ -107,7 +107,7 @@ class CompileCommands:
             json.dump(self.to_dict(), f, indent=indent)
 
     def get_source_files(self) -> list[Path]:
-        """Get all unique source files"""
+        """Get all unique source files (as absolute paths)"""
         return list(set(cmd.absolute_file_path for cmd in self.commands))
 
     def get_directories(self) -> list[Path]:

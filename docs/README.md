@@ -15,9 +15,7 @@ Single-commit merges may be squashed. Multi-commit PRs should use a merge reques
 `git log --first-parent --oneline` lists the tested ancestors of the current commit.
 `git bisect --first-parent` likewise has bisection ignore untested commits.
 
-The tests run in CI should be equivalent (for now) to `10j check-star && 10j check-unit-rs`.
-CI does not yet check whether any particular translations produce the expected results.
-This ought to change in the future.
+The tests run in CI should be equivalent (for now) to `10j check-star && 10j check-unit-rs && 10j check-e2e-smoke-tests`.
 
 Some commits should have their message prefixed with a tag:
 - `NFC: ` -- No Functional Change, for behavior-preserving refactorings
@@ -122,7 +120,7 @@ The containers are built and pushed to both registries from [a manually-triggere
 
 Another [manually-triggered GitHub workflow](https://github.com/Aarno-Labs/tenjin-build-deps/blob/main/.github/workflows/makerelease.yml) uses the containers to build the non-LLVM components and creates a corresponding GitHub release
 based on the current HEAD commit (example: [rev-03d4672c4](https://github.com/Aarno-Labs/tenjin-build-deps/releases/tag/rev-03d4672c4)).
-Tarballs are created for x86\_64 and aarch64.
+Tarballs for core build tools and libraries needed on Linux are created for x86\_64 and aarch64. Another set of tarballs ("more-deps") are built for Mac aarch64 as well as Linux.
 
 A [third manually-triggered GitHub workflow](https://github.com/Aarno-Labs/tenjin-build-deps/blob/main/.github/workflows/buildllvm.yml) builds LLVM for Mac and Linux (using the bullseye builder on the latter), and uploads the resulting tarballs to an existing GitHub release.
 
