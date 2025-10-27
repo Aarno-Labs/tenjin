@@ -79,18 +79,20 @@ def do_fix_rs():
     do_fmt_rs()
 
 
-def do_build_rs(root: Path):
+def do_build_rs(root: Path, capture_output: bool = False):
     cargo_profile = os.environ.get("XJ_BUILD_RS_PROFILE", "dev")
     cargo_flags = f"--locked --profile={cargo_profile}"
     hermetic.run_cargo_in(
         f"build {cargo_flags} -p c2rust -p c2rust-transpile".split(),
         cwd=root / "c2rust",
         check=True,
+        capture_output=capture_output,
     )
     hermetic.run_cargo_in(
         f"build {cargo_flags} --workspace".split(),
         cwd=root / "xj-improve-multitool",
         check=True,
+        capture_output=capture_output,
     )
 
 

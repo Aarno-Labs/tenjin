@@ -3,6 +3,7 @@ import sys
 import os
 from pathlib import Path
 import shutil
+import tempfile
 
 import click
 import requests
@@ -127,6 +128,40 @@ def translate(codebase, resultsdir, cratename, c_main_in, guidance, buildcmd, re
     translation.do_translate(
         root, Path(codebase), resultsdir, cratename, guidance, c_main_in, buildcmd
     )
+
+
+@cli.command()
+@click.argument("c_file_or_codebase")
+def translate_and_run(c_file_or_codebase):
+    root = repo_root.find_repo_root_dir_Path()
+    cli_subcommands.do_build_rs(root, capture_output=True)
+
+    with tempfile.TemporaryDirectory() as tempdir:
+        tempdir_path = Path(tempdir)
+        results_dir = tempdir_path / "results"
+
+        # Run do_translate via subprocess so we can reliably capture stdout/stderr
+        cp = subprocess.run(
+            [
+                root / "cli" / "10j",
+                "translate",
+                "--codebase",
+                str(c_file_or_codebase),
+                "--resultsdir",
+                str(results_dir),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        cp.check_returncode()
+        cp = hermetic.run_cargo_on_translated_code(
+            ["-q", "build"], cwd=results_dir / "final", check=True
+        )
+        cp = hermetic.run_cargo_on_translated_code(
+            ["-q", "run"], cwd=results_dir / "final", check=False, capture_output=False
+        )
+
+    sys.exit(cp.returncode)
 
 
 @cli.command()
