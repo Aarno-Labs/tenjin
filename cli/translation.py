@@ -244,7 +244,7 @@ def do_translate(
     ]
 
     skip_remainder_of_translation = False
-    resultsdir.mkdir(parents=True, exist_ok=False)
+    resultsdir.mkdir(parents=True, exist_ok=True)
 
     # We might want to pass guidance to preparation passes.
     final_prepared_codebase = run_preparation_passes(codebase, resultsdir, tracker, buildcmd)
