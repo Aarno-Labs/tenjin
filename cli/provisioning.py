@@ -601,9 +601,6 @@ def want_10j_sysroot_extras():
 
 
 def want_10j_deps():
-    if platform.system() == "Darwin":
-        return
-
     want(
         "10j-build-deps",
         "10j-build-deps",
