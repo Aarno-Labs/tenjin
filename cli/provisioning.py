@@ -1109,9 +1109,12 @@ def provision_10j_llvm_with(version: str, keyname: str):
 
                         CFILE=machdep-ml-clangcompat.c
                         # Remove references to Clang-unsupported type _Float128.
-                        cat machdep-ml.c \
-                                | sed 's/_Float128 _Complex/struct { char _[32]; }/g' \
-                                | sed 's/_Float128/struct { char _[16]; }/g' > "$CFILE" || {
+                        cat machdep-ml.c \\
+                                | sed 's/_Float128 _Complex/struct { char _[32]; }/g' \\
+                                | sed 's/_Float128 _Complex/struct { char _[32]; }/g' \\
+                                | sed 's/_Float128/struct { char _[16]; }/g' \\
+                                | sed 's/_Float64x/double/g' \\
+                                | sed 's/_Float32x/float/g' > "$CFILE" || {
                             rm -f "$CFILE"
                             exit 1
                         }
