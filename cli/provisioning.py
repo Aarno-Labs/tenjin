@@ -1084,6 +1084,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
     def provision_debian_sysroot():
         provision_debian_bullseye_sysroot_with(hermetic.xj_llvm_root(localdir) / SYSROOT_NAME)
 
+    def create_goblint_gcc_wrapper():
         #                   COMMENTARY(goblint-cil-gcc-wrapper)
         # Okay, this one is unfortunate. We generally only care about software that
         # builds with Clang. But CodeHawk depends on goblint-cil, which uses C code
@@ -1092,7 +1093,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
         # do here is write out a wrapper script for goblint-cil to find, which will
         # intercept the GCC-specific stuff in the code it compiles and patch it out
         # before passing it on to Clang. Hurk!
-        sadness = hermetic.xj_llvm_root(localdir) / "goblint-sadness"
+        sadness = hermetic.xj_llvm_root(HAVE.localdir) / "goblint-sadness"
         sadness.mkdir(exist_ok=True)
         gcc_wrapper_path = sadness / "gcc"
         with open(gcc_wrapper_path, "w", encoding="utf-8") as f:
@@ -1196,6 +1197,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
             hermetic.run_cargo_in(["clean"], upstream_c2rust_dir)
             rebuild_10j_upstream_c2rust(upstream_c2rust_dir)
 
+    create_goblint_gcc_wrapper()
     update_10j_llvm_have(keyname, version, llvm_version)
 
 
