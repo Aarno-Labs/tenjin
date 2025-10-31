@@ -601,7 +601,7 @@ def run_improvement_passes(
         return hermetic.run_cargo_on_translated_code(
             ["fmt"],
             cwd=dir,
-            check=True,
+            check=False,  # formatting failure is not a fatal error
             capture_output=True,
         )
 
@@ -656,6 +656,11 @@ def run_improvement_passes(
             cp_or_None: CompletedProcess | None = func(root, newdir)
             if cp_or_None is not None:
                 _step.update_sub(cp_or_None)
+                if cp_or_None.returncode != 0:
+                    print(
+                        f"TENJIN WARNING: improvement pass {counter} ({tag}) failed, skipping further passes."
+                    )
+                    break
             mid_ns = time.perf_counter_ns()
             # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
             quiet_cargo(["check"], cwd=newdir)
