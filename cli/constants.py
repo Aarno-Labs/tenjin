@@ -1,7 +1,7 @@
 # Note: the keys in this dict are not command names, or file names,
 # just arbitrary labels for the things we are tracking.
 WANT = {
-    "10j-llvm": "18.1.8+refold@rev-b578a0937",
+    "10j-llvm": "18.1.8+refold@rev-a67042e56",
     "10j-opam": "2.3.0",
     "10j-dune": "3.19.1",
     "10j-ocaml": "5.2.0",
