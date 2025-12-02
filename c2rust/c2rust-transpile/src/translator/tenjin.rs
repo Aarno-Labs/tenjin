@@ -433,88 +433,36 @@ fn recognize_scanf_and_fscanf_of_stdin(
     func: &Expr,
     args: &[Box<Expr>],
     cargs: &[CExprId],
-    ctx: &ExprContext,
 ) -> Option<RecognizedCallForm> {
-    if ctx.is_used() {
-        // We currently only translate to the scanf::scanf! macro, which
-        // returns Result<(), _>. Eventually, we should find or create a
-        // more faithful implementation which tracks assignments and can
-        // thus compute the same integer return codes as scanf & fscanf.
-        return None;
-    }
-
     // TENJIN-TODO: extract helper method for mostly-duplicated code below
     if tenjin::expr_is_ident(func, "scanf") && args.len() > 1 {
-        if let Some(fmt_raw) = cargs
-            .first()
-            .and_then(|&carg| t.c_expr_get_str_lit_bytes(carg))
+        let cargs_after_fmt = cargs[1..].to_vec();
+        if cargs_after_fmt
+            .iter()
+            .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
         {
-            let fmt = String::from_utf8_lossy(&fmt_raw);
-            match tenjin_scanf::parse_scanf_format(&fmt) {
-                Ok(directives) => {
-                    if directives.iter().all(tenjin_scanf::directive_is_simple) {
-                        let cargs_after_fmt = cargs[1..].to_vec();
-                        if cargs_after_fmt
-                            .iter()
-                            .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
-                            && args.len() == 999
-                        // disable without triggering dead code
-                        {
-                            // If all directives are simple, and all arguments are address-taken,
-                            // we can use the scanf macro.
-                            return Some(RecognizedCallForm::ScanfAddrTaken(
-                                directives,
-                                cargs_after_fmt,
-                            ));
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("TENJIN: Failed to parse scanf format: {}", e);
-                }
-            }
+            // If all arguments are address-taken, we can use the scanf macro.
+            return Some(RecognizedCallForm::ScanfAddrTaken(
+                cargs[0],
+                cargs_after_fmt,
+            ));
         }
     }
 
+    // TENJIN-SHORTCOMINGS:
+    // - fscanf of non-stdin streams
+    // - arguments that are not address-of expressions
     if tenjin::expr_is_ident(func, "fscanf") && args.len() > 2 && tenjin::expr_is_stdin(&args[0]) {
-        if let Some(fmt_raw) = cargs
-            .get(1)
-            .and_then(|carg| t.c_expr_get_str_lit_bytes(*carg))
+        let cargs_after_fmt = cargs[2..].to_vec();
+        if cargs_after_fmt
+            .iter()
+            .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
         {
-            let fmt = String::from_utf8_lossy(&fmt_raw);
-            match tenjin_scanf::parse_scanf_format(&fmt) {
-                Ok(directives) => {
-                    if directives.iter().all(tenjin_scanf::directive_is_simple) {
-                        let cargs_after_fmt = cargs[2..].to_vec();
-                        if cargs_after_fmt
-                            .iter()
-                            .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
-                            && args.len() == 999
-                        // disable without triggering dead code
-                        {
-                            // If all directives are simple, and all arguments are address-taken,
-                            // we can use the scanf macro.
-                            return Some(RecognizedCallForm::ScanfAddrTaken(
-                                directives,
-                                cargs_after_fmt,
-                            ));
-                        } else {
-                            log::trace!("TENJIN: fscanf arguments not all address-taken");
-                        }
-                    } else {
-                        log::trace!("TENJIN: fscanf directives are not all simple");
-                    }
-                    // TENJIN-SHORTCOMINGS:
-                    // - fscanf of non-stdin streams
-                    // - format strings with non-trivial directives (including char/string inputs)
-                    // - arguments that are not address-of expressions
-                }
-                Err(e) => {
-                    log::warn!("TENJIN: Failed to parse fscanf format: {}", e);
-                }
-            }
-        } else {
-            log::trace!("TENJIN: fscanf fmt wasn't str lit");
+            // If all arguments are address-taken, we can use the scanf macro.
+            return Some(RecognizedCallForm::ScanfAddrTaken(
+                cargs[1],
+                cargs_after_fmt,
+            ));
         }
     }
     None
@@ -753,7 +701,7 @@ impl Translation<'_> {
         func: &Expr,
         args: &[Box<Expr>],
         cargs: &[CExprId],
-        ctx: ExprContext,
+        _ctx: ExprContext,
     ) -> RecognizedCallForm {
         if tenjin::expr_is_ident(func, "printf")
             && !args.is_empty()
@@ -813,8 +761,7 @@ impl Translation<'_> {
             );
         }
 
-        if let Some(call_form) = recognize_scanf_and_fscanf_of_stdin(self, func, args, cargs, &ctx)
-        {
+        if let Some(call_form) = recognize_scanf_and_fscanf_of_stdin(self, func, args, cargs) {
             return call_form;
         }
 
@@ -918,57 +865,40 @@ impl Translation<'_> {
                     vec![mk().mutbl().addr_of_expr(dest), size_expr, formatted_string],
                 ))
             }
-            RecognizedCallForm::ScanfAddrTaken(all_directives, cargs) => {
-                // If there are more conversion specifications than arguments,
-                // that's UB in C, so we're permitted to drop any extras.
-                let mut capped_directives = Vec::new();
-                let mut seen_conversion_specs = 0;
-                for directive in &all_directives {
-                    if let tenjin_scanf::Directive::ConversionSpec(_) = directive {
-                        if seen_conversion_specs < cargs.len() {
-                            capped_directives.push(directive.clone());
-                        }
-
-                        seen_conversion_specs += 1;
-                    } else {
-                        capped_directives.push(directive.clone());
-                    }
-                }
-
-                let mut scanf_rs_fmt = String::new();
-                for directive in &capped_directives {
-                    match directive {
-                        tenjin_scanf::Directive::ZeroOrMoreWhitespace => {
-                            scanf_rs_fmt.push(' ');
-                        }
-                        tenjin_scanf::Directive::OrdinaryChar(c) => {
-                            scanf_rs_fmt.push(*c);
-                        }
-                        tenjin_scanf::Directive::ConversionSpec(_spec) => {
-                            // So far we only get this far if we have simple specs,
-                            // which are defined so that an empty format string is
-                            // appropriate for the scanf macro.
-                            scanf_rs_fmt.push('{');
-                            scanf_rs_fmt.push('}');
-                        }
-                    }
-                }
-
+            RecognizedCallForm::ScanfAddrTaken(fmt_arg, cargs) => {
                 let mut args_tts = Vec::new();
-                args_tts.push(TokenTree::Literal(Literal::string(&scanf_rs_fmt)));
-                for carg in cargs {
-                    let un_addr = self.c_expr_get_addr_of(carg).unwrap();
-                    let arg = self.convert_expr(ctx, un_addr, None)?;
-                    args_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
+
+                let mut need_direct_fmt_expr = true;
+                // TODO: Simplify this when we can use let chains.
+                if let Some(fmt_lit) = self.c_expr_get_str_lit_bytes(fmt_arg) {
+                    if let Ok(fmt_str) = std::str::from_utf8(&fmt_lit) {
+                        args_tts.push(TokenTree::Literal(Literal::string(fmt_str)));
+                        need_direct_fmt_expr = false;
+                    }
+                }
+
+                if need_direct_fmt_expr {
+                    let fmt: WithStmts<Box<Expr>> = self.convert_expr(ctx, fmt_arg, None)?;
                     args_tts.push(TokenTree::Group(proc_macro2::Group::new(
                         proc_macro2::Delimiter::None,
-                        arg.into_value().to_token_stream(),
+                        fmt.into_value().to_token_stream(),
                     )));
                 }
 
-                self.use_crate(ExternCrate::Scanf);
+                for carg in cargs {
+                    let un_addr = self.c_expr_get_addr_of(carg).unwrap();
+                    let arg = self.convert_expr(ctx, un_addr, None)?;
+                    let addr_mut_arg = arg.map(|arg| mk().mutbl().addr_of_expr(arg));
+                    args_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
+                    args_tts.push(TokenTree::Group(proc_macro2::Group::new(
+                        proc_macro2::Delimiter::None,
+                        addr_mut_arg.into_value().to_token_stream(),
+                    )));
+                }
+
+                self.use_crate(ExternCrate::XjScanf);
                 self.with_cur_file_item_store(|item_store| {
-                    item_store.add_use(vec!["scanf".into()], "scanf");
+                    item_store.add_use(vec!["xj_scanf".into()], "scanf");
                 });
 
                 let scanf_call = mk().mac_expr(mk().mac(
@@ -976,7 +906,7 @@ impl Translation<'_> {
                     args_tts,
                     MacroDelimiter::Paren(Default::default()),
                 ));
-                Ok(mk().method_call_expr(scanf_call, "unwrap", vec![]))
+                Ok(scanf_call)
             }
             RecognizedCallForm::RetargetedCallee(func) => mk_call_with(func, args),
             RecognizedCallForm::OtherCall => mk_call_with(func, args),

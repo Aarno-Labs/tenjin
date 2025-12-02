@@ -54,7 +54,6 @@ pub mod parent_fn;
 mod simd;
 mod structs;
 pub mod tenjin;
-mod tenjin_scanf;
 mod variadic;
 
 pub use crate::diagnostics::{TranslationError, TranslationErrorKind};
@@ -1457,7 +1456,7 @@ enum RecognizedCallForm {
     },
     RetargetedCallee(Box<Expr>),
     OtherCall,
-    ScanfAddrTaken(Vec<tenjin_scanf::Directive>, Vec<CExprId>),
+    ScanfAddrTaken(CExprId, Vec<CExprId>),
 }
 
 enum LitStrOrByteStr<'a> {
