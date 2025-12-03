@@ -1654,6 +1654,7 @@ mod refactor_format {
         Char,
         Str,
         Float,
+        HexFloat,
         None(char),
     }
 
@@ -1679,6 +1680,11 @@ mod refactor_format {
                     .cast_expr(e, mk().path_ty(self.as_rust_ty())),
                 CastType::Usize => mk().span(span).cast_expr(e, mk().ident_ty("usize")),
                 CastType::Float => mk().span(span).cast_expr(e, mk().ident_ty("f64")),
+                CastType::HexFloat => {
+                    // hexfloat2::format(e)
+                    x.use_crate(ExternCrate::Hexfloat2);
+                    mk().call_expr(mk().path_expr(vec!["hexfloat2", "format"]), vec![e])
+                }
                 CastType::Char => {
                     // e as u8 as char
                     let e = mk().cast_expr(e, mk().ident_ty("u8"));
@@ -1786,6 +1792,7 @@ mod refactor_format {
         Char,
         Str,
         Float,
+        HexFloat,
         Unknown(char),
     }
 
@@ -1858,6 +1865,7 @@ mod refactor_format {
                 ConvType::Char => CastType::Char,
                 ConvType::Str => CastType::Str,
                 ConvType::Float => CastType::Float,
+                ConvType::HexFloat => CastType::HexFloat,
                 ConvType::Unknown(c) => CastType::None(c),
             };
 
@@ -2091,6 +2099,7 @@ mod refactor_format {
                 'c' => ConvType::Char,
                 's' => ConvType::Str,
                 'f' => ConvType::Float,
+                'a' => ConvType::HexFloat,
                 _ => ConvType::Unknown(c),
             }
         }
