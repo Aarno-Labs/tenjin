@@ -822,119 +822,6 @@ def provision_debian_bullseye_sysroot_with(dest_sysroot: Path):
     shutil.unpack_archive(tarball, dest_sysroot, filter="tar")
     tarball.unlink()
 
-    quarantine_surplus_sysroot_files(dest_sysroot)
-
-
-def quarantine_surplus_sysroot_files(debian_bullseye_sysroot: Path):
-    """The sysroot provides an assortment of system and third-party libraries.
-    We don't want to end up with conflicting system libraries, especially
-    libstdc++.so.6. So we'll use `find` to find where the host stores its
-    copy of that library, then set aside any libraries in the sysroot which
-    conflict with it or its siblings."""
-
-    def say(msg: str):
-        sez(msg, ctx="(sysroot) ")
-
-    # Find where the host stores libstdc++.so.6
-    try:
-        result = subprocess.run(
-            [
-                "find",
-                "/usr",
-                "-name",
-                "libstdc++.so.6",
-                "-type",
-                "f",
-                "-o",
-                "-name",
-                "libstdc++.so.6",
-                "-type",
-                "l",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        host_libstdcpp_paths = [p for p in result.stdout.strip().split("\n") if p]
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        say("Could not locate host libstdc++.so.6, skipping sysroot quarantine.")
-        return
-
-    if not host_libstdcpp_paths:
-        say("Host libstdc++.so.6 not found, skipping sysroot quarantine.")
-        return
-
-    # Get the directory containing the host's libstdc++.so.6
-    host_lib_dir = Path(host_libstdcpp_paths[0]).parent
-
-    # Collect all sibling library names from the host directory
-    host_lib_names: set[str] = set()
-    if host_lib_dir.is_dir():
-        for item in host_lib_dir.iterdir():
-            host_lib_names.add(item.name)
-
-    # This file is referenced by the linker script `libm.so` in some
-    # implementations, so we must not quarantine it.
-    host_lib_names.discard("libmvec.so")
-
-    if not host_lib_names:
-        say("No host libraries found, skipping sysroot quarantine.")
-        return
-
-    # Determine the sysroot library directory
-    triple = f"{platform.machine()}-linux-gnu"
-    sysroot_lib_dir = debian_bullseye_sysroot / "usr" / "lib" / triple
-
-    if not sysroot_lib_dir.is_dir():
-        return
-
-    # Create the quarantine directory
-    quarantine_dir = debian_bullseye_sysroot / "tenjin-surplus"
-    quarantine_dir.mkdir(exist_ok=True)
-
-    def move_to_quarantine(path: Path):
-        """Move a file or symlink to the quarantine directory."""
-        dest = quarantine_dir / path.name
-        if dest.exists() or dest.is_symlink():
-            # Already quarantined
-            return
-        shutil.move(str(path), str(dest))
-
-    say(f"Quarantining surplus/conflicting sysroot libraries into {quarantine_dir}...")
-
-    # If the host has a symlink with the same name, set aside
-    # both the symlink and the file it points to.
-    symlinks_to_process = [p for p in sysroot_lib_dir.iterdir() if p.is_symlink()]
-    targets_to_quarantine: set[Path] = set()
-
-    for symlink in symlinks_to_process:
-        if symlink.name in host_lib_names:
-            # The host has a file/symlink with this name
-            # Get the target of the symlink before moving it
-            try:
-                target_name = os.readlink(symlink)
-                # The target is typically a relative path
-                target_path = sysroot_lib_dir / target_name
-                if target_path.exists() or target_path.is_symlink():
-                    targets_to_quarantine.add(target_path)
-            except OSError:
-                pass
-
-            move_to_quarantine(symlink)
-
-    # Move the targets of quarantined symlinks
-    for target in targets_to_quarantine:
-        if target.exists() or target.is_symlink():
-            move_to_quarantine(target)
-
-    # # Phase 2: Process remaining non-symlink files
-    # remaining_files = [p for p in sysroot_lib_dir.iterdir() if not p.is_symlink() and p.is_file()]
-
-    # for filepath in remaining_files:
-    #     if filepath.name in host_lib_names:
-    #         move_to_quarantine(filepath)
-
 
 def provision_opam_binary_with(opam_version: str) -> None:
     def say(msg: str):
@@ -1186,7 +1073,10 @@ def provision_10j_llvm_with(version: str, keyname: str):
                     # from outside of the sysroot, results in a link error.
                     # To avoid this outcome, we forcibly add the within-sysroot path
                     # to take precedence over the external system path.
-                    -L <CFGDIR>/../sysroot/usr/lib/{platform.machine()}-linux-gnu/
+                    #     (Disabled because I have been unable to reproduce the issue
+                    #      with a re-pinned sysroot recently. Leaving this note
+                    #      for future reference, in case it recurs.  -brk)
+                    #-L <CFGDIR>/../sysroot/usr/lib/{platform.machine()}-linux-gnu/
 
                     # This one's unfortunate. LLD defaults to --no-allow-shlib-undefined
                     # but the libgcc_s.so.1 shipped with Ubuntu 22.04 has an undefined

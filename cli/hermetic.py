@@ -106,7 +106,7 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
         ])
 
         ld_lib_paths = [str(llvm_root / "lib")]
-        if platform.system() == "Linux" and not running_in_ci():
+        if os.environ.get("XJ_LD_SYSROOT", "") == "1":
             triple = f"{platform.machine()}-linux-gnu"
             ld_lib_paths.append(str(llvm_root / "sysroot" / "usr" / "lib" / triple))
 
