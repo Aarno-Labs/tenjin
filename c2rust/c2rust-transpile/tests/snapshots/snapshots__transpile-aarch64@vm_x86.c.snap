@@ -1,6 +1,6 @@
 ---
 source: c2rust-transpile/tests/snapshots.rs
-expression: cat tests/snapshots/arch-specific/vm_x86.x86_64.rs
+expression: cat tests/snapshots/arch-specific/vm_x86.aarch64.rs
 input_file: c2rust-transpile/tests/snapshots/arch-specific/vm_x86.c
 ---
 #![allow(
@@ -47,30 +47,16 @@ pub unsafe extern "C" fn VM_CallCompiled(
         ) as *mut byte as *mut ::core::ffi::c_int) = *args.offset(arg as isize);
         arg += 1;
     }
-<<<<<<< HEAD
-    *(&mut *image.offset((programStack + 4 as core::ffi::c_int) as isize) as *mut byte
-        as *mut core::ffi::c_int) = 0 as core::ffi::c_int;
-    *(&mut *image.offset(programStack as isize) as *mut byte as *mut core::ffi::c_int) =
-        -(1 as core::ffi::c_int);
-    entryPoint = ((*vm).codeBase).offset((*vm).entryOfs as isize);
-    opStack = (stack.as_mut_ptr() as *mut core::ffi::c_int).offset(16 as isize);
-    *opStack = 0 as core::ffi::c_int;
-    opStackOfs = 0 as core::ffi::c_int;
-    if opStackOfs != 1 as core::ffi::c_int
-        || *opStack as core::ffi::c_uint != 0xdeadbeef as core::ffi::c_uint
-=======
     *(&mut *image.offset((programStack + 4 as ::core::ffi::c_int) as isize) as *mut byte
         as *mut ::core::ffi::c_int) = 0 as ::core::ffi::c_int;
     *(&mut *image.offset(programStack as isize) as *mut byte as *mut ::core::ffi::c_int) =
         -(1 as ::core::ffi::c_int);
     entryPoint = (*vm).codeBase.offset((*vm).entryOfs as isize);
-    opStack =
-        (stack.as_mut_ptr() as *mut ::core::ffi::c_int).offset(16 as ::core::ffi::c_int as isize);
+    opStack = (stack.as_mut_ptr() as *mut ::core::ffi::c_int).offset(16 as isize);
     *opStack = 0 as ::core::ffi::c_int;
     opStackOfs = 0 as ::core::ffi::c_int;
     if opStackOfs != 1 as ::core::ffi::c_int
         || *opStack as ::core::ffi::c_uint != 0xdeadbeef as ::core::ffi::c_uint
->>>>>>> refs/subrepo/c2rust/fetch
     {
         return 0 as ::core::ffi::c_int;
     }

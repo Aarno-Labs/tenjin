@@ -115,6 +115,7 @@ unsafe fn marshal_result(result: *const ffi::ExportResult) -> HashMap<String, Ve
         let name = cname.to_str().unwrap().to_owned();
 
         // Convert CBOR bytes
+        #[allow(clippy::unnecessary_cast /*, reason = "needed on aarch64-apple-darwin" */)]
         let csize = *res.sizes.offset(i) as u64;
         let cbytes = *res.bytes.offset(i);
         #[allow(clippy::unnecessary_cast /*, reason = "needed on x86_64-unknown-linux-gnu" */)]
