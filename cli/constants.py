@@ -17,7 +17,7 @@ WANT = {
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
     "10j-xj-improve-multitool-toolchain": "nightly-2025-08-20",
     "10j-xj-default-rust-toolchain": "1.88.0",
-    "10j-reference-c2rust-tag": "55e1c24d5f3cbe0f3ef29717eeed77ea4c51867a",
+    "10j-reference-c2rust-tag": "613d3f5a7ef568aecb1681ef5960f956c1ed7344",
 }
 
 XJ_GUIDANCE_FILENAME = "xj-guidance.json"
