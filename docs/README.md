@@ -137,8 +137,8 @@ To sync with the latest changes from upstream (that is, `immunant/c2rust`):
 
 1. Sync `Aarno-Labs/c2rust`'s `master` branch with `immunant/c2rust`
 2. Merge `master` into the `tenjin` branch of `Aarno-Labs/c2rust` (and push)
-3. Check out a new branch in (your fork of) `Aarno-Labs/tenjin`, then do `git subrepo pull c2rust`
-4. If there are merge conflicts, follow the listed instrutions to address them
+3. Check out a new branch in (your fork of) `Aarno-Labs/tenjin`, then do `git subrepo pull c2rust`. (You do NOT need to do `git subrepo init` first.)
+4. If there are merge conflicts, follow the listed instructions to address them
 5. Your new branch should eventually wind up with a commit like [this one](https://github.com/Aarno-Labs/tenjin/commit/8b6a2b94f73453f20f03e3aa58a6332a71a9638f ) for a conflict-free merge or [this one](https://github.com/Aarno-Labs/tenjin/commit/7be732b3260a9d2b08d36d53b2f262487af83c25) for a hand-resolved merge
-6. Make sure to run `10j check-rs` and `10j test-unit-rs` and address any issues raised. Also run at least one non-trivial translation, to validate that our invocations of `c2rust` are still kosher. Do these as separate commits, to minimize changes in the merge commit.
+6. Make sure to run `10j check-rs` and `10j test-unit-rs` and `10j check-e2e-smoke-tests` and address any issues raised. Also run at least one non-trivial translation, to validate that our invocations of `c2rust` are still kosher. Do these as separate commits, to minimize changes in the merge commit.
 7. Push the branch!
