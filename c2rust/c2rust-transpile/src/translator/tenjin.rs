@@ -898,7 +898,7 @@ impl Translation<'_> {
 
                 self.use_crate(ExternCrate::XjScanf);
                 self.with_cur_file_item_store(|item_store| {
-                    item_store.add_use(vec!["xj_scanf".into()], "scanf");
+                    item_store.add_use(false, vec!["xj_scanf".into()], "scanf");
                 });
 
                 let scanf_call = mk().mac_expr(mk().mac(
@@ -1637,11 +1637,11 @@ impl Translation<'_> {
                     .is_some_and(|g| g.pretty == "String")
                 {
                     self.with_cur_file_item_store(|item_store| {
-                        item_store.add_use(vec!["std".into(), "io".into()], "Read");
-                        item_store.add_use(vec!["std".into(), "io".into()], "BufRead");
+                        item_store.add_use(true, vec!["std".into(), "io".into()], "Read");
+                        item_store.add_use(true, vec!["std".into(), "io".into()], "BufRead");
                         item_store.add_item_str_once(
                             "fn fgets_stdin_bool(buf: &mut String, limit: u64) -> bool {
-                            let handle = std::io::stdin().lock();
+                            let handle = ::std::io::stdin().lock();
                             let res = handle.take(limit - 1).read_line(buf);
                             res.is_ok() && res.unwrap() > 0
                         }",

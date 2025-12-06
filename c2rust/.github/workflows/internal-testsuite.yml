@@ -8,8 +8,6 @@ on:
   push:
     branches: [ master, feature/ci-dev ]
   pull_request:
-  # allow using from other repos (in particular, c2rust-testsuite)
-  workflow_call:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -39,39 +37,22 @@ jobs:
       uses: actions/checkout@v2
       with:
         repository: immunant/c2rust
-
-    # Working dir is /home/runner/work/c2rust/c2rust/testsuite
-    - name: Checkout c2rust-testsuite
-      uses: actions/checkout@v2
-      with:
-        repository: immunant/c2rust-testsuite
-        path: testsuite
         submodules: true
 
-    - name: Cache Rust toolchain
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.rustup/toolchains
-          ~/.rustup/update-hashes
-          ~/.rustup/settings.toml
-        key: ${{ runner.os }}-rust-toolchain-${{ hashFiles('**/*rust-toolchain.toml') }}
+    - uses: astral-sh/setup-uv@v6
 
-    - name: Cache Rust artifacts
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-          ${{ github.workspace }}/testsuite/tests/**/compile_commands.json
-        key: ${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/c2rust-ast-exporter/**/CMakeLists.txt', '**/examples/**/CMakeLists.txt') }}
+    - run: uv python install
 
-    - name: Cache Python - pip
-      uses: actions/cache@v4
+    - uses: Swatinem/rust-cache@v2
       with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        cache-workspace-crates: true
+
+    - name: Install Rust toolchains
+      run: |
+        rustup toolchain install nightly-2022-08-08 \
+          --profile minimal --component rustfmt,rustc-dev
+        rustup toolchain install nightly-2023-04-15 \
+          --profile minimal --component rustfmt
 
     # TODO(pl): Figure out why json-c fails when caching compile commands
     # - name: Get Image Version
@@ -84,11 +65,8 @@ jobs:
     #   uses: actions/cache@v4
     #   with:
     #     path: |
-    #       ${{ github.workspace }}/testsuite/tests/**/compile_commands.json
+    #       ${{ github.workspace }}/tests/integration/tests/**/compile_commands.json
     #     key: ${{ runner.os }}-ccdb-${{ steps.get-image-ver.outputs.version }}
-
-    - name: Provision Rust
-      run:  rustup component add rustfmt-preview rustc-dev
 
     - name: Provision Debian Packages
       run: |
@@ -111,16 +89,10 @@ jobs:
             librtmp-dev             \
             libtool                 \
             libzstd-dev             \
-            python3-setuptools      \
-            python3-wheel           \
             rcs                     \
             tcl-dev                 \
             tk-dev                  \
             zlib1g-dev
-
-    # installs intercept-build to $HOME/.local/bin
-    - name: Provision Python Packages
-      run: python3 -m pip install -r $GITHUB_WORKSPACE/testsuite/requirements.txt
 
     # Runs a single command using the runners shell
     # Working dir is /home/runner/work/c2rust/c2rust
@@ -132,15 +104,19 @@ jobs:
     # TODO(pl): figure out why compile_commands.json may cause json-c to fail
     - name: Run c2rust testsuite
       run: |
-        find testsuite -type f -name compile_commands.json -delete
+        find tests/integration -type f -name compile_commands.json -delete
         export PATH=$PWD/target/release:$HOME/.local/bin:$PATH
         echo "PATH=$PATH"
-        python3 testsuite/test.py curl json-c lua nginx zstd libxml2 python2
+        export C2RUST_DIR=$PWD
+        # Needs to be run from `tests/integration/` (or further inside)
+        # to correctly load the `pyproject.toml`.
+        (cd tests/integration && ./test.py curl json-c lua nginx zstd libxml2 python2 libmcs)
 
     - uses: actions/upload-artifact@v4
       with:
         name: testsuite-${{ matrix.runner }}-artifacts
         path: |
-          ${{ github.workspace }}/testsuite/**/*.log
-          ${{ github.workspace }}/testsuite/**/compile_commands.json
+          ${{ github.workspace }}/tests/integration/**/*.log
+          ${{ github.workspace }}/tests/integration/**/compile_commands.json
+          ${{ github.workspace }}/tests/integration/tests/refactor-diffs/**
       if: always()

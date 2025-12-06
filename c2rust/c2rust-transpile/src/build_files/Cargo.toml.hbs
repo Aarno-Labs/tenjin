@@ -2,7 +2,7 @@
 [workspace]
 resolver = "2"
 members = [
-{{#each workspace_members}} "{{{this}}}",
+{{#each workspace_members}}    "{{{this}}}",
 {{/each~}}
 ]
 {{~/if}}
@@ -33,7 +33,7 @@ path = "{{path}}"
 name = "{{name}}"
 {{/each}}
 [dependencies]
-{{#each dependencies~}}
+{{#each dependencies}}
 {{this.name}} = { version = "{{this.version}}"{{#if this.features}}, features = [{{#each
 this.features}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}} }
 {{/each}}

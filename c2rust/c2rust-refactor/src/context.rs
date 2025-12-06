@@ -13,7 +13,7 @@ use rustc_hir::def::{DefKind, Namespace, Res};
 use rustc_hir::def_id::{CrateNum, DefId, LocalDefId};
 use rustc_hir::{self as hir, BodyId, HirId, Node};
 use rustc_index::vec::IndexVec;
-use rustc_middle::hir::map as hir_map;
+use rustc_middle::hir::{map as hir_map, nested_filter};
 use rustc_middle::ty::subst::InternalSubsts;
 use rustc_middle::ty::{FnSig, ParamEnv, PolyFnSig, Ty, TyCtxt, TyKind};
 use rustc_session::config::CrateType;
@@ -22,7 +22,9 @@ use rustc_span::Span;
 
 use crate::ast_builder::mk;
 use crate::ast_manip::util::{is_export_attr, namespace};
-use crate::ast_manip::AstEquiv;
+use crate::ast_manip::{
+    child_slot, AstEquiv, AstSpanMaps, NodeContextKey, NodeSpan, SpanNodeKind, StructuralContext,
+};
 use crate::command::{GenerationalTyCtxt, TyCtxtGeneration};
 use crate::reflect;
 use crate::{expect, match_or};
@@ -48,6 +50,274 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
     }
 }
 
+type SpanToHirMap = FxHashMap<NodeSpan, HirId>;
+type ContextToHirMap = FxHashMap<(NodeSpan, NodeContextKey), HirId>;
+
+struct SpanToHirMapper<'def, 'hir> {
+    hir_map: hir_map::Map<'hir>,
+    def_id_to_node_id: &'def IndexVec<LocalDefId, NodeId>,
+    span_to_hir_map: SpanToHirMap,
+    /// Secondary lookup keyed by (span, structural context) for span-colliding nodes
+    context_to_hir_map: ContextToHirMap,
+    /// Tracks block/owner/child-slot stacks while walking the HIR
+    ctx: StructuralContext<HirId>,
+}
+
+fn hir_id_to_span(id: HirId, hir_map: hir_map::Map) -> Option<NodeSpan> {
+    use SpanNodeKind::*;
+    let ns = match hir_map.find(id) {
+        Some(Node::Param(param)) => Some(NodeSpan::new(param.span, Param)),
+        Some(Node::Item(item)) => Some(NodeSpan::new(item.span, Item)),
+        Some(Node::ForeignItem(foreign_item)) => {
+            Some(NodeSpan::new(foreign_item.span, ForeignItem))
+        }
+        Some(Node::TraitItem(trait_item)) => Some(NodeSpan::new(trait_item.span, AssocItem)),
+        Some(Node::ImplItem(impl_item)) => Some(NodeSpan::new(impl_item.span, AssocItem)),
+        Some(Node::Variant(variant)) => Some(NodeSpan::new(variant.span, Variant)),
+        Some(Node::Field(field)) => Some(NodeSpan::new(field.span, FieldDef)),
+        Some(Node::AnonConst(_)) => None,
+        Some(Node::Expr(expr)) => {
+            if matches!(expr.kind, hir::ExprKind::Path(..)) {
+                Some(NodeSpan::new(expr.span, PathExpr))
+            } else {
+                Some(NodeSpan::new(expr.span, Expr))
+            }
+        }
+        Some(Node::Stmt(stmt)) => Some(NodeSpan::new(stmt.span, Stmt)),
+        // Intentionally skip PathSegment to avoid collisions
+        Some(Node::PathSegment(_)) => None,
+        Some(Node::Ty(ty)) => Some(NodeSpan::new(ty.span, Ty)),
+        // We do not have a SpanNodeKind for certain nodes
+        Some(Node::TypeBinding(_)) => None,
+        Some(Node::TraitRef(_)) => None,
+        Some(Node::Pat(pat)) => Some(NodeSpan::new(pat.span, Pat)),
+        Some(Node::Arm(arm)) => Some(NodeSpan::new(arm.span, Arm)),
+        Some(Node::Block(block)) => Some(NodeSpan::new(block.span, Block)),
+        Some(Node::Local(local)) => Some(NodeSpan::new(local.span, Local)),
+        Some(Node::Ctor(_)) => None,
+        Some(Node::Lifetime(_)) => None,
+        Some(Node::GenericParam(_)) => None,
+        Some(Node::Crate(item)) => Some(NodeSpan::new(item.spans.inner_span, Crate)),
+        Some(Node::Infer(_)) => None,
+        None => None,
+    };
+
+    // Filter out dummy spans
+    ns.filter(|ns| !ns.span.is_dummy())
+}
+
+/// Extract identifier symbol from HIR nodes for additional disambiguation
+fn hir_id_to_symbol(id: HirId, hir_map: hir_map::Map) -> Option<rustc_span::Symbol> {
+    match hir_map.find(id) {
+        Some(Node::Expr(expr)) => match &expr.kind {
+            hir::ExprKind::Path(hir::QPath::Resolved(_, path)) => {
+                path.segments.last().map(|seg| seg.ident.name)
+            }
+            _ => None,
+        },
+        Some(Node::Pat(pat)) => match &pat.kind {
+            hir::PatKind::Binding(_, _, ident, _) => Some(ident.name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+impl<'def, 'hir> SpanToHirMapper<'def, 'hir> {
+    fn new(
+        hir_map: hir_map::Map<'hir>,
+        def_id_to_node_id: &'def IndexVec<LocalDefId, NodeId>,
+    ) -> Self {
+        Self {
+            hir_map,
+            def_id_to_node_id,
+            span_to_hir_map: Default::default(),
+            context_to_hir_map: Default::default(),
+            ctx: StructuralContext::default(),
+        }
+    }
+
+    fn into_maps(self) -> (SpanToHirMap, ContextToHirMap) {
+        (self.span_to_hir_map, self.context_to_hir_map)
+    }
+
+    fn current_owner_node_id(&self) -> Option<NodeId> {
+        let owner = self.ctx.current_owner()?;
+        let def_id = owner.owner;
+        self.def_id_to_node_id.get(def_id).copied()
+    }
+
+    fn visit_child<F>(&mut self, slot: u16, visit_fn: F)
+    where
+        F: FnOnce(&mut Self),
+    {
+        self.ctx.push_child(slot);
+        visit_fn(self);
+        self.ctx.pop_child();
+    }
+
+    fn insert_mapping(&mut self, id: HirId) {
+        if let Some(ns) = hir_id_to_span(id, self.hir_map) {
+            let _old_id = self.span_to_hir_map.insert(ns, id);
+
+            // Rebuild the context fingerprint that the AST side recorded for the matching NodeId
+            let symbol = hir_id_to_symbol(id, self.hir_map);
+
+            let mut context = self.ctx.current_context();
+            if let Some(stmt_idx) = self.ctx.current_stmt_index() {
+                context = context.with_stmt_index(stmt_idx);
+            }
+            if context.owner.is_none() {
+                if let Some(owner) = self.current_owner_node_id() {
+                    context = context.with_owner(Some(owner));
+                }
+            }
+            if let Some(sym) = symbol {
+                context = context.with_symbol(Some(sym));
+            }
+
+            let _old_context_id = self.context_to_hir_map.insert((ns, context.clone()), id);
+        }
+    }
+}
+
+impl<'def, 'hir> hir::intravisit::Visitor<'hir> for SpanToHirMapper<'def, 'hir> {
+    type NestedFilter = nested_filter::OnlyBodies;
+
+    fn nested_visit_map(&mut self) -> Self::Map {
+        self.hir_map
+    }
+
+    fn visit_id(&mut self, id: HirId) {
+        self.insert_mapping(id);
+    }
+
+    fn visit_item(&mut self, item: &'hir hir::Item<'hir>) {
+        self.visit_id(item.hir_id());
+        self.ctx.push_owner(item.hir_id());
+        hir::intravisit::walk_item(self, item);
+        self.ctx.pop_owner();
+    }
+
+    fn visit_impl_item(&mut self, item: &'hir hir::ImplItem<'hir>) {
+        self.visit_id(item.hir_id());
+        self.ctx.push_owner(item.hir_id());
+        hir::intravisit::walk_impl_item(self, item);
+        self.ctx.pop_owner();
+    }
+
+    fn visit_trait_item(&mut self, item: &'hir hir::TraitItem<'hir>) {
+        self.visit_id(item.hir_id());
+        self.ctx.push_owner(item.hir_id());
+        hir::intravisit::walk_trait_item(self, item);
+        self.ctx.pop_owner();
+    }
+
+    fn visit_foreign_item(&mut self, item: &'hir hir::ForeignItem<'hir>) {
+        self.visit_id(item.hir_id());
+        self.ctx.push_owner(item.hir_id());
+        hir::intravisit::walk_foreign_item(self, item);
+        self.ctx.pop_owner();
+    }
+
+    fn visit_block(&mut self, block: &'hir hir::Block<'hir>) {
+        // Record block mapping before descending so NodeId-based queries can find this block.
+        self.visit_id(block.hir_id);
+        // Keep track of the active block to fold the statement index into the context key.
+        self.ctx.push_block(block.hir_id);
+
+        // Manually walk statements to track indices
+        for stmt in block.stmts {
+            self.visit_stmt(stmt);
+            self.ctx.next_stmt();
+        }
+
+        // Visit the trailing expression if present
+        if let Some(expr) = block.expr {
+            self.visit_expr(expr);
+        }
+
+        self.ctx.pop_block();
+    }
+
+    fn visit_expr(&mut self, expr: &'hir hir::Expr<'hir>) {
+        // Insert mapping for this expression first
+        self.visit_id(expr.hir_id);
+
+        // Note: HIR Expr doesn't have attrs field (attributes are on items/stmts)
+
+        // Enumerate only those expression kinds whose AST and HIR shapes line up exactly.
+        // The slot values must stay in lockstep with `child_slot` so that both sides compute
+        // the same `NodeContextKey`.
+        match &expr.kind {
+            hir::ExprKind::Struct(..) => {
+                hir::intravisit::walk_expr(self, expr);
+            }
+            hir::ExprKind::Tup(exprs) => {
+                for (i, elem) in exprs.iter().enumerate() {
+                    self.visit_child(child_slot::tuple_elem(i), |this| {
+                        this.visit_expr(elem);
+                    });
+                }
+            }
+            hir::ExprKind::Array(exprs) => {
+                for (i, elem) in exprs.iter().enumerate() {
+                    self.visit_child(child_slot::array_elem(i), |this| {
+                        this.visit_expr(elem);
+                    });
+                }
+            }
+            hir::ExprKind::Binary(_, lhs, rhs) => {
+                self.visit_child(child_slot::BINARY_LHS, |this| {
+                    this.visit_expr(lhs);
+                });
+                self.visit_child(child_slot::BINARY_RHS, |this| {
+                    this.visit_expr(rhs);
+                });
+            }
+            hir::ExprKind::Unary(_, operand) => {
+                self.visit_child(child_slot::UNARY_OPERAND, |this| {
+                    this.visit_expr(operand);
+                });
+            }
+            hir::ExprKind::Call(callee, args) => {
+                self.visit_child(child_slot::CALL_CALLEE, |this| {
+                    this.visit_expr(callee);
+                });
+                for (i, arg) in args.iter().enumerate() {
+                    self.visit_child(child_slot::call_arg(i), |this| {
+                        this.visit_expr(arg);
+                    });
+                }
+            }
+            hir::ExprKind::MethodCall(segment, args, _span) => {
+                // Visit the method name/generics (PathSegment)
+                self.visit_path_segment(expr.span, segment);
+                // Visit receiver and arguments
+                for (i, arg) in args.iter().enumerate() {
+                    let slot = if i == 0 {
+                        child_slot::METHOD_RECEIVER
+                    } else {
+                        child_slot::method_arg(i - 1)
+                    };
+                    self.visit_child(slot, |this| {
+                        this.visit_expr(arg);
+                    });
+                }
+            }
+            _ => {
+                // Let the default walker recurse for every other expression kind.  Lowering
+                // rewrites those shapes (e.g. `if` introduces wrapper expressions, matches add
+                // guard nodes), so any slot assignments we invent here would disagree with the
+                // AST-side enumeration and we'd be back to unresolved NodeId lookups.  The
+                // default walker still records spans for all descendants; we simply omit the
+                // fragile structural fingerprint.
+                hir::intravisit::walk_expr(self, expr);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct HirMap<'hir> {
     map: hir_map::Map<'hir>,
@@ -58,6 +328,11 @@ pub struct HirMap<'hir> {
 
     node_id_to_def_id: FxHashMap<NodeId, LocalDefId>,
     def_id_to_node_id: IndexVec<LocalDefId, NodeId>,
+
+    span_to_hir_map: SpanToHirMap,
+    /// Tie-breaker map keyed by (span, NodeContextKey) for nodes that share spans
+    context_to_hir_map: ContextToHirMap,
+    ast_span_maps: AstSpanMaps,
 }
 
 impl<'hir> HirMap<'hir> {
@@ -66,12 +341,20 @@ impl<'hir> HirMap<'hir> {
         map: hir_map::Map<'hir>,
         node_id_to_def_id: FxHashMap<NodeId, LocalDefId>,
         def_id_to_node_id: IndexVec<LocalDefId, NodeId>,
+        ast_span_maps: AstSpanMaps,
     ) -> Self {
+        let mut mapper = SpanToHirMapper::new(map, &def_id_to_node_id);
+        map.visit_all_item_likes_in_crate(&mut mapper);
+        let (span_to_hir_map, context_to_hir_map) = mapper.into_maps();
+
         Self {
             map,
             max_node_id,
             node_id_to_def_id,
             def_id_to_node_id,
+            span_to_hir_map,
+            context_to_hir_map,
+            ast_span_maps,
         }
     }
 }
@@ -524,12 +807,17 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
 
     /// Compare two Defs for structural equivalence, ignoring names.
     pub fn structural_eq_defs(&self, did1: DefId, did2: DefId) -> bool {
-        TypeCompare::new(self).structural_eq_defs(did1, did2)
+        TypeCompare::new(self).structural_eq_defs(did1, did2, false)
     }
 
-    /// Compare two Tys for structural equivalence, ignoring names.
+    /// Compare two Tys for structural equivalence, ignoring names and visibility.
     pub fn structural_eq_tys(&self, ty1: Ty<'tcx>, ty2: Ty<'tcx>) -> bool {
         TypeCompare::new(self).structural_eq_tys(ty1, ty2)
+    }
+
+    /// Compare two Tys for structural equivalence, ignoring names but matching visibility.
+    pub fn structural_eq_tys_with_vis(&self, ty1: Ty<'tcx>, ty2: Ty<'tcx>) -> bool {
+        TypeCompare::new(self).structural_eq_tys_with_vis(ty1, ty2)
     }
 
     /// Are we refactoring an executable crate?
@@ -606,18 +894,38 @@ impl<'hir> HirMap<'hir> {
     #[inline]
     pub fn opt_node_to_hir_id(&self, id: NodeId) -> Option<HirId> {
         if id > self.max_node_id {
-            None
-        } else {
-            self.node_id_to_def_id
-                .get(&id)
-                .map(|ldid| self.map.local_def_id_to_hir_id(*ldid))
+            return None;
         }
+
+        if let Some(ldid) = self.node_id_to_def_id.get(&id) {
+            return Some(self.map.local_def_id_to_hir_id(*ldid));
+        }
+
+        if let Some(node_span) = self.ast_span_maps.node_id_to_span_map.get(&id) {
+            if let Some(context_key) = self.ast_span_maps.node_id_to_context_map.get(&id) {
+                if let Some(hir_id) = self
+                    .context_to_hir_map
+                    .get(&(*node_span, context_key.clone()))
+                {
+                    return Some(*hir_id);
+                }
+            }
+            return self.span_to_hir_map.get(node_span).copied();
+        }
+
+        None
     }
 
     #[inline]
     pub fn node_to_hir_id(&self, id: NodeId) -> HirId {
-        self.opt_node_to_hir_id(id)
-            .unwrap_or_else(|| panic!("Could not find an HIR id for NodeId: {:?}", id))
+        self.opt_node_to_hir_id(id).unwrap_or_else(|| {
+            let span = self.ast_span_maps.node_id_to_span_map.get(&id).copied();
+            let ctx = self.ast_span_maps.node_id_to_context_map.get(&id).cloned();
+            panic!(
+                "Could not find an HIR id for NodeId {:?}; span={:?}, context={:?}",
+                id, span, ctx
+            )
+        })
     }
 
     /// Retrieves the `Node` corresponding to `id`, returning `None` if cannot be found.
@@ -640,6 +948,19 @@ impl<'hir> HirMap<'hir> {
     }
 
     pub fn hir_to_node_id(&self, id: HirId) -> NodeId {
+        let ns = hir_id_to_span(id, self.map);
+        if let Some(id) = ns.and_then(|ns| self.ast_span_maps.span_to_node_id_map.get(&ns)) {
+            return *id;
+        }
+
+        // TODO: consult `context_to_node_id_map` using the structural fingerprint recorded by
+        // `SpanToHirMapper`.  Falling straight back to `opt_local_def_id` still conflates siblings
+        // that share a span (e.g. derive helpers), so HIR -> NodeId lookups remain lossy until we
+        // thread the same context key through this path.  Today `hir_to_node_id` feeds
+        // `transform::lifetime_analysis` (panic if the mapped AST node is the wrong kind),
+        // `analysis::mark_related_types` (marks land on the wrong `NodeId`), and
+        // `transform::retype` (changed-def rewrites miss their targets) among others, so the missing
+        // fingerprint shows up whenever macro/derive expansions give several HIR nodes the same span.
         self.map
             .opt_local_def_id(id)
             .and_then(|id| self.def_id_to_node_id.get(id))
@@ -913,36 +1234,45 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
     }
 
     /// Compare two AST types for structural equivalence, ignoring names.
-    pub fn structural_eq_ast_tys(&self, ty1: &rustc_ast::Ty, ty2: &rustc_ast::Ty) -> bool {
+    fn structural_eq_ast_tys(&self, ty1: &rustc_ast::Ty, ty2: &rustc_ast::Ty) -> bool {
         match (self.cx.opt_node_type(ty1.id), self.cx.opt_node_type(ty2.id)) {
             (Some(ty1), Some(ty2)) => return self.structural_eq_tys(ty1, ty2),
             _ => {}
         }
-        match (self.cx.try_resolve_ty(ty1), self.cx.try_resolve_ty(ty1)) {
-            (Some(did1), Some(did2)) => self.structural_eq_defs(did1, did2),
+        match (self.cx.try_resolve_ty(ty1), self.cx.try_resolve_ty(ty2)) {
+            (Some(did1), Some(did2)) => self.structural_eq_defs(did1, did2, false),
             _ => ty1.unnamed_equiv(ty2),
         }
     }
 
-    /// Compare two Ty types for structural equivalence, ignoring names.
+    /// Compare two Ty types for structural equivalence, ignoring names and visibility.
     pub fn structural_eq_tys(&self, ty1: Ty<'tcx>, ty2: Ty<'tcx>) -> bool {
         // We have to track which def ids we've seen so we don't recurse
         // infinitely
         let mut seen = HashSet::new();
-        self.structural_eq_tys_impl(ty1, ty2, &mut seen)
+        self.structural_eq_tys_impl(ty1, ty2, false, &mut seen)
     }
 
-    pub fn structural_eq_defs(&self, did1: DefId, did2: DefId) -> bool {
+    /// Compare two Ty types for structural equivalence, ignoring names but matching visibility.
+    fn structural_eq_tys_with_vis(&self, ty1: Ty<'tcx>, ty2: Ty<'tcx>) -> bool {
         // We have to track which def ids we've seen so we don't recurse
         // infinitely
         let mut seen = HashSet::new();
-        self.structural_eq_defs_impl(did1, did2, &mut seen)
+        self.structural_eq_tys_impl(ty1, ty2, true, &mut seen)
+    }
+
+    fn structural_eq_defs(&self, did1: DefId, did2: DefId, match_vis: bool) -> bool {
+        // We have to track which def ids we've seen so we don't recurse
+        // infinitely
+        let mut seen = HashSet::new();
+        self.structural_eq_defs_impl(did1, did2, match_vis, &mut seen)
     }
 
     fn structural_eq_tys_impl(
         &self,
         ty1: Ty<'tcx>,
         ty2: Ty<'tcx>,
+        match_vis: bool,
         seen: &mut HashSet<(DefId, DefId)>,
     ) -> bool {
         // TODO: Make this follow the C rules for structural equivalence rather
@@ -959,7 +1289,7 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                     || !substs1
                         .types()
                         .zip(substs2.types())
-                        .all(|(ty1, ty2)| self.structural_eq_tys_impl(ty1, ty2, seen))
+                        .all(|(ty1, ty2)| self.structural_eq_tys_impl(ty1, ty2, match_vis, seen))
                 {
                     trace!(
                         "Substituted types don't match between {:?} and {:?}",
@@ -974,7 +1304,12 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                     if mapping.contains_key(&def1.did()) || mapping.contains_key(&def2.did()) {
                         // structural_eq_defs_impl will look up the defs in the
                         // mapping before calling us again.
-                        return self.structural_eq_defs_impl(def1.did(), def2.did(), seen);
+                        return self.structural_eq_defs_impl(
+                            def1.did(),
+                            def2.did(),
+                            match_vis,
+                            seen,
+                        );
                     }
                 }
 
@@ -988,7 +1323,10 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                         .zip(def2.all_fields())
                         .all(|(field1, field2)| {
                             field1.ident(tcx).unnamed_equiv(&field2.ident(tcx))
-                                && self.structural_eq_defs_impl(field1.did, field2.did, seen)
+                                && (!match_vis || field1.vis == field2.vis)
+                                && self.structural_eq_defs_impl(
+                                    field1.did, field2.did, match_vis, seen,
+                                )
                         })
             }
 
@@ -1004,18 +1342,19 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                     trace!("Array lengths don't match: {:?} and {:?}", n1, n2);
                     return false;
                 }
-                self.structural_eq_tys_impl(*ty1, *ty2, seen)
+                self.structural_eq_tys_impl(*ty1, *ty2, match_vis, seen)
             }
 
             (TyKind::Slice(ty1), TyKind::Slice(ty2)) => {
-                self.structural_eq_tys_impl(*ty1, *ty2, seen)
+                self.structural_eq_tys_impl(*ty1, *ty2, match_vis, seen)
             }
 
             (TyKind::RawPtr(ty1), TyKind::RawPtr(ty2)) => {
                 if ty1.mutbl != ty2.mutbl {
                     trace!("Mutability doesn't match: {:?} and {:?}", ty1, ty2);
                 }
-                ty1.mutbl == ty2.mutbl && self.structural_eq_tys_impl(ty1.ty, ty2.ty, seen)
+                ty1.mutbl == ty2.mutbl
+                    && self.structural_eq_tys_impl(ty1.ty, ty2.ty, match_vis, seen)
             }
 
             (TyKind::Ref(region1, ty1, mutbl1), TyKind::Ref(region2, ty2, mutbl2)) => {
@@ -1027,7 +1366,7 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                 }
                 region1 == region2
                     && mutbl1 == mutbl2
-                    && self.structural_eq_tys_impl(*ty1, *ty2, seen)
+                    && self.structural_eq_tys_impl(*ty1, *ty2, match_vis, seen)
             }
 
             (TyKind::FnDef(fn1, substs1), TyKind::FnDef(fn2, substs2)) => {
@@ -1035,7 +1374,7 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                     || !substs1
                         .types()
                         .zip(substs2.types())
-                        .all(|(ty1, ty2)| self.structural_eq_tys_impl(ty1, ty2, seen))
+                        .all(|(ty1, ty2)| self.structural_eq_tys_impl(ty1, ty2, match_vis, seen))
                 {
                     trace!(
                         "Substituted types don't match between {:?} and {:?}",
@@ -1046,7 +1385,7 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                 }
                 // warning: we're ignore lifetime and const generic params
 
-                self.structural_eq_defs(*fn1, *fn2)
+                self.structural_eq_defs(*fn1, *fn2, match_vis)
             }
 
             (TyKind::FnPtr(fn1), TyKind::FnPtr(fn2)) => {
@@ -1070,7 +1409,7 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                     return false;
                 }
 
-                if !self.structural_eq_tys_impl(fn1.output(), fn2.output(), seen) {
+                if !self.structural_eq_tys_impl(fn1.output(), fn2.output(), match_vis, seen) {
                     trace!(
                         "Function pointer output types don't match: {:?} and {:?}",
                         fn1,
@@ -1082,7 +1421,7 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                 fn1.inputs()
                     .iter()
                     .zip(fn2.inputs().iter())
-                    .all(|(ty1, ty2)| self.structural_eq_tys_impl(*ty1, *ty2, seen))
+                    .all(|(ty1, ty2)| self.structural_eq_tys_impl(*ty1, *ty2, match_vis, seen))
             }
 
             (TyKind::Tuple(_), TyKind::Tuple(_)) => {
@@ -1091,7 +1430,7 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                         .tuple_fields()
                         .iter()
                         .zip(ty2.tuple_fields().iter())
-                        .all(|(ty1, ty2)| self.structural_eq_tys_impl(ty1, ty2, seen))
+                        .all(|(ty1, ty2)| self.structural_eq_tys_impl(ty1, ty2, match_vis, seen))
             }
 
             (TyKind::Foreign(did1), TyKind::Foreign(did2)) => {
@@ -1127,6 +1466,7 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
         &self,
         did1: DefId,
         did2: DefId,
+        match_vis: bool,
         seen: &mut HashSet<(DefId, DefId)>,
     ) -> bool {
         let did1 = *self
@@ -1143,7 +1483,12 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
             return true;
         }
         seen.insert((did1, did2));
-        self.structural_eq_tys_impl(self.cx.def_type(did1), self.cx.def_type(did2), seen)
+        self.structural_eq_tys_impl(
+            self.cx.def_type(did1),
+            self.cx.def_type(did2),
+            match_vis,
+            seen,
+        )
     }
 
     pub fn eq_tys(&self, ty1: Ty<'tcx>, ty2: Ty<'tcx>) -> bool {

@@ -48,9 +48,7 @@ impl Translation<'_> {
                         let name = self.renamer.borrow().get(&variant_id).unwrap();
 
                         // Import the enum variant if needed
-                        if let Some(cur_file) = self.cur_file.get() {
-                            self.add_import(cur_file, variant_id, &name);
-                        }
+                        self.add_import(variant_id, &name);
                         return mk().path_expr(vec![name]);
                     }
                 }
@@ -71,16 +69,18 @@ impl Translation<'_> {
         mk().cast_expr(value, target_ty)
     }
 
-    /// Return whether the literal can be directly translated as this type. This does not check
-    /// that the literal fits into the type's range of values (as doing so is in general dependent
-    /// on the target platform), just that it is the appropriate kind for the type.
-    pub fn literal_kind_matches_ty(&self, lit: &CLiteral, ty: CQualTypeId) -> bool {
+    /// Return whether the literal can be directly translated as this type.
+    pub fn literal_matches_ty(&self, lit: &CLiteral, ty: CQualTypeId) -> bool {
         let ty_kind = &self.ast_context.resolve_type(ty.ctype).kind;
         match *lit {
-            CLiteral::Integer(..) if ty_kind.is_integral_type() && !ty_kind.is_bool() => true,
+            CLiteral::Integer(value, _) if ty_kind.is_integral_type() && !ty_kind.is_bool() => {
+                ty_kind.guaranteed_integer_in_range(value)
+            }
             // `convert_literal` always casts these to i32.
-            CLiteral::Character(..) => matches!(ty_kind, CTypeKind::Int32),
-            CLiteral::Floating(..) if ty_kind.is_floating_type() => true,
+            CLiteral::Character(_value) => matches!(ty_kind, CTypeKind::Int32),
+            CLiteral::Floating(value, _) if ty_kind.is_floating_type() => {
+                ty_kind.guaranteed_float_in_range(value)
+            }
             _ => false,
         }
     }
@@ -149,7 +149,7 @@ impl Translation<'_> {
 
                         self.use_crate(ExternCrate::F128);
 
-                        let fn_path = mk().path_expr(vec!["f128", "f128", "new"]);
+                        let fn_path = mk().abs_path_expr(vec!["f128", "f128", "new"]);
                         let args = vec![mk().lit_expr(mk().float_unsuffixed_lit(&str))];
 
                         mk().call_expr(fn_path, args)
@@ -399,6 +399,8 @@ impl Translation<'_> {
                     .borrow()
                     .resolve_decl_name(union_id)
                     .unwrap();
+                log::debug!("importing union {union_name}, id {union_id:?}");
+                self.add_import(union_id, &union_name);
                 match self.ast_context.index(union_field_id).kind {
                     CDeclKind::Field { typ: field_ty, .. } => {
                         let val = if ids.is_empty() {

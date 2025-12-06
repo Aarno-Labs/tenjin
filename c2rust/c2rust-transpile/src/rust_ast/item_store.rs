@@ -3,6 +3,7 @@ use indexmap::{IndexMap, IndexSet};
 use syn::{ForeignItem, Ident, Item};
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::mem::swap;
 
 #[derive(Debug)]
@@ -36,32 +37,60 @@ impl MultiImport {
 }
 
 #[derive(Debug, Default)]
-pub struct PathedMultiImports(IndexMap<Vec<String>, MultiImport>);
+pub struct PathedMultiImports(IndexMap<(bool, Vec<String>), MultiImport>);
 
 impl PathedMultiImports {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn get_mut(&mut self, path: Vec<String>) -> &mut MultiImport {
-        self.0.entry(path).or_insert(MultiImport::new())
+    pub fn get_mut(&mut self, is_absolute: bool, path: Vec<String>) -> &mut MultiImport {
+        self.0
+            .entry((is_absolute, path))
+            .or_insert(MultiImport::new())
     }
 
     pub fn into_items(self) -> Vec<Box<Item>> {
-        fn build_items((mut path, imports): (Vec<String>, MultiImport)) -> Box<Item> {
-            let mut leaves = imports.leaves;
-            let attrs = imports.attrs.unwrap_or_else(mk);
+        self.0
+            .into_iter()
+            .map(|((is_absolute, mut path), imports)| {
+                let mut leaves = imports.leaves;
+                let attrs = imports.attrs.unwrap_or_else(mk);
 
-            if leaves.len() == 1 {
-                path.push(leaves.pop().unwrap());
+                if leaves.len() == 1 {
+                    path.push(leaves.pop().unwrap());
 
-                attrs.use_simple_item(path, None as Option<Ident>)
-            } else {
-                attrs.use_multiple_item(path, leaves.into_iter())
-            }
+                    let path = if is_absolute {
+                        mk().abs_path(path)
+                    } else {
+                        mk().path(path)
+                    };
+
+                    attrs.use_simple_item(path, None as Option<Ident>)
+                } else {
+                    let path = if is_absolute {
+                        mk().abs_path(path)
+                    } else {
+                        mk().path(path)
+                    };
+
+                    attrs.use_multiple_item(path, leaves.into_iter())
+                }
+            })
+            .collect()
+    }
+
+    /// Remove all imports covered by the other [`PathedMultiImports`].
+    pub fn remove(&mut self, other: &PathedMultiImports) {
+        for (k, v) in &mut self.0 {
+            // We don't consider attributes, just subtract leaf sets.
+            let other_items = other
+                .0
+                .get(k)
+                .map(|imports| imports.leaves.iter().collect::<HashSet<_>>())
+                .unwrap_or_default();
+            v.leaves.retain(|leaf| !other_items.contains(leaf));
         }
-
-        self.0.into_iter().map(build_items).collect()
     }
 }
 
@@ -97,12 +126,20 @@ impl ItemStore {
         }
     }
 
-    pub fn add_use(&mut self, path: Vec<String>, ident: &str) {
-        self.uses.get_mut(path).insert(ident)
+    pub fn add_use(&mut self, is_absolute: bool, path: Vec<String>, ident: &str) {
+        self.uses.get_mut(is_absolute, path).insert(ident)
     }
 
-    pub fn add_use_with_attr(&mut self, path: Vec<String>, ident: &str, attrs: Builder) {
-        self.uses.get_mut(path).insert_with_attr(ident, attrs)
+    pub fn add_use_with_attr(
+        &mut self,
+        is_absolute: bool,
+        path: Vec<String>,
+        ident: &str,
+        attrs: Builder,
+    ) {
+        self.uses
+            .get_mut(is_absolute, path)
+            .insert_with_attr(ident, attrs)
     }
 
     pub fn drain(&mut self) -> (Vec<Box<Item>>, Vec<ForeignItem>, PathedMultiImports) {

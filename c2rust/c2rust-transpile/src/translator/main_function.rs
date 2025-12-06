@@ -63,7 +63,7 @@ impl Translation<'_> {
                     Some(mk().path_ty(vec![mk().path_segment_with_args(
                         "Vec",
                         mk().angle_bracketed_args(vec![
-                            mk().mutbl().ptr_ty(mk().path_ty(vec!["core", "ffi", "c_char"])),
+                            mk().mutbl().ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_char"])),
                         ]),
                     )])),
                     Some(mk().call_expr(mk().path_expr(vec!["Vec", "new"]), vec![])),
@@ -131,7 +131,7 @@ impl Translation<'_> {
                     Some(mk().path_ty(vec![mk().path_segment_with_args(
                         "Vec",
                         mk().angle_bracketed_args(vec![
-                            mk().mutbl().ptr_ty(mk().path_ty(vec!["core", "ffi", "c_char"])),
+                            mk().mutbl().ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_char"])),
                         ]),
                     )])),
                     Some(mk().call_expr(mk().path_expr(vec!["Vec", "new"]), vec![])),
@@ -230,7 +230,7 @@ impl Translation<'_> {
             };
 
             self.with_cur_file_item_store(|item_store| {
-                item_store.add_use(vec!["std".into(), "process".into()], "ExitCode");
+                item_store.add_use(true, vec!["std".into(), "process".into()], "ExitCode");
             });
 
             if let CTypeKind::Void = ret {

@@ -104,7 +104,7 @@ impl<'a> Translation<'a> {
                             mk().angle_bracketed_args(vec![mk().lifetime("a")]),
                         ),
                     ];
-                    mk().path_ty(mk().abs_path(path))
+                    mk().abs_path_ty(path)
                 } else {
                     let record_name = self
                         .type_converter
@@ -161,7 +161,7 @@ impl<'a> Translation<'a> {
                                 .unwrap();
 
                             let inner_name = self.resolve_decl_inner_name(decl_id);
-                            ty = mk().path_ty(mk().path(vec![inner_name]));
+                            ty = mk().path_ty(vec![inner_name]);
 
                             use_inner_type = true;
 
@@ -413,6 +413,8 @@ impl<'a> Translation<'a> {
         field_expr_ids: &[CExprId],
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let name = self.resolve_decl_inner_name(struct_id);
+        log::debug!("importing struct {name}, id {struct_id:?}");
+        self.add_import(struct_id, &name);
 
         let (field_decl_ids, platform_byte_size) = match self.ast_context.index(struct_id).kind {
             CDeclKind::Struct {

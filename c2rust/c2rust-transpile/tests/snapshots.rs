@@ -131,7 +131,7 @@ fn transpile(platform: Option<&str>, c_path: &Path) {
     let rlib_path = format!("lib{crate_name}.rlib");
     let status = Command::new("rustc")
         .args([
-            "+nightly-2022-08-08",
+            "+nightly-2023-04-15",
             "--crate-type",
             "lib",
             "--edition",
@@ -177,11 +177,17 @@ fn transpile_all() {
     #[cfg(target_arch = "aarch64")]
     let arch = "aarch64";
 
+    let arch_os = format!("{}-{}", arch, os);
+
     insta::with_settings!({snapshot_suffix => os}, {
         insta::glob!("snapshots/os-specific/*.c", |path| transpile(Some(os), path));
     });
 
     insta::with_settings!({snapshot_suffix => arch}, {
         insta::glob!("snapshots/arch-specific/*.c", |path| transpile(Some(arch), path));
-    })
+    });
+
+    insta::with_settings!({snapshot_suffix => arch_os.as_str()}, {
+        insta::glob!("snapshots/arch-os-specific/*.c", |path| transpile(Some(arch_os.as_str()), path));
+    });
 }

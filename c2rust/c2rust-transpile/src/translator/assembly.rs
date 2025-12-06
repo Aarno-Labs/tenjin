@@ -932,7 +932,7 @@ impl Translation<'_> {
 
                     // Import the trait into scope
                     self.with_cur_file_item_store(|item_store| {
-                        item_store.add_use(vec!["c2rust_asm_casts".into()], "AsmCastTrait");
+                        item_store.add_use(true, vec!["c2rust_asm_casts".into()], "AsmCastTrait");
                     });
 
                     let (output_name, inner_name) = operand_renames.get(tied_operand).unwrap();
@@ -1060,7 +1060,7 @@ impl Translation<'_> {
         }
 
         self.with_cur_file_item_store(|item_store| {
-            item_store.add_use(vec!["core".into(), "arch".into()], "asm");
+            item_store.add_use(true, vec!["core".into(), "arch".into()], "asm");
         });
 
         let mac = mk().mac(

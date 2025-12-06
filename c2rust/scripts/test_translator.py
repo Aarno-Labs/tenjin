@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run
 
 import errno
 import os
@@ -18,7 +18,6 @@ from common import (
     regex,
     setup_logging,
     die,
-    ensure_dir,
     on_mac,
 )
 from enum import Enum
@@ -26,8 +25,6 @@ from rust_file import (
     CrateType,
     RustFile,
     RustFileBuilder,
-    RustFunction,
-    RustMatch,
     RustMod,
     RustVisibility,
 )
@@ -492,6 +489,16 @@ class TestDirectory:
         lib_file = rust_file_builder.build(self.full_path + "/src/lib.rs")
 
         self.generated_files["rust_src"].append(lib_file)
+
+        # Copy `generated-rust-toolchain.toml`.
+        # We `c2rust-transpile` `*.c` files individually, so `--emit-build-files` doesn't work
+        # (if it's generated, it's in the wrong directory and may be different for each transpiled file).
+        # We could also change things to transpile all `*.c` files at once, but that's more involved.
+        generated_rust_toolchain = Path(c.TRANSPILE_CRATE_DIR) / "src/build_files/generated-rust-toolchain.toml"
+        rust_toolchain = Path(self.full_path) / "rust-toolchain.toml"
+        rust_toolchain.unlink(missing_ok=True)
+        rust_toolchain.symlink_to(generated_rust_toolchain)
+        self.generated_files["rust_src"].append(str(rust_toolchain))
 
         # Build
         with pb.local.cwd(self.full_path):

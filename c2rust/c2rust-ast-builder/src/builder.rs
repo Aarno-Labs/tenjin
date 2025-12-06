@@ -1280,6 +1280,14 @@ impl Builder {
         }))
     }
 
+    pub fn abs_path_ty<Pa>(self, path: Pa) -> Box<Type>
+    where
+        Pa: Make<Path>,
+    {
+        let path = mk().abs_path(path);
+        self.path_ty(path)
+    }
+
     pub fn path_ty<Pa>(self, path: Pa) -> Box<Type>
     where
         Pa: Make<Path>,
@@ -2251,22 +2259,19 @@ fn parenthesize_if_necessary(mut outer: Expr) -> Expr {
         }
     };
     match outer {
-        Expr::Field(ref mut ef) => {
-            if let Expr::Index(_) = *ef.base {
-                /* we do not need to parenthesize the indexing in a[b].c */
-            } else {
-                /*if let Expr::Unary(_) = *ef.base {
-                    parenthesize_mut(&mut ef.base);
-                } else { */
-                parenthesize_if_gt(&mut ef.base);
+        Expr::MethodCall(ref mut emc) => {
+            // Do not parenthesize `a.b.c()` or `a().b()` or `a[b].c()`
+            if !matches!(
+                *emc.receiver,
+                Expr::Field(..) | Expr::Call(..) | Expr::Index(..)
+            ) {
+                parenthesize_if_gt(&mut emc.receiver);
             }
         }
-        Expr::MethodCall(ref mut emc) => {
-            if let Expr::Call(_) = *emc.receiver {
-                // Chaining a method call on a function call
-                // does not require parenthesization.
-            } else {
-                parenthesize_if_gt(&mut emc.receiver);
+        Expr::Field(ref mut ef) => {
+            // Do not parenthesize `a().b` or `a[b].c`
+            if !matches!(*ef.base, Expr::Call(..) | Expr::Index(..)) {
+                parenthesize_if_gt(&mut ef.base);
             }
         }
         Expr::Call(ref mut ec) => {
