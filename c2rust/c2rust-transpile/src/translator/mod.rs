@@ -362,7 +362,7 @@ impl ParsedGuidance {
                     }
                     let ty = syn::parse_str::<syn::Type>(unparsed_ty)
                         .unwrap_or_else(|_| panic!("Failed to parse type: {unparsed_ty}"));
-                    log::warn!("Parsed type key vars_of_type: {:#?}", ty);
+                    //log::warn!("Parsed type key vars_of_type: {:#?}", ty);
                     declspecs_of_type.insert(ty, parsed_declspecs);
                 }
             }
