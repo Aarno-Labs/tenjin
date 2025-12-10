@@ -1752,6 +1752,7 @@ mod refactor_format {
         Str,
         Float,
         HexFloat,
+        GFloat,
         None(char),
     }
 
@@ -1781,6 +1782,14 @@ mod refactor_format {
                     // hexfloat2::format(e)
                     x.use_crate(ExternCrate::Hexfloat2);
                     mk().call_expr(mk().path_expr(vec!["hexfloat2", "format"]), vec![e])
+                }
+                CastType::GFloat => {
+                    // GPoint(e)
+                    x.use_crate(ExternCrate::GPoint);
+                    x.with_cur_file_item_store(|item_store| {
+                        item_store.add_use(false, vec!["gpoint".into()], "GPoint");
+                    });
+                    mk().call_expr(mk().path_expr(vec!["GPoint"]), vec![e])
                 }
                 CastType::Char => {
                     // e as u8 as char
@@ -1890,6 +1899,7 @@ mod refactor_format {
         Str,
         Float,
         HexFloat,
+        GFloat,
         Unknown(char),
     }
 
@@ -1897,7 +1907,11 @@ mod refactor_format {
         fn is_numeric(&self) -> bool {
             matches!(
                 *self,
-                ConvType::Int(_) | ConvType::Uint(_) | ConvType::Hex(_, _) | ConvType::Float
+                ConvType::Int(_)
+                    | ConvType::Uint(_)
+                    | ConvType::Hex(_, _)
+                    | ConvType::Float
+                    | ConvType::GFloat
             )
         }
 
@@ -1963,6 +1977,7 @@ mod refactor_format {
                 ConvType::Str => CastType::Str,
                 ConvType::Float => CastType::Float,
                 ConvType::HexFloat => CastType::HexFloat,
+                ConvType::GFloat => CastType::GFloat,
                 ConvType::Unknown(c) => CastType::None(c),
             };
 
@@ -2197,6 +2212,7 @@ mod refactor_format {
                 's' => ConvType::Str,
                 'f' => ConvType::Float,
                 'a' => ConvType::HexFloat,
+                'g' => ConvType::GFloat,
                 _ => ConvType::Unknown(c),
             }
         }

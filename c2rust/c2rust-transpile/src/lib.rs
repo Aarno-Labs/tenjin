@@ -170,6 +170,7 @@ pub enum ExternCrate {
     XjScanf,
     LibzRsSys,
     Bytemuck,
+    GPoint,
 }
 
 #[derive(Serialize)]
@@ -216,6 +217,7 @@ impl From<ExternCrate> for ExternCrateDetails {
             ExternCrate::LibzRsSys => Self::new("libz-rs-sys", "0.5.1", false),
             ExternCrate::Bytemuck => Self::new("bytemuck", "1.23.2", false)
                 .with_features(vec!["derive", "extern_crate_alloc"]),
+            ExternCrate::GPoint => Self::new("gpoint", "0.2.1", false),
         }
     }
 }
