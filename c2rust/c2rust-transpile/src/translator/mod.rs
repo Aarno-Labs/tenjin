@@ -1816,11 +1816,13 @@ mod refactor_format {
                     if let Some(g) = x.parsed_guidance.borrow_mut().query_expr_type(x, cexpr) {
                         if g.pretty == "String" {
                             // For a variable that's already type String, we can leave it as is.
+                            // XREF:guided_cast_str_of_owned_string
                             return e;
                         }
 
                         if g.pretty_sans_refs() == "Vec < u8 >" {
                             // For a variable that's type Vec<u8>, we can convert it to String directly.
+                            // XREF:guided_cast_str_of_shared_vec_u8
                             return mk().call_expr(
                                 mk().path_expr(vec!["String", "from_utf8_lossy"]),
                                 vec![mk().addr_of_expr(e)],
@@ -3825,6 +3827,7 @@ impl<'c> Translation<'c> {
         return_type: Option<CQualTypeId>,
     ) -> TranslationResult<ReturnType> {
         if let Some(guided_type) = self.parsed_guidance.borrow().query_fn_return_type(name) {
+            // XREF:guided_ret_type
             return Ok(ReturnType::Type(
                 Default::default(),
                 Box::new(guided_type.parsed),
@@ -3878,6 +3881,7 @@ impl<'c> Translation<'c> {
             if let Some(guided_type) = mb_guided_type {
                 if guided_type.pretty == "String" {
                     // strings are never null, so the base value is false, which matches the value of negated.
+                    // XREF:guided_condition_string_null_check_neq
                     return mk().lit_expr(mk().bool_lit(negated));
                 }
             }
@@ -3928,6 +3932,7 @@ impl<'c> Translation<'c> {
                 null_pointer_case(!target, ptr)
             }
 
+            // XREF:guided_condition_string_null_check_neq
             CExprKind::Binary(_, c_ast::BinOp::NotEqual, null_expr, ptr, _, _)
                 if self.ast_context.is_null_expr(null_expr) =>
             {

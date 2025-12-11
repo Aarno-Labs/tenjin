@@ -1437,6 +1437,7 @@ impl CfgBuilder {
                         .parsed_guidance
                         .borrow_mut()
                         .query_fn_return_type(self.fn_name.as_str());
+                    // XREF:snapshot_guided_ret_ostr
                     translator.convert_expr_guided(ctx.used(), i, ret_ty, &ret_ty_guidance)
                 }) {
                     Some(r) => Some(r?),
