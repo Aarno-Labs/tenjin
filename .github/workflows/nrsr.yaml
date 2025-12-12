@@ -121,7 +121,7 @@ jobs:
         run: cli/10j provision all 2>&1 | ./tss
 
       - name: Run Tenjin end-to-end tests
-        run: XJ_BUILD_RS_PROFILE=release cli/10j check-e2e-smoke-tests
+        run: XJ_BUILD_RS_PROFILE=release cli/10j runtests tests
 
 
   not-rocket-science-rs-lint:

@@ -15,7 +15,7 @@ Single-commit merges may be squashed. Multi-commit PRs should use a merge reques
 `git log --first-parent --oneline` lists the tested ancestors of the current commit.
 `git bisect --first-parent` likewise has bisection ignore untested commits.
 
-The tests run in CI should be equivalent (for now) to `10j check-star && 10j check-unit-rs && 10j check-e2e-smoke-tests`.
+The tests run in CI should be equivalent (for now) to `10j check-star && 10j check-unit-rs && 10j runtests tests`.
 
 Some commits should have their message prefixed with a tag:
 - `NFC: ` -- No Functional Change, for behavior-preserving refactorings

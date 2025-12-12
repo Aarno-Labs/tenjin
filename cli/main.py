@@ -13,7 +13,6 @@ import provisioning
 import hermetic
 import translation
 import cli_subcommands
-import e2e_smoke_tests
 
 
 def do_check_repo_file_sizes() -> bool:
