@@ -45,10 +45,11 @@ def test_smoketest0(test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
 
 def test_smoketest1(test_dir, tmp_codebase):
   codebase = test_dir / "test_1" / "main.c"
+  target = tmp_codebase / "main.c"
   translation_preparation.copy_codebase(codebase, tmp_codebase)
-  hermetic.run_chkc(["c-file", "parse", str(codebase)], check=True)
-  hermetic.run_chkc(["c-file", "analyze", str(codebase)], check=True)
-  hermetic.run_chkc(["c-file", "report", str(codebase)], check=True)
+  hermetic.run_chkc(["c-file", "parse", str(target)], check=True)
+  hermetic.run_chkc(["c-file", "analyze", str(target)], check=True)
+  hermetic.run_chkc(["c-file", "report", str(target)], check=True)
 
 def test_smoketest2(test_dir, tmp_codebase, tmp_resultsdir):
   codebase = test_dir / "test_2"
