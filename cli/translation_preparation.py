@@ -201,12 +201,19 @@ def copy_new_source_files_back(
             dest_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(new_file, dest_file)
 
+def copy_codebase(pristine: Path, newdir: Path):
+    """Copy the original codebase (src or directory) to a new directory."""
+    if pristine.is_file():
+        newdir.mkdir()
+        shutil.copy2(pristine, newdir / pristine.name)
+    else:
+        copy_codebase_dir(pristine, newdir)
 
-def copy_codebase(
+def copy_codebase_dir(
     src: Path,
     dst: Path,
 ):
-    """Copy the original codebase (file or directory) to a new directory."""
+    """Copy the original codebase (directory) to a new directory."""
     assert src.is_dir()
     shutil.copytree(src, dst)
     if compdb_path_in(dst).exists():
@@ -438,7 +445,6 @@ class PrepPassResultStore:
     ]
     cmake_exe_targets: list[str]
 
-
 def run_preparation_passes(
     original_codebase: Path,
     resultsdir: Path,
@@ -450,11 +456,7 @@ def run_preparation_passes(
     along with a list of CMake executable targets (if applicable)."""
 
     def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path, store: PrepPassResultStore):
-        if pristine.is_file():
-            newdir.mkdir()
-            shutil.copy2(pristine, newdir / pristine.name)
-        else:
-            copy_codebase(pristine, newdir)
+        copy_codebase(pristine, newdir)
 
     def prep_01_materialize_compdb(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         with tempfile.TemporaryDirectory() as builddirname:
@@ -1036,7 +1038,7 @@ def run_preparation_passes(
         with tracker.tracking(f"preparation_pass_{counter:02d}_{tag}", newdir) as step:
             start_ns = time.perf_counter_ns()
             if counter > 0:
-                copy_codebase(prev, newdir)
+                copy_codebase_dir(prev, newdir)
             cp_or_None: CompletedProcess | None = func(prev, newdir, store)
             if cp_or_None is not None:
                 step.update_sub(cp_or_None)
