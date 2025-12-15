@@ -354,19 +354,10 @@ def upload_results(directory: Path, host_port: str):
 
 
 @cli.command()
-@click.argument("testnames", nargs=-1)
-def check_e2e_smoke_tests(testnames):
-    selected = e2e_smoke_tests.query_selected_tests(testnames)
-    for name, fn in selected.items():
-        if not fn:
-            click.echo(f"Test case {name} unknown", err=True)
-            sys.exit(1)
-
-    # Execute each selected test; if a mapping entry is None, treat as unimplemented
-    for name in sorted(selected.keys()):
-        fn = selected.get(name)
-        assert fn is not None
-        fn()
+@click.argument("testdir", nargs=1)
+def runtests(testdir):
+    import pytest
+    pytest.main(["-x", testdir])
 
 
 @cli.command(hidden=True)
