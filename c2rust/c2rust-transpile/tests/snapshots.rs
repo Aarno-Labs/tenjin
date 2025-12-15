@@ -52,6 +52,19 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
         serde_json::json!({
             "no_math_errno": true,
         })
+    } else if c_path.ends_with("tenjin_guided.c") {
+        serde_json::json!({
+            "vars_of_type": {
+                "String" : "*:ostr",
+                "&str" : "*:rstr",
+                "&mut str" : ["*:xstr", "*:xstr2"],
+                "Vec<u8>" : "*:ovu8",
+                "&Vec<u8>" : "*:rvu8",
+            },
+            "fn_return_type": {
+                "guided_ret_ostr": "String"
+            }
+        })
     } else {
         serde_json::json!({})
     }

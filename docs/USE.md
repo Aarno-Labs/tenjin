@@ -68,7 +68,7 @@ such variable named `bar` in every function.
 * `declspecs_of_type` - closely related, but applies to global variables.
 * `vars_mut`: likewise, a dict mapping specifiers to boolean values
     indicating whether that declaration should be marked `mut` in Rust.
-* `fn_return_types` - a dict mapping function names to the Rust type they should be made to / assumed to return
+* `fn_return_type` - a dict mapping function names to the Rust type they should be made to / assumed to return
 * `pod_types` - a list of type names which should be considered to
 be plain old data, and thereby eligible for type-safe casting with
 the `bytemuck` crate.

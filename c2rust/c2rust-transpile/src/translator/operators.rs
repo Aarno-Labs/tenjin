@@ -708,6 +708,7 @@ impl Translation<'_> {
                         if lhs_guided_type.is_some_and(|g| tenjin::type_is_mut_ref(&g.parsed))
                             || rhs_guided_type.is_some_and(|g| tenjin::type_is_mut_ref(&g.parsed))
                         {
+                            // XREF:guided_mut_ref_neq
                             mk().lit_expr(mk().int_unsuffixed_lit(1)) // mutable references never alias, so pointer inequality is true
                         } else {
                             mk().binary_expr(BinOp::Ne(Default::default()), lhs, rhs)
