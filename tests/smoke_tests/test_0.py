@@ -1,10 +1,7 @@
 from pathlib import Path
-import cli_subcommands
 import translation_preparation
 import translation
 import hermetic
-import repo_root
-from testing import *
 
 def run_cargo_on_final(cwd: Path, args: list[str], capture_output: bool = False):
     return hermetic.run_cargo_on_translated_code(
@@ -37,8 +34,8 @@ def test_smoketest0(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
 
   assert (tmp_resultsdir / "final" / "Cargo.toml").exists()
 
-  run_cargo_on_final(tmp_resultsdir/"final", ["build"])
-  rs_prog_output = run_cargo_on_final(tmp_resultsdir/"final", ["run"], capture_output=True)
+  run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+  rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
 
   assert rs_prog_output.stdout == c_prog_output.stdout
 
@@ -83,8 +80,8 @@ def test_smoketest2(root, test_dir, tmp_codebase, tmp_resultsdir):
 
   assert (tmp_resultsdir / "final" / "Cargo.toml").exists()
 
-  run_cargo_on_final(tmp_resultsdir/"final", ["build"])
-  rs_prog_output = run_cargo_on_final(tmp_resultsdir/"final", ["run"], capture_output=True)
+  run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+  rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
 
   assert rs_prog_output.stdout == c_prog_output.stdout
 
@@ -103,7 +100,6 @@ def test_smoketest3(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
     assert c_prog_output.stdout == b"Hello, Tenjin!\n", f"Got: {c_prog_output.stdout!r}"
 
     # Run translation
-    cwd = Path.cwd()
     translation.do_translate(
         root,
         tmp_codebase,
@@ -111,7 +107,7 @@ def test_smoketest3(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
         cratename="smoke_test_3",
         guidance_path_or_literal="{}",
     )
-    run_cargo_on_final(tmp_resultsdir/"final", ["build"])
-    rs_prog_output = run_cargo_on_final(tmp_resultsdir/"final", ["run"], capture_output=True)
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
 
     assert rs_prog_output.stdout == c_prog_output.stdout

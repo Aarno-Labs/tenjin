@@ -9,7 +9,6 @@ def root():
     cli_subcommands.do_build_rs(root)
     return root
 
-
 @pytest.fixture
 def test_dir(request):
   return request.path.parent
@@ -25,6 +24,6 @@ def tmp_codebase(test_tmp_dir):
 
 @pytest.fixture
 def tmp_resultsdir(test_tmp_dir):
-  resultsdir =  test_tmp_dir / "resultsdir"
+  resultsdir = test_tmp_dir / "resultsdir"
   resultsdir.mkdir()
   return resultsdir

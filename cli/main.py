@@ -7,6 +7,7 @@ import tempfile
 
 import click
 import requests
+import pytest
 
 import repo_root
 import provisioning
@@ -356,7 +357,6 @@ def upload_results(directory: Path, host_port: str):
 @cli.command()
 @click.argument("testdir", nargs=1)
 def runtests(testdir):
-    import pytest
     pytest.main(["-x", testdir])
 
 
