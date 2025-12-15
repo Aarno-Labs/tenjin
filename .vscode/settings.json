@@ -5,5 +5,6 @@
     "**/lib/rustlib/src/rust/library/**/*.rs": true
   },
   "python.defaultInterpreterPath": "${workspaceFolder}/cli/.venv/bin/python3",
+  "python.envFile": "${workspaceFolder}/.env",
   "editor.formatOnSave": true
 }
