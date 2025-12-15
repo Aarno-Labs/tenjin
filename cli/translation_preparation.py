@@ -201,6 +201,7 @@ def copy_new_source_files_back(
             dest_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(new_file, dest_file)
 
+
 def copy_codebase(pristine: Path, newdir: Path):
     """Copy the original codebase (src or directory) to a new directory."""
     if pristine.is_file():
@@ -208,6 +209,7 @@ def copy_codebase(pristine: Path, newdir: Path):
         shutil.copy2(pristine, newdir / pristine.name)
     else:
         copy_codebase_dir(pristine, newdir)
+
 
 def copy_codebase_dir(
     src: Path,
@@ -444,6 +446,7 @@ class PrepPassResultStore:
         RelativeFilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
     ]
     cmake_exe_targets: list[str]
+
 
 def run_preparation_passes(
     original_codebase: Path,
