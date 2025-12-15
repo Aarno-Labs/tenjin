@@ -1,5 +1,15 @@
 import pytest
 
+import cli_subcommands
+import repo_root
+
+@pytest.fixture
+def root():
+    root = repo_root.find_repo_root_dir_Path()
+    cli_subcommands.do_build_rs(root)
+    return root
+
+
 @pytest.fixture
 def test_dir(request):
   return request.path.parent

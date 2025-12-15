@@ -1,7 +1,7 @@
 from pathlib import Path
+import cli_subcommands
 import translation_preparation
 import translation
-import ingest_tracking
 import hermetic
 import repo_root
 from testing import *
@@ -14,8 +14,7 @@ def run_cargo_on_final(cwd: Path, args: list[str], capture_output: bool = False)
         capture_output=capture_output,
     )
 
-def test_smoketest0(test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
-  root = repo_root.find_repo_root_dir_Path()
+def test_smoketest0(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
   codebase = test_dir / "test_0" / "main.c"
 
   translation_preparation.copy_codebase(codebase, tmp_codebase)
@@ -51,9 +50,8 @@ def test_smoketest1(test_dir, tmp_codebase):
   hermetic.run_chkc(["c-file", "analyze", str(target)], check=True)
   hermetic.run_chkc(["c-file", "report", str(target)], check=True)
 
-def test_smoketest2(test_dir, tmp_codebase, tmp_resultsdir):
+def test_smoketest2(root, test_dir, tmp_codebase, tmp_resultsdir):
   codebase = test_dir / "test_2"
-  root = repo_root.find_repo_root_dir_Path()
   translation_preparation.copy_codebase(codebase, tmp_codebase)
   # For reasons I don't understand yet, intercept-build sometimes creates an empty
   # compile_commands.json on macOS.
@@ -89,3 +87,31 @@ def test_smoketest2(test_dir, tmp_codebase, tmp_resultsdir):
   rs_prog_output = run_cargo_on_final(tmp_resultsdir/"final", ["run"], capture_output=True)
 
   assert rs_prog_output.stdout == c_prog_output.stdout
+
+def test_smoketest3(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
+    codebase = test_dir / "test_03"
+    build_dir = test_tmp_dir / "build"
+
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # Ensure it compiles and runs as expected
+    hermetic.run(["cmake", "-B", str(build_dir), "-S", str(tmp_codebase)], check=True)
+    hermetic.run(["cmake", "--build", str(build_dir)], check=True, capture_output=True)
+    c_prog_output = hermetic.run(
+        [str(build_dir / "tenjin_smoke_test_4")], check=True, capture_output=True
+    )
+    assert c_prog_output.stdout == b"Hello, Tenjin!\n", f"Got: {c_prog_output.stdout!r}"
+
+    # Run translation
+    cwd = Path.cwd()
+    translation.do_translate(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="smoke_test_3",
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir/"final", ["build"])
+    rs_prog_output = run_cargo_on_final(tmp_resultsdir/"final", ["run"], capture_output=True)
+
+    assert rs_prog_output.stdout == c_prog_output.stdout
