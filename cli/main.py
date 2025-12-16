@@ -7,7 +7,6 @@ import tempfile
 
 import click
 import requests
-import pytest
 
 import repo_root
 import provisioning
@@ -251,6 +250,12 @@ def clang():
     pass  # placeholder command
 
 
+@cli.command()
+def pytest():
+    "Alias for `10j exec pytest`"
+    pass  # placeholder command
+
+
 # placeholder command
 @cli.command()
 def exec():
@@ -354,12 +359,6 @@ def upload_results(directory: Path, host_port: str):
         sys.exit(1)
 
 
-@cli.command()
-@click.argument("testdir", nargs=1)
-def runtests(testdir):
-    pytest.main(["-x", testdir])
-
-
 @cli.command(hidden=True)
 def synthesize_compilation_database_for(file: Path):
     """Emit a trivial compilation database JSON for the given C file to stdout."""
@@ -391,6 +390,8 @@ if __name__ == "__main__":
         if sys.argv[1] == "cargo":
             sys.exit(hermetic.run_cargo_in(sys.argv[2:], cwd=Path.cwd(), check=False).returncode)
         if sys.argv[1] == "clang":
+            sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
+        if sys.argv[1] == "pytest":
             sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
         if sys.argv[1] == "chkc":
             sys.exit(hermetic.run_chkc(sys.argv[2:]).returncode)

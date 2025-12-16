@@ -1,1 +1,1 @@
-pytest_plugins = "testing"
+pytest_plugins = "test_fixtures"

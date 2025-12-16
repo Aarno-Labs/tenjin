@@ -1,7 +1,8 @@
 from pathlib import Path
-import translation_preparation
-import translation
+
 import hermetic
+import translation
+import translation_preparation
 
 
 def run_cargo_on_final(cwd: Path, args: list[str], capture_output: bool = False):
