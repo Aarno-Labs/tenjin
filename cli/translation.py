@@ -217,6 +217,8 @@ def do_translate(
     tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
 
     skip_remainder_of_translation = False
+
+    resultsdir = resultsdir.resolve()
     resultsdir.mkdir(parents=True, exist_ok=True)
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
