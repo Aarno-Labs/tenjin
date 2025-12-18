@@ -27,10 +27,10 @@ check_cmd () {
 
 download () {
   if check_cmd curl
-  then curl -sSfL "$1" -o "$2"
+  then curl --connect-timeout 11 --retry 2 -sSfL "$1" -o "$2"
 
   elif check_cmd wget
-  then wget "$1" -O "$2"
+  then wget --connect-timeout=11 --tries=3 "$1" -O "$2"
 
   else die "need curl or wget!"
   fi
