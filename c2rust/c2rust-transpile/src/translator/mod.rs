@@ -7041,11 +7041,10 @@ impl<'c> Translation<'c> {
     ) -> Box<Expr> {
         let mut offset = offset;
 
-        if c_ptr.map_or(false, |p| self.should_subscript(p)) {
+        if c_ptr.map_or(false, |ptr_id| self.can_subscript(ptr_id)) {
             if neg {
                 offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
             }
-
             return mk().index_expr(ptr, cast_int(offset, "usize", false));
         }
 

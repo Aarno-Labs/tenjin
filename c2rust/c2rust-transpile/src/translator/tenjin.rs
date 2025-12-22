@@ -1877,6 +1877,8 @@ impl Translation<'_> {
         }
     }
 
+    /// Attempt to compute the post-translation type of `expr`, taking into
+    /// account guidance
     pub fn try_compute_guided_type(&self, expr: CExprId) -> Option<Type> {
         match self.ast_context[self.c_strip_noop_casts(expr)].kind {
             CExprKind::DeclRef(_, decl_id, _) => {
@@ -1902,7 +1904,8 @@ impl Translation<'_> {
         }
     }
 
-    pub fn should_subscript(&self, c_ptr: CExprId) -> bool {
+    /// return `true` if guidance indicates the type of `c_ptr` is subscriptable
+    pub fn can_subscript(&self, c_ptr: CExprId) -> bool {
         self.try_compute_guided_type(c_ptr)
             .as_ref()
             .and_then(|ty| type_try_arraylike_element(ty))
