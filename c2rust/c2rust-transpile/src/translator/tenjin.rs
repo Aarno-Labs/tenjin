@@ -2,7 +2,7 @@ use super::*;
 use proc_macro2::Literal;
 use quote::ToTokens; // for to_token_stream()
 use std::str::FromStr;
-use syn::{Expr, Path, Type};
+use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
 
 #[derive(Debug, Clone)]
 pub struct GuidedType {
@@ -76,12 +76,26 @@ pub fn is_known_size_1_type(ty: &Type) -> bool {
     }
 }
 
-pub fn path_get_1_ident(path: &Path) -> Option<&Ident> {
+pub fn path_get_1_segment(path: &Path) -> Option<&PathSegment> {
     if path.segments.len() == 1 {
-        Some(&path.segments[0].ident)
+        Some(&path.segments[0])
     } else {
         None
     }
+}
+
+pub fn segment_get_1_bracket_argument(seg: &PathSegment) -> Option<&GenericArgument> {
+    match &seg.arguments {
+        syn::PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) => {
+            args.first().or(args.last())
+        }
+
+        _ => None,
+    }
+}
+
+pub fn path_get_1_ident(path: &Path) -> Option<&Ident> {
+    path_get_1_segment(path).map(|s| &s.ident)
 }
 
 pub fn is_path_exactly_1(path: &Path, a: &str) -> bool {
@@ -134,6 +148,23 @@ pub fn type_is_mut_ref(ty: &Type) -> bool {
         return tref.mutability.is_some();
     }
     false
+}
+
+fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
+    match t {
+        Type::Path(p) => path_get_1_segment(&p.path)
+            .and_then(|s| segment_get_1_bracket_argument(&s))
+            .and_then(|args| match args {
+                GenericArgument::Type(t) => Some(t),
+                _ => None,
+            }),
+
+        Type::Slice(slice) => Some(&slice.elem),
+
+        Type::Reference(reference) => type_try_arraylike_element(&reference.elem),
+
+        _ => None,
+    }
 }
 
 pub fn expr_get_path(expr: &Expr) -> Option<&Path> {
@@ -1844,5 +1875,37 @@ impl Translation<'_> {
             }
             _ => None,
         }
+    }
+
+    pub fn try_compute_guided_type(&self, expr: CExprId) -> Option<Type> {
+        match self.ast_context[self.c_strip_noop_casts(expr)].kind {
+            CExprKind::DeclRef(_, decl_id, _) => {
+                self.ast_context
+                    .get_decl(&decl_id)
+                    .and_then(|decl| match decl.kind {
+                        CDeclKind::Variable { .. } => self
+                            .parsed_guidance
+                            .borrow_mut()
+                            .query_decl_type(self, decl_id)
+                            .map(|gt| gt.parsed),
+                        _ => None,
+                    })
+            }
+
+            CExprKind::ArraySubscript(_, subexpr, _index, _lrvalue) => self
+                .try_compute_guided_type(subexpr)
+                .as_ref()
+                .and_then(|ty| type_try_arraylike_element(ty))
+                .map(|ty| ty.clone()),
+
+            _ => None,
+        }
+    }
+
+    pub fn should_subscript(&self, c_ptr: CExprId) -> bool {
+        self.try_compute_guided_type(c_ptr)
+            .as_ref()
+            .and_then(|ty| type_try_arraylike_element(ty))
+            .is_some()
     }
 }
