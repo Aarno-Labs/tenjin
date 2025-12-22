@@ -257,6 +257,13 @@ def _CompileCommand_from_intercepted_command(
         # Absolute paths outside both codebase and builddir remain as-is.
         return p
 
+    def update_arg(p: str) -> str:
+        # Applies update to an include (-Ipath) argument
+        if p.startswith("-I"):
+            return f"-I{update(p[2:])}"
+        else:
+            return update(p)
+
     output = icmd.output
     assert output is not None, "InterceptedCommand has no output"
     if not Path(output).is_absolute():
@@ -272,6 +279,6 @@ def _CompileCommand_from_intercepted_command(
     return compilation_database.CompileCommand(
         directory=icmd.entry["directory"],
         file=update(filename),
-        arguments=[update(arg) for arg in icmd.entry["arguments"]],
+        arguments=[update_arg(arg) for arg in icmd.entry["arguments"]],
         output=update(output),
     )
