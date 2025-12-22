@@ -57,3 +57,33 @@ pub unsafe extern "C" fn guided_mut_ref_neq(
 ) -> ::core::ffi::c_int {
     return 1 as ::core::ffi::c_int;
 }
+#[no_mangle]
+pub unsafe extern "C" fn guided_1d_slice(
+    mut x: &[::core::ffi::c_int],
+    mut index: ::core::ffi::c_int,
+) -> ::core::ffi::c_int {
+    return x[index as usize];
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_2d_slice(
+    mut x2d: &[&[::core::ffi::c_int]],
+    mut i: ::core::ffi::c_int,
+    mut j: ::core::ffi::c_int,
+) -> ::core::ffi::c_int {
+    return x2d[i as usize][j as usize];
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_1d_vec(
+    mut x: Vec<::core::ffi::c_int>,
+    mut index: ::core::ffi::c_int,
+) -> ::core::ffi::c_int {
+    return x[index as usize];
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_2d_vec(
+    mut x2d: Vec<Vec<::core::ffi::c_int>>,
+    mut i: ::core::ffi::c_int,
+    mut j: ::core::ffi::c_int,
+) -> ::core::ffi::c_int {
+    return x2d[i as usize][j as usize];
+}

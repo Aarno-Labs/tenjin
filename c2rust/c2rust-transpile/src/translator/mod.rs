@@ -7041,20 +7041,11 @@ impl<'c> Translation<'c> {
     ) -> Box<Expr> {
         let mut offset = offset;
 
-        if let Some(c_ptr) = c_ptr {
-            let guided_type = self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, c_ptr);
-
-            if guided_type
-                .is_some_and(|g: tenjin::GuidedType| g.pretty_sans_refs().starts_with("Vec <"))
-            {
-                if neg {
-                    offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
-                }
-                return mk().index_expr(ptr, cast_int(offset, "usize", false));
+        if c_ptr.is_some_and(|ptr_id| self.can_subscript(ptr_id)) {
+            if neg {
+                offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
             }
+            return mk().index_expr(ptr, cast_int(offset, "usize", false));
         }
 
         offset = cast_int(offset, "isize", false);
