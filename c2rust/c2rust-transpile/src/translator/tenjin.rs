@@ -1,7 +1,6 @@
 use super::*;
 use proc_macro2::Literal;
-use quote::ToTokens;
-use smallvec::Array; // for to_token_stream()
+use quote::ToTokens; // for to_token_stream()
 use std::str::FromStr;
 use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
 
