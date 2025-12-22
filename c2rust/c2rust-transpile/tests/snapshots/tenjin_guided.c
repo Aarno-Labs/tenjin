@@ -75,3 +75,13 @@ int guided_2d_slice(int **x2d, int i, int j)
 {
     return x2d[i][j];
 }
+
+int guided_1d_vec(int *x, int index)
+{
+    return x[index];
+}
+
+int guided_2d_vec(int **x2d, int i, int j)
+{
+    return x2d[i][j];
+}
