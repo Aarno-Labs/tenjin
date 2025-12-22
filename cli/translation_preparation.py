@@ -668,6 +668,9 @@ def run_preparation_passes(
             all_build_targets[0].name, current_codebase, include_link_cmds=False
         )
 
+        # clang-rename will use this
+        compdb.to_json_file(current_codebase / "compile_commands.json")
+
         all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
             compdb, statics_only=True
         )
