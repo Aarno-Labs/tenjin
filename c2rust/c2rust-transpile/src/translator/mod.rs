@@ -7041,7 +7041,7 @@ impl<'c> Translation<'c> {
     ) -> Box<Expr> {
         let mut offset = offset;
 
-        if c_ptr.map_or(false, |ptr_id| self.can_subscript(ptr_id)) {
+        if c_ptr.is_some_and(|ptr_id| self.can_subscript(ptr_id)) {
             if neg {
                 offset = mk().unary_expr(UnOp::Neg(Default::default()), offset);
             }

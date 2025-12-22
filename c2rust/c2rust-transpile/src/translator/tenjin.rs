@@ -1,6 +1,7 @@
 use super::*;
 use proc_macro2::Literal;
-use quote::ToTokens; // for to_token_stream()
+use quote::ToTokens;
+use smallvec::Array; // for to_token_stream()
 use std::str::FromStr;
 use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
 
@@ -153,16 +154,14 @@ pub fn type_is_mut_ref(ty: &Type) -> bool {
 fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
     match t {
         Type::Path(p) => path_get_1_segment(&p.path)
-            .and_then(|s| segment_get_1_bracket_argument(&s))
+            .and_then(|s| segment_get_1_bracket_argument(s))
             .and_then(|args| match args {
                 GenericArgument::Type(t) => Some(t),
                 _ => None,
             }),
-
-        Type::Slice(slice) => Some(&slice.elem),
-
         Type::Reference(reference) => type_try_arraylike_element(&reference.elem),
-
+        Type::Slice(slice) => Some(&slice.elem),
+        Type::Array(arr) => Some(&arr.elem),
         _ => None,
     }
 }
@@ -1898,7 +1897,7 @@ impl Translation<'_> {
                 .try_compute_guided_type(subexpr)
                 .as_ref()
                 .and_then(|ty| type_try_arraylike_element(ty))
-                .map(|ty| ty.clone()),
+                .cloned(),
 
             _ => None,
         }
