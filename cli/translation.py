@@ -19,6 +19,7 @@ from repo_root import find_repo_root_dir_Path, localdir
 import provisioning
 import ingest
 import ingest_tracking
+import targets
 import hermetic
 import vcs_helpers
 import cargo_workspace_helpers
@@ -222,10 +223,9 @@ def do_translate(
     resultsdir.mkdir(parents=True, exist_ok=True)
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
-    final_prepared_codebase, cmake_exe_targets = run_preparation_passes(
+    final_prepared_codebase, build_info = run_preparation_passes(
         codebase, resultsdir, tracker, guidance, buildcmd
     )
-    compdb = final_prepared_codebase / "compile_commands.json"
 
     c2rust_transpile_flags = [
         "--translate-const-macros",
@@ -234,26 +234,29 @@ def do_translate(
         "--disable-refactoring",
     ]
 
-    if False and cmake_exe_targets:
-        for target in cmake_exe_targets:
-            c2rust_transpile_flags.extend([
-                "--binary",
-                target,
-            ])
-    else:
-        ccs_with_main_funcs = find_main_translation_units(
-            compilation_database.CompileCommands.from_json_file(compdb)
-        )
-        if ccs_with_main_funcs:
+    saw_binaries = False
+    for target in build_info.get_all_targets():
+        print("Found build target:", target)
+        if target.type == targets.TargetType.EXECUTABLE:
+            target_compdb = build_info.compdb_for_target_within(
+                target.name, final_prepared_codebase
+            )
+            ccs_with_main_funcs = find_main_translation_units(target_compdb)
+            assert len(ccs_with_main_funcs) == 1, f"Expected one main function in target {target}"
+            # We eventually want to use target.stem as the name of the Rust binary,
+            # but for now c2rust only takes the file name, and uses it as the binary name.
             for cmd in ccs_with_main_funcs:
                 c2rust_transpile_flags.extend([
                     "--binary",
                     cmd.absolute_file_path.stem,
                 ])
-        else:
-            c2rust_transpile_flags.extend(["--emit-build-files"])
 
-    # Preparation passes can modify the guidance.
+            saw_binaries = True
+
+    if not saw_binaries:
+        c2rust_transpile_flags.extend(["--emit-build-files"])
+
+    # Preparation passes can modify the guidance, so we re-load it here.
     xj_c2rust_transpile_flags = [
         *c2rust_transpile_flags,
         "--log-level",
@@ -266,6 +269,9 @@ def do_translate(
     # so we (temporarily) create a subdirectory with the desired crate name.
     output = resultsdir / cratename
     output.mkdir(parents=True, exist_ok=False)
+
+    compdb = final_prepared_codebase / "compile_commands.json"
+    build_info.compdb_for_all_targets_within(final_prepared_codebase).to_json_file(compdb)
 
     # We must explicitly pass c2rust our sysroot
     compilation_database.munge_compile_commands_for_hermetic_translation(compdb)

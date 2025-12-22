@@ -84,6 +84,15 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
     else:
         env = os.environ.copy()
 
+    # This dance gives call sites the ability to add PATH entries
+    # that come before the Tenjin ones.
+    path_prefix = []
+    if env_ext and "pre-Tenjin PATH prefix" in env_ext:
+        p = env_ext["pre-Tenjin PATH prefix"]
+        assert isinstance(p, list)
+        path_prefix.extend(p)
+        del env_ext["pre-Tenjin PATH prefix"]
+
     if env_ext is not None:
         env = {**env, **env_ext}
 
@@ -91,6 +100,7 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
         # We define LLVM_LIB_DIR for c2rust (unconditionally).
         env["LLVM_LIB_DIR"] = str(llvm_root / "lib")
         env["PATH"] = os.pathsep.join([
+            *path_prefix,
             str(xj_build_deps(localdir) / "bin"),
             str(xj_more_deps(localdir) / "bin"),
             str(llvm_root / "bin"),

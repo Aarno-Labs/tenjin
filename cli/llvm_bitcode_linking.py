@@ -17,8 +17,8 @@ from compilation_database import CompileCommands
 
 
 def compile_and_link_bitcode(
-    compile_commands_path: Path,
-    target_path: Path,
+    compile_commands: CompileCommands,
+    destination_path: Path,
     use_llvm14: bool = False,
 ) -> None:
     """Compile translation units to LLVM bitcode and link them.
@@ -27,15 +27,13 @@ def compile_and_link_bitcode(
     by using clang on each translation unit, then llvm-link to combine them.
 
     Args:
-        compile_commands_path: Path to compile_commands.json
-        target_path: Path where the linked bitcode module should be written
+        compile_commands: Parsed compilation database
+        destination_path: Path where the linked bitcode module should be written
 
     Raises:
         CalledProcessError: If clang or llvm-link fails
         FileNotFoundError: If required tools are not found
     """
-    # Load the compilation database
-    compile_commands = CompileCommands.from_json_file(compile_commands_path)
 
     # Create a temporary directory for intermediate bitcode files
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -85,6 +83,10 @@ def compile_and_link_bitcode(
             # going to run this code, or even use it for subsequent translation.
             clang_args.extend(["-emit-llvm", "-g", "-O0", "-c", "-o", str(bc_file)])
 
+            # For reasons I don't yet understand, while Clang 18 picks up our
+            # default config file automatically, Clang 14 needs it spelled out.
+            clang_args.extend(["--config", "clang.cfg"])
+
             # Run clang to produce bitcode
             try:
                 hermetic.run(
@@ -104,18 +106,18 @@ def compile_and_link_bitcode(
 
         # Link all bitcode files into a single module
         if not bitcode_files:
-            click.echo(compile_commands_path.read_text(), err=True)
+            click.echo(compile_commands.to_dict(), err=True)
             raise ValueError("No bitcode files were produced from compilation database")
 
         if len(bitcode_files) == 1:
             # If there's only one bitcode file, just move it to the target path
-            bitcode_files[0].replace(target_path)
+            bitcode_files[0].replace(destination_path)
         else:
             llvm_link_args = [
                 "llvm-link",
                 *[str(bc) for bc in bitcode_files],
                 "-o",
-                str(target_path),
+                str(destination_path),
             ]
 
             try:

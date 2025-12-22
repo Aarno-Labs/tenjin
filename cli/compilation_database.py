@@ -139,20 +139,24 @@ class CompileCommands:
         return [cmd for cmd in self.commands if cmd.absolute_file_path == path]
 
 
-def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddir: Path):
-    """Write a synthetic compile_commands.json file for a single C file."""
-    assert compdb_path.parent.is_dir()
+def synthetic_compile_commands_for_c_file(c_file: Path, builddir: Path) -> CompileCommands:
     outname = c_file.with_suffix(".o").name
     cc = hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "clang"
     c_file_full_q = shlex.quote(c_file.resolve().as_posix())
-    CompileCommands([
+    return CompileCommands([
         CompileCommand(
             directory=builddir.as_posix(),
             file=c_file.resolve().as_posix(),
             command=f"{cc} -c {c_file_full_q} -o {shlex.quote(outname)}",
             output=outname,
         )
-    ]).to_json_file(compdb_path)
+    ])
+
+
+def write_synthetic_compile_commands_to(compdb_path: Path, c_file: Path, builddir: Path):
+    """Write a synthetic compile_commands.json file for a single C file."""
+    assert compdb_path.parent.is_dir()
+    synthetic_compile_commands_for_c_file(c_file, builddir).to_json_file(compdb_path)
 
 
 def extract_macro_args_affecting_content_from_compile_command(cc: CompileCommand) -> list[str]:
@@ -199,12 +203,11 @@ def extract_macro_args_affecting_content_from_compile_command(cc: CompileCommand
 
 
 def extract_preprocessor_definitions_from_compile_commands(
-    compile_commands_path: Path,
+    ccs: CompileCommands,
     codebase: Path,
 ) -> ingest.PerFilePreprocessorDefinitions:
     """Extract preprocessor definitions from `compile_commands.json`"""
     definitions = {}
-    ccs = CompileCommands.from_json_file(compile_commands_path)
     for cc in ccs.commands:
         args = cc.get_command_parts()
         # command_info["directory"] is build directory, which can be
@@ -239,41 +242,6 @@ def extract_preprocessor_definitions_from_compile_commands(
         if defs:
             definitions[chosen_path.as_posix()] = defs
     return definitions
-
-
-def rebase_compile_commands_from_to(compile_commands_path: Path, from_dir: Path, to_dir: Path):
-    """Rebase all paths in the given compile_commands.json file from `from_dir` to `to_dir`."""
-    # TODO maybe we need to handle relative paths more explicitly?
-    assert from_dir.is_absolute()
-    assert to_dir.is_absolute()
-
-    def update(p: str) -> str:
-        # The from_dir can appear in the haystack in resolved or unresolved form.
-        # Since either may be a subpath of the other, we replace the longer one first.
-        unresolved = from_dir.as_posix()
-        resolved = from_dir.resolve().as_posix()
-        if len(resolved) > len(unresolved):
-            first, second = resolved, unresolved
-        else:
-            first, second = unresolved, resolved
-        p = p.replace(first, to_dir.as_posix())
-        p = p.replace(second, to_dir.as_posix())
-        return p
-
-    ccs_orig = CompileCommands.from_json_file(compile_commands_path)
-    ccs: list[CompileCommand] = []
-    for cc in ccs_orig.commands:
-        parts = [update(arg) for arg in cc.get_command_parts()]
-        ccs.append(
-            CompileCommand(
-                directory=update(cc.directory),
-                file=update(cc.file),
-                command=" ".join(parts) if cc.command is not None else None,
-                arguments=parts if cc.arguments is not None else None,
-                output=cc.output,
-            )
-        )
-    CompileCommands(commands=ccs).to_json_file(compile_commands_path)
 
 
 def munge_compile_commands_for_hermetic_translation(compile_commands_path: Path):

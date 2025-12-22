@@ -2,12 +2,12 @@ import os
 import json
 import shutil
 import time
-import tempfile
 from pathlib import Path
 from typing import Callable
 from subprocess import CompletedProcess
 import hashlib
-from dataclasses import dataclass
+from collections import defaultdict
+import dataclasses
 from enum import Enum
 
 from clang.cindex import CursorKind  # type: ignore
@@ -24,7 +24,8 @@ import hermetic
 import repo_root
 import ingest_tracking
 import llvm_bitcode_linking
-import targets_from_cmake
+import targets_from_intercept
+from targets import BuildInfo, BuildTarget, TargetType
 from caching_file_contents import FilePathStr, CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
 
@@ -34,39 +35,45 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     return (end_ns - start_ns) / 1_000_000.0
 
 
-def materialize_compilation_database_in(
+def compute_build_info_in(
     builddir: Path,
     codebase: Path,
     buildcmd: str | None,
     tracker: ingest_tracking.TimingRepo,
-    mut_cmake_exe_targets: list[str] | None = None,
+    mut_build_info: BuildInfo,
 ):
-    """Leaves a copy of a provided-or-generated compile_commands.json file
-    in the given build directory.
+    """Builds the codebase in a temporary directory, intercepting compile and link commands.
+    (Single-file codebases do not require a build step.)
 
-    The compile_commands.json file will refer to paths in the original codebase,
-    not the build directory.
-
-    The build directory may or may not end up with a copy of the input codebase,
-    and in-place build artifacts,
-    depending on whether a build was required to produce the compilation database.
     To account for builds that generate files in the source tree, such as `Vim`,
     any newly created files ending in `.h`, `.c`, or `.inc` will be copied back
     to the original codebase. Otherwise, builds would fail due to missing files.
     """
+    buildcmds = codebase / ".xj-build-commands"
+
+    def convert_intercepted_commands_to_build_info():
+        entries = []
+        for json_file in buildcmds.glob("*.json"):
+            with open(json_file, "r", encoding="utf-8") as f:
+                entry = json.load(f)
+                # if entry["type"] != "cc":
+                #     continue  # FIXME
+                entries.append(entry)
+        intercepted_commands = targets_from_intercept.convert_json_entries(entries)
+
+        mut_build_info.set_intercepted_commands(intercepted_commands)
+
     provided_compdb = codebase / "compile_commands.json"
     provided_cmakelists = codebase / "CMakeLists.txt"
+
+    cc_ld_intercept_dir = repo_root.find_repo_root_dir_Path() / "cli" / "sh" / "cc-ld-intercept"
 
     if provided_cmakelists.exists() and not provided_compdb.exists():
         # If we have a CMakeLists.txt, we can generate the compile_commands.json
         cmake_project = CMakeProject(str(builddir), str(codebase), api_version=1)
         cmake_project.cmake_file_api.instrument_all()
-        cc_launcher = str(
-            repo_root.find_repo_root_dir_Path() / "cli" / "sh" / "cc-ld-intercept" / "cc"
-        )
-        ld_launcher = str(
-            repo_root.find_repo_root_dir_Path() / "cli" / "sh" / "cc-ld-intercept" / "ld"
-        )
+        cc_launcher = str(cc_ld_intercept_dir / "cc")
+        ld_launcher = str(cc_ld_intercept_dir / "ld")
         cmake_preset = os.environ.get("XJ_CMAKE_PRESET", "")
         cp = hermetic.run(
             [
@@ -86,7 +93,6 @@ def materialize_compilation_database_in(
         tracker.update_sub(cp)
 
         # Build the project to ensure all compile and link commands are intercepted.
-        buildcmds = codebase / ".xj-build-commands"
         cp2 = hermetic.run(
             [
                 "cmake",
@@ -101,90 +107,50 @@ def materialize_compilation_database_in(
             # capture_output=True,
         )
         tracker.update_sub(cp2)
+        convert_intercepted_commands_to_build_info()
+        assert not mut_build_info.is_empty(), "Failed to intercept commands from CMake build"
 
-        entries = []
-        for json_file in buildcmds.glob("*.json"):
-            with open(json_file, "r", encoding="utf-8") as f:
-                entry = json.load(f)
-                # if entry["type"] != "cc":
-                #     continue  # FIXME
-                entries.append(entry)
-        parsed_entries = targets_from_cmake.convert_json_entries(entries)
-        # print("parsed entries:")
-        # pprint(parsed_entries)
-
-        # entry_infos = targets_from_cmake.cmake_project_to_entry_infos(cmake_project)
-        # print("entry infos:")
-        # pprint(entry_infos)
-
-        targets_from_cmake.collect_executable_target_names(cmake_project, mut_cmake_exe_targets)
-
-        new_commands = targets_from_cmake.extract_link_compile_commands(
-            parsed_entries, codebase, builddir
-        )
-        # print("link commands:")
-        # pprint(new_commands)
-
-        shutil.copyfile(
-            builddir / "compile_commands.json", codebase / "compile_commands.cmake.json"
-        )
-
-        Path(codebase / "compile_commands.withlinks.json").write_text(
-            json.dumps(new_commands, indent=2), encoding="utf-8"
-        )
-        shutil.copyfile(
-            codebase / "compile_commands.withlinks.json", builddir / "compile_commands.json"
-        )
-        compilation_database.rebase_compile_commands_from_to(
-            builddir / "compile_commands.json", builddir, codebase
-        )
-
-    elif codebase.is_file() and codebase.suffix == ".c":
-        # If we have a single C file, we can trivially generate a compile_commands.json
-        # with a single entry for it.
-        compilation_database.write_synthetic_compile_commands_to(
-            builddir / "compile_commands.json", codebase, codebase.parent
-        )
     elif buildcmd:
-        # If we have a build command, use it to generate a compile_commands.json file
-        # by invoking the build command from a temporary directory with a copy of the
-        # input codebase.
+        # Invoke the build command from a temporary directory with a copy of the
+        # input codebase, logging the intercepted commands.
         shutil.copytree(codebase, builddir, dirs_exist_ok=True)
-        hermetic.run(f"intercept-build {buildcmd}", cwd=builddir, shell=True, check=True)
+
+        hermetic.run(
+            buildcmd,
+            cwd=builddir,
+            shell=True,
+            check=True,
+            env_ext={
+                "BUILD_COMMANDS_DIRECTORY": str(buildcmds),
+                "pre-Tenjin PATH prefix": [str(cc_ld_intercept_dir)],
+            },
+        )
         copy_new_source_files_back(codebase, builddir)
-        # intercept-build will have generated this file, if all went well
-        extracted_compdb = builddir / "compile_commands.json"
-        extracted_compdb_bytes = extracted_compdb.read_bytes()
-        if extracted_compdb_bytes == b"[]":
-            # Perhaps the build command failed, or it cut off early,
-            # for example if the target binary already existed.
-            raise ValueError("Extracted compile_commands.json is empty")
-        else:
-            compilation_database.rebase_compile_commands_from_to(
-                extracted_compdb, builddir, codebase
-            )
+        convert_intercepted_commands_to_build_info()
+        assert not mut_build_info.is_empty(), "Failed to intercept commands from build"
 
-    elif provided_compdb.exists():
-        # Otherwise, we assume the compile_commands.json is already present.
-        # We must make a copy to freely munge without affecting the original.
-        shutil.copyfile(provided_compdb, builddir / "compile_commands.json")
     else:
-        # If the codebase is a directory containing a single C file,
+        # If the codebase is a C file, or a directory containing a single C file,
         # we assume it's the intended source file to compile.
-        c_files = list(codebase.glob("*.c"))
+
+        if codebase.is_file() and codebase.suffix == ".c":
+            c_files = [codebase]
+        else:
+            c_files = list(codebase.glob("*.c"))
+
         if len(c_files) == 1:
-            compilation_database.write_synthetic_compile_commands_to(
-                builddir / "compile_commands.json", c_files[0], codebase
+            c_file = c_files[0]
+            # If we have a single C file, we synthesize a trivial build structure for it.
+            target_type = TargetType.EXECUTABLE
+            # TODO allow non-exe compilation via checking for main fn, then update docs/USE.md
+            mut_build_info.for_single_file(
+                c_file,
+                BuildTarget(name=c_file.name, type=target_type, stem=c_file.stem),
             )
         else:
-            raise FileNotFoundError(
-                f"No compile_commands.json found in {codebase}, "
-                "and unable to generate one automatically."
+            raise ValueError(
+                f"Unable to build {codebase}, no CMakeLists.txt found, no buildcmd provided"
             )
-
-
-def compdb_path_in(dir: Path) -> Path:
-    return dir / "compile_commands.json"
 
 
 def copy_new_source_files_back(
@@ -218,13 +184,12 @@ def copy_codebase_dir(
     """Copy the original codebase (directory) to a new directory."""
     assert src.is_dir()
     shutil.copytree(src, dst)
-    if compdb_path_in(dst).exists():
-        compilation_database.rebase_compile_commands_from_to(compdb_path_in(dst), src, dst)
 
-        # print("Rebased compile_commands.json")
-        # print("from ", src)
-        # print("to   ", dst)
-        # print(compdb_path_in(dst).read_text())
+    # Remove stale compile_commands.json if present; they should be
+    # regenerated in the new location as needed.
+    compdb_path = dst / "compile_commands.json"
+    if compdb_path.exists():
+        compdb_path.unlink()
 
 
 type QUSS = str
@@ -240,16 +205,17 @@ class FnDefHandling(Enum):
 
 def collect_decls_by_rel_tu(
     current_codebase: Path,
+    compdb: compilation_database.CompileCommands,
     restricted_to_files: set[FilePathStr] | None = None,
     fn_def_handling: FnDefHandling = FnDefHandling.EXCLUDE,
 ) -> dict[RelativeFilePathStr, dict[QUSS, tuple[RelativeFilePathStr, int, int, FileContentsStr]]]:
     def path_of_interest(p: FilePathStr) -> bool:
         if not Path(p).is_relative_to(current_codebase):
-            assert not Path(p).is_relative_to(current_codebase.parent)
+            assert not Path(p).is_relative_to(current_codebase.parent), (
+                f"Unexpected path: {p} not relative to {current_codebase=}"
+            )
             return False
         return restricted_to_files is None or p in restricted_to_files
-
-    compdb = compilation_database.CompileCommands.from_json_file(compdb_path_in(current_codebase))
 
     header_contents = CachingFileContents()
 
@@ -263,7 +229,9 @@ def collect_decls_by_rel_tu(
     index = c_refact.create_xj_clang_index()
     tus = c_refact.parse_project(index, compdb)
     for tu_path, tu in tus.items():
-        assert Path(tu_path).is_relative_to(current_codebase)
+        assert Path(tu_path).is_relative_to(current_codebase), (
+            f"Unexpected TU path: {tu_path} not relative to {current_codebase=}\n{compdb=}"
+        )
         rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
         for cursor in tu.cursor.get_children():
             # When we run this pass before expanding the preprocessor,
@@ -437,7 +405,7 @@ def expand_overlapping_decl_header_entries(
     return expanded_entries
 
 
-@dataclass
+@dataclasses.dataclass
 class PrepPassResultStore:
     decls_defined_by_headers: dict[
         RelativeFilePathStr, dict[QUSS, tuple[int, int, FileContentsStr]]
@@ -445,7 +413,7 @@ class PrepPassResultStore:
     decls_defined_after_pp: dict[
         RelativeFilePathStr, dict[QUSS, tuple[FilePathStr, int, int, FileContentsStr]]
     ]
-    cmake_exe_targets: list[str]
+    build_info: BuildInfo
 
 
 def run_preparation_passes(
@@ -454,33 +422,31 @@ def run_preparation_passes(
     tracker: ingest_tracking.TimingRepo,
     guidance: dict,
     buildcmd: str | None = None,
-) -> tuple[Path, list[str]]:
+) -> tuple[Path, BuildInfo]:
     """Returns the path to the final prepared codebase directory,
-    along with a list of CMake executable targets (if applicable)."""
+    along with information about the build structure."""
 
     def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path, store: PrepPassResultStore):
         copy_codebase(pristine, newdir)
 
-    def prep_01_materialize_compdb(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        with tempfile.TemporaryDirectory() as builddirname:
-            builddir = Path(builddirname)
-            materialize_compilation_database_in(
-                builddir, current_codebase, buildcmd, tracker, store.cmake_exe_targets
+    def prep_01_intercept_build(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        builddir = resultsdir / "_build_1"
+        compute_build_info_in(builddir, current_codebase, buildcmd, tracker, store.build_info)
+
+        merged_defs = defaultdict(list)
+
+        for target in store.build_info.get_all_targets():
+            compdb_for_target = store.build_info.compdb_for_target_within(
+                target.name, current_codebase, include_link_cmds=False
             )
-            # The generated compile_commands.json is in builddir and refers to current_codebase.
-
-            compdb_contents = compdb_path_in(builddir).read_text()
-            assert builddirname not in compdb_contents
-            assert compdb_contents != "[]", "Generated compile_commands.json is empty"
-
-            shutil.copyfile(compdb_path_in(builddir), compdb_path_in(current_codebase))
-
-        tracker.set_preprocessor_definitions(
-            compilation_database.extract_preprocessor_definitions_from_compile_commands(
-                compdb_path_in(current_codebase),
+            defs = compilation_database.extract_preprocessor_definitions_from_compile_commands(
+                compdb_for_target,
                 current_codebase,
-            ),
-        )
+            )
+            for k, v in defs.items():
+                merged_defs[k].extend(v)
+
+        tracker.set_preprocessor_definitions(dict(merged_defs))
 
         # Writing out the user-provided guidance can go pretty much wherever in the early stages.
         json.dump(
@@ -489,21 +455,32 @@ def run_preparation_passes(
             indent=2,
         )
 
-    def prep_uniquify_compdb(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        compdb = compilation_database.CompileCommands.from_json_file(
-            compdb_path_in(current_codebase)
-        )
-
+    def prep_uniquify_built_files(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # Some codebases will compile the same source file multiple times with different
         # flags. It's really convenient for us if each source file is only compiled once.
         # So we duplicate source files as needed and adjust the compilation database.
 
-        outputs = [cmd.output for cmd in compdb.commands if cmd.output is not None]
+        intercepted_commands = store.build_info._intercepted_commands
+        outputs = [cmd.output for cmd in intercepted_commands if cmd.output is not None]
         assert len(outputs) == len(set(outputs)), f"Output files are not unique: {outputs}"
 
-        new_commands: list[compilation_database.CompileCommand] = []
-        for abs_path in compdb.get_source_files():
-            cmds = compdb.get_commands_for_path(abs_path)
+        # Step 1: Find files which are compiled multiple times
+        cc_commands_for_path: defaultdict[Path, list[targets_from_intercept.InterceptedCommand]] = (
+            defaultdict(list)
+        )
+        for cmd in intercepted_commands:
+            if not cmd.compile_only:
+                continue
+            inp = cmd.c_inputs[0] if len(cmd.c_inputs) == 1 else None
+            assert inp, f"Expected single C input file for compilation command {cmd}"
+
+            stale_abs_path = cmd.abs_path(Path(inp))
+            cc_commands_for_path[stale_abs_path].append(cmd)
+
+        # Step 2: Duplicate files in current_codebase, duplicate commands (but with stale refs).
+        new_commands = []
+        for stale_abs_path, cmds in cc_commands_for_path.items():
+            stale_abs_path = Path(stale_abs_path)
             if len(cmds) == 1:
                 # Only one command for this file, keep as-is
                 new_commands.append(cmds[0])
@@ -512,65 +489,85 @@ def run_preparation_passes(
             # Multiple commands for same file - need to duplicate all of them
             for idx, cmd in enumerate(cmds):
                 # Create unique file name: foo.c -> foo_xjdup_0.c, foo_xjdup_1.c, ...
-                stem = abs_path.stem
-                suffix = abs_path.suffix
+                stem = stale_abs_path.stem
+                suffix = stale_abs_path.suffix
                 new_filename = f"{stem}_xjdup_{idx}{suffix}"
-                new_file_path = abs_path.parent / new_filename
+                stale_dedup_path = stale_abs_path.parent / new_filename
+                curr_dedup_path = current_codebase / new_filename
 
-                # Copy the source file  to the new file
-                shutil.copyfile(abs_path, new_file_path)
+                # Copy the source file to the new file.
+                assert stale_abs_path.exists()
+                shutil.copyfile(stale_abs_path, curr_dedup_path)
 
-                # Update command arguments to reference new file
-                new_args = cmd.get_command_parts().copy()
-                for i, arg in enumerate(new_args):
-                    arg_path = Path(arg)
-                    if not arg_path.is_absolute():
-                        arg_path = cmd.directory_path / arg_path
+                # Cache this to reduce the number of repeated resolve() calls.
+                resolved_stale_path = stale_abs_path.resolve()
+
+                def update_arg(arg: str) -> str:
                     try:
-                        if arg_path.resolve() == abs_path.resolve():
-                            new_args[i] = str(new_file_path)
-                            break
+                        if cmd.abs_path(Path(arg)).resolve() == resolved_stale_path:
+                            return stale_dedup_path.as_posix()
                     except OSError:
                         # Path resolution can fail for non-existent paths
                         pass
+                    return arg
 
-                # Create new compile command with updated file and arguments
-                new_commands.append(
-                    compilation_database.CompileCommand(
-                        directory=cmd.directory,
-                        file=str(new_file_path),
-                        arguments=new_args if cmd.arguments else None,
-                        command=" ".join(new_args) if cmd.command else None,
-                        output=cmd.output,
-                    )
-                )
+                new_commands.append(cmd.fmap_input_paths(update_arg))
 
-        # compdb.get_source_files() ignores fake link thingy commands,
+        # compile_commands_for_path omits fake link thingy commands,
         # so we need to add them back in.
-        for cmd in compdb.commands:
-            if cmd.is_fake_link_thingy:
+        for cmd in intercepted_commands:
+            if not cmd.compile_only:
                 new_commands.append(cmd)
 
-        # Write updated compile_commands.json
-        compilation_database.CompileCommands(commands=new_commands).to_json_file(
-            compdb_path_in(current_codebase)
+        store.build_info.set_intercepted_commands(new_commands)
+
+        # Synthesize new compile_commands.json in current_codebase.
+        # (this is mostly for debugging purposes, tested in the triplicated smoke test)
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(
+            current_codebase / "compile_commands.json"
         )
 
     def prep_localize_mutable_globals(
         prev: Path, current_codebase: Path, store: PrepPassResultStore
     ):
-        compdb = compilation_database.CompileCommands.from_json_file(
-            compdb_path_in(current_codebase)
-        )
-        c_refact.localize_mutable_globals(
-            current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
-        )
+        # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
+        # Preconditions for localizing mutable globals:
+        # A. The project must consist of a single executable target, OR
+        # B. The project must have one or more executable targets, each of which
+        #    has completely disjoint modifiable input files (including headers).
+        #
+        # In case A, we are free to update all local files as needed.
+        #
+        # In case B, we cannot update headers shared between executable and
+        # library targets, because we cannot generally localize globals in
+        # shared libraries which need to maintain a stable C ABI.
+        #
+        # We could in principle modify headers shared only between executable targets, but
+        # only if every target makes the same modifications to those headers.
+        all_targets = store.build_info.get_all_targets()
+        if len(all_targets) == 1 and all_targets[0].type == TargetType.EXECUTABLE:
+            # Case A
+            compdb = store.build_info.compdb_for_target_within(
+                all_targets[0].name, current_codebase, include_link_cmds=False
+            )
+
+            c_refact.localize_mutable_globals(
+                current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
+            )
+        else:
+            # Case B
+            print(
+                "TENJIN: NOTE: Skipping localization of mutable globals for multi-target codebase."
+            )
 
     def prep_lift_subfield_args(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        compdb = compilation_database.CompileCommands.from_json_file(
-            compdb_path_in(current_codebase)
-        )
-        c_refact_arglifter.lift_subfield_args(compdb)
+        # Lifting of subfield arguments is idempotent, so we apply it to all targets
+        # without concern for overlapping source files.
+        for target in store.build_info.get_all_targets():
+            compdb_for_target = store.build_info.compdb_for_target_within(
+                target.name, current_codebase, include_link_cmds=False
+            )
+            c_refact_arglifter.lift_subfield_args(compdb_for_target)
 
     def run_cc2json_or_cached(bitcode_module_path: Path, current_codebase: Path) -> None:
         assert bitcode_module_path.exists()
@@ -639,19 +636,38 @@ def run_preparation_passes(
         )
 
     def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        # For now, we restrict analysis to single-target projects,
+        # although this is not a fundamental limitation.
+        all_build_targets = store.build_info.get_all_targets()
+        if len(all_build_targets) != 1:
+            print("TENJIN: NOTE: Skipping cclyzer++ analysis for multi-target codebase.")
+            return
+
+        curr_compdb = store.build_info.compdb_for_target_within(
+            all_build_targets[0].name, current_codebase, include_link_cmds=False
+        )
+
         # Compile and link LLVM bitcode module
         bitcode_module_path = current_codebase / "linked_module.bc"
 
         llvm_bitcode_linking.compile_and_link_bitcode(
-            compdb_path_in(current_codebase), bitcode_module_path, use_llvm14=True
+            curr_compdb, bitcode_module_path, use_llvm14=True
         )
 
         run_cc2json_or_cached(bitcode_module_path, current_codebase)
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        compdb = compilation_database.CompileCommands.from_json_file(
-            compdb_path_in(current_codebase)
+        # For now, we restrict analysis to single-target projects,
+        # although this is not a fundamental limitation.
+        all_build_targets = store.build_info.get_all_targets()
+        if len(all_build_targets) != 1:
+            print("TENJIN: NOTE: Skipping static-uniquification for multi-target codebase.")
+            return
+
+        compdb = store.build_info.compdb_for_target_within(
+            all_build_targets[0].name, current_codebase, include_link_cmds=False
         )
+
         all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
             compdb, statics_only=True
         )
@@ -729,7 +745,7 @@ def run_preparation_passes(
             )
 
     def prep_split_joined_decls(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        j = c_refact.run_xj_locate_joined_decls(current_codebase)
+        j = c_refact.run_xj_locate_joined_decls(current_codebase, store.build_info)
         c_refact_decl_splitter.apply_decl_splitting_rewrites(current_codebase, j)
 
     def prep_pre_refold_consolidation(
@@ -749,8 +765,15 @@ def run_preparation_passes(
         #
         # Since we run this pass before refolding, locations refer to .i files,
         # not .c or .h files.
-        compdb = compilation_database.CompileCommands.from_json_file(
-            compdb_path_in(current_codebase)
+
+        # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
+        all_build_targets = store.build_info.get_all_targets()
+        if len(all_build_targets) != 1:
+            print("TENJIN: NOTE: Skipping static-uniquification for multi-target codebase.")
+            return
+
+        compdb = store.build_info.compdb_for_target_within(
+            all_build_targets[0].name, current_codebase, include_link_cmds=False
         )
 
         decls_src_by_tu: dict[FilePathStr, dict[QUSS, FileContentsStr]] = {}
@@ -966,19 +989,27 @@ def run_preparation_passes(
                         )
 
     def prep_expand_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
+        all_build_targets = store.build_info.get_all_targets()
+        if len(all_build_targets) != 1:
+            print("TENJIN: NOTE: Skipping preprocessor expansion for multi-target codebase.")
+            return
+
+        compdb = store.build_info.compdb_for_target_within(
+            all_build_targets[0].name, current_codebase, include_link_cmds=False
+        )
+
         # We want to capture decl information after the header contents have stabilized,
         # so just before preprocessor expansion is a good time.
         local_header_paths = set(p.as_posix() for p in current_codebase.glob("**/*.h"))
 
         store.decls_defined_by_headers = organize_decls_by_headers(
-            collect_decls_by_rel_tu(current_codebase, restricted_to_files=local_header_paths)
+            collect_decls_by_rel_tu(
+                current_codebase, compdb, restricted_to_files=local_header_paths
+            )
         )
 
         # Miscellaneous tasks over, onwards with preprocessor expansion!
-
-        compdb = compilation_database.CompileCommands.from_json_file(
-            compdb_path_in(current_codebase)
-        )
         new_compdb: compilation_database.CompileCommands = (
             c_refact.preprocess_and_create_new_compdb(
                 compdb,
@@ -989,15 +1020,22 @@ def run_preparation_passes(
         for cmd in new_compdb.commands:
             assert cmd.file_path.suffix == ".i", "Expected preprocessed .i files"
 
-        store.decls_defined_after_pp = collect_decls_by_rel_tu(current_codebase)
+        store.decls_defined_after_pp = collect_decls_by_rel_tu(current_codebase, new_compdb)
         print(
             f"Collected declarations after preprocessing: {len(store.decls_defined_after_pp)} TUs"
         )
 
     def prep_refold_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        compdb = compilation_database.CompileCommands.from_json_file(
-            compdb_path_in(current_codebase)
+        # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
+        all_build_targets = store.build_info.get_all_targets()
+        if len(all_build_targets) != 1:
+            print("TENJIN: NOTE: Skipping preprocessor refolding for multi-target codebase.")
+            return
+
+        compdb = store.build_info.compdb_for_target_within(
+            all_build_targets[0].name, current_codebase, include_link_cmds=False
         )
+
         new_compdb: compilation_database.CompileCommands = (
             c_refact.refold_preprocess_and_create_new_compdb(compdb, current_codebase.as_posix())
         )
@@ -1009,29 +1047,29 @@ def run_preparation_passes(
         tuple[str, Callable[[Path, Path, PrepPassResultStore], CompletedProcess | None]]
     ] = [
         ("copy_pristine_codebase", prep_00_copy_pristine_codebase),
-        ("materialize_compdb", prep_01_materialize_compdb),
-        ("uniquify_compdb", prep_uniquify_compdb),
+        ("intercept_build", prep_01_intercept_build),
+        ("uniquify_built", prep_uniquify_built_files),
+        ("uniquify_statics", prep_uniquify_statics),
+        ("split_joined_decls", prep_split_joined_decls),
+        ("expand_preprocessor", prep_expand_preprocessor),
+        ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
+        ("localize_mutable_globals", prep_localize_mutable_globals),
+        ("lift_subfield_args", prep_lift_subfield_args),
     ]
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") == "1":
         preparation_passes.extend([
-            ("uniquify_statics", prep_uniquify_statics),
-            ("split_joined_decls", prep_split_joined_decls),
-            ("expand_preprocessor", prep_expand_preprocessor),
-            ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
-            ("localize_mutable_globals", prep_localize_mutable_globals),
-            ("lift_subfield_args", prep_lift_subfield_args),
-            # # Refolding and pre-refolding should always go together.
-            # # They are separate steps to allow inspection of the intermediate codebase.
-            # ("pre_refold_consolidation", prep_pre_refold_consolidation),
-            # ("refold_preprocessor", prep_refold_preprocessor),
+            # Refolding and pre-refolding should always go together.
+            # They are separate steps to allow inspection of the intermediate codebase.
+            ("pre_refold_consolidation", prep_pre_refold_consolidation),
+            ("refold_preprocessor", prep_refold_preprocessor),
         ])
 
     prev = original_codebase.absolute()
     resultsdir_abs = resultsdir.absolute()
 
     store = PrepPassResultStore(
-        decls_defined_by_headers={}, decls_defined_after_pp={}, cmake_exe_targets=[]
+        decls_defined_by_headers={}, decls_defined_after_pp={}, build_info=BuildInfo()
     )
 
     # Note: the original codebase may be a file or directory,
@@ -1052,4 +1090,4 @@ def run_preparation_passes(
 
             prev = newdir
 
-    return prev, store.cmake_exe_targets
+    return prev, store.build_info

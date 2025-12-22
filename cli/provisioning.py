@@ -612,7 +612,7 @@ def want_10j_more_deps():
             subprocess.check_call([
                 "install_name_tool",
                 "-add_rpath",
-                "@executable_path/../../xj-llvm/lib",
+                "@executable_path/../../xj-llvm-14/lib",
                 str(target / "bin" / "cc2json-llvm14"),
             ])
 

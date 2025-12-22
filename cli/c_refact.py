@@ -28,6 +28,7 @@ import batching_rewriter
 from cindex_helpers import render_declaration_sans_qualifiers, yield_matching_cursors
 import c_refact_type_mod_replicator
 from constants import XJ_GUIDANCE_FILENAME
+from targets import BuildInfo
 
 
 def create_xj_clang_index() -> Index:
@@ -897,6 +898,7 @@ class XjLocateJoinedDeclsOutput(TypedDict):
 
 def run_xj_locate_joined_decls(
     current_codebase: Path,
+    build_info: BuildInfo,
 ) -> XjLocateJoinedDeclsOutput:
     builddir = hermetic.xj_prepare_locatejoineddecls_build_dir(repo_root.localdir())
     assert builddir.exists(), (
@@ -912,6 +914,11 @@ def run_xj_locate_joined_decls(
         hermetic.run("clang -print-resource-dir", shell=True, capture_output=True)
         .stdout.decode("utf-8")
         .strip()
+    )
+
+    # Synthesize a compile_commands.json for all TUs in the codebase
+    build_info.compdb_for_all_targets_within(current_codebase).to_json_file(
+        current_codebase / "compile_commands.json"
     )
 
     # Keep in sync with `xj-prepare-printdecllocs/CMakeLists.txt`

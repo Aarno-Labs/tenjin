@@ -24,7 +24,7 @@ import repo_root
 def root() -> Path:
     """The tenjin root dir"""
     root = repo_root.find_repo_root_dir_Path()
-    cli_subcommands.do_build_rs(root)
+    cli_subcommands.do_build_star()
     return root
 
 

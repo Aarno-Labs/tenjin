@@ -103,10 +103,10 @@ def do_test_unit_rs():
     )
 
 
-def do_build_star():
-    do_build_xj_prepare_findfnptrdecls()
-    do_build_xj_prepare_locatejoineddecls()
-    do_build_rs(repo_root.find_repo_root_dir_Path())
+def do_build_star(capture_output: bool = False):
+    do_build_xj_prepare_findfnptrdecls(capture_output=capture_output)
+    do_build_xj_prepare_locatejoineddecls(capture_output=capture_output)
+    do_build_rs(repo_root.find_repo_root_dir_Path(), capture_output=capture_output)
 
 
 def do_build_xj_prepare_findfnptrdecls(capture_output: bool = False):
