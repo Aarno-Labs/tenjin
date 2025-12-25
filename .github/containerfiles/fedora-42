@@ -1,0 +1,18 @@
+FROM fedora:42
+
+RUN \
+   dnf install git -y && \
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.88.0 -y && \
+   /bin/true
+
+ENV PATH="$PATH:/root/.cargo/bin:/tenjin/cli"
+
+RUN \
+   cd / && \
+   git clone https://github.com/Aarno-Labs/tenjin && \
+   cd tenjin && \
+   10j provision && \
+   echo 'int main() { return 42; }' > /tmp/fortytwo.c && \
+   10j translate-and-run /tmp/fortytwo.c ; \
+   if [ $? -ne 42 ]; then exit 1; fi
+   
