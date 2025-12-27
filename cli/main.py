@@ -392,6 +392,7 @@ if __name__ == "__main__":
         if sys.argv[1] == "clang":
             sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
         if sys.argv[1] == "pytest":
+            cli_subcommands.do_build_star()  # Build once, before concurrent tests start
             # When pytest executes from outside of the repo, e.g. because `10j` is on the PATH,
             # it cannot find the repo root from the executing script or the cwd.
             env_ext = {"XJ_REPO_ROOT_DIR": str(repo_root.find_repo_root_dir_Path())}
