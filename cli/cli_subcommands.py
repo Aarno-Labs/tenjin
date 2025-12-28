@@ -130,7 +130,7 @@ def do_build_xj_prepare_findfnptrdecls(capture_output: bool = False):
         assert builddir.exists(), f"cmake config returned {cp.returncode}"
 
     hermetic.run(
-        ["cmake", "--build", builddir.as_posix()],
+        ["cmake", "--build", builddir.as_posix(), "--", "--quiet"],
         cwd=root,
         capture_output=capture_output,
         check=True,
@@ -157,7 +157,7 @@ def do_build_xj_prepare_locatejoineddecls(capture_output: bool = False):
         )
 
     hermetic.run(
-        ["cmake", "--build", builddir.as_posix()],
+        ["cmake", "--build", builddir.as_posix(), "--", "--quiet"],
         cwd=root,
         check=True,
         capture_output=capture_output,
