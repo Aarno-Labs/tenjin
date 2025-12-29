@@ -260,6 +260,30 @@ def munge_compile_commands_for_hermetic_translation(compile_commands_path: Path)
     CompileCommands(commands=ccs).to_json_file(compile_commands_path)
 
 
+def _is_cc_command(args: list[str]) -> bool:
+    """Check if the given argument list represents an implicit or explicit
+    C compile command.
+
+    Explicit commands have `-c` in the argument list.
+    Implicit compile commands have one or more `.c` or `.i` files as inputs.
+
+    (The definition is not trivial: invocations used only to link object files
+    will be excluded.)"""
+    if not args:
+        return False
+    compiler = Path(args[0]).name
+    if compiler not in ("clang", "cc"):
+        return False
+
+    if "-c" in args:
+        return True
+
+    for arg in args:
+        if arg.endswith(".c") or arg.endswith(".i"):
+            return True
+    return False
+
+
 def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     """Modify compile_commands.json to include Tenjin-specific declarations
     and block expansion of macros that Tenjin gives special treatment."""
@@ -268,7 +292,7 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     ccs: list[CompileCommand] = []
     for cc in ccs_orig.commands:
         args = cc.get_command_parts()
-        if args and Path(args[0]).name in ("clang", "cc") and "-c" in args:
+        if _is_cc_command(args):
             args.append("-include")
             args.append(
                 str(repo_root.find_repo_root_dir_Path() / "cli" / "autoincluded_tenjin_decls.h")
