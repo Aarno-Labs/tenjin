@@ -246,10 +246,10 @@ def do_translate(
             # We eventually want to use target.stem as the name of the Rust binary,
             # but for now c2rust only takes the file name, and uses it as the binary name.
             for cmd in ccs_with_main_funcs:
-                c2rust_transpile_flags.extend([
-                    "--binary",
-                    cmd.absolute_file_path.stem,
-                ])
+                stem = cmd.absolute_file_path.stem
+                # c2rust disallows dots in binary names
+                stem = stem.replace(".", "_")
+                c2rust_transpile_flags.extend(["--binary", stem])
 
             saw_binaries = True
 
