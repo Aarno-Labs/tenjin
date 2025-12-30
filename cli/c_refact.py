@@ -669,7 +669,9 @@ def localize_mutable_globals_phase1(
             list(tus.values()), fpd_output["var_decl_fn_ptr_arg_lparen_locs"]
         )
         pprint.pprint(
-            equiv_classes, indent=2, stream=open("xj-type_equiv_classes.txt", "w", encoding="utf-8")
+            equiv_classes,
+            indent=2,
+            stream=open(current_codebase / "xj-type_equiv_classes.txt", "w", encoding="utf-8"),
         )
         print("phase1, replicating type modifications across TUs")
         ext_rewrites = c_refact_type_mod_replicator.replicate_type_modifications(
