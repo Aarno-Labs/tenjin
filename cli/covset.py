@@ -915,8 +915,7 @@ def generate_via(
         #    %m = module name
         cp = hermetic.run(
             [target_binary, *rest],
-            cwd=tmp_path,
-            env_ext={"LLVM_PROFILE_FILE": "xj-%p-%m.profraw"},
+            env_ext={"LLVM_PROFILE_FILE": (tmp_path / "xj-%p-%m.profraw").as_posix()},
             check=False,
         )
 
