@@ -110,10 +110,6 @@ def translate(codebase, resultsdir, cratename, guidance, buildcmd, reset_results
         )
         sys.exit(1)
 
-    if guidance is None:
-        click.echo("Using empty guidance; pass `--guidance` to refine translation.", err=True)
-        guidance = "{}"
-
     resultsdir = Path(resultsdir)
     if reset_resultsdir and resultsdir.is_dir():
         # Remove contents but not the directory itself, so that open editors don't lose their place.
@@ -122,6 +118,18 @@ def translate(codebase, resultsdir, cratename, guidance, buildcmd, reset_results
                 shutil.rmtree(item)
             else:
                 item.unlink()
+    elif resultsdir.is_dir() and any(resultsdir.iterdir()):
+        sdir = click.style(resultsdir, fg="bright_white", bold=True)
+        flag = click.style("--reset-resultsdir", fg="bright_cyan", bold=True)
+        click.echo(
+            f"Results directory {sdir} already exists and is not empty. Pass {flag} to reset it.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if guidance is None:
+        click.echo("Using empty guidance; pass `--guidance` to refine translation.", err=True)
+        guidance = "{}"
 
     translation.do_translate(root, Path(codebase), resultsdir, cratename, guidance, buildcmd)
 
