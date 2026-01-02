@@ -30,19 +30,28 @@ from translation_improvement import run_improvement_passes
 from constants import XJ_GUIDANCE_FILENAME
 
 
-def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationRecord | None:
+def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationRecord:
     """
     Create a stub IngestionRecord for the given codebase and crate name.
     This is used to initialize the ingestion record before the actual translation.
     """
 
     codebase_vcs_dir = vcs_helpers.find_containing_vcs_dir(codebase)
-    if codebase_vcs_dir is None:
-        return None
+    ingested_codebase = None
 
-    codebase_wcs = vcs_helpers.vcs_working_copy_status(codebase_vcs_dir)
-    if codebase_wcs.origin is None or codebase_wcs.commit is None:
-        return None
+    if codebase_vcs_dir is not None:
+        codebase_wcs = vcs_helpers.vcs_working_copy_status(codebase_vcs_dir)
+        if codebase_wcs.origin is not None and codebase_wcs.commit is not None:
+            codebase_relative_path = codebase
+            if codebase_relative_path.is_absolute():
+                codebase_relative_path = codebase.relative_to(
+                    vcs_helpers.vcs_root(codebase_vcs_dir)
+                )
+            ingested_codebase = ingest.IngestedCodebase(
+                git_repo_url=codebase_wcs.origin,
+                git_commit=codebase_wcs.commit,
+                relative_path=str(codebase_relative_path),
+            )
 
     tenjin_vcs_dir = vcs_helpers.find_containing_vcs_dir(find_repo_root_dir_Path())
     assert tenjin_vcs_dir is not None, "No VCS directory found for Tenjin?!?!"
@@ -52,21 +61,11 @@ def stub_ingestion_record(codebase: Path, guidance: dict) -> ingest.TranslationR
     assert tenjin_wcs.origin is not None, "Tenjin working copy has no origin URL?!?"
     assert tenjin_wcs.commit is not None, "Tenjin working copy has no commit hash?!?"
 
-    assert codebase_wcs.origin is not None, "Codebase working copy has no origin URL?!?"
-    assert codebase_wcs.commit is not None, "Codebase working copy has no commit hash?!?"
-
-    codebase_relative_path = codebase
-    if codebase_relative_path.is_absolute() and codebase_vcs_dir is not None:
-        codebase_relative_path = codebase.relative_to(vcs_helpers.vcs_root(codebase_vcs_dir))
     upstream_c2rust = provisioning.HAVE.query("10j-reference-c2rust-tag")
     return ingest.TranslationRecord(
         translation_uuid=uuid.uuid4(),
         inputs=ingest.TranslationInputs(
-            codebase=ingest.IngestedCodebase(
-                git_repo_url=codebase_wcs.origin,
-                git_commit=codebase_wcs.commit,
-                relative_path=str(codebase_relative_path),
-            ),
+            codebase=ingested_codebase,
             host_platform=platform(),
             tenjin_git_repo_url=tenjin_wcs.origin,
             tenjin_git_commit=tenjin_wcs.commit,

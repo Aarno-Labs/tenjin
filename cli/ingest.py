@@ -31,7 +31,7 @@ class IngestedCodebase:
 @dataclass_json
 @dataclass
 class TranslationInputs:
-    codebase: IngestedCodebase
+    codebase: IngestedCodebase | None
     host_platform: str
     per_file_preprocessor_definitions: PerFilePreprocessorDefinitions
     tenjin_git_repo_url: str

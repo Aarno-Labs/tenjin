@@ -5,6 +5,8 @@ import argparse
 from pathlib import Path
 import shutil
 import tempfile
+import textwrap
+import json
 from typing import Literal, cast
 
 import click
@@ -330,6 +332,22 @@ def upload_results(directory: Path, host_port: str):
 
     if not snapshot_file.exists():
         click.echo(f"Error: {snapshot_file} does not exist", err=True)
+        sys.exit(1)
+
+    # Check if codebase information is present
+    with open(metadata_file, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+
+    if metadata.get("inputs", {}).get("codebase") is None:
+        click.echo(
+            textwrap.dedent(
+                """\
+                Error: Cannot upload results without codebase VCS information."
+                       The translated codebase was not in a Git repository,"
+                       so the translation is not mechanically reproducible."""
+            ),
+            err=True,
+        )
         sys.exit(1)
 
     if host_port.startswith("http"):
