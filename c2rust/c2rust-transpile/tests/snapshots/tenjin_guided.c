@@ -1,6 +1,8 @@
 // To avoid cross-platform output differences from `printf` argument names,
-// we'll just declare printf ourselves.
+// we'll just declare printf and other libc functions ourselves.
 int printf(const char *fmt, ...);
+long strlen(const char *s);
+void *memset(void *s, int c, long n);
 
 void print_owned_String(const char *ostr)
 {
@@ -39,6 +41,32 @@ int guided_condition_string_null_check_neq(const char *ostr)
 {
     // XREF:guided_condition_string_null_check_neq
     return (ostr != ((void *)0)) ? 2 : 5;
+}
+
+void guided_c_assignment_string_pop(char* ostr)
+{
+    // XREF:guided_c_assignment_string_pop
+    ostr[strlen(ostr) - 1] = '\0';
+}
+
+
+// void guided_vec_memset_zero_nosizeof(char* ovu8)
+// {
+//     // XREF:guided_vec_memset_zero_nosizeof
+//     memset(ovu8, 0, 3);
+// }
+
+
+void guided_vec_memset_zero_mulsizeof_ty(char* ovu8)
+{
+    // XREF:guided_vec_memset_zero_mulsizeof_ty
+    memset(ovu8, 0, sizeof(char) * 3);
+}
+
+void guided_vec_memset_zero_mulsizeof_deref(char* ovu8)
+{
+    // XREF:guided_vec_memset_zero_mulsizeof_deref
+    memset(ovu8, 0, sizeof(*ovu8) * 3);
 }
 
 // int guided_noncondition_string_null_check_neq(const char* ostr) {

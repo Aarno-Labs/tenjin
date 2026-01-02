@@ -13,6 +13,12 @@ input_file: c2rust-transpile/tests/snapshots/tenjin_guided.c
 )]
 extern "C" {
     fn printf(fmt: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
+    fn strlen(s: *const ::core::ffi::c_char) -> ::core::ffi::c_long;
+    fn memset(
+        s: *mut ::core::ffi::c_void,
+        c: ::core::ffi::c_int,
+        n: ::core::ffi::c_long,
+    ) -> *mut ::core::ffi::c_void;
 }
 #[no_mangle]
 pub unsafe extern "C" fn print_owned_String(mut ostr: String) {
@@ -49,6 +55,18 @@ pub unsafe extern "C" fn guided_condition_string_null_check_neq(
     } else {
         5 as ::core::ffi::c_int
     };
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_c_assignment_string_pop(mut ostr: String) {
+    ostr.pop();
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_vec_memset_zero_mulsizeof_ty(mut ovu8: Vec<u8>) {
+    ovu8[..3].fill(0);
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_vec_memset_zero_mulsizeof_deref(mut ovu8: Vec<u8>) {
+    ovu8[..3].fill(0);
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_mut_ref_neq(

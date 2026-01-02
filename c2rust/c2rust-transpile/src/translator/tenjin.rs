@@ -574,6 +574,14 @@ impl Translation<'_> {
         }
     }
 
+    fn c_type_pointee(&self, typ: CTypeId) -> Option<CTypeId> {
+        if let CTypeKind::Pointer(pointee) = self.ast_context[typ].kind {
+            Some(pointee.ctype)
+        } else {
+            None
+        }
+    }
+
     fn c_expr_decl_id(&self, expr: CExprId) -> Option<CDeclId> {
         let kind = &self
             .ast_context
@@ -591,6 +599,8 @@ impl Translation<'_> {
         //   (   E      * sizeof(T)) or
         //   (sizeof(T) *     E)     ==> (E, None, T)
         //   (   E      * sizeof(V)) ==> (E, Some(V), typeof(V))
+
+        let expr = self.c_strip_implicit_casts(expr);
 
         let get_sizeof =
             |t: &Translation<'_>, expr: CExprId| -> Option<(Option<CExprId>, CTypeId)> {
@@ -670,6 +680,7 @@ impl Translation<'_> {
                         .borrow_mut()
                         .query_decl_type(self, base_decl_id);
 
+                    // XREF:guided_c_assignment_string_pop
                     if guided_type.is_none_or(|g| g.pretty != "String") {
                         log::trace!("target variable not guided to be of type String");
                         return Ok(None);
@@ -1720,6 +1731,7 @@ impl Translation<'_> {
 
             let arg0_sans_casts = self.c_strip_implicit_casts(cargs[0]);
 
+            // XREF:guided_vec_memset_zero_mulsizeof
             let mb_dst_guided_type = self
                 .parsed_guidance
                 .borrow_mut()
@@ -1820,30 +1832,29 @@ impl Translation<'_> {
     ) -> bool {
         // For `memset(DST, 0, E * sizeof(T))` it's OK as long as sizeof(T) == sizeof(*DST), which we currently
         // approximate by requiring that the resolved types are identical.
-        if sized_expr.is_none() && Some(*elt_type) == self.ast_context[*dst].kind.get_type() {
-            return true;
-        }
-
-        // We can only proceed if the user wrote something sensible like memset(DST, 0, E * sizeof(*DST)).
-        // For `memset(PTR, 0, E * sizeof(PTR))` we'd need to know the relationship between the target pointer size
-        // and the size of the pointee type.
-        if let Some(sized_expr) = sized_expr {
-            match &self.ast_context[*sized_expr].kind {
-                CExprKind::Unary(_, c_ast::UnOp::Deref, inner, _lrvalue) => {
-                    self.c_expr_decl_id(*inner) == self.c_expr_decl_id(*dst)
-                }
-                CExprKind::ArraySubscript(_cqt, base, _idx, _lrval) => {
-                    log::warn!(
-                        "memset_args_translate_plainly: sized_expr is ArraySubscript, cqt={:?}",
-                        _cqt
-                    );
-                    self.c_expr_decl_id(*base) == self.c_expr_decl_id(*dst)
-                }
-                _ => false,
+        if let Some(dst_type_id) = self.ast_context[*dst].kind.get_type() {
+            if sized_expr.is_none() && Some(*elt_type) == self.c_type_pointee(dst_type_id) {
+                // XREF:guided_vec_memset_zero_mulsizeof_ty
+                return true;
             }
-        } else {
-            false
-        }
+
+            // We can only proceed if the user wrote something sensible like memset(DST, 0, E * sizeof(*DST)).
+            // For `memset(PTR, 0, E * sizeof(PTR))` we'd need to know the relationship between the target pointer size
+            // and the size of the pointee type.
+            if let Some(sized_expr) = sized_expr {
+                return match &self.ast_context[*sized_expr].kind {
+                    CExprKind::Unary(_, c_ast::UnOp::Deref, inner, _lrvalue) => {
+                        // XREF:guided_vec_memset_zero_mulsizeof_deref
+                        self.c_expr_decl_id(*inner) == self.c_expr_decl_id(*dst)
+                    }
+                    CExprKind::ArraySubscript(_cqt, base, _idx, _lrval) => {
+                        self.c_expr_decl_id(*base) == self.c_expr_decl_id(*dst)
+                    }
+                    _ => false,
+                };
+            }
+        };
+        false
     }
 
     pub fn get_callee_function_arg_guidances(
