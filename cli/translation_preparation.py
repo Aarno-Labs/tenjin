@@ -10,7 +10,7 @@ from collections import defaultdict
 import dataclasses
 from enum import Enum
 
-from clang.cindex import CursorKind  # type: ignore
+from clang.cindex import Cursor, CursorKind  # type: ignore
 from cmake_file_api import CMakeProject
 
 import compilation_database
@@ -193,7 +193,7 @@ def copy_codebase_dir(
         compdb_path.unlink()
 
 
-type QUSS = str
+type QUSS = c_refact_type_mod_replicator.QuasiUniformSymbolSpecifier
 type FileContentsStr = str
 type RelativeFilePathStr = str
 
@@ -907,6 +907,33 @@ def run_preparation_passes(
                     print("  Normalized 2 sans consts:", t2_norm.replace("const ", ""))
             return None
 
+        def collect_non_outermost_children(tu_cursor: Cursor) -> set[QUSS]:
+            # The children of a translation unit cursor include both top-level
+            # declarations and (at least some) nested declarations, such as
+            # `typedef struct { ... } Foo;` which produces both a StructDecl
+            # and a TypedefDecl as children of the TU cursor.
+            #
+            # We don't want to generate overlapping edits for nested declarations,
+            # which can cause corruption if not handled carefully.
+            # Example:
+            # - Start with AAABBBBCC where e.g. BBBB is a nested decl within AAAA.
+            # - We'll generate simultaneous edits to replace BBBB with XX and
+            #   AAABBBB with YYXX.
+            # - Since BBBB comes last, we first replace BBBB with XX, yielding AAAXXCC.
+            # - Then we try to replace (what used to be) AAABBBB with YYXX,
+            #   but the offsets are now wrong, so we end up with YYXX instead of YYXXCC.
+            all_children_sorted_by_location = sorted(
+                tu_cursor.get_children(), key=lambda c: c.extent.start.offset
+            )
+            nested_children: set[QUSS] = set()
+            for idx in range(len(all_children_sorted_by_location) - 1):
+                c1 = all_children_sorted_by_location[idx]
+                c2 = all_children_sorted_by_location[idx + 1]
+                if c2.extent.start.offset < c1.extent.end.offset:
+                    q2 = c_refact_type_mod_replicator.quss(c2, None)
+                    nested_children.add(q2)
+            return nested_children
+
         remove_expanded_src_for: set[QUSS] = set()
         quss_to_expanded_src: dict[QUSS, FileContentsStr] = {}
         for expanded_decls in store.decls_defined_after_pp.values():
@@ -944,6 +971,8 @@ def run_preparation_passes(
             #     (start_offset, end_offset, source_text) = header_decl
             #     quss_to_expanded_src[q] = source_text
 
+            nested_children = collect_non_outermost_children(tu.cursor)
+
             tu_file_contents_str = Path(tu_path).read_text(encoding="utf-8")
             for cursor in tu.cursor.get_children():
                 if cursor.kind.is_declaration():
@@ -965,6 +994,9 @@ def run_preparation_passes(
                         continue
 
                     q = c_refact_type_mod_replicator.quss(cursor, None)
+                    if q in nested_children:
+                        continue
+
                     if q in quss_to_header_src:
                         start_offset = cursor.extent.start.offset
                         end_offset = cursor.extent.end.offset
