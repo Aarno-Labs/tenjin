@@ -252,6 +252,28 @@ def refold_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir_path: 
             check=True,
             cwd=cmd.directory,
         )
+
+        crc_cp = hermetic.run(
+            [
+                "clang-refold",
+                "--check",
+                c_path,
+                "--refold-map",
+                refold_map_path,
+                "--pp-mod",
+                abs_src_path,
+            ],
+            check=False,
+            capture_output=True,
+        )
+        if crc_cp.returncode != 0:
+            print("clang-refold --check failed:")
+            print("stdout:")
+            print(crc_cp.stdout.decode("utf-8"))
+            print("stderr:")
+            print(crc_cp.stderr.decode("utf-8"))
+            raise RuntimeError("clang-refold --check failed")
+
     b._use_preprocessed_files = False
 
 
