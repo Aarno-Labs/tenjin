@@ -749,17 +749,16 @@ def run_preparation_passes(
             all_build_targets[0].name, current_codebase
         )
 
-        # clang-rename will use this
-        compdb.to_json_file(current_codebase / "compile_commands.json")
-
         all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
             compdb, statics_only=True
         )
         all_pgs = [c_refact.mk_NamedDeclInfo(c) for c in all_pgs_cursors]
-        # We do not want to try renaming symbols from outside the current codebase!
         current_codebase_dir = current_codebase.as_posix()
-        pgs = [v for v in all_pgs if (v.file_path or "").startswith(current_codebase_dir)]
-        all_global_names = set(g_s.spelling for g_s in pgs)
+        for g_s in all_pgs:
+            assert g_s.file_path is not None, f"Expected file_path for global/static: {g_s}"
+            assert g_s.file_path.startswith(current_codebase_dir)
+
+        all_global_names = set(g_s.spelling for g_s in all_pgs)
         uniquifiers: dict[str, int] = {}
 
         def mk_unique_name(base: str) -> str:
@@ -772,7 +771,7 @@ def run_preparation_passes(
 
         rewrites_per_file: dict[str, dict[int, tuple[int, str, str]]] = {}
         pgs_in_determinstic_order = sorted(
-            pgs, key=lambda g: (g.file_path or "", g.decl_start_byte_offset)
+            all_pgs, key=lambda g: (g.file_path or "", g.decl_start_byte_offset)
         )
         for g_s in pgs_in_determinstic_order:
             rewrites_per_file.setdefault(g_s.file_path or "", {})[g_s.decl_start_byte_offset] = (
@@ -1157,9 +1156,9 @@ def run_preparation_passes(
         ("intercept_build", prep_01_intercept_build),
         ("build_coverage", prep_02_build_coverage),
         ("uniquify_built", prep_uniquify_built_files),
-        ("uniquify_statics", prep_uniquify_statics),
         ("split_joined_decls", prep_split_joined_decls),
         ("expand_preprocessor", prep_expand_preprocessor),
+        ("uniquify_statics", prep_uniquify_statics),
         ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
         ("localize_mutable_globals", prep_localize_mutable_globals),
         ("lift_subfield_args", prep_lift_subfield_args),
