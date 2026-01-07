@@ -24,6 +24,7 @@ import hermetic
 import vcs_helpers
 import cargo_workspace_helpers
 import static_measurements_rust
+import guidance
 from c_refact_identify_mains import find_main_translation_units
 from translation_preparation import run_preparation_passes
 from translation_improvement import run_improvement_passes
@@ -212,9 +213,9 @@ def do_translate(
     have files called `translation_metadata.json` and `translation_snapshot.json`.
     """
 
-    guidance = load_and_parse_guidance(guidance_path_or_literal)
+    guidance_dict = guidance.load_and_parse_guidance(guidance_path_or_literal)
 
-    tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance))
+    tracker = ingest_tracking.TimingRepo(stub_ingestion_record(codebase, guidance_dict))
 
     skip_remainder_of_translation = False
 
@@ -223,7 +224,7 @@ def do_translate(
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
     final_prepared_codebase, build_info = run_preparation_passes(
-        codebase, resultsdir, tracker, guidance, buildcmd
+        codebase, resultsdir, tracker, guidance_dict, buildcmd
     )
 
     c2rust_transpile_flags = [
@@ -419,17 +420,6 @@ def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output):
         click.echo(e.stderr)
 
         sys.exit(1)
-
-
-def load_and_parse_guidance(guidance_path_or_literal: str) -> dict:
-    try:
-        if guidance_path_or_literal == "":
-            guidance = {}
-        else:
-            guidance = json.loads(guidance_path_or_literal)
-    except json.JSONDecodeError:
-        guidance = json.load(Path(guidance_path_or_literal).open("r", encoding="utf-8"))
-    return guidance
 
 
 def find_highest_numbered_dir(base: Path) -> Path | None:

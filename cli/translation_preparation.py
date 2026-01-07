@@ -25,6 +25,7 @@ import repo_root
 import ingest_tracking
 import llvm_bitcode_linking
 import targets_from_intercept
+import guidance
 from targets import BuildInfo, TargetType
 from caching_file_contents import FilePathStr, CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
@@ -421,7 +422,7 @@ def run_preparation_passes(
     original_codebase: Path,
     resultsdir: Path,
     tracker: ingest_tracking.TimingRepo,
-    guidance: dict,
+    guidance_dict: dict,
     buildcmd: str | None = None,
 ) -> tuple[Path, BuildInfo]:
     """Returns the path to the final prepared codebase directory,
@@ -450,11 +451,7 @@ def run_preparation_passes(
         tracker.set_preprocessor_definitions(dict(merged_defs))
 
         # Writing out the user-provided guidance can go pretty much wherever in the early stages.
-        json.dump(
-            guidance,
-            open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8"),
-            indent=2,
-        )
+        guidance.store_in_codebase(guidance_dict, current_codebase, XJ_GUIDANCE_FILENAME)
 
     def prep_02_build_coverage(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # Rebuild all targets with coverage instrumentation flags.
@@ -780,6 +777,13 @@ def run_preparation_passes(
                 g_s.spelling,
             )
 
+        # Update guidance to match
+        codebase_guidance = guidance.load_from_codebase(current_codebase)
+        guidance_rename: dict = {}
+
+        def apply_guidance_renaming(x: str) -> str:
+            return guidance_rename.get(x, x)
+
         for srcfile, editdict in rewrites_per_file.items():
             contents = Path(srcfile).read_bytes()
             edits = []
@@ -815,6 +819,7 @@ def run_preparation_passes(
                 assert name_byte_offset != -1, (
                     f"Could not find bytes for '{old_name}' in source file range: {contents[decl_start_byte_offset:decl_end_byte_offset]!r}"
                 )
+                guidance_rename[old_name] = new_name
                 edits.extend(["--offset", str(name_byte_offset), "--new-name", new_name])
             hermetic.run(
                 [
@@ -826,6 +831,8 @@ def run_preparation_passes(
                 cwd=current_codebase,
                 check=True,
             )
+        guidance.map_function_names(codebase_guidance, apply_guidance_renaming)
+        guidance.store_in_codebase(codebase_guidance, current_codebase)
 
     def prep_split_joined_decls(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         j = c_refact.run_xj_locate_joined_decls(current_codebase, store.build_info)
