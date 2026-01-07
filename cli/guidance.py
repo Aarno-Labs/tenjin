@@ -6,11 +6,8 @@ from constants import XJ_GUIDANCE_FILENAME
 
 def store_in_codebase(guidance: dict, codebase: Path, name: str = XJ_GUIDANCE_FILENAME):
     """Serialize guidance as json to codebase / name"""
-    json.dump(
-        guidance,
-        open(codebase / name, "w", encoding="utf-8"),
-        indent=2,
-    )
+    with open(codebase / name, "w", encoding="utf-8") as fh:
+        json.dump(guidance, fh, indent=2)
 
 
 def load_from_codebase(codebase: Path, name: str = XJ_GUIDANCE_FILENAME) -> dict:
