@@ -27,8 +27,8 @@ import compilation_database
 import batching_rewriter
 from cindex_helpers import render_declaration_sans_qualifiers, yield_matching_cursors
 import c_refact_type_mod_replicator
-from constants import XJ_GUIDANCE_FILENAME
 import targets
+import guidance
 
 
 def create_xj_clang_index() -> Index:
@@ -1785,14 +1785,13 @@ def update_vars_of_type_guidance_for_xjg(
                     else:
                         # passed as an argument
                         higher_order_tissue_functions.add(v.spelling)
-    guidance: dict = json.load(open(current_codebase / XJ_GUIDANCE_FILENAME, "r", encoding="utf-8"))
+    codebase_guidance: dict = guidance.load_from_codebase(current_codebase)
     can_take_mut_xjg = phase1results.nonmain_tissue_functions - higher_order_tissue_functions
-    mut_specs = guidance.get("vars_of_type", {}).get("&mut XjGlobals", [])
+    mut_specs = codebase_guidance.get("vars_of_type", {}).get("&mut XjGlobals", [])
     for tissue_fn_name in can_take_mut_xjg:
         mut_specs.append(f"{tissue_fn_name}:xjg")
-    guidance.setdefault("vars_of_type", {})["&mut XjGlobals"] = mut_specs
-    with open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8") as fh:
-        json.dump(guidance, fh, indent=2)
+    codebase_guidance.setdefault("vars_of_type", {})["&mut XjGlobals"] = mut_specs
+    guidance.store_in_codebase(codebase_guidance, current_codebase)
 
 
 def extract_function_info(
