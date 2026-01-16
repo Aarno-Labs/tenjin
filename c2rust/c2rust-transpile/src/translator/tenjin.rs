@@ -10,6 +10,9 @@ pub struct GuidedType {
     pub parsed: Type,
 }
 
+// This must be kept in sync with translation_preparation.py
+const TENJIN_UNIQUE_SUFFIX: &str = "_xjtr";
+
 impl FromStr for GuidedType {
     type Err = syn::parse::Error;
 
@@ -515,6 +518,12 @@ enum SizeofArgSituation {
     BareSizeof(Option<CExprId>, CTypeId),
     ExprTimesSizeof(CExprId, Option<CExprId>, CTypeId),
     Unrecognized,
+}
+
+pub fn trim_unique_suffix(s: &str) -> &str {
+    s.split(TENJIN_UNIQUE_SUFFIX)
+        .next()
+        .unwrap_or_else(|| panic!("Empty name after trimming tenjin suffix: {}", s))
 }
 
 impl Translation<'_> {

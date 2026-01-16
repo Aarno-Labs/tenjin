@@ -2654,9 +2654,12 @@ impl<'c> Translation<'c> {
 
                 if (!spec.fnname.is_empty()) && spec.fnname != "*" {
                     let parent_fn_name = self.parent_fn_map.get(&id).and_then(|parent_fn| {
-                        self.ast_context
-                            .get_decl(parent_fn)
-                            .and_then(|fn_decl| fn_decl.kind.get_name().map(|s| s.as_str()))
+                        self.ast_context.get_decl(parent_fn).and_then(|fn_decl| {
+                            fn_decl
+                                .kind
+                                .get_name()
+                                .map(|s| tenjin::trim_unique_suffix(s.as_str()))
+                        })
                     });
 
                     let opt_parent_fn_name = fn_name_override.or(parent_fn_name);
@@ -2666,8 +2669,11 @@ impl<'c> Translation<'c> {
                 }
 
                 match &decl.kind {
-                    CDeclKind::Function { name, .. } => spec.varname == name.as_str(),
+                    CDeclKind::Function { name, .. } => {
+                        spec.varname == tenjin::trim_unique_suffix(name.as_str())
+                    }
                     CDeclKind::Field { .. } => {
+                        log::trace!("field {:?} {:?}", &spec.varname, &var_name_override);
                         spec.varname == "*"
                             || spec.varname
                                 == var_name_override.expect("matches_decl() needs a field name")
@@ -2679,10 +2685,12 @@ impl<'c> Translation<'c> {
                     } => {
                         if *has_global_storage {
                             // For globals, match the spec fnname instead of the varname
-                            spec.fnname == ident.as_str()
+                            spec.fnname == tenjin::trim_unique_suffix(ident.as_str())
                         } else {
                             // Match variable declarations against the declspecs
-                            spec.varname == "*" || spec.varname == ident.as_str()
+                            spec.varname == "*"
+                                || spec.varname.as_str()
+                                    == tenjin::trim_unique_suffix(ident.as_str())
                         }
                     }
                     _ => {
