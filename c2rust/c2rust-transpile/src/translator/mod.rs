@@ -523,7 +523,10 @@ impl ParsedGuidance {
     }
 
     pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
-        if let Some(guided_type) = self.fn_return_types.get(name) {
+        let find_guided = self.fn_return_types
+                              .get(name)
+                              .or_else(|| self.fn_return_types.get(tenjin::trim_unique_suffix(name)));
+        if let Some(guided_type) = find_guided {
             return Some(tenjin::GuidedType::from_type(guided_type.clone()));
         }
         None
@@ -2658,22 +2661,21 @@ impl<'c> Translation<'c> {
                             fn_decl
                                 .kind
                                 .get_name()
-                                .map(|s| tenjin::trim_unique_suffix(s.as_str()))
+                                .map(|s| s.as_str())
                         })
                     });
 
                     let opt_parent_fn_name = fn_name_override.or(parent_fn_name);
-                    if opt_parent_fn_name != Some(&spec.fnname) {
+                    if opt_parent_fn_name.map_or(true, |s| !tenjin::is_derived_name(&spec.fnname, s)) {
                         return false;
                     }
                 }
 
                 match &decl.kind {
                     CDeclKind::Function { name, .. } => {
-                        spec.varname == tenjin::trim_unique_suffix(name.as_str())
+                        tenjin::is_derived_name(&spec.varname, name)
                     }
                     CDeclKind::Field { .. } => {
-                        log::trace!("field {:?} {:?}", &spec.varname, &var_name_override);
                         spec.varname == "*"
                             || spec.varname
                                 == var_name_override.expect("matches_decl() needs a field name")
@@ -2685,12 +2687,11 @@ impl<'c> Translation<'c> {
                     } => {
                         if *has_global_storage {
                             // For globals, match the spec fnname instead of the varname
-                            spec.fnname == tenjin::trim_unique_suffix(ident.as_str())
+                            tenjin::is_derived_name(&spec.fnname, ident)
                         } else {
                             // Match variable declarations against the declspecs
                             spec.varname == "*"
-                                || spec.varname.as_str()
-                                    == tenjin::trim_unique_suffix(ident.as_str())
+                                || tenjin::is_derived_name(&spec.varname, &ident)
                         }
                     }
                     _ => {

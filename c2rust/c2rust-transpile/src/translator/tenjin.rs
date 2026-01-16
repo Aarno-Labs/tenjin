@@ -520,6 +520,10 @@ enum SizeofArgSituation {
     Unrecognized,
 }
 
+pub fn is_derived_name(s: &str, possible_instance: &str) -> bool {
+    s == possible_instance || s == trim_unique_suffix(possible_instance)
+}
+
 pub fn trim_unique_suffix(s: &str) -> &str {
     s.split(TENJIN_UNIQUE_SUFFIX)
         .next()
