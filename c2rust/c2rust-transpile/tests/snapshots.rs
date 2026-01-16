@@ -69,6 +69,20 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "guided_ret_ostr": "String"
             }
         })
+    } else if c_path.ends_with("tenjin_globals.c") {
+        serde_json::json!({
+            "vars_of_type": {
+                "i32" : "foo:argc",
+                "u8" : "foo_xjtr_0:x"
+            },
+            "vars_mut" : {
+                "foo:argc" : false
+            },
+            "fn_return_type": {
+                "foo": "u8"
+            }
+        })
+
     } else {
         serde_json::json!({})
     }
