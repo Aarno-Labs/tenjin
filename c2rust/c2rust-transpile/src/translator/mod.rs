@@ -523,7 +523,11 @@ impl ParsedGuidance {
     }
 
     pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
-        if let Some(guided_type) = self.fn_return_types.get(name) {
+        let find_guided = self
+            .fn_return_types
+            .get(name)
+            .or_else(|| self.fn_return_types.get(tenjin::trim_unique_suffix(name)));
+        if let Some(guided_type) = find_guided {
             return Some(tenjin::GuidedType::from_type(guided_type.clone()));
         }
         None
@@ -2660,13 +2664,16 @@ impl<'c> Translation<'c> {
                     });
 
                     let opt_parent_fn_name = fn_name_override.or(parent_fn_name);
-                    if opt_parent_fn_name != Some(&spec.fnname) {
+                    if opt_parent_fn_name.is_none_or(|s| !tenjin::is_derived_name(&spec.fnname, s))
+                    {
                         return false;
                     }
                 }
 
                 match &decl.kind {
-                    CDeclKind::Function { name, .. } => spec.varname == name.as_str(),
+                    CDeclKind::Function { name, .. } => {
+                        tenjin::is_derived_name(&spec.varname, name)
+                    }
                     CDeclKind::Field { .. } => {
                         spec.varname == "*"
                             || spec.varname
@@ -2679,10 +2686,10 @@ impl<'c> Translation<'c> {
                     } => {
                         if *has_global_storage {
                             // For globals, match the spec fnname instead of the varname
-                            spec.fnname == ident.as_str()
+                            tenjin::is_derived_name(&spec.fnname, ident)
                         } else {
                             // Match variable declarations against the declspecs
-                            spec.varname == "*" || spec.varname == ident.as_str()
+                            spec.varname == "*" || tenjin::is_derived_name(&spec.varname, ident)
                         }
                     }
                     _ => {
