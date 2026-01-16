@@ -523,9 +523,10 @@ impl ParsedGuidance {
     }
 
     pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
-        let find_guided = self.fn_return_types
-                              .get(name)
-                              .or_else(|| self.fn_return_types.get(tenjin::trim_unique_suffix(name)));
+        let find_guided = self
+            .fn_return_types
+            .get(name)
+            .or_else(|| self.fn_return_types.get(tenjin::trim_unique_suffix(name)));
         if let Some(guided_type) = find_guided {
             return Some(tenjin::GuidedType::from_type(guided_type.clone()));
         }
@@ -2657,16 +2658,14 @@ impl<'c> Translation<'c> {
 
                 if (!spec.fnname.is_empty()) && spec.fnname != "*" {
                     let parent_fn_name = self.parent_fn_map.get(&id).and_then(|parent_fn| {
-                        self.ast_context.get_decl(parent_fn).and_then(|fn_decl| {
-                            fn_decl
-                                .kind
-                                .get_name()
-                                .map(|s| s.as_str())
-                        })
+                        self.ast_context
+                            .get_decl(parent_fn)
+                            .and_then(|fn_decl| fn_decl.kind.get_name().map(|s| s.as_str()))
                     });
 
                     let opt_parent_fn_name = fn_name_override.or(parent_fn_name);
-                    if opt_parent_fn_name.map_or(true, |s| !tenjin::is_derived_name(&spec.fnname, s)) {
+                    if opt_parent_fn_name.is_none_or(|s| !tenjin::is_derived_name(&spec.fnname, s))
+                    {
                         return false;
                     }
                 }
@@ -2690,8 +2689,7 @@ impl<'c> Translation<'c> {
                             tenjin::is_derived_name(&spec.fnname, ident)
                         } else {
                             // Match variable declarations against the declspecs
-                            spec.varname == "*"
-                                || tenjin::is_derived_name(&spec.varname, &ident)
+                            spec.varname == "*" || tenjin::is_derived_name(&spec.varname, ident)
                         }
                     }
                     _ => {
