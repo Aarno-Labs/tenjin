@@ -1772,14 +1772,17 @@ mod refactor_format {
             // and the spans need to match the original expressions
             // FIXME: should all the inner nodes have spans too???
             let span = e.span();
+            let get_ty_elts = || {
+                let ty_elts = self.as_rust_ty();
+                if ty_elts.first() == Some(&"libc") {
+                    x.use_crate(ExternCrate::Libc);
+                }
+                ty_elts
+            };
             //e.span = DUMMY_SP;
             match *self {
-                CastType::Int(_) => mk()
-                    .span(span)
-                    .cast_expr(e, mk().path_ty(self.as_rust_ty())),
-                CastType::Uint(_) => mk()
-                    .span(span)
-                    .cast_expr(e, mk().path_ty(self.as_rust_ty())),
+                CastType::Int(_) => mk().span(span).cast_expr(e, mk().path_ty(get_ty_elts())),
+                CastType::Uint(_) => mk().span(span).cast_expr(e, mk().path_ty(get_ty_elts())),
                 CastType::Usize => mk().span(span).cast_expr(e, mk().ident_ty("usize")),
                 CastType::Float => mk().span(span).cast_expr(e, mk().ident_ty("f64")),
                 CastType::HexFloat => {
