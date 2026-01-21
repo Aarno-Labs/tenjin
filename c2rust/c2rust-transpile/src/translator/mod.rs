@@ -1786,9 +1786,12 @@ mod refactor_format {
                 CastType::Usize => mk().span(span).cast_expr(e, mk().ident_ty("usize")),
                 CastType::Float => mk().span(span).cast_expr(e, mk().ident_ty("f64")),
                 CastType::HexFloat => {
-                    // hexfloat2::format(e)
+                    // hexfloat2::HexFloat::from(e)
                     x.use_crate(ExternCrate::Hexfloat2);
-                    mk().call_expr(mk().path_expr(vec!["hexfloat2", "format"]), vec![e])
+                    mk().call_expr(
+                        mk().path_expr(vec!["hexfloat2", "HexFloat", "from"]),
+                        vec![e],
+                    )
                 }
                 CastType::GFloat => {
                     // GPoint(e)

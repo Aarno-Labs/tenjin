@@ -212,7 +212,7 @@ impl From<ExternCrate> for ExternCrateDetails {
             ExternCrate::NumTraits => Self::new("num-traits", "0.2", true),
             ExternCrate::Memoffset => Self::new("memoffset", "0.5", true),
             ExternCrate::Libc => Self::new("libc", "0.2", false),
-            ExternCrate::Hexfloat2 => Self::new("hexfloat2", "0.1.3", false),
+            ExternCrate::Hexfloat2 => Self::new("hexfloat2", "0.2.0", false),
             ExternCrate::XjScanf => Self::new("xj_scanf", "0.2.1", false),
             ExternCrate::LibzRsSys => Self::new("libz-rs-sys", "0.5.1", false),
             ExternCrate::Bytemuck => Self::new("bytemuck", "1.23.2", false)
