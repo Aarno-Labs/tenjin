@@ -1544,6 +1544,7 @@ struct ConvertedVariable {
 
 #[allow(clippy::vec_box)]
 enum RecognizedCallForm {
+    Puts,
     PrintfOut {
         fmt_string_idx: usize,
     },

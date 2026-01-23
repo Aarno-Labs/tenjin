@@ -19,7 +19,7 @@ pub const C: C2RustUnnamed = 2;
 pub const B: C2RustUnnamed = 1;
 pub const A: C2RustUnnamed = 0;
 unsafe extern "C" fn side_effect() -> ::core::ffi::c_int {
-    puts(b"the return of side effect\0" as *const u8 as *const ::core::ffi::c_char);
+    println!("{:>}", "the return of side effect");
     return 10 as ::core::ffi::c_int;
 }
 #[no_mangle]

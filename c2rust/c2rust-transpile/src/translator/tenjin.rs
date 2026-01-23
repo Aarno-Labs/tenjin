@@ -756,6 +756,10 @@ impl Translation<'_> {
         cargs: &[CExprId],
         _ctx: ExprContext,
     ) -> RecognizedCallForm {
+        if tenjin::expr_is_ident(func, "puts") && !args.is_empty() {
+            return RecognizedCallForm::Puts;
+        }
+
         if tenjin::expr_is_ident(func, "printf")
             && !args.is_empty()
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[0]))
@@ -849,6 +853,19 @@ impl Translation<'_> {
             res
         };
         match self.call_form_cases(&func, &args, cargs, ctx) {
+            RecognizedCallForm::Puts => {
+                Ok(mk().mac_expr(refactor_format::build_format_macro_from(
+                    self,
+                    "%s\n".into(),
+                    "println",
+                    "println",
+                    &args,
+                    cargs,
+                    None,
+                    None,
+                    None,
+                )))
+            }
             RecognizedCallForm::PrintfOut { fmt_string_idx } => {
                 let fmt_string_span = self
                     .ast_context
