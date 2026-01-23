@@ -2147,10 +2147,10 @@ mod refactor_format {
                 }
 
                 if b'1' <= self.peek() && self.peek() <= b'9' || self.peek() == b'*' {
-                    conv.width = Some(self.parse_amount());
+                    conv.width = self.parse_amount();
                 }
                 if self.eat(b'.') {
-                    conv.prec = Some(self.parse_amount());
+                    conv.prec = self.parse_amount();
                 }
                 conv.ty = self.parse_conv_type();
                 (self.callback)(Piece::Conv(Box::new(conv)));
@@ -2161,9 +2161,9 @@ mod refactor_format {
             }
         }
 
-        fn parse_amount(&mut self) -> Amount {
+        fn parse_amount(&mut self) -> Option<Amount> {
             if self.eat(b'*') {
-                return Amount::NextArg;
+                return Some(Amount::NextArg);
             }
 
             let start = self.pos;
@@ -2172,7 +2172,13 @@ mod refactor_format {
             }
             let end = self.pos;
 
-            Amount::Number(usize::from_str(&self.s[start..end]).unwrap())
+            if start == end {
+                return None;
+            }
+
+            usize::from_str(&self.s[start..end])
+                .ok()
+                .map(Amount::Number)
         }
 
         fn parse_length(&mut self) -> Length {
