@@ -787,7 +787,6 @@ impl Translation<'_> {
         if tenjin::expr_is_ident(func, "sprintf")
             && args.len() >= 2
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
-            // TODO:xref
             && self
                 .parsed_guidance
                 .borrow_mut()
