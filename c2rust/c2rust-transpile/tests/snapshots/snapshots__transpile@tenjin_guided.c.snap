@@ -179,6 +179,10 @@ pub unsafe extern "C" fn unguided_coerce_asref(mut unguided: *mut ::core::ffi::c
     takes_shared_u8(unguided.as_ref().unwrap());
 }
 #[no_mangle]
+pub unsafe extern "C" fn guided_string_zero_empty() {
+    let mut ostr: String = String::new();
+}
+#[no_mangle]
 pub unsafe extern "C" fn struct_unguided_ptr_with_guided_members(
     mut ug_ptr: *mut StructWithMembersA,
 ) {

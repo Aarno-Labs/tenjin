@@ -193,6 +193,12 @@ void unguided_coerce_asref(unsigned char* unguided) {
     takes_shared_u8(unguided);
 }
 
+void guided_string_zero_empty()
+{
+    // XREF:guided_string_zero_empty
+    const char* ostr = 0;
+}
+
 struct StructWithMembersA {
     unsigned char* uptr;
     unsigned char zu8;

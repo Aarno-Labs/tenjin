@@ -6566,6 +6566,14 @@ impl<'c> Translation<'c> {
 
             CastKind::NullToPointer => {
                 assert!(val.stmts().is_empty());
+                if let Some(guided_type) = guided_type {
+                    if guided_type.pretty == "String" {
+                        // XREF:guided_string_zero_empty
+                        return Ok(WithStmts::new_val(
+                            mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]),
+                        ));
+                    }
+                }
                 Ok(WithStmts::new_val(
                     self.null_ptr(target_cty.ctype, ctx.is_static)?,
                 ))
