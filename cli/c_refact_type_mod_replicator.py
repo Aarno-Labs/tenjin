@@ -253,6 +253,13 @@ def collect_type_definitions(
     # definitions associated with the same variable name across TUs are
     # grouped together. (Note we assume alpha-renaming has already been
     # done on static variables to ensure uniqueness within each TU.)
+    #
+    # A separate issue is that function prototypes are permitted to vary
+    # in the presence or absence of parameter names, so we cannot assume
+    # the full prototype text is identical across TUs. To handle this in
+    # the case of variables with function pointer types, we note that at
+    # least for now, we can get by with only tracking the region of text
+    # from the return type to parameter list start.
 
     type_definitions_by_tu_and_varname: dict[str, dict[VariableName, TypeDefinition]] = {}
     unique_type_definitions: dict[
