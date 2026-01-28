@@ -97,6 +97,7 @@ impl Translation<'_> {
             CLiteral::Integer(val, _)
                 if guided_type.as_ref().is_some_and(|g| g.pretty == "char") =>
             {
+                // XREF:guided_int_as_char
                 self.convert_literal(ctx, ty, &CLiteral::Character(val), guided_type)
             }
             CLiteral::Integer(val, base) => Ok(WithStmts::new_val(self.mk_int_lit(ty, val, base)?)),

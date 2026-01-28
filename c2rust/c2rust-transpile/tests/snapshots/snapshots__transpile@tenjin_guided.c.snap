@@ -166,6 +166,11 @@ pub unsafe extern "C" fn guided_2d_vec(
     return x2d[i as usize][j as usize];
 }
 #[no_mangle]
+pub unsafe extern "C" fn guided_local_int_as_char() {
+    let mut unguided: ::core::ffi::c_char = 65 as ::core::ffi::c_char;
+    let mut oc: char = 'A';
+}
+#[no_mangle]
 pub unsafe extern "C" fn takes_shared_str(mut rstr: &str) {}
 #[no_mangle]
 pub unsafe extern "C" fn takes_shared_u8(mut ru8: &u8) {}

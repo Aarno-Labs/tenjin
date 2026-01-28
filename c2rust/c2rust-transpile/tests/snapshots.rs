@@ -57,6 +57,7 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
             "vars_of_type": {
                 "String" : ["*:ostr", "guided_strcspn:delimiters"],
                 "&str" : "*:rstr",
+                "char": "*:oc",
                 "&[::core::ffi::c_int]" : ["guided_1d_slice:x"],
                 "Vec<::core::ffi::c_int>" : ["guided_1d_vec:x"],
                 "&[&[::core::ffi::c_int]]" : ["guided_2d_slice:x2d"],

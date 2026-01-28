@@ -169,6 +169,13 @@ int guided_2d_vec(int **x2d, int i, int j)
     return x2d[i][j];
 }
 
+void guided_local_int_as_char() {
+    char unguided = (char) 65;
+    // char oc = unguided; // fails because unguided is i8, not Rust char
+    // XREF:guided_int_as_char
+    char oc = 65;
+}
+
 // notyet:guided_ret_coerce_borrow
 // unsigned char guided_ret_ru8(unsigned char x)
 // {
