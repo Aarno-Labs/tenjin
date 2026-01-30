@@ -76,8 +76,14 @@ pub unsafe extern "C" fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
 #[no_mangle]
 pub unsafe extern "C" fn guided_str_init_lit() {
     let ostr: String = String::from("owned String");
+    print_owned_String(String::from("ddedd"));
     let mut uptr: *const ::core::ffi::c_char =
         b"unguided pointer\0" as *const u8 as *const ::core::ffi::c_char;
+}
+#[no_mangle]
+pub unsafe extern "C" fn guided_str_init_empty_lit() {
+    let mut ostr: String = String::new();
+    print_owned_String(String::new());
 }
 #[no_mangle]
 pub unsafe extern "C" fn guided_static() {

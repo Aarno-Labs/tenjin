@@ -6485,6 +6485,7 @@ impl<'c> Translation<'c> {
                         if is_const && !translate_as_macro =>
                     {
                         if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
+                            // XREF:guided_string_implicit_cast
                             return Ok(WithStmts::new_val(
                                 self.convert_literal_to_rust_string(bytes, 1),
                             ));

@@ -49,9 +49,19 @@ void guided_str_init_lit()
 {
     // XREF:guided_local_nonmut
     const char *ostr = "owned String";
+    // XREF:guided_string_implicit_cast
+    print_owned_String("ddedd");
     // const char* rstr = "shared &str";
     // const char* xstr = "exclusive &mut str";
     const char *uptr = "unguided pointer";
+}
+
+void guided_str_init_empty_lit()
+{
+    // XREF:guided_string_sans_cast
+    char ostr[] = "";
+    // XREF:guided_string_empty
+    print_owned_String("");
 }
 
 void guided_static()

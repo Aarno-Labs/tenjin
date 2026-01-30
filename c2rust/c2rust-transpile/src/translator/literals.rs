@@ -190,8 +190,8 @@ impl Translation<'_> {
             num_elems
         );
 
-        // XREF:TENJIN-GUIDANCE-STRAWMAN
         if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
+            // XREF:guided_string_sans_cast
             return Ok(WithStmts::new_val(
                 self.convert_literal_to_rust_string(&val, width),
             ));
@@ -213,12 +213,9 @@ impl Translation<'_> {
     }
 
     /// Convert a C string literal to a Rust expression of type `String`
-    pub fn convert_literal_to_rust_string(&self, val: &Vec<u8>, width: u8) -> Box<Expr> {
-        log::trace!(
-            "TENJIN TRACE: converting C string literal to Rust String via String::from/new() for: {:?}",
-            val
-        );
+    pub fn convert_literal_to_rust_string(&self, val: &[u8], width: u8) -> Box<Expr> {
         if val.is_empty() {
+            // XREF:guided_string_empty
             return mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]);
         }
         if let Some(s) = self.convert_literal_to_rust_str(val, width) {
