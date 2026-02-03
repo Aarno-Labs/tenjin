@@ -180,6 +180,20 @@ def clone_or_fetch_git_repo(
         subprocess.check_call(["git", "switch", "--detach", version], cwd=str(target_dir))
 
 
+def query_git_head(repo_dir: Path) -> str | None:
+    """Return the current HEAD commit hash of the given git repository."""
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(repo_dir),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
 # See https://stackoverflow.com/questions/45125516/possible-values-for-uname-m
 # See https://gist.github.com/skyzyx/d82b7d9ba05523dd1a9301fd282b32c4
 def machine_normalized(aarch64="aarch64") -> str:
@@ -375,7 +389,11 @@ def want_10j_reference_c2rust_tag():
     ):
         xj_upstream_c2rust = hermetic.xj_upstream_c2rust(HAVE.localdir)
 
-        if hermetic.running_in_ci() and xj_upstream_c2rust.is_dir():
+        if (
+            hermetic.running_in_ci()
+            and xj_upstream_c2rust.is_dir()
+            and query_git_head(xj_upstream_c2rust) == version
+        ):
             sez("Upstream c2rust restored from CI cache...", ctx="(c2rust) ")
         else:
             provision_10j_reference_c2rust_source_with(version, xj_upstream_c2rust)
@@ -468,7 +486,11 @@ def want_codehawk():
         keyname: str,
     ):
         xj_codehawk = hermetic.xj_codehawk(HAVE.localdir)
-        if hermetic.running_in_ci() and xj_codehawk.is_dir():
+        if (
+            hermetic.running_in_ci()
+            and xj_codehawk.is_dir()
+            and query_git_head(xj_codehawk) == version
+        ):
             sez("CodeHawk restored from CI cache...", ctx="(codehawk) ")
         else:
             provision_codehawk_source_with(version, xj_codehawk)
