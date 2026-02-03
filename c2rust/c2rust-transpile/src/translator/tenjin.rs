@@ -284,6 +284,24 @@ pub fn expr_in_usize(expr: Box<Expr>) -> Box<Expr> {
     cast_box
 }
 
+fn expr_within_raw_addr(expr: &Expr) -> Option<&Expr> {
+    if let Expr::RawAddr(syn::ExprRawAddr { expr: inner, .. }) = expr {
+        return Some(inner);
+    }
+    None
+}
+
+pub fn expr_is_call_of_ctime_with_raw_addr(expr: &Expr) -> Option<Box<Expr>> {
+    if let Expr::Call(syn::ExprCall { func, args, .. }) = expr {
+        if tenjin::expr_is_ident(func, "ctime") && args.len() == 1 {
+            if let Some(inner) = tenjin::expr_within_raw_addr(&args[0]) {
+                return Some(Box::new(inner.clone()));
+            }
+        }
+    }
+    None
+}
+
 fn to_char_lossy(expr: Box<Expr>) -> Box<Expr> {
     // Converts an expression of integral type to char, using lossy conversion.
     // This is appropriate for calls to tolower() and similar functions,
@@ -1147,6 +1165,18 @@ impl Translation<'_> {
                     };
                     self.recognize_preconversion_call_method_1_guided(ctx, method, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "difftime") => {
+                    self.recognize_preconversion_call_difftime(ctx, cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "time") => {
+                    self.recognize_preconversion_call_time(ctx, cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "localtime")
+                    || tenjin::is_path_exactly_1(path, "localtime_r") =>
+                {
+                    self.use_crate(ExternCrate::XjCtime);
+                    Ok(None)
+                }
                 _ => Ok(None),
             }
         } else {
@@ -1688,6 +1718,66 @@ impl Translation<'_> {
             return Ok(Some(WithStmts::new_val(call)));
         }
 
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_difftime(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 2 {
+            self.use_crate(ExternCrate::XjCtime);
+            let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let e2 = self.convert_expr(ctx.used(), cargs[1], None)?;
+            let difftime_call = mk().call_expr(
+                mk().path_expr(vec!["xj_ctime", "compat", "difftime"]),
+                vec![e1.to_expr(), e2.to_expr()],
+            );
+            return Ok(Some(WithStmts::new_val(difftime_call)));
+        }
+        Ok(None)
+    }
+
+    /// Map NULL -> None, &x -> Some(&[mut] x), otherwise `x.as_ref()`.
+    fn c_coerce_pointer_to_option_ref(
+        &self,
+        ctx: ExprContext,
+        cexpr: CExprId,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        if let CExprKind::ImplicitCast(_, _, CastKind::NullToPointer, _, _) =
+            self.ast_context[cexpr].kind
+        {
+            return Ok(WithStmts::new_val(mk().path_expr(vec!["None"])));
+        }
+        Ok(self.convert_expr(ctx.used(), cexpr, None)?.map(|e| {
+            if let Expr::Reference(_) = &*e {
+                mk().call_expr(mk().path_expr("Some"), vec![e])
+            } else {
+                mk().method_call_expr(e, "as_ref", vec![])
+            }
+        }))
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_time(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 1 {
+            self.use_crate(ExternCrate::XjCtime);
+            return Ok(Some(
+                self.c_coerce_pointer_to_option_ref(ctx, cargs[0])?
+                    .map(|arg_expr| {
+                        mk().call_expr(
+                            mk().path_expr(vec!["xj_ctime", "compat", "time"]),
+                            vec![arg_expr],
+                        )
+                    }),
+            ));
+        }
         Ok(None)
     }
 

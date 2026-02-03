@@ -1966,18 +1966,7 @@ mod refactor_format {
                         }
                     }
 
-                    // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
-                    let e =
-                        mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["core", "ffi", "c_char"])));
-                    let cs = mk().call_expr(
-                        // TODO(kkysen) change `"std"` to `"core"` after `#![feature(core_c_str)]` is stabilized in `1.63.0`
-                        mk().path_expr(vec!["std", "ffi", "CStr", "from_ptr"]),
-                        vec![e],
-                    );
-                    let s = mk().method_call_expr(cs, "to_str", Vec::new());
-                    let call = mk().method_call_expr(s, "unwrap", Vec::new());
-                    let b = mk().unsafe_().block(vec![mk().expr_stmt(call)]);
-                    mk().span(span).block_expr(b)
+                    Self::cast_str(x, e)
                 }
                 CastType::None(c) => {
                     log::warn!(
@@ -1987,6 +1976,36 @@ mod refactor_format {
                     );
                     e
                 }
+            }
+        }
+
+        fn cast_str(x: &Translation, e: Box<Expr>) -> Box<Expr> {
+            if let Some(tm) = tenjin::expr_is_call_of_ctime_with_raw_addr(&e) {
+                // Special case: `ctime(&raw mut tm)` produces a `*const c_char`
+                // but `xj_ctime::ctime(&xj_ctime::Time::from_raw(tm)).unwrap()` produces a String
+                x.use_crate(ExternCrate::XjCtime);
+                let arg = mk().call_expr(
+                    mk().path_expr(vec!["xj_ctime", "Time", "from_raw"]),
+                    vec![tm],
+                );
+                let ctime_call = mk().call_expr(
+                    mk().path_expr(vec!["xj_ctime", "ctime"]),
+                    vec![mk().borrow_expr(arg)],
+                );
+                mk().method_call_expr(ctime_call, "unwrap", Vec::new())
+            } else {
+                let span = e.span();
+                // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
+                let e = mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["core", "ffi", "c_char"])));
+                let cs = mk().call_expr(
+                    // TODO(kkysen) change `"std"` to `"core"` after `#![feature(core_c_str)]` is stabilized in `1.63.0`
+                    mk().path_expr(vec!["std", "ffi", "CStr", "from_ptr"]),
+                    vec![e],
+                );
+                let s = mk().method_call_expr(cs, "to_str", Vec::new());
+                let call = mk().method_call_expr(s, "unwrap", Vec::new());
+                let b = mk().unsafe_().block(vec![mk().expr_stmt(call)]);
+                mk().span(span).block_expr(b)
             }
         }
 
