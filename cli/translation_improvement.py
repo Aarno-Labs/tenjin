@@ -11,6 +11,7 @@ from typing import Callable, Sequence
 from subprocess import CompletedProcess
 from dataclasses import dataclass
 
+import repo_root
 from tenj_types import ResolvedPath
 
 import click
@@ -25,6 +26,57 @@ from speculative_rewriters import (
 )
 import cargo_workspace_helpers
 import static_measurements_rust
+
+
+def run_ast_grep_improvements(_root: Path, dir: Path) -> CompletedProcess:
+    def run_ast_grep_rewrite(pattern: str, rewrite: str) -> CompletedProcess:
+        cp = hermetic.run(
+            [
+                hermetic.xj_ast_grep_exe(repo_root.localdir()),
+                "-p",
+                pattern,
+                "--rewrite",
+                rewrite,
+                "--update-all",
+                "-l",
+                "rs",
+                dir,
+            ],
+            cwd=dir,
+            capture_output=True,
+            check=False,
+        )
+        if cp.returncode != 0:
+            stderr = cp.stderr.decode("utf-8")
+            if stderr:
+                # If the pattern is not found, ast-grep will return 1
+                # without printing anything to stderr.
+                click.echo(stderr, err=True)
+                cp.check_returncode()
+        return cp
+
+    # Macro arguments are in general token trees, not expressions,
+    # and ast-grep rightly treats them as such. But there are important
+    # special cases, so we temporarily rewrite invocation sites to look like
+    # function calls with expression arguments.
+    #
+    # This produces, as an ephemeral intermediate state, code that does not
+    # type check, but ast-grep can still match on it.
+    run_ast_grep_rewrite(
+        "println!($$$ARGS)",
+        "xj_astgrep_println($$$ARGS)",
+    )
+
+    # Direct indexing of arrays takes an unnecessary detour through unsafe pointers
+    run_ast_grep_rewrite(
+        "(*$BASE.as_mut_ptr().offset($IDX as isize))",
+        "($BASE[$IDX as usize])",
+    )
+
+    return run_ast_grep_rewrite(
+        "xj_astgrep_println($$$ARGS)",
+        "println!($$$ARGS)",
+    )
 
 
 def quiet_cargo(args: list[str], cwd: Path, env_ext=None) -> CompletedProcess:
@@ -660,6 +712,7 @@ def run_improvement_passes(
         )
 
     improvement_passes: list[tuple[str, Callable[[Path, Path], CompletedProcess | None]]] = [
+        ("ast-greps", run_ast_grep_improvements),
         ("fmt", run_cargo_fmt),
         ("fix", run_cargo_fix),
         (
