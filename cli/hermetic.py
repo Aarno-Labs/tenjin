@@ -64,6 +64,10 @@ def xj_codehawk_c(localdir: Path) -> Path:
     return localdir / "codehawk-c"
 
 
+def xj_ast_grep_exe(localdir: Path) -> Path:
+    return localdir / "ast-grep" / "ast-grep"
+
+
 def xj_prepare_findfnptrdecls_build_dir(localdir: Path) -> Path:
     return localdir / "_build_findfnptrdecls"
 

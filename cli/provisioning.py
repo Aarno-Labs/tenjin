@@ -11,6 +11,7 @@ import json
 import enum
 import sys
 import textwrap
+import zipfile
 
 from packaging.version import Version
 import click
@@ -242,6 +243,7 @@ def provision_desires(wanted: str):
     want_10j_llvm()
     want_cmake()
     want_10j_more_deps()
+    want_10j_ast_grep()
 
     if wanted in ("all", "rust"):
         want_10j_rust_toolchains()
@@ -671,6 +673,10 @@ def want_10j_more_deps():
         "Tenjin more deps",
         provision_10j_more_deps_with,
     )
+
+
+def want_10j_ast_grep():
+    want("10j-ast-grep", "ast-grep", "ast-grep", provision_10j_ast_grep_with)
 
 
 def provision_10j_rust_toolchain_with(version: str, keyname: str):
@@ -1627,3 +1633,72 @@ def extract_tarball(
         extracted_path.rmdir()
 
     return final_target_dir
+
+
+def provision_10j_ast_grep_with(version: str, keyname: str):
+    """Download and install ast-grep binary."""
+
+    def say(msg: str):
+        sez(msg, ctx="(ast-grep) ")
+
+    def mk_url() -> str:
+        """Build the download URL based on platform and architecture."""
+        base_url = f"https://github.com/ast-grep/ast-grep/releases/download/{version}"
+        match [platform.system(), machine_normalized()]:
+            case ["Linux", "x86_64"]:
+                return f"{base_url}/app-x86_64-unknown-linux-gnu.zip"
+            case ["Linux", "aarch64"]:
+                return f"{base_url}/app-aarch64-unknown-linux-gnu.zip"
+            case ["Darwin", "x86_64"]:
+                return f"{base_url}/app-x86_64-apple-darwin.zip"
+            case ["Darwin", "aarch64"]:
+                return f"{base_url}/app-aarch64-apple-darwin.zip"
+            case sys_mach:
+                raise ProvisioningError(f"ast-grep: unsupported platform: {sys_mach}")
+
+    target_dir = HAVE.localdir / "ast-grep"
+    if target_dir.is_dir():
+        shutil.rmtree(target_dir)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    url = mk_url()
+
+    say("Downloading and extracting ast-grep...")
+    temp_file = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+            temp_file = tmp.name
+            download(url, Path(temp_file))
+    except Exception:
+        if temp_file and Path(temp_file).exists():
+            os.remove(temp_file)
+        raise
+
+    with zipfile.ZipFile(temp_file, "r") as zip_ref:
+        zip_ref.extractall(target_dir)
+
+    # Clean up the temporary file
+    os.remove(temp_file)
+
+    # Make the binary executable
+    binary_path = target_dir / "ast-grep"
+    if binary_path.is_file():
+        binary_path.chmod(binary_path.stat().st_mode | 0o111)
+    else:
+        # Check if it's in a subdirectory (some releases extract to a subfolder)
+        for item in target_dir.iterdir():
+            if item.is_dir():
+                potential_binary = item / "ast-grep"
+                if potential_binary.is_file():
+                    # Move binary up to target_dir
+                    shutil.move(str(potential_binary), str(binary_path))
+                    binary_path.chmod(binary_path.stat().st_mode | 0o111)
+                    # Remove the now-empty subdirectory
+                    shutil.rmtree(item)
+                    break
+
+    if not binary_path.is_file():
+        raise ProvisioningError("ast-grep binary not found after extraction")
+
+    HAVE.note_we_have(keyname, version=Version(version))
+    say(f"v{version} acquired successfully")

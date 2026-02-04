@@ -18,6 +18,7 @@ WANT = {
     "10j-xj-improve-multitool-toolchain": "nightly-2025-08-20",
     "10j-xj-default-rust-toolchain": "1.88.0",
     "10j-reference-c2rust-tag": "613d3f5a7ef568aecb1681ef5960f956c1ed7344",
+    "10j-ast-grep": "0.40.5",
 }
 
 XJ_GUIDANCE_FILENAME = "xj-guidance.json"
