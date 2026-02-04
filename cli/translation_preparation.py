@@ -281,14 +281,14 @@ def collect_decls_by_rel_tu(
                 macro_inst_ranges[inst_loc] = cursor.extent.end.offset
                 continue
 
-            print(
-                "PPRC: Visiting cursor:",
-                cursor.kind,
-                cursor.spelling,
-                "is_definition=",
-                cursor.is_definition(),
-                fn_def_handling,
-            )
+            # print(
+            #     "PPRC: Visiting cursor:",
+            #     cursor.kind,
+            #     cursor.spelling,
+            #     "is_definition=",
+            #     cursor.is_definition(),
+            #     fn_def_handling,
+            # )
 
             # When we run this pass before expanding the preprocessor,
             # cursor.location can reflect header file locations.
