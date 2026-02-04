@@ -37,3 +37,46 @@ from `$PATH`.
 ### `pkgconf` not found
 
 Run `brew install pkgconf`
+
+### `ld.lld: error: unable to find library -lgmp`
+
+E.g.
+
+```
+File "CHJ/jchmuse/dune", line 2, characters 8-27:    
+2 |   (name jCHXExtractFeatures)
+            ^^^^^^^^^^^^^^^^^^^
+ld.lld: error: unable to find library -lgmp
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+File "caml_startup", line 1:
+Error: Error during linking (exit code 1)
+```
+
+It's unclear what conditions lead to this error (suspect it has something to do with
+`opam` having re-installed dependencies per below) but removing `_local` and re-provisioning fixed the issue for me.
+
+
+```
+<><> Updating package repositories ><><><><><><><><><><><><><><><><><><><><><><>
+[default] synchronised from https://opam.ocaml.org
+Now run 'opam upgrade' to apply any package updates.
+The following actions will be performed:
+=== recompile 2 packages
+  ↻ camlzip   1.13 [uses conf-zlib]
+  ↻ conf-zlib 1    [upstream or system changes]
+
+<><> Processing actions <><><><><><><><><><><><><><><><><><><><><><><><><><><><>
+⬇ retrieved camlzip.1.13  (cached)
+⊘ removed   camlzip.1.13
+⊘ removed   conf-zlib.1
+∗ installed conf-zlib.1
+∗ installed camlzip.1.13
+```
+
+### `ld.lld: error: undefined symbol: __libc_csu_fini`
+
+```
+>>> referenced by /PATH/TO/tenjin/_local/xj-llvm/bin/../sysroot/usr/lib/x86_64-linux-gnu/Scrt1.o:(_start)
+```
+
+Seen in CI due to stale CodeHawk cached files. Try removing `_local` and re-provisioning.
