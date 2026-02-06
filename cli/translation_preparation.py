@@ -910,6 +910,10 @@ def run_preparation_passes(
                     f"Could not find bytes for '{old_name}' in source file range: {contents[decl_start_byte_offset:decl_end_byte_offset]!r}"
                 )
                 edits.extend(["--offset", str(name_byte_offset), "--new-name", new_name])
+
+            # `clang-rename` will complain it cannot find a compilation database and is
+            # running without flags, but that should not matter since we are running
+            # on preprocessed code.
             hermetic.run(
                 [
                     "clang-rename",
