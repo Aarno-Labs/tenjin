@@ -48,10 +48,18 @@ def run_ast_grep_improvements(_root: Path, dir: Path) -> CompletedProcess:
         )
         if cp.returncode != 0:
             stderr = cp.stderr.decode("utf-8")
-            if stderr:
+            if not stderr:
+                # Treat pattern-not-found as success, not failure.
+                cp.returncode = 0
+            else:
                 # If the pattern is not found, ast-grep will return 1
-                # without printing anything to stderr.
+                # without printing anything to stderr. So if we do see
+                # output, something is amiss; print it and fail loudly.
                 click.echo(stderr, err=True)
+                click.echo(
+                    "TENJIN WARNING: ast-grep rewrite failed for pattern: " + pattern, err=True
+                )
+                click.echo(cp.stdout.decode("utf-8"), err=True)
                 cp.check_returncode()
         return cp
 
