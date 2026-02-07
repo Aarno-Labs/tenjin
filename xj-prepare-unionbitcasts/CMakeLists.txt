@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
-project(UnionConversionTransformer)
+project(xj-prepare-unionbitcasts)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,7 +12,7 @@ find_package(Clang REQUIRED CONFIG)
 include_directories(${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
-add_executable(UnionConversionTransformer
+add_executable(xj-prepare-unionbitcasts
     main.cpp
     Common.cpp
     UnionAccessCollector.cpp
@@ -23,7 +23,7 @@ add_executable(UnionConversionTransformer
 )
 
 
-target_link_libraries(UnionConversionTransformer
+target_link_libraries(xj-prepare-unionbitcasts
     PRIVATE
     clangTooling
     clangBasic
@@ -37,5 +37,5 @@ target_link_libraries(UnionConversionTransformer
 )
 
 llvm_map_components_to_libnames(llvm_libs support core irreader)
-target_link_libraries(UnionConversionTransformer PRIVATE ${llvm_libs})
+target_link_libraries(xj-prepare-unionbitcasts PRIVATE ${llvm_libs})
 
