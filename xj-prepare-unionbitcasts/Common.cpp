@@ -233,72 +233,17 @@ std::string generateConversionFunction(const FieldDecl *src_field, const FieldDe
                                         ASTContext &Ctx) {
     QualType srcType = src_field->getType();
     QualType dstType = dst_field->getType();
-
-    std::string srcStr = getOrCreateTypedefName(srcType, Ctx);
-    std::string dstStr = getOrCreateTypedefName(dstType, Ctx);
-
-    SourceManager &SM = Ctx.getSourceManager();
-    unsigned line = SM.getSpellingLineNumber(insertLoc);
-    unsigned col = SM.getSpellingColumnNumber(insertLoc);
-
-    std::string funcName = sanitizeTypes("__tenjin_" + std::to_string(line) + "_" +
-                                         std::to_string(col) + "_" + srcStr + "_to_" + dstStr);
-
-    auto asArray = [&](QualType T) -> const clang::ArrayType * { return Ctx.getAsArrayType(T); };
-
-    const clang::ArrayType *srcArr = asArray(srcType);
-    const clang::ArrayType *dstArr = asArray(dstType);
-
-    QualType elemSrc = srcArr ? srcArr->getElementType() : srcType;
-    QualType elemDst = dstArr ? dstArr->getElementType() : dstType;
-
-    std::string elemSrcStr;
-    if (elemSrc->isStructureType() || elemSrc->isUnionType()) {
-        elemSrcStr = getFullTypeName(elemSrc, Ctx);
-    } else {
-        elemSrcStr = getOrCreateTypedefName(elemSrc, Ctx);
-        if (elemSrcStr.empty())
-            elemSrcStr = getFullTypeName(elemSrc, Ctx);
-    }
-
-    std::string elemDstStr;
-    if (elemDst->isStructureType() || elemDst->isUnionType()) {
-        elemDstStr = getFullTypeName(elemDst, Ctx);
-    } else {
-        elemDstStr = getOrCreateTypedefName(elemDst, Ctx);
-        if (elemDstStr.empty())
-            elemDstStr = getFullTypeName(elemDst, Ctx);
-    }
-
-    bool srcWasArray = (srcArr != nullptr);
-    std::string srcParam;
-    std::string memcpySrcExpr;
-    if (srcWasArray) {
-        srcParam = elemSrcStr + " *x";
-        memcpySrcExpr = "x";
-    } else {
-        srcParam = elemSrcStr + " x";
-        memcpySrcExpr = "&x";
-    }
-
-    std::string dstParam = elemDstStr + " *out";
-
-    std::string code;
-    code += "static void " + funcName + "(" + srcParam + ", " + dstParam + ") {\n";
-    code += "    memcpy(out, " + memcpySrcExpr + ", " + std::to_string(copySizeBytes) + ");\n";
-    code += "}\n";
-
-    return code;
+    return generateUnionConversionFunction(srcType, dstType, insertLoc, Ctx, copySizeBytes);
 }
 
-std::string generateFuncName(QualType srcType, QualType dstType, SourceLocation unionLoc,
+std::string generateFuncName(QualType srcType, QualType dstType, SourceLocation aLoc,
                               ASTContext &Ctx) {
     std::string srcStr = getOrCreateTypedefName(srcType, Ctx);
     std::string dstStr = getOrCreateTypedefName(dstType, Ctx);
 
     SourceManager &SM = Ctx.getSourceManager();
-    unsigned line = SM.getSpellingLineNumber(unionLoc);
-    unsigned col = SM.getSpellingColumnNumber(unionLoc);
+    unsigned line = SM.getSpellingLineNumber(aLoc);
+    unsigned col = SM.getSpellingColumnNumber(aLoc);
 
     return sanitizeTypes("__tenjin_" + std::to_string(line) + "_" + std::to_string(col) + "_" +
                          srcStr + "_to_" + dstStr);
