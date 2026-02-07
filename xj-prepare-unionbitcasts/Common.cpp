@@ -245,7 +245,8 @@ std::string generateFuncName(QualType srcType, QualType dstType, SourceLocation 
     unsigned line = SM.getSpellingLineNumber(aLoc);
     unsigned col = SM.getSpellingColumnNumber(aLoc);
 
-    return sanitizeTypes("__tenjin_" + std::to_string(line) + "_" + std::to_string(col) + "_" +
+    // bvm = bitcast via memcpy
+    return sanitizeTypes("__tenjin_bvm_" + std::to_string(line) + "_" + std::to_string(col) + "_" +
                          srcStr + "_to_" + dstStr);
 }
 
