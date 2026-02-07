@@ -234,7 +234,7 @@ pub unsafe fn guided_union_float_int_bitcast(mut f: ::core::ffi::c_float) -> ::c
     let mut __tenjin_tmp_out_u: ::core::ffi::c_uint = 0;
     let mut u = UsedForFloatIntBitcast { ui: 0 };
     __tenjin_tmp_in_u = f;
-    __tenjin_bvm_264_7_float_to_unsigned_int(__tenjin_tmp_in_u, &raw mut __tenjin_tmp_out_u);
+    __tenjin_tmp_out_u = __tenjin_tmp_in_u.to_bits() as ::core::ffi::c_uint;
     return __tenjin_tmp_out_u;
 }
 unsafe fn __tenjin_bvm_264_7_unsigned_int_to_float(
@@ -253,7 +253,7 @@ pub unsafe fn guided_union_int_float_bitcast(mut ui: ::core::ffi::c_uint) -> ::c
     let mut __tenjin_tmp_out_u: ::core::ffi::c_float = 0.;
     let mut u = UsedForFloatIntBitcast { ui: 0 };
     __tenjin_tmp_in_u = ui;
-    __tenjin_bvm_264_7_unsigned_int_to_float(__tenjin_tmp_in_u, &raw mut __tenjin_tmp_out_u);
+    __tenjin_tmp_out_u = f32::from_bits(__tenjin_tmp_in_u as u32);
     return __tenjin_tmp_out_u;
 }
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
