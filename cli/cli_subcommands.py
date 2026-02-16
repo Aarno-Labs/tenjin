@@ -83,6 +83,12 @@ def do_build_rs(root: Path, capture_output: bool = False):
         check=True,
         capture_output=capture_output,
     )
+    hermetic.run_cargo_in(
+        f"build {cargo_flags} --workspace".split(),
+        cwd=root / "xj-improve-synsub",
+        check=True,
+        capture_output=capture_output,
+    )
 
 
 def do_test_unit_rs():

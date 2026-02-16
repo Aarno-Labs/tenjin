@@ -87,6 +87,20 @@ def run_ast_grep_improvements(_root: Path, dir: Path) -> CompletedProcess:
     )
 
 
+def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
+    target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
+    return hermetic.run(
+        ["xj-improve-synsub", *args, dir],
+        cwd=dir,
+        env_ext={
+            "PATH": os.pathsep.join([
+                str(root / "xj-improve-synsub" / "target" / target_subdir),
+                os.environ["PATH"],
+            ]),
+        },
+    )
+
+
 def quiet_cargo(args: list[str], cwd: Path, env_ext=None) -> CompletedProcess:
     cp = hermetic.run_cargo_on_translated_code(
         args, cwd=cwd, check=False, capture_output=True, env_ext=env_ext
@@ -724,6 +738,10 @@ def run_improvement_passes(
         )
 
     improvement_passes: list[tuple[str, Callable[[Path, Path], CompletedProcess | None]]] = [
+        (
+            "synsub",
+            lambda root, dir: run_improve_synsub(root, ["--modify-in-place"], dir),
+        ),
         ("ast-greps", run_ast_grep_improvements),
         ("fmt", run_cargo_fmt),
         ("fix", run_cargo_fix),

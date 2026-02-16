@@ -1,10 +1,11 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use clap::Parser;
+use toml_edit::{DocumentMut, Item, Table, value};
 
-use xj_improve_synsub::{collect_crate_files, Depth, Rewriter};
+use xj_improve_synsub::{Depth, Rewriter, collect_crate_files};
 
 #[derive(Parser)]
 #[command(
@@ -39,13 +40,9 @@ fn main() -> Result<()> {
 
     rw.rewrite_crate(&mut files, depth);
 
-    // Report any new crate dependencies introduced by rewrites.
     let deps = rw.deps();
     if !deps.is_empty() {
-        eprintln!("new crate dependencies:");
-        for dep in &deps {
-            eprintln!("  {dep}");
-        }
+        add_deps_to_manifest(&args.crate_root, &deps)?;
     }
 
     for (path, file) in &files {
@@ -60,4 +57,71 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn add_deps_to_manifest(
+    crate_root: &Path,
+    deps: &std::collections::BTreeSet<String>,
+) -> Result<()> {
+    let manifest_path = find_manifest_path(crate_root)?;
+    let mut manifest: DocumentMut = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?
+        .parse()
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+
+    let deps_item = manifest
+        .entry("dependencies")
+        .or_insert(Item::Table(Table::new()));
+    let Some(deps_table) = deps_item.as_table_like_mut() else {
+        bail!(
+            "[dependencies] in {} is not a table",
+            manifest_path.display()
+        );
+    };
+
+    let mut changed = false;
+    for dep in deps {
+        if !deps_table.contains_key(dep) {
+            deps_table.insert(dep, value(dep_version(dep)));
+            changed = true;
+        }
+    }
+
+    if changed {
+        fs::write(&manifest_path, manifest.to_string())
+            .with_context(|| format!("writing {}", manifest_path.display()))?;
+        eprintln!("updated {}", manifest_path.display());
+    }
+
+    Ok(())
+}
+
+fn dep_version(crate_name: &str) -> &'static str {
+    match crate_name {
+        "xj_cstr" => "0.1.1",
+        "xj_scanf" => "0.2.1",
+        _ => "*",
+    }
+}
+
+fn find_manifest_path(crate_root: &Path) -> Result<PathBuf> {
+    let start = crate_root
+        .canonicalize()
+        .with_context(|| format!("canonicalising {}", crate_root.display()))?;
+
+    let mut dir = if start.is_file() {
+        start.parent().map(Path::to_path_buf)
+    } else {
+        Some(start)
+    };
+
+    while let Some(path) = dir {
+        let manifest = path.join("Cargo.toml");
+        if manifest.is_file() {
+            return Ok(manifest);
+        }
+        dir = path.parent().map(Path::to_path_buf);
+    }
+
+    bail!("could not find Cargo.toml for {}", crate_root.display())
 }

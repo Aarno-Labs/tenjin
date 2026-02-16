@@ -130,14 +130,12 @@ impl SymbolTable {
 /// `Some((replacement, depth))` if the rewrite applies, where `depth`
 /// limits further rewriting within the replacement.  Returns `None` if
 /// the rewrite does not apply.
-pub type ExprRewrite =
-    fn(&Rewriter, &SymbolTable, &syn::Expr) -> Option<(syn::Expr, Depth)>;
+pub type ExprRewrite = fn(&Rewriter, &SymbolTable, &syn::Expr) -> Option<(syn::Expr, Depth)>;
 
 /// Signature for statement rewrite functions.
 ///
 /// Same contract as [`ExprRewrite`] but for statements.
-pub type StmtRewrite =
-    fn(&Rewriter, &SymbolTable, &syn::Stmt) -> Option<(syn::Stmt, Depth)>;
+pub type StmtRewrite = fn(&Rewriter, &SymbolTable, &syn::Stmt) -> Option<(syn::Stmt, Depth)>;
 
 // ── Rewriter ─────────────────────────────────────────────────────────
 
@@ -278,9 +276,7 @@ impl RewriteVisitor<'_> {
 impl VisitMut for RewriteVisitor<'_> {
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
         // Try every registered expression rewrite on this node.
-        if let Some((new_expr, inner_depth)) =
-            self.rewriter.try_rewrite_expr(&self.symbols, expr)
-        {
+        if let Some((new_expr, inner_depth)) = self.rewriter.try_rewrite_expr(&self.symbols, expr) {
             *expr = new_expr;
             // Recurse into the replacement with the depth returned by the
             // rewrite, not the ambient depth.
@@ -303,9 +299,7 @@ impl VisitMut for RewriteVisitor<'_> {
 
     fn visit_stmt_mut(&mut self, stmt: &mut syn::Stmt) {
         // Try every registered statement rewrite on this node.
-        if let Some((new_stmt, inner_depth)) =
-            self.rewriter.try_rewrite_stmt(&self.symbols, stmt)
-        {
+        if let Some((new_stmt, inner_depth)) = self.rewriter.try_rewrite_stmt(&self.symbols, stmt) {
             *stmt = new_stmt;
             let mut inner = RewriteVisitor {
                 rewriter: self.rewriter,
@@ -419,10 +413,8 @@ fn collect_file(
     if !seen.insert(path.to_path_buf()) {
         return Ok(());
     }
-    let src =
-        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let ast =
-        syn::parse_file(&src).with_context(|| format!("parsing {}", path.display()))?;
+    let src = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let ast = syn::parse_file(&src).with_context(|| format!("parsing {}", path.display()))?;
 
     // Compute the base directory for resolving child `mod` declarations.
     // Directory-owning files (lib.rs, main.rs, mod.rs) resolve children
