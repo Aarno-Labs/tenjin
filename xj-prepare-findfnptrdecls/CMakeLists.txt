@@ -2,15 +2,13 @@ cmake_minimum_required(VERSION 3.17)
 project(xj-find-fn-ptr-decls)
 
 
-find_package(LLVM REQUIRED CONFIG)
-find_package(Clang CONFIG)
+set(XJ_LLVM_ROOT "${CMAKE_CURRENT_LIST_DIR}/../_local/xj-llvm")
 
-include_directories(${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
-add_definitions(${LLVM_DEFINITIONS} ${CLANG_DEFINITIONS})
+include_directories("${XJ_LLVM_ROOT}/include")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 
-add_definitions(-DCLANG_LIBDIR_SUFFIX="${LLVM_LIBDIR_SUFFIX}")
+add_definitions(-DCLANG_LIBDIR_SUFFIX="")
 
 add_executable(xj-find-fn-ptr-decls FindFnPtrDecls.cpp)
 
@@ -19,4 +17,19 @@ set_target_properties(xj-find-fn-ptr-decls PROPERTIES
   CXX_EXTENSIONS OFF
   )
 
-target_link_libraries(xj-find-fn-ptr-decls libclang clang-cpp LLVM)
+set(XJ_LLVM_LIB_DIR "${XJ_LLVM_ROOT}/lib")
+find_library(XJ_LLVM_LIBCLANG
+	NAMES libclang${CMAKE_SHARED_LIBRARY_SUFFIX}
+	PATHS "${XJ_LLVM_LIB_DIR}" REQUIRED)
+find_library(XJ_LLVM_LIBCLANGCPP
+	NAMES libclang-cpp${CMAKE_SHARED_LIBRARY_SUFFIX}
+	PATHS "${XJ_LLVM_LIB_DIR}" REQUIRED)
+find_library(XJ_LLVM_LIBLLVM
+	NAMES libLLVM${CMAKE_SHARED_LIBRARY_SUFFIX}
+	PATHS "${XJ_LLVM_LIB_DIR}" REQUIRED)
+
+target_link_libraries(xj-find-fn-ptr-decls
+        ${XJ_LLVM_LIBCLANG}
+        ${XJ_LLVM_LIBCLANGCPP}
+        ${XJ_LLVM_LIBLLVM}
+) 
