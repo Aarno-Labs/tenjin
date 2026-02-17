@@ -172,6 +172,7 @@ def copy_new_source_files_back(
 
 def copy_codebase(pristine: Path, newdir: Path):
     """Copy the original codebase (src or directory) to a new directory."""
+    assert pristine.exists(), f"Input codebase path does not exist: {pristine}"
     if pristine.is_file():
         newdir.mkdir()
         shutil.copy2(pristine, newdir / pristine.name)
