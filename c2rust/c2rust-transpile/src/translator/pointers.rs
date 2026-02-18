@@ -205,7 +205,10 @@ impl<'c> Translation<'c> {
                 }
             }
         } else {
-            self.use_feature("raw_ref_op");
+            if self.tcfg.use_raw_ref_op {
+                self.use_feature("raw_ref_op");
+            }
+
             if is_array_decay {
                 needs_cast = false;
                 let method = match mutbl {

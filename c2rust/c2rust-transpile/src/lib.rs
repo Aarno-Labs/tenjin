@@ -105,6 +105,7 @@ pub struct TranspilerConfig {
     pub preserve_unused_functions: bool,
     pub log_level: log::LevelFilter,
 
+    pub use_raw_ref_op: bool,
     pub guidance_json: serde_json::Value,
 
     // Options that control build files
