@@ -46,7 +46,11 @@ void UnionTransformAction::EndSourceFileAction() {
 
         llvm::errs() << summary;
     }
-    TheRewriter.getEditBuffer(SM.getMainFileID()).write(llvm::outs());
+    if (g_inplace) {
+        TheRewriter.overwriteChangedFiles();
+    } else {
+        TheRewriter.getEditBuffer(SM.getMainFileID()).write(llvm::outs());
+    }
 }
 
 std::unique_ptr<ASTConsumer> UnionTransformAction::CreateASTConsumer(CompilerInstance &CI, StringRef file) {

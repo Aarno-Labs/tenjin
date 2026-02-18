@@ -56,6 +56,7 @@ extern std::vector<FailedUnionLog> g_failed_unions;
 extern std::set<std::string> generatedObjects;
 extern std::map<const RecordDecl *, std::string> UnnamedTypedefMap;
 extern DeclarationMatcher FunctionMatcher;
+extern bool g_inplace;
 
 // ============================================================================
 // Union Analysis Structures

@@ -12,6 +12,7 @@ std::vector<FailedUnionLog> g_failed_unions;
 std::set<std::string> generatedObjects;
 std::map<const RecordDecl *, std::string> UnnamedTypedefMap;
 DeclarationMatcher FunctionMatcher = functionDecl(isDefinition()).bind("funcDecl");
+bool g_inplace = false;
 
 // ============================================================================
 // Helper Function Implementations
