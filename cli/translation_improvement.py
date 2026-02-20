@@ -309,7 +309,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         # print("unsafe spans:", unsafe_spans)
         # print("unsafe status:", unsafe_status)
 
-        called = set()
+        called_elts: set[int] = set()
 
         # Use graphlib to collect ready nodes in topological order
         # from the *reverse* of the call graph -- we want to process
@@ -321,13 +321,13 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             # which is already the reverse of the "conventional"
             # graph edge direction of src -> tgt / pred -> node.
             g.add(caller, callee)
-            called.add(callee)
+            called_elts = called_elts.union(cacg.nodes[callee])
 
         # For library crates, public API functions may not have internal
         # callers, so we must synthesize a virtual caller for them.
         for scc in cacg.nodes:
             for e in scc:
-                if e not in called:
+                if e not in called_elts:
                     g.add(-1, SingletonSCC(elt_not_node=e))
 
         g.prepare()
