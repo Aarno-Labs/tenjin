@@ -4176,7 +4176,9 @@ impl<'c> Translation<'c> {
 
                     let pat = mk().set_mutbl(mutbl).ident_pat(rust_name.clone());
 
-                    let type_annotation = if self.tcfg.reduce_type_annotations
+                    let type_annotation = if let Some(g) = guided_type {
+                        Some(Box::new(g.parsed))
+                    } else if self.tcfg.reduce_type_annotations
                         && !self.should_assign_type_annotation(typ.ctype, initializer)
                     {
                         None

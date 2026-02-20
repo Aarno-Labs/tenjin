@@ -42,7 +42,7 @@ pub fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
 }
 #[no_mangle]
 pub fn guided_str_init_lit() {
-    let ostr = String::from("owned String");
+    let ostr: String = String::from("owned String");
     print_owned_String(String::from("ddedd"));
     let mut uptr = b"unguided pointer\0" as *const u8 as *const ::core::ffi::c_char;
 }
@@ -117,7 +117,7 @@ pub fn guided_1d_slice(
     mut x: &[::core::ffi::c_int],
     mut index: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
-    let mut x2 = &x[3_usize..];
+    let mut x2: &[::core::ffi::c_int] = &x[3..];
     x[index as usize]
 }
 #[no_mangle]
@@ -146,7 +146,7 @@ pub fn guided_2d_vec(
 #[no_mangle]
 pub fn guided_local_int_as_char() {
     let mut unguided = 65 as ::core::ffi::c_char;
-    let mut oc = 'A';
+    let mut oc: char = 'A';
 }
 #[no_mangle]
 pub fn takes_shared_str(mut rstr: &str) {}
@@ -154,7 +154,7 @@ pub fn takes_shared_str(mut rstr: &str) {}
 pub fn takes_shared_u8(mut ru8: &u8) {}
 #[no_mangle]
 pub fn guided_coerce_borrow_arg() {
-    let mut ostr = guided_ret_ostr();
+    let mut ostr: String = guided_ret_ostr();
     takes_shared_str(&ostr);
 }
 #[no_mangle]
@@ -163,7 +163,7 @@ pub unsafe fn unguided_coerce_asref(mut unguided: *mut ::core::ffi::c_uchar) {
 }
 #[no_mangle]
 pub fn guided_string_zero_empty() {
-    let mut ostr = String::new();
+    let mut ostr: String = String::new();
 }
 #[no_mangle]
 pub unsafe fn struct_unguided_ptr_with_guided_members(mut ug_ptr: *mut StructWithMembersA) {
