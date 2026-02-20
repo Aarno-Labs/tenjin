@@ -19,6 +19,7 @@ import c_refact
 import c_refact_arglifter
 import c_refact_decl_splitter
 import c_refact_type_mod_replicator
+from c_refact_identify_mains import translation_unit_has_main
 import cindex_helpers
 import hermetic
 import repo_root
@@ -128,13 +129,23 @@ def compute_build_info_in(
                 )
             c_file = c_files[0]
 
-        # TODO allow non-exe compilation via checking for main fn, then update docs/USE.md
-        buildcmd = [
-            "clang",
-            "-o",
-            f"{c_file.stem}.exe",
-            c_file.as_posix(),
-        ]
+        index = c_refact.create_xj_clang_index()
+        tu = c_refact.parse_translation_unit_with_args(index, c_file.as_posix(), [])
+        if translation_unit_has_main(tu):
+            buildcmd = [
+                "clang",
+                "-o",
+                f"{c_file.stem}.exe",
+                c_file.as_posix(),
+            ]
+        else:
+            buildcmd = [
+                "clang",
+                "-c",
+                "-o",
+                f"{c_file.stem}.o",
+                c_file.as_posix(),
+            ]
     assert buildcmd is not None
     # Invoke the build command from a temporary directory with a copy of the
     # input codebase, logging the intercepted commands.

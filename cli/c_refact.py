@@ -62,6 +62,10 @@ def parse_translation_unit_with_args(
 ) -> TranslationUnit:
     """Parse a translation unit with given arguments."""
     args_matching_path = []
+
+    if not args:
+        args = [path]
+
     for arg in args:
         if path == arg:
             args_matching_path.append(arg)
