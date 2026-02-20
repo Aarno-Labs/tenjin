@@ -13,6 +13,7 @@
         "&mut Vec<u8>" : "*:xvu8",
         "u8": "guided_static:u8",
         "&mut StructWithMembersA": "*:gm_ptr",
+        "&[u8]" : ["*:rsu8"],
         "&u8": "*:ru8"
     },
     "vars_mut" : {

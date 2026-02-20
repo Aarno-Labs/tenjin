@@ -78,6 +78,19 @@ void guided_array_vec()
     print_owned_vec_u8(ovu8);
 }
 
+void guided_immutable_u8_array_slice_decay_to_ptr()
+{
+    const unsigned char rsu8[] = "";
+    strlen((const char*)rsu8);
+}
+
+
+void guided_immutable_u8_pointer()
+{
+    const unsigned char* rsu8 = "";
+    strlen((const char*)rsu8);
+}
+
 void recognize_call_exit() { exit(1); }
 
 void recognize_int_float_bitcast()
