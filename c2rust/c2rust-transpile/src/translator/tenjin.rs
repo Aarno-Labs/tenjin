@@ -52,6 +52,20 @@ impl GuidedType {
     pub fn is_shared_borrow(&self) -> bool {
         self.is_borrow() && !self.is_exclusive_borrow()
     }
+
+    pub fn is_slice_ref(&self) -> bool {
+        match self.parsed {
+            Type::Reference(ref tref) => matches!(*tref.elem, Type::Slice(_)),
+            _ => false,
+        }
+    }
+
+    pub fn is_array_ref(&self) -> bool {
+        match self.parsed {
+            Type::Reference(ref tref) => matches!(*tref.elem, Type::Array(_)),
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +189,16 @@ fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
     }
 }
 
+fn is_path_exactly_3(path: &Path, a: &str, b: &str, c: &str) -> bool {
+    if path.segments.len() == 3 {
+        path.segments[0].ident.to_string().as_str() == a
+            && path.segments[1].ident.to_string().as_str() == b
+            && path.segments[2].ident.to_string().as_str() == c
+    } else {
+        false
+    }
+}
+
 fn is_known_size_1_path(path: &Path) -> bool {
     // TODO-TENJIN: expand this list
     match path.segments.len() {
@@ -229,12 +253,28 @@ pub fn type_is_vec_of_1_path(ty: &Type, a: &str) -> bool {
     try_type_vec_of(ty).is_some_and(|arg| type_is_exactly_1_path(arg, a))
 }
 
+pub fn type_is_c_char(ty: &Type) -> bool {
+    if let Some(path) = type_get_bare_path(ty) {
+        return is_path_exactly_3(path, "core", "ffi", "c_char")
+            || is_path_exactly_2(path, "libc", "c_char");
+    }
+    false
+}
+
 pub fn type_is_vec(ty: &Type) -> bool {
     type_is_exactly_1_path(ty, "Vec")
 }
 
 pub fn type_is_ref(ty: &Type) -> bool {
     matches!(ty, Type::Reference(_))
+}
+
+pub fn type_of_ref(ty: &Type) -> Option<&Type> {
+    if let Type::Reference(ref tref) = *ty {
+        Some(&tref.elem)
+    } else {
+        None
+    }
 }
 
 pub fn type_is_mut_ref(ty: &Type) -> bool {
@@ -244,7 +284,34 @@ pub fn type_is_mut_ref(ty: &Type) -> bool {
     false
 }
 
-fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
+pub fn type_is_shared_borrow(ty: &Type) -> bool {
+    if let Type::Reference(ref tref) = *ty {
+        return tref.mutability.is_none();
+    }
+    false
+}
+
+pub fn type_of_slice_ref(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Reference(ref tref) => match *tref.elem {
+            Type::Slice(ref slice) => Some(&slice.elem),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub fn type_of_array_ref(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Reference(ref tref) => match *tref.elem {
+            Type::Array(ref arr) => Some(&arr.elem),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
     match t {
         Type::Path(p) => path_get_1_segment(&p.path)
             .and_then(|s| segment_get_1_bracket_argument(s))
@@ -337,6 +404,37 @@ pub fn expr_strip_casts(expr: &Expr) -> &Expr {
     loop {
         match ep {
             Expr::Cast(ExprCast { expr, .. }) => ep = expr,
+            _ => break ep,
+        }
+    }
+}
+
+pub fn expr_is_transmute(expr: &Expr) -> bool {
+    if let Expr::Path(ref path) = *expr {
+        if is_path_exactly_1(&path.path, "transmute") {
+            return true;
+        }
+        if is_path_exactly_3(&path.path, "core", "mem", "transmute") {
+            return true;
+        }
+        if is_path_exactly_3(&path.path, "core", "intrinsics", "transmute") {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn expr_strip_transmute(expr: &Expr) -> &Expr {
+    let mut ep = expr;
+    loop {
+        match ep {
+            Expr::Call(syn::ExprCall { func, args, .. }) => {
+                if tenjin::expr_is_transmute(func) && args.len() == 1 {
+                    ep = &args[0];
+                } else {
+                    break ep;
+                }
+            }
             _ => break ep,
         }
     }
