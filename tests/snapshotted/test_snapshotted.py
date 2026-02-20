@@ -59,9 +59,10 @@ def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
     if not snapshot_dir.exists():
         snapshot_dir.mkdir()
 
-    before = contents_of_non_ignored_files(snapshot_dir)
-    shutil.copytree(dst=snapshot_dir, src=tmp_resultsdir / "final", dirs_exist_ok=True)
-    after = contents_of_non_ignored_files(snapshot_dir)
+    before = contents_of_non_ignored_files(snapshot_dir / "final")
+    shutil.copytree(dst=snapshot_dir / "00_out", src=tmp_resultsdir / "00_out", dirs_exist_ok=True)
+    shutil.copytree(dst=snapshot_dir / "final", src=tmp_resultsdir / "final", dirs_exist_ok=True)
+    after = contents_of_non_ignored_files(snapshot_dir / "final")
 
     assert cp_ce.returncode == 0, "translation did not succeed"
 
