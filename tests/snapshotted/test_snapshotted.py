@@ -48,6 +48,8 @@ def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
             (src_dir / "assorted_guidance.c").as_posix(),
             "--resultsdir",
             tmp_resultsdir,
+            "--guidance",
+            (src_dir / "guidance.json").as_posix(),
         ],
         check=False,
         capture_output=False,
