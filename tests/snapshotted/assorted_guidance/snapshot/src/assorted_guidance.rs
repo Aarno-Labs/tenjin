@@ -11,16 +11,16 @@ pub struct StructWithMembersA {
 }
 static static_int_nonmutbl: ::core::ffi::c_int = 0;
 #[no_mangle]
-pub unsafe extern "C" fn use_global_ints() {
+pub unsafe fn use_global_ints() {
     static static_local_nonmutbl: ::core::ffi::c_int = 0;
     extern_int_unguided = 5 + extern_int_nonmutbl + static_int_nonmutbl + static_local_nonmutbl;
 }
 #[no_mangle]
-pub extern "C" fn print_owned_String(mut ostr: String) {
+pub fn print_owned_String(mut ostr: String) {
     println!("{:>}", ostr);
 }
 #[no_mangle]
-pub unsafe extern "C" fn print_unguided_ptr(mut ptr: *const ::core::ffi::c_char) {
+pub unsafe fn print_unguided_ptr(mut ptr: *const ::core::ffi::c_char) {
     println!("{:>}", {
         std::ffi::CStr::from_ptr(ptr as *const core::ffi::c_char)
             .to_str()
@@ -28,52 +28,52 @@ pub unsafe extern "C" fn print_unguided_ptr(mut ptr: *const ::core::ffi::c_char)
     });
 }
 #[no_mangle]
-pub extern "C" fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
+pub fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
     println!("{:>}", String::from_utf8_lossy(rvu8));
 }
 #[no_mangle]
-pub extern "C" fn print_owned_vec_u8(mut ovu8: Vec<u8>) {
+pub fn print_owned_vec_u8(mut ovu8: Vec<u8>) {
     println!("{:>}", String::from_utf8_lossy(&ovu8));
 }
 #[no_mangle]
-pub extern "C" fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
+pub fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
     xj_sprintf_Vec_u8(xvu8, Some(24), format!("{:}", 42));
     xj_sprintf_Vec_u8(xvu8, None, format!("{:}", 42));
 }
 #[no_mangle]
-pub extern "C" fn guided_str_init_lit() {
+pub fn guided_str_init_lit() {
     let ostr = String::from("owned String");
     print_owned_String(String::from("ddedd"));
     let mut uptr = b"unguided pointer\0" as *const u8 as *const ::core::ffi::c_char;
 }
 #[no_mangle]
-pub extern "C" fn guided_str_init_empty_lit() {
+pub fn guided_str_init_empty_lit() {
     let mut ostr: String = String::new();
     print_owned_String(String::new());
 }
 #[no_mangle]
-pub extern "C" fn guided_array_vec() {
+pub fn guided_array_vec() {
     let mut ovu8: Vec<u8> = vec![1, 2, 3, 4];
     print_owned_vec_u8(ovu8);
 }
 #[no_mangle]
-pub extern "C" fn recognize_call_exit() {
+pub fn recognize_call_exit() {
     ::std::process::exit(1);
 }
 #[no_mangle]
-pub extern "C" fn recognize_int_float_bitcast() {
+pub fn recognize_int_float_bitcast() {
     let mut ui = 0x40490fdb as ::core::ffi::c_int as ::core::ffi::c_uint;
     let mut f = f32::from_bits(ui);
     println!("float f = {:}", { f as ::core::ffi::c_double });
 }
 #[no_mangle]
-pub extern "C" fn guided_static() {}
+pub fn guided_static() {}
 #[no_mangle]
-pub extern "C" fn guided_ret_ostr() -> String {
+pub fn guided_ret_ostr() -> String {
     String::new()
 }
 #[no_mangle]
-pub extern "C" fn guided_condition_string_null_check_neq(mut ostr: String) -> ::core::ffi::c_int {
+pub fn guided_condition_string_null_check_neq(mut ostr: String) -> ::core::ffi::c_int {
     if true {
         2
     } else {
@@ -81,42 +81,39 @@ pub extern "C" fn guided_condition_string_null_check_neq(mut ostr: String) -> ::
     }
 }
 #[no_mangle]
-pub extern "C" fn guided_c_assignment_string_pop(mut ostr: String) {
+pub fn guided_c_assignment_string_pop(mut ostr: String) {
     ostr.pop();
 }
 #[no_mangle]
-pub extern "C" fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
+pub fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
     ostr.len() as ::core::ffi::c_ulong
 }
 #[no_mangle]
-pub extern "C" fn guided_isalnum() -> ::core::ffi::c_int {
+pub fn guided_isalnum() -> ::core::ffi::c_int {
     xj_isalnum('A' as i32)
 }
 #[no_mangle]
-pub extern "C" fn guided_tolower() -> ::core::ffi::c_int {
+pub fn guided_tolower() -> ::core::ffi::c_int {
     xj_tolower('A' as i32) as ::core::ffi::c_int
 }
 #[no_mangle]
-pub extern "C" fn guided_strcspn(mut ostr: String, mut delimiters: String) -> ::core::ffi::c_int {
+pub fn guided_strcspn(mut ostr: String, mut delimiters: String) -> ::core::ffi::c_int {
     strcspn_str(&ostr, &delimiters) as ::core::ffi::c_int
 }
 #[no_mangle]
-pub extern "C" fn guided_vec_memset_zero_mulsizeof_ty(mut ovu8: Vec<u8>) {
+pub fn guided_vec_memset_zero_mulsizeof_ty(mut ovu8: Vec<u8>) {
     ovu8[..3].fill(0);
 }
 #[no_mangle]
-pub extern "C" fn guided_vec_memset_zero_mulsizeof_deref(mut ovu8: Vec<u8>) {
+pub fn guided_vec_memset_zero_mulsizeof_deref(mut ovu8: Vec<u8>) {
     ovu8[..3].fill(0);
 }
 #[no_mangle]
-pub extern "C" fn guided_mut_ref_neq(
-    mut xstr: &mut str,
-    mut xstr2: &mut str,
-) -> ::core::ffi::c_int {
+pub fn guided_mut_ref_neq(mut xstr: &mut str, mut xstr2: &mut str) -> ::core::ffi::c_int {
     1
 }
 #[no_mangle]
-pub extern "C" fn guided_1d_slice(
+pub fn guided_1d_slice(
     mut x: &[::core::ffi::c_int],
     mut index: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
@@ -124,7 +121,7 @@ pub extern "C" fn guided_1d_slice(
     x[index as usize]
 }
 #[no_mangle]
-pub extern "C" fn guided_2d_slice(
+pub fn guided_2d_slice(
     mut x2d: &[&[::core::ffi::c_int]],
     mut i: ::core::ffi::c_int,
     mut j: ::core::ffi::c_int,
@@ -132,14 +129,14 @@ pub extern "C" fn guided_2d_slice(
     x2d[i as usize][j as usize]
 }
 #[no_mangle]
-pub extern "C" fn guided_1d_vec(
+pub fn guided_1d_vec(
     mut x: Vec<::core::ffi::c_int>,
     mut index: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
     x[index as usize]
 }
 #[no_mangle]
-pub extern "C" fn guided_2d_vec(
+pub fn guided_2d_vec(
     mut x2d: Vec<Vec<::core::ffi::c_int>>,
     mut i: ::core::ffi::c_int,
     mut j: ::core::ffi::c_int,
@@ -147,38 +144,34 @@ pub extern "C" fn guided_2d_vec(
     x2d[i as usize][j as usize]
 }
 #[no_mangle]
-pub extern "C" fn guided_local_int_as_char() {
+pub fn guided_local_int_as_char() {
     let mut unguided = 65 as ::core::ffi::c_char;
     let mut oc = 'A';
 }
 #[no_mangle]
-pub extern "C" fn takes_shared_str(mut rstr: &str) {}
+pub fn takes_shared_str(mut rstr: &str) {}
 #[no_mangle]
-pub extern "C" fn takes_shared_u8(mut ru8: &u8) {}
+pub fn takes_shared_u8(mut ru8: &u8) {}
 #[no_mangle]
-pub extern "C" fn guided_coerce_borrow_arg() {
+pub fn guided_coerce_borrow_arg() {
     let mut ostr = guided_ret_ostr();
     takes_shared_str(&ostr);
 }
 #[no_mangle]
-pub unsafe extern "C" fn unguided_coerce_asref(mut unguided: *mut ::core::ffi::c_uchar) {
+pub unsafe fn unguided_coerce_asref(mut unguided: *mut ::core::ffi::c_uchar) {
     takes_shared_u8(unguided.as_ref().unwrap());
 }
 #[no_mangle]
-pub extern "C" fn guided_string_zero_empty() {
+pub fn guided_string_zero_empty() {
     let mut ostr = String::new();
 }
 #[no_mangle]
-pub unsafe extern "C" fn struct_unguided_ptr_with_guided_members(
-    mut ug_ptr: *mut StructWithMembersA,
-) {
+pub unsafe fn struct_unguided_ptr_with_guided_members(mut ug_ptr: *mut StructWithMembersA) {
     *(*ug_ptr).uptr.offset(0) = 42;
     (*ug_ptr).zu8 = 43;
 }
 #[no_mangle]
-pub unsafe extern "C" fn struct_guided_ptr_with_guided_members(
-    mut gm_ptr: &mut StructWithMembersA,
-) {
+pub unsafe fn struct_guided_ptr_with_guided_members(mut gm_ptr: &mut StructWithMembersA) {
     *gm_ptr.uptr.offset(0) = 42;
     gm_ptr.zu8 = 43;
 }

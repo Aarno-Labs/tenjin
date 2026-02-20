@@ -21,6 +21,7 @@
         "static_int_nonmutbl": false,
         "*:static_local_nonmutbl": false
     },
+    "public_api": [],
     "fn_return_type": {
         "guided_ret_ostr": "String"
     }

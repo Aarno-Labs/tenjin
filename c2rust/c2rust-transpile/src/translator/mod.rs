@@ -326,6 +326,7 @@ pub struct ParsedGuidance {
     pub using_crates: HashSet<String>,
     pub pod_types: HashSet<String>,
     pub no_math_errno: bool,
+    pub public_api: Option<HashSet<String>>,
 }
 
 impl ParsedGuidance {
@@ -420,6 +421,19 @@ impl ParsedGuidance {
             }
         }
 
+        let mut public_api = None;
+        if let Some(fns) = raw.get("public_api") {
+            let mut api_fns = HashSet::new();
+            if let Some(fns) = fns.as_array() {
+                for fnname in fns {
+                    if let Some(fnname_str) = fnname.as_str() {
+                        api_fns.insert(fnname_str.to_string());
+                    }
+                }
+            }
+            public_api = Some(api_fns);
+        }
+
         //dbg!(&fn_return_types);
         //dbg!(&declspecs_of_type);
         //dbg!(&mut_of_decl);
@@ -461,6 +475,7 @@ impl ParsedGuidance {
             using_crates,
             pod_types,
             no_math_errno,
+            public_api,
         }
     }
 
@@ -3320,7 +3335,13 @@ impl<'c> Translation<'c> {
                     (ty, init)
                 };
 
-                let mut static_def = if is_externally_visible {
+                let fn_needs_abi_preservation =
+                    if let Some(api) = &self.parsed_guidance.borrow().public_api {
+                        api.contains(ident)
+                    } else {
+                        is_externally_visible
+                    };
+                let mut static_def = if fn_needs_abi_preservation {
                     mk_linkage(false, new_name, ident).pub_().extern_("C")
                 } else if self.cur_file.get().is_some() {
                     mk().pub_()
@@ -3654,18 +3675,23 @@ impl<'c> Translation<'c> {
                     // but strings have to do for now
                     self.mk_cross_check(mk(), vec!["entry(djb2=\"main\")", "exit(djb2=\"main\")"])
                 } else if (is_global && !is_inline) || is_extern_inline {
-                    mk_linkage(false, new_name, name).extern_("C").pub_()
+                    mk_linkage(false, new_name, name).pub_()
                 } else if self.cur_file.get().is_some() {
-                    mk().extern_("C").pub_()
+                    mk().pub_()
                 } else {
-                    mk().extern_("C")
+                    mk()
                 };
 
-                // XREF:TENJIN-GUIDANCE-STRAWMAN
-                // Eventually, we must become more sophisticated about ABI preservation.
+                // If we've been given guidance about what constitutes the public API of the
+                // code we're translating, we can use it to refine what functions are marked `extern`.
                 // Some common types like `String` and `Vec` are not FFI-safe.
-                // YOLO mode for now!
-                let fn_needs_abi_preservation: bool = false;
+                let fn_needs_abi_preservation =
+                    if let Some(api) = &self.parsed_guidance.borrow().public_api {
+                        api.contains(name)
+                    } else {
+                        // By default, all non-static functions might be externally visible.
+                        true
+                    };
 
                 if fn_needs_abi_preservation && !is_main {
                     mk_ = mk_.extern_("C");
