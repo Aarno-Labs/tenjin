@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -65,6 +66,13 @@ def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
     after = contents_of_non_ignored_files(snapshot_dir / "final")
 
     assert cp_ce.returncode == 0, "translation did not succeed"
+
+    translation_metadata_path = tmp_resultsdir / "translation_metadata.json"
+    assert translation_metadata_path.is_file(), "translation_metadata.json was not generated"
+    tmj = json.loads(translation_metadata_path.read_text(encoding="utf-8"))
+    assert tmj["results"]["tenjin_final"]["rustc_errors"] == 0, (
+        "unexpected rustc errors in final translation results"
+    )
 
     added = [p for p in after if p not in before]
     removed = [p for p in before if p not in after]
