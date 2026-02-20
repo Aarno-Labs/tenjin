@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+]
+[package]
+name = "tenjinized"
+authors = ["C2Rust"]
+version = "0.0.0"
+publish = false
+edition = "2021"
+autobins = false
+
+[lib]
+name = "tenjinized"
+path = "lib.rs"
+crate-type = ["staticlib", "rlib"]
+[dependencies]
+
+
