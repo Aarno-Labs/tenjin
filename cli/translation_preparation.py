@@ -1334,9 +1334,7 @@ def run_preparation_passes(
             f"Collected declarations after preprocessing: {len(store.items_defined_after_pp)} TUs"
         )
 
-    def prep_convert_union_bitcasts(
-        prev: Path, current_codebase: Path, store: PrepPassResultStore
-    ):
+    def prep_convert_union_bitcasts(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         builddir = hermetic.xj_prepare_unionbitcasts_build_dir(repo_root.localdir())
         assert builddir.exists(), (
             f"Build directory {builddir} does not exist, should have been built already"
@@ -1346,9 +1344,7 @@ def run_preparation_passes(
         binary_path = builddir / "xj-prepare-unionbitcasts"
 
         compdb_path = current_codebase / "compile_commands.json"
-        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(
-            compdb_path
-        )
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
 
         # Extract source file paths from the compilation database
         with open(compdb_path, encoding="utf-8") as f:
@@ -1360,7 +1356,8 @@ def run_preparation_passes(
             [
                 binary_path.as_posix(),
                 "--inplace",
-                "-p", current_codebase.as_posix(),
+                "-p",
+                current_codebase.as_posix(),
                 "--extra-arg=-Wno-zero-length-array",
                 "--extra-arg=-Wno-implicit-int-conversion",
                 "--extra-arg=-Wno-unused-function",
