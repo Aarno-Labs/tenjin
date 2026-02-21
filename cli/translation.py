@@ -21,7 +21,6 @@ import ingest_tracking
 import targets
 import hermetic
 import vcs_helpers
-import cargo_workspace_helpers
 import static_measurements_rust
 from tenj_types import ResolvedPath, style_path, UserFacingError
 from c_refact_identify_mains import find_main_translation_units
@@ -334,18 +333,7 @@ def do_translate(
         skip_remainder_of_translation = True
 
     if not skip_remainder_of_translation:
-        # Verify that the initial translation is valid Rust code.
-        # If it has errors, we won't be able to run the improvement passes.
-        initial_cp = hermetic.run_cargo_on_translated_code(["check"], cwd=output, check=False)
-        # Ensure that subsequent passes start with a clean slate.
-        clean_p_cp = hermetic.run_cargo_on_translated_code(
-            ["clean", *cargo_workspace_helpers.flags_for_all_cargo_workspace_packages(output)],
-            cwd=output,
-            check=False,
-        )
-
-        if initial_cp.returncode == 0 and clean_p_cp.returncode == 0:
-            run_improvement_passes(root, output, resultsdir, cratename, tracker)
+        run_improvement_passes(root, output, resultsdir, cratename, tracker)
 
         # Find the highest numbered output directory and copy its contents
         # to the final output directory.
