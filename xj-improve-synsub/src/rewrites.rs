@@ -1,4 +1,4 @@
-use syn::Expr;
+use syn::{Expr, ExprCast, Pat, Path, Stmt, Type};
 
 use crate::{Depth, Rewriter, SymbolTable};
 
@@ -30,6 +30,32 @@ impl Rewriter {
 
         Some((replacement, Depth::Limited(0)))
     }
+
+    /// Rewrite let-binding statements.
+    pub fn rewrite_local(&self, symbols: &SymbolTable, stmt: &Stmt) -> Option<(Stmt, Depth)> {
+        let Stmt::Local(local) = stmt else {
+            return None;
+        };
+        let Pat::Type(pat_type) = &local.pat else {
+            return None;
+        };
+        let Some(localinit) = &local.init else {
+            return None;
+        };
+
+        if let Some(elt_ty) = type_of_slice_ref(&pat_type.ty) {
+            if is_u8_type(elt_ty) {
+                let init_expr = &localinit.expr;
+                let coerced = coerce_u8s(init_expr, symbols, true)?;
+                let replacement: Stmt = syn::parse_quote! {
+                    let #pat_type = #coerced;
+                };
+                return Some((replacement, Depth::Limited(0)));
+            }
+        }
+
+        None
+    }
 }
 
 /// Coerce supported string-like inputs into `u8` slice expressions.
@@ -40,7 +66,9 @@ impl Rewriter {
 /// - `x.as_mut_ptr()` on `u8` slices (`x.as_u8_slice()`),
 /// - pointer expressions (`CStr::from_ptr(x).to_bytes()`) when
 ///   `exclusive == false`.
-fn coerce_u8s(expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option<Box<Expr>> {
+fn coerce_u8s(mut expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option<Box<Expr>> {
+    expr = expr_strip_transmute_deref(expr_strip_casts(expr));
+
     if let Some(coerced) = coerce_cast_byte_str(expr) {
         return Some(coerced);
     }
@@ -163,6 +191,16 @@ fn is_ref_str_type(ty: &syn::Type) -> bool {
     matches!(&*reference.elem, syn::Type::Path(path) if path.path.is_ident("str"))
 }
 
+fn type_of_slice_ref(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Reference(tref) => match &*tref.elem {
+            Type::Slice(slice) => Some(&slice.elem),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn is_pointer_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
     if let Expr::Cast(cast) = expr {
         if matches!(&*cast.ty, syn::Type::Ptr(_)) {
@@ -179,5 +217,83 @@ fn is_cast_byte_str(expr: &Expr) -> bool {
         Expr::Lit(lit) => matches!(lit.lit, syn::Lit::ByteStr(_)),
         Expr::Cast(cast) => is_cast_byte_str(&cast.expr),
         _ => false,
+    }
+}
+
+fn expr_strip_casts(expr: &Expr) -> &Expr {
+    let mut ep = expr;
+    loop {
+        match ep {
+            Expr::Cast(ExprCast { expr, .. }) => ep = expr,
+            _ => break ep,
+        }
+    }
+}
+
+pub fn is_path_exactly_1(path: &Path, a: &str) -> bool {
+    if path.segments.len() == 1 {
+        path.segments[0].ident.to_string().as_str() == a
+    } else {
+        false
+    }
+}
+
+// fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
+//     if path.segments.len() == 2 {
+//         path.segments[0].ident.to_string().as_str() == a
+//             && path.segments[1].ident.to_string().as_str() == b
+//     } else {
+//         false
+//     }
+// }
+
+fn is_path_exactly_3(path: &Path, a: &str, b: &str, c: &str) -> bool {
+    if path.segments.len() == 3 {
+        path.segments[0].ident.to_string().as_str() == a
+            && path.segments[1].ident.to_string().as_str() == b
+            && path.segments[2].ident.to_string().as_str() == c
+    } else {
+        false
+    }
+}
+
+fn expr_is_transmute(expr: &Expr) -> bool {
+    if let Expr::Path(ref path) = *expr {
+        if is_path_exactly_1(&path.path, "transmute") {
+            return true;
+        }
+        if is_path_exactly_3(&path.path, "core", "mem", "transmute") {
+            eprintln!("++++++++++++found core::mem::transmute");
+            return true;
+        }
+        if is_path_exactly_3(&path.path, "core", "intrinsics", "transmute") {
+            return true;
+        }
+    }
+    false
+}
+
+fn expr_strip_transmute_deref(expr: &Expr) -> &Expr {
+    let mut ep = expr;
+    loop {
+        match ep {
+            Expr::Call(syn::ExprCall { func, args, .. }) => {
+                if expr_is_transmute(func) && args.len() == 1 {
+                    if let Expr::Unary(syn::ExprUnary {
+                        op: syn::UnOp::Deref(_),
+                        expr,
+                        ..
+                    }) = &args[0]
+                    {
+                        ep = expr;
+                    } else {
+                        break ep;
+                    }
+                } else {
+                    break ep;
+                }
+            }
+            _ => break ep,
+        }
     }
 }

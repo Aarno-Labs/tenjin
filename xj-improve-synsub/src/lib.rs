@@ -19,8 +19,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use syn::visit_mut::{self, VisitMut};
 
 // ── Depth ────────────────────────────────────────────────────────────
@@ -527,4 +529,98 @@ fn resolve_mod(
     }
 
     None
+}
+
+// ── Cargo metadata ───────────────────────────────────────────────────
+
+/// A single Cargo target (lib, bin, example, …) with its root source file.
+#[derive(Debug, Clone)]
+pub struct CrateRoot {
+    /// Package name from `Cargo.toml`.
+    pub package_name: String,
+    /// Target name (often equal to the package name for `lib` targets).
+    pub target_name: String,
+    /// Target kinds, e.g. `["lib"]`, `["bin"]`, `["example"]`.
+    pub kinds: Vec<String>,
+    /// Absolute path to the root source file for this target.
+    pub src_path: PathBuf,
+}
+
+// Subset of the `cargo metadata` JSON we care about.
+#[derive(Deserialize)]
+struct CargoMetadata {
+    packages: Vec<MetadataPackage>,
+}
+
+#[derive(Deserialize)]
+struct MetadataPackage {
+    name: String,
+    targets: Vec<MetadataTarget>,
+}
+
+#[derive(Deserialize)]
+struct MetadataTarget {
+    name: String,
+    kind: Vec<String>,
+    src_path: PathBuf,
+}
+
+/// Discover the root source files of every crate in a Cargo workspace by
+/// running `cargo metadata --offline --no-deps --format-version 1`.
+///
+/// `manifest_dir` should be any directory inside the workspace (typically
+/// the workspace root).  The function returns one [`CrateRoot`] per
+/// target (lib, bin, example, …) listed in the metadata.
+pub fn discover_crate_roots(manifest_dir: &Path) -> Result<Vec<CrateRoot>> {
+    let output = Command::new("cargo")
+        .args([
+            "metadata",
+            "--offline",
+            "--no-deps",
+            "--format-version",
+            "1",
+        ])
+        .current_dir(manifest_dir)
+        .output()
+        .context("failed to run `cargo metadata`")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "`cargo metadata` exited with {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+
+    let meta: CargoMetadata =
+        serde_json::from_slice(&output.stdout).context("parsing `cargo metadata` output")?;
+
+    let mut roots = Vec::new();
+    for pkg in meta.packages {
+        for tgt in pkg.targets {
+            roots.push(CrateRoot {
+                package_name: pkg.name.clone(),
+                target_name: tgt.name,
+                kinds: tgt.kind,
+                src_path: tgt.src_path,
+            });
+        }
+    }
+    Ok(roots)
+}
+
+/// Convenience wrapper: discover every crate root in the workspace and
+/// then [`collect_crate_files`] for each one, returning all files keyed
+/// by [`CrateRoot`].
+pub fn collect_workspace_files(
+    manifest_dir: &Path,
+) -> Result<Vec<(CrateRoot, Vec<(PathBuf, syn::File)>)>> {
+    let roots = discover_crate_roots(manifest_dir)?;
+    let mut result = Vec::with_capacity(roots.len());
+    for root in roots {
+        let files = collect_crate_files(&root.src_path)?;
+        result.push((root, files));
+    }
+    Ok(result)
 }

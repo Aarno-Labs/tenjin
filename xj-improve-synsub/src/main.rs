@@ -5,16 +5,16 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use xj_improve_synsub::{Depth, Rewriter, collect_crate_files};
+use xj_improve_synsub::{Depth, Rewriter, collect_workspace_files};
 
 #[derive(Parser)]
 #[command(
     name = "xj-improve-synsub",
-    about = "Rewrite Rust source code using syn-based substitution rules"
+    about = "Rewrite Rust source code using `syn`-based substitution rules"
 )]
 struct Args {
-    /// Root source file of the crate to rewrite (e.g. src/lib.rs).
-    crate_root: PathBuf,
+    /// Root directory of the workspace to be rewritten
+    workspace_root: PathBuf,
 
     /// Maximum rewriting depth (omit for unlimited).
     #[arg(long)]
@@ -28,31 +28,36 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let mut files = collect_crate_files(&args.crate_root)?;
+    let mut crates = collect_workspace_files(&args.workspace_root)?;
     let mut rw = Rewriter::new();
 
     rw.add_expr_rewrite(Rewriter::rewrite_strstr);
+    rw.add_stmt_rewrite(Rewriter::rewrite_local);
 
     let depth = match args.depth {
         Some(n) => Depth::Limited(n),
         None => Depth::Unlimited,
     };
 
-    rw.rewrite_crate(&mut files, depth);
+    for (_crate_root, files) in crates.iter_mut() {
+        rw.rewrite_crate(files, depth);
+    }
 
     let deps = rw.deps();
     if !deps.is_empty() {
-        add_deps_to_manifest(&args.crate_root, &deps)?;
+        add_deps_to_manifest(&args.workspace_root, &deps)?;
     }
 
-    for (path, file) in &files {
-        let code = prettyplease::unparse(file);
-        if args.in_place {
-            fs::write(path, &code)?;
-            eprintln!("wrote {}", path.display());
-        } else {
-            println!("// {}", path.display());
-            println!("{code}");
+    for (_crate_root, files) in crates {
+        for (path, file) in files {
+            let code = prettyplease::unparse(&file);
+            if args.modify_in_place {
+                fs::write(&path, &code)?;
+                eprintln!("wrote {}", path.display());
+            } else {
+                println!("// {}", path.display());
+                println!("{code}");
+            }
         }
     }
 
