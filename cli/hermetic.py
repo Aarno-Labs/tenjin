@@ -470,10 +470,15 @@ def check_call_opam(
 
 
 def run_output_git(args: list[str], check=False) -> bytes:
-    jjdir = repo_root.find_repo_root_dir_Path() / ".jj"
+    rootdir = repo_root.find_repo_root_dir_Path()
+    jjdir = rootdir / ".jj"
     if jjdir.is_dir():
-        gitroot = subprocess.check_output(["jj", "git", "root"]).decode("utf-8")
-        cp = subprocess.run(["git", "--git-root", gitroot, *args], check=False, capture_output=True)
+        gitroot = subprocess.check_output(["jj", "git", "root"]).decode("utf-8").strip()
+        cp = subprocess.run(
+            ["git", "--git-dir", gitroot, "--work-tree", rootdir.as_posix(), *args],
+            check=False,
+            capture_output=True,
+        )
     else:
         cp = subprocess.run(["git", *args], check=False, capture_output=True)
 

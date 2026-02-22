@@ -15,7 +15,7 @@ various transformations during translation. The final version of the code
 will be contained in a subdirectory called `final/`.
 
 Currently, Tenjin requires either a project directory or a lone C file
-(which should contain a `main` function, and should be compilable without
+(which should be compilable without
 any preprocessor definitions or include flags). If providing a project
 directory, it should contain a `CMakeLists.txt` file.
 For other build systems, there is a `--buildcmd` flag which can, for example,

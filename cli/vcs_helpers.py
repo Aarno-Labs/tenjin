@@ -62,7 +62,7 @@ def jj_working_copy_status(vcs_root: Path, origin_remote: str = "origin") -> Wor
     if not origin_url:
         raise RuntimeError(f"No remote named {origin_remote} found in 'jj git remote list' output.")
 
-    fields = "empty,commit_id,immutable,git_refs,parents.len()".split(",")
+    fields = "empty,commit_id,immutable,remote_bookmarks,parents.len()".split(",")
     #           0       1       2         3         4
     template = ' ++ "," ++ '.join(fields) + r' ++ "\n"'
 
