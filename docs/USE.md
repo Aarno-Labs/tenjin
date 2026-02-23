@@ -67,6 +67,43 @@ Currently restricted to a hard-coded list.
 that no functions in the entire translated codebase make of use
 `errno` in the math stdlib.
 
+### Type Guidance
+
+When does it make sense to guide a declaration D to use Rust type T
+instead of "raw" type R?
+
+1. at each initialization site (e.g. fn call args and RHSes of let bindings)
+   the expression of type R can be transformed into one of type T; and
+2. at every use site of D,
+    EITHER
+        a value of type T can be coerced to one of type R,
+        producing a value respecting the same invariants that
+        an unguided value would have obeyed,
+    OR
+        the use expression *and its context* can be altered to avoid
+        a coercion to type R.
+
+Regarding invariants: `&[u8]` can safely decay to a pointer, but if the
+slice contents are not null terminated, many C string operations will be UB.
+
+The choice of coercion vs context alteration as the baseline approach will
+vary per-type. For example, a String in Rust generally cannot safely decay
+to a raw `char*` due to the need to maintain UTF-8 contents sans null terminator.
+However, a `&[u8]` slice can be coerced to a pointer, assuming that null
+terminators are kept.
+
+This implies that Tenjin should handle the two cases differently: for "compatible"
+types like `&[u8]`, occurrences should be emitted with coercions to maintain
+interoperation with the rest of the translated program. For "incompatible" types
+like `&str`, occurrences should be left as-is, so that any residual occurrences
+which could not be given special handling will be flagged by the Rust compiler
+due to type incompatibilities.
+
+When these conditions are not met, automated translation will not produce a
+correct program. Note that one may rationally want to produce an incorrect
+translation, if the cost of fixing the unhandled cases from "incorrect" guidance
+is lower than the cost of otherwise obtaining an acceptably correct translation.
+
 ## Coverage
 
 Tenjin provides support for collecting and manipulating coverage
