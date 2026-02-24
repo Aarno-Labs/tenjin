@@ -70,12 +70,13 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
         const std::vector<FieldAccess> &seq;
         const FieldDecl *src_field;
         const FieldDecl *dst_field;
-        const std::string &funcName;
-        const std::string &funcCode;
+        std::string funcName;
         ASTContext &Ctx;
         SourceManager &SM;
         LangOptions LO;
         CFGBlock *cutPoint;
+        SourceLocation unionLoc;
+        int num_bytes;
 
         // Generated values
         std::string tmp_in_name;
@@ -127,17 +128,16 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
 
     // Modular transformation methods
     InsertionInfo analyzeCutPoint(TransformContext &ctx);
-    void generateDeclarations(TransformContext &ctx);
+    bool generateConversionFunctionCode(TransformContext &ctx);
+    void generateTemporaryVariables(TransformContext &ctx);
     bool tryDeleteUnionDecl(TransformContext &ctx, const DeclStmt *declStmt);
     bool handleInitOnlyCase(TransformContext &ctx);
     void collectReplacementEdits(TransformContext &ctx);
-    void emitConversionCall(TransformContext &ctx, const InsertionInfo &info);
-    void emitTypedefAndFunction(TransformContext &ctx);
+    void generateConversionCall(TransformContext &ctx, const InsertionInfo &info);
 
-    bool emitTransformation(const FunctionDecl *FD, const VarDecl *VD,
+    bool generateTransformation(const FunctionDecl *FD, const VarDecl *VD,
                             const std::vector<FieldAccess> &seq,
                             const FieldDecl *src_field, const FieldDecl *dst_field,
-                            const std::string &srcC, const std::string &funcName,
-                            const std::string &funcCode, ASTContext &Ctx,
-                            CFGBlock *cutPoint);
+                            SourceLocation unionLoc, int num_bytes,
+                            ASTContext &Ctx, CFGBlock *cutPoint);
 };

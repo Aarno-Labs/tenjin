@@ -248,27 +248,11 @@ void FunctionAccessAnalyzer::transformUnionVar(const FunctionDecl *FD, TypePunCa
             return;
         }
     }
-    SourceManager &SM = Ctx.getSourceManager();
-    LangOptions LO = Ctx.getLangOpts();
-
     // Get union definition location
     const RecordDecl *unionDecl = src_field->getParent();
     SourceLocation unionLoc = unionDecl->getLocation();
 
-    std::string srcC = getTypeString(src_field->getType(), Ctx);
-    std::string funcName =
-        generateFuncName(src_field->getType(), dst_field->getType(), unionLoc, Ctx);
-    std::string funcCode = generateUnionConversionFunction(src_field->getType(), dst_field->getType(),
-                                                            unionLoc, Ctx, UI.num_bytes);
-    if (funcName.empty() || funcCode.empty()) {
-        gLog.error = "Could not generate conversion function";
-        logFailedUnion(UI.var_decl, Ctx, gLog.error);
-        if (VERBOSE)
-            llvm::outs() << "[Error] " + gLog.error + "\n";
-        return;
-    }
-
-    if (emitTransformation(FD, UI.var_decl, seq, src_field, dst_field, srcC, funcName, funcCode, Ctx,
+    if (generateTransformation(FD, UI.var_decl, seq, src_field, dst_field, unionLoc, UI.num_bytes, Ctx,
                    cutPoint)) {
         gLog.replacedUnion = true;
         g_unions_replaced++;
