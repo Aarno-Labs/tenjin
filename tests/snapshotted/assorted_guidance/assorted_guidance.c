@@ -260,3 +260,20 @@ void struct_guided_ptr_with_guided_members(struct StructWithMembersA* gm_ptr) {
     gm_ptr->uptr[0] = 42;
     gm_ptr->zu8 = 43;
 }
+
+union UsedForFloatIntBitcast {
+    unsigned int ui;
+    float f;
+};
+
+unsigned int guided_union_float_int_bitcast(float f) {
+    union UsedForFloatIntBitcast u;
+    u.f = f;
+    return u.ui;
+}
+
+float guided_union_int_float_bitcast(unsigned int ui) {
+    union UsedForFloatIntBitcast u;
+    u.ui = ui;
+    return u.f;
+}

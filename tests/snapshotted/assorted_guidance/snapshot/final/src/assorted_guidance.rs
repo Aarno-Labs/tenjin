@@ -1,4 +1,9 @@
 extern "C" {
+    fn memcpy(
+        dest: *mut ::core::ffi::c_void,
+        src: *const ::core::ffi::c_void,
+        n: ::core::ffi::c_ulong,
+    ) -> *mut ::core::ffi::c_void;
 
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
@@ -8,6 +13,12 @@ extern "C" {
 pub struct StructWithMembersA {
     pub uptr: *mut ::core::ffi::c_uchar,
     pub zu8: ::core::ffi::c_uchar,
+}
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub union UsedForFloatIntBitcast {
+    pub ui: ::core::ffi::c_uint,
+    pub f: ::core::ffi::c_float,
 }
 static static_int_nonmutbl: ::core::ffi::c_int = 0;
 #[no_mangle]
@@ -174,6 +185,44 @@ pub unsafe fn struct_unguided_ptr_with_guided_members(mut ug_ptr: *mut StructWit
 pub unsafe fn struct_guided_ptr_with_guided_members(mut gm_ptr: &mut StructWithMembersA) {
     *gm_ptr.uptr.offset(0) = 42;
     gm_ptr.zu8 = 43;
+}
+unsafe fn __tenjin_bvm_264_7_float_to_unsigned_int(
+    mut x: ::core::ffi::c_float,
+    mut out: *mut ::core::ffi::c_uint,
+) {
+    memcpy(
+        out as *mut ::core::ffi::c_void,
+        &raw mut x as *const ::core::ffi::c_void,
+        4 as ::core::ffi::c_ulong,
+    );
+}
+#[no_mangle]
+pub unsafe fn guided_union_float_int_bitcast(mut f: ::core::ffi::c_float) -> ::core::ffi::c_uint {
+    let mut __tenjin_tmp_in_u: ::core::ffi::c_float = 0.;
+    let mut __tenjin_tmp_out_u: ::core::ffi::c_uint = 0;
+    let mut u = UsedForFloatIntBitcast { ui: 0 };
+    __tenjin_tmp_in_u = f;
+    __tenjin_bvm_264_7_float_to_unsigned_int(__tenjin_tmp_in_u, &raw mut __tenjin_tmp_out_u);
+    __tenjin_tmp_out_u
+}
+unsafe fn __tenjin_bvm_264_7_unsigned_int_to_float(
+    mut x: ::core::ffi::c_uint,
+    mut out: *mut ::core::ffi::c_float,
+) {
+    memcpy(
+        out as *mut ::core::ffi::c_void,
+        &raw mut x as *const ::core::ffi::c_void,
+        4 as ::core::ffi::c_ulong,
+    );
+}
+#[no_mangle]
+pub unsafe fn guided_union_int_float_bitcast(mut ui: ::core::ffi::c_uint) -> ::core::ffi::c_float {
+    let mut __tenjin_tmp_in_u: ::core::ffi::c_uint = 0;
+    let mut __tenjin_tmp_out_u: ::core::ffi::c_float = 0.;
+    let mut u = UsedForFloatIntBitcast { ui: 0 };
+    __tenjin_tmp_in_u = ui;
+    __tenjin_bvm_264_7_unsigned_int_to_float(__tenjin_tmp_in_u, &raw mut __tenjin_tmp_out_u);
+    __tenjin_tmp_out_u
 }
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
     if lim == Some(0) {
