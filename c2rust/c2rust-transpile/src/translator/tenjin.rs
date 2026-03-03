@@ -109,6 +109,14 @@ pub fn is_path_exactly_1(path: &Path, a: &str) -> bool {
     }
 }
 
+pub fn is_path_exactly_1_starts_with(path: &Path, a: &str) -> bool {
+    if path.segments.len() == 1 {
+        path.segments[0].ident.to_string().as_str().starts_with(a)
+    } else {
+        false
+    }
+}
+
 fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
     if path.segments.len() == 2 {
         path.segments[0].ident.to_string().as_str() == a
@@ -1177,6 +1185,9 @@ impl Translation<'_> {
                     self.use_crate(ExternCrate::XjCtime);
                     Ok(None)
                 }
+                _ if tenjin::is_path_exactly_1_starts_with(path, "__tenjin_bvm_") => {
+                    self.recognize_preconversion_call_bitcastviamemcpy(ctx, cargs)
+                }
                 _ => Ok(None),
             }
         } else {
@@ -2004,6 +2015,131 @@ impl Translation<'_> {
             }
         };
         false
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_bitcastviamemcpy(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        // xj-prepare-unionbitcasts produced a call to a synthesized wrapper
+        // around memcpy for bitcasting between int/float types of the same size:
+        //    F(S, [&]D)
+        // The first parameter is the value being cast, and the second parameter
+        // is the pointer to the destination value of the target type.
+        // If S is an integer type of size NN, we want to produce
+        //      D = fNN::from_bits(x);
+        // and if it's a float type of size NN we want to produce
+        //      D = x.to_bits() [as iNN];
+        if cargs.len() == 2 {
+            let src_expr_id = self.c_strip_implicit_casts(cargs[0]);
+            let dst_expr_id = self.c_strip_implicit_casts(cargs[1]);
+
+            let Some(src_type_id) = self.ast_context[src_expr_id].kind.get_type() else {
+                return Ok(None);
+            };
+            let Some(dst_ptr_type_id) = self.ast_context[dst_expr_id].kind.get_type() else {
+                return Ok(None);
+            };
+            let Some(dst_type_id) = self.c_type_pointee(dst_ptr_type_id) else {
+                return Ok(None);
+            };
+
+            let src_kind = &self.ast_context.resolve_type(src_type_id).kind;
+            let dst_kind = &self.ast_context.resolve_type(dst_type_id).kind;
+
+            let int_bits = |k: &CTypeKind| -> Option<u32> {
+                match k {
+                    CTypeKind::Int | CTypeKind::UInt => Some(32),
+                    CTypeKind::Long
+                    | CTypeKind::ULong
+                    | CTypeKind::LongLong
+                    | CTypeKind::ULongLong => Some(64),
+                    _ => None,
+                }
+            };
+
+            let float_bits = |k: &CTypeKind| -> Option<u32> {
+                match k {
+                    CTypeKind::Float => Some(32),
+                    CTypeKind::Double => Some(64),
+                    _ => None,
+                }
+            };
+
+            let dst_addr_of = self.c_expr_get_addr_of(cargs[1]);
+            let (dst_assign_expr_id, dst_is_ptr) = if let Some(inner) = dst_addr_of {
+                (inner, false)
+            } else {
+                (dst_expr_id, true)
+            };
+
+            if let (Some(src_bits), Some(dst_float_bits)) =
+                (int_bits(src_kind), float_bits(dst_kind))
+            {
+                if src_bits != dst_float_bits {
+                    return Ok(None);
+                }
+
+                let src_expr = self.convert_expr(ctx.used(), src_expr_id, None)?;
+                let dst_expr = self.convert_expr(ctx.used(), dst_assign_expr_id, None)?;
+
+                let res = src_expr.and_then(move |src_expr| {
+                    dst_expr.and_then(|dst_expr| {
+                        let bits_ty = if dst_float_bits == 32 {
+                            mk().path_ty(vec!["u32"])
+                        } else {
+                            mk().path_ty(vec!["u64"])
+                        };
+                        let bits_expr = mk().cast_expr(src_expr, bits_ty);
+                        let float_ctor = if dst_float_bits == 32 {
+                            mk().path_expr(vec!["f32", "from_bits"])
+                        } else {
+                            mk().path_expr(vec!["f64", "from_bits"])
+                        };
+                        let float_expr = mk().call_expr(float_ctor, vec![bits_expr]);
+                        let lhs = if dst_is_ptr {
+                            mk().unary_expr(UnOp::Deref(Default::default()), dst_expr)
+                        } else {
+                            dst_expr
+                        };
+                        Ok(WithStmts::new_val(mk().assign_expr(lhs, float_expr)))
+                    })
+                });
+
+                return res.map(Some);
+            }
+
+            if let (Some(src_float_bits), Some(dst_bits)) =
+                (float_bits(src_kind), int_bits(dst_kind))
+            {
+                if src_float_bits != dst_bits {
+                    return Ok(None);
+                }
+
+                let src_expr = self.convert_expr(ctx.used(), src_expr_id, None)?;
+                let dst_expr = self.convert_expr(ctx.used(), dst_assign_expr_id, None)?;
+                let dst_ty = self.convert_type(dst_type_id)?;
+
+                let res = src_expr.and_then(move |src_expr| {
+                    let dst_ty = dst_ty.clone();
+                    dst_expr.and_then(|dst_expr| {
+                        let to_bits = mk().method_call_expr(src_expr, "to_bits", vec![]);
+                        let casted = mk().cast_expr(to_bits, dst_ty);
+                        let lhs = if dst_is_ptr {
+                            mk().unary_expr(UnOp::Deref(Default::default()), dst_expr)
+                        } else {
+                            dst_expr
+                        };
+                        Ok(WithStmts::new_val(mk().assign_expr(lhs, casted)))
+                    })
+                });
+
+                return res.map(Some);
+            }
+        }
+        Ok(None)
     }
 
     pub fn coerce_borrow_guided(

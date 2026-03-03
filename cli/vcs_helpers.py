@@ -8,6 +8,23 @@ import click
 import hermetic
 
 
+def vcs_diff(path: Path) -> bytes:
+    vcs_dir = find_containing_vcs_dir(path)
+    if vcs_dir is None:
+        raise RuntimeError(f"No containing .jj or .git directory found for path {path}")
+    if vcs_dir.name == ".jj":
+        return hermetic.check_output(
+            ["jj", "diff", "--git", "--no-pager", "--quiet", path.as_posix()],
+            cwd=vcs_root(vcs_dir),
+        )
+    else:
+        assert vcs_dir.name == ".git"
+        return hermetic.check_output(
+            ["git", "diff", path.as_posix()],
+            cwd=vcs_root(vcs_dir),
+        )
+
+
 @dataclass
 class WorkingCopyStatus:
     """Status of a working copy in a version control system.
