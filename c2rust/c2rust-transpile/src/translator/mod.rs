@@ -4831,7 +4831,7 @@ impl<'c> Translation<'c> {
         mut ctx: ExprContext,
         expr_id: CExprId,
         override_ty: Option<CQualTypeId>,
-        guided_type: &Option<tenjin::GuidedType>,
+        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let Located {
             loc: src_loc,
@@ -5107,7 +5107,7 @@ impl<'c> Translation<'c> {
             },
 
             Literal(ty, ref kind) => {
-                self.convert_literal(ctx, override_ty.unwrap_or(ty), kind, guided_type)
+                self.convert_literal(ctx, override_ty.unwrap_or(ty), kind, ctx_guided_type)
             }
 
             ImplicitCast(ty, expr, kind, opt_field_id, _)
@@ -5169,7 +5169,12 @@ impl<'c> Translation<'c> {
                         (override_ty, &self.ast_context[expr].kind)
                     {
                         if self.literal_matches_ty(lit, ty) {
-                            return self.convert_expr_guided(ctx, expr, override_ty, guided_type);
+                            return self.convert_expr_guided(
+                                ctx,
+                                expr,
+                                override_ty,
+                                ctx_guided_type,
+                            );
                         }
                     }
                     // LValueToRValue casts don't actually change the type, so it still makes sense
@@ -5178,9 +5183,9 @@ impl<'c> Translation<'c> {
                     if kind == CastKind::LValueToRValue
                         && Some(source_ty.ctype) != override_ty.map(|x| x.ctype)
                     {
-                        self.convert_expr_guided(ctx, expr, override_ty, guided_type)?
+                        self.convert_expr_guided(ctx, expr, override_ty, ctx_guided_type)?
                     } else {
-                        self.convert_expr_guided(ctx, expr, None, guided_type)?
+                        self.convert_expr_guided(ctx, expr, None, ctx_guided_type)?
                     }
                 };
                 // Shuffle Vector "function" builtins will add a cast to the output of the
@@ -5199,7 +5204,7 @@ impl<'c> Translation<'c> {
                     Some(expr),
                     Some(kind),
                     opt_field_id,
-                    guided_type,
+                    ctx_guided_type,
                     is_explicit,
                 )
             }
@@ -5553,7 +5558,7 @@ impl<'c> Translation<'c> {
 
             InitList(ty, ref ids, opt_union_field_id, _) => {
                 let arr = self.convert_init_list(ctx, ty, ids, opt_union_field_id);
-                if guided_type
+                if ctx_guided_type
                     .as_ref()
                     .is_some_and(|gt| tenjin::type_is_vec(gt.strip_refs()))
                 {
@@ -5586,7 +5591,7 @@ impl<'c> Translation<'c> {
             }
 
             ImplicitValueInit(ty) => {
-                self.implicit_default_expr_guided(guided_type, ty.ctype, ctx.is_static)
+                self.implicit_default_expr_guided(ctx_guided_type, ty.ctype, ctx.is_static)
             }
 
             Predefined(_, val_id) => self.convert_expr(ctx, val_id, override_ty),
