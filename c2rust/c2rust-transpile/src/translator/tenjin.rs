@@ -328,6 +328,10 @@ pub fn expr_is_lit_str_only(expr: &Expr) -> bool {
     false
 }
 
+pub fn expr_is_borrow(expr: &Expr) -> bool {
+    matches!(expr, Expr::Reference(_))
+}
+
 pub fn expr_strip_casts(expr: &Expr) -> &Expr {
     let mut ep = expr;
     loop {
@@ -2352,9 +2356,13 @@ impl Translation<'_> {
                 if target_guided_type.is_exclusive_borrow() && !expr_guided_type.is_borrow() {
                     return mk().mutbl().borrow_expr(expr);
                 }
+            } else if tenjin::expr_is_borrow(&expr) {
+                // Expr is already a borrow, but we have guidance that the target is a borrow,
+                // so we assume it's the right kind of borrow and do nothing.
             } else {
                 // Have target guided type, but no expr guided type.
                 // If target is a borrow, we assume expr was a pointer.
+
                 if target_guided_type.is_shared_borrow() {
                     // XREF:unguided_arg_coerce_asref
                     // Coerce to `.as_ref().unwrap()`
