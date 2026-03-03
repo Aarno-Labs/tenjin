@@ -5030,7 +5030,30 @@ impl<'c> Translation<'c> {
                 if let CTypeKind::VariableArray(..) =
                     self.ast_context.resolve_type(qual_ty.ctype).kind
                 {
+                    // XREF:array_decay
                     val = mk().method_call_expr(val, "as_mut_ptr", vec![]);
+                } else if let Some(var_guided_type) = self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, decl_id)
+                {
+                    if (var_guided_type.is_slice_ref() || var_guided_type.is_array_ref())
+                        && !self.wrapped_with_array_decay(expr_id)
+                    {
+                        let method = if var_guided_type.is_exclusive_borrow() {
+                            "as_mut_ptr"
+                        } else {
+                            "as_ptr"
+                        };
+                        // Apply compatible coercions for behavioral equivalence,
+                        // unless we'd end up adding a redundant/conflicting cast.
+                        // XREF:array_decay
+                        val = mk().method_call_expr(val, method, vec![]);
+                    }
+                    // For types which do not have known compatible coercions, we leave the
+                    // variable reference as-is, and rely on the Rust compiler to notify the
+                    // user of any cases in which subsequent rewrites were unable to produce
+                    // a type-correct program.
                 }
 
                 // if the context wants a different type, add a cast

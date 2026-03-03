@@ -2539,4 +2539,22 @@ impl Translation<'_> {
             .and_then(|ty| type_try_arraylike_element(ty))
             .is_some()
     }
+
+    pub fn wrapped_with_array_decay(&self, mut cexpr: CExprId) -> bool {
+        while let Some(parent_id) = self.parent_expr_map.get(&cexpr) {
+            match self.ast_context[*parent_id].kind {
+                CExprKind::ImplicitCast(_, _, CastKind::ArrayToPointerDecay, _, _)
+                | CExprKind::ExplicitCast(_, _, CastKind::ArrayToPointerDecay, _, _) => {
+                    return true
+                }
+                CExprKind::ImplicitCast(_, _, _, _, _)
+                | CExprKind::Paren(_, _)
+                | CExprKind::ExplicitCast(_, _, _, _, _) => {
+                    cexpr = *parent_id;
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
 }

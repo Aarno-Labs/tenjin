@@ -21,7 +21,6 @@ impl<'a> ParentExprCollector<'a> {
         let iter = DFExpr::new(self.ast_context, SomeId::Stmt(body_id));
         for node in iter {
             if let SomeId::Expr(expr_id) = node {
-                let expr = &self.ast_context[expr_id];
                 for child in crate::c_ast::iterators::immediate_children_all_types(
                     self.ast_context,
                     SomeId::Expr(expr_id),
