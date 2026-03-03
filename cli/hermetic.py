@@ -480,7 +480,9 @@ def run_output_git(args: list[str], check=False) -> bytes:
             capture_output=True,
         )
     else:
-        cp = subprocess.run(["git", *args], check=False, capture_output=True)
+        cp = subprocess.run(
+            ["git", *args], cwd=rootdir.as_posix(), check=False, capture_output=True
+        )
 
     if cp.stderr:
         click.echo(cp.stderr, err=True)
