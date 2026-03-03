@@ -224,10 +224,43 @@ def do_translate(
         stub_ingestion_record(codebase, guidance, do_not_refactor_headers_within)
     )
 
-    skip_remainder_of_translation = False
-
     resultsdir = resultsdir.resolve()
     resultsdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        do_translate_with_tracker(
+            root,
+            codebase,
+            resultsdir,
+            cratename,
+            guidance,
+            tracker,
+            do_not_refactor_headers_within,
+            buildcmd,
+        )
+    finally:
+        record = tracker.finalize()
+        if record is not None:
+            with (resultsdir / "translation_metadata.json").open("w") as f:
+                f.write(record.to_json(indent=2))
+
+            results_snapshot = create_translation_snapshot(root, codebase, resultsdir, record)
+
+            with (resultsdir / "translation_snapshot.json").open("w") as f:
+                f.write(results_snapshot.to_json(indent=2))
+
+
+def do_translate_with_tracker(
+    root: Path,
+    codebase: Path,
+    resultsdir: Path,
+    cratename: str,
+    guidance: dict,
+    tracker: ingest_tracking.TimingRepo,
+    do_not_refactor_headers_within: list[ResolvedPath] = [],
+    buildcmd: str | None = None,
+):
+    skip_remainder_of_translation = False
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
     final_prepared_codebase, build_info = run_preparation_passes(
@@ -333,7 +366,10 @@ def do_translate(
         skip_remainder_of_translation = True
 
     if not skip_remainder_of_translation:
-        run_improvement_passes(root, output, resultsdir, cratename, tracker)
+        try:
+            run_improvement_passes(root, output, resultsdir, cratename, tracker)
+        finally:
+            tracker.mark_translation_finished()
 
         # Find the highest numbered output directory and copy its contents
         # to the final output directory.
@@ -344,7 +380,6 @@ def do_translate(
                 resultsdir / "final",
             )
 
-        tracker.mark_translation_finished()
         print("Translation finished.")
         print("Collecting static code quality measurements...")
         xj_start_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "00_out")
@@ -371,16 +406,6 @@ def do_translate(
             mb_mut_res.c2rust_baseline = baseline_metrics
             mb_mut_res.tenjin_initial = xj_start_metrics
             mb_mut_res.tenjin_final = xj_final_metrics
-
-    record = tracker.finalize()
-    if record is not None:
-        with (resultsdir / "translation_metadata.json").open("w") as f:
-            f.write(record.to_json(indent=2))
-
-        results_snapshot = create_translation_snapshot(root, codebase, resultsdir, record)
-
-        with (resultsdir / "translation_snapshot.json").open("w") as f:
-            f.write(results_snapshot.to_json(indent=2))
 
 
 def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output) -> bool:
