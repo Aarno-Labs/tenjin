@@ -242,7 +242,8 @@ std::string generateConversionFunction(const FieldDecl *src_field, const FieldDe
     unsigned line = SM.getSpellingLineNumber(insertLoc);
     unsigned col = SM.getSpellingColumnNumber(insertLoc);
 
-    std::string funcName = sanitizeTypes("__tenjin_" + std::to_string(line) + "_" +
+    // bvm = bitcase via memcpy for tenjin to generate bitcast wrapper
+    std::string funcName = sanitizeTypes("__tenjin_bvm_" + std::to_string(line) + "_" +
                                          std::to_string(col) + "_" + srcStr + "_to_" + dstStr);
 
     auto asArray = [&](QualType T) -> const clang::ArrayType * { return Ctx.getAsArrayType(T); };
@@ -301,7 +302,7 @@ std::string generateFuncName(QualType srcType, QualType dstType, SourceLocation 
     unsigned line = SM.getSpellingLineNumber(unionLoc);
     unsigned col = SM.getSpellingColumnNumber(unionLoc);
 
-    return sanitizeTypes("__tenjin_" + std::to_string(line) + "_" + std::to_string(col) + "_" +
+    return sanitizeTypes("__tenjin_bvm_" + std::to_string(line) + "_" + std::to_string(col) + "_" +
                          srcStr + "_to_" + dstStr);
 }
 
