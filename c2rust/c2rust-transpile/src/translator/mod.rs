@@ -53,6 +53,7 @@ mod literals;
 mod main_function;
 mod named_references;
 mod operators;
+pub mod parent_expr;
 pub mod parent_fn;
 mod pointers;
 mod simd;
@@ -572,6 +573,7 @@ pub struct Translation<'c> {
 
     // Translation state and utilities
     parent_fn_map: HashMap<CDeclId, CDeclId>,
+    parent_expr_map: HashMap<CExprId, CExprId>,
     type_converter: RefCell<TypeConverter>,
     renamer: RefCell<Renamer<CDeclId>>,
     zero_inits: RefCell<IndexMap<CDeclId, ZeroInitsExprAndImports>>,
@@ -860,8 +862,9 @@ pub fn translate(
     tcfg: &TranspilerConfig,
     main_file: &Path,
     parent_fn_map: HashMap<CDeclId, CDeclId>,
+    parent_expr_map: HashMap<CExprId, CExprId>,
 ) -> (String, Option<DeclMap>, PragmaVec, CrateSet) {
-    let mut t = Translation::new(ast_context, tcfg, main_file, parent_fn_map);
+    let mut t = Translation::new(ast_context, tcfg, main_file, parent_fn_map, parent_expr_map);
     let ctx = ExprContext {
         used: true,
         is_static: false,
@@ -2446,6 +2449,7 @@ impl<'c> Translation<'c> {
         tcfg: &'c TranspilerConfig,
         main_file: &Path,
         parent_fn_map: HashMap<CDeclId, CDeclId>,
+        parent_expr_map: HashMap<CExprId, CExprId>,
     ) -> Self {
         let comment_context = CommentContext::new(&mut ast_context);
         let mut type_converter = TypeConverter::new();
@@ -2492,6 +2496,7 @@ impl<'c> Translation<'c> {
             extern_crates: RefCell::new(IndexSet::new()),
             cur_file: Default::default(),
             parent_fn_map,
+            parent_expr_map,
         }
     }
 

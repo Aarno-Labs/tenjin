@@ -675,8 +675,14 @@ fn transpile_single(
 
     // Perform the translation
     let parent_fn_map = translator::parent_fn::compute_parent_fn_map(&typed_context);
-    let (translated_string, maybe_decl_map, pragmas, crates) =
-        translator::translate(typed_context, tcfg, input_path, parent_fn_map);
+    let parent_expr_map = translator::parent_expr::compute_parent_expr_map(&typed_context);
+    let (translated_string, maybe_decl_map, pragmas, crates) = translator::translate(
+        typed_context,
+        tcfg,
+        input_path,
+        parent_fn_map,
+        parent_expr_map,
+    );
 
     if let Some(decl_map) = maybe_decl_map {
         let decl_map_path = output_path.with_extension("c_decls.json");
