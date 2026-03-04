@@ -1,7 +1,5 @@
 extern "C" {
 
-    fn strlen(s: *const ::core::ffi::c_char) -> size_t;
-
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
@@ -66,14 +64,18 @@ pub fn guided_array_vec() {
     print_owned_vec_u8(ovu8);
 }
 #[no_mangle]
-pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
+pub fn guided_immutable_u8_array_slice_decay_to_ptr() {
     let rsu8: &[u8] = b"";
-    strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
+    (::std::ffi::CStr::from_bytes_until_nul(rsu8)
+        .unwrap()
+        .count_bytes());
 }
 #[no_mangle]
-pub unsafe fn guided_immutable_u8_pointer() {
+pub fn guided_immutable_u8_pointer() {
     let mut rsu8: &[u8] = b"";
-    strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
+    (::std::ffi::CStr::from_bytes_until_nul(rsu8)
+        .unwrap()
+        .count_bytes());
 }
 #[no_mangle]
 pub fn recognize_call_exit() {

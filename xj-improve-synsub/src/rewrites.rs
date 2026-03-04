@@ -31,6 +31,25 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    fn peek_array_decay_coercion(mut expr: &Expr) -> Option<&Expr> {
+        if let Expr::Cast(cast) = expr {
+            if let syn::Type::Ptr(_) = *cast.ty {
+                expr = &*cast.expr;
+            }
+        }
+
+        let Expr::MethodCall(method_call) = expr else {
+            return None;
+        };
+        let is_array_decay_method_call = method_call.args.is_empty()
+            && (method_call.method == "as_mut_ptr" || method_call.method == "as_ptr");
+
+        if !is_array_decay_method_call {
+            return None;
+        }
+        Some(&method_call.receiver)
+    }
+
     /// Rewrite `e1.as_mut_ptr()[e2]` into `e1[e2]`
     /// (it's an artifact of guidance).
     pub fn rewrite_decayed_array_subscript(
@@ -41,24 +60,61 @@ impl Rewriter {
         let Expr::Index(index) = expr else {
             return None;
         };
-        let Expr::MethodCall(method_call) = &*index.expr else {
+        if let Some(decayed) = Self::peek_array_decay_coercion(&index.expr) {
+            let subscript = &index.index;
+            let replacement: Expr = syn::parse_quote! {
+                #decayed[#subscript]
+            };
+            Some((replacement, Depth::Limited(0)))
+        } else {
+            None
+        }
+    }
+
+    /// Rewrite `strlen(e1.as_mut_ptr())` into:
+    ///   * `(e1.len() - 1) as size_t` when `e1` is a `u8` slice (with the trailing NUL kept)
+    ///     and we've determined that e1 will never have its length changed by having
+    ///     a null byte written into its interior. (NOT YET IMPLEMENTED)
+    ///   * `CStr::from_bytes_until_nul(e1).count_bytes() as size_t` when e1 is a `u8` slice.
+    ///   * `CStr::from_bytes_until_nul(e1.as_u8_slice()).count_bytes() as size_t` otherwise.
+    pub fn rewrite_strlen_of_slice(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
             return None;
         };
-        eprintln!("checking method call: {:?}", method_call);
-        let is_array_decay_method_call = method_call.args.is_empty()
-            && (method_call.method == "as_mut_ptr" || method_call.method == "as_ptr");
-
-        if !is_array_decay_method_call {
+        let Expr::Path(ref func) = *call.func else {
+            return None;
+        };
+        if !func.path.is_ident("strlen") {
             return None;
         }
-        let receiver = &method_call.receiver;
-        let subscript = &index.index;
+        if call.args.len() != 1 {
+            return None;
+        }
 
-        let replacement: Expr = syn::parse_quote! {
-            #receiver[#subscript]
-        };
-
-        Some((replacement, Depth::Limited(0)))
+        let arg = &call.args[0];
+        if let Some(decayed) = Self::peek_array_decay_coercion(&arg) {
+            if is_u8_slice_expr(decayed, _symbols) {
+                let replacement: Expr = syn::parse_quote! {
+                    (::std::ffi::CStr::from_bytes_until_nul(#decayed).unwrap().count_bytes()) as ::core::ffi::c_ulong
+                };
+                Some((replacement, Depth::Limited(0)))
+            } else {
+                self.add_dep("xj_cstr");
+                self.with_cur_file_item_store(|item_store| {
+                    item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
+                });
+                let replacement: Expr = syn::parse_quote! {
+                    (::std::ffi::CStr::from_bytes_until_nul(#decayed.as_u8_slice()).unwrap().count_bytes()) as ::core::ffi::c_ulong
+                };
+                Some((replacement, Depth::Limited(0)))
+            }
+        } else {
+            None
+        }
     }
 
     /// Rewrite let-binding statements.

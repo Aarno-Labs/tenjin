@@ -33,6 +33,7 @@ fn main() -> Result<()> {
 
     rw.add_expr_rewrite(Rewriter::rewrite_strstr);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
+    rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
 
     rw.add_stmt_rewrite(Rewriter::rewrite_local);
 
