@@ -1,5 +1,7 @@
 extern "C" {
 
+    fn strlen(s: *const ::core::ffi::c_char) -> ::core::ffi::c_long;
+
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
@@ -61,6 +63,16 @@ pub fn guided_str_init_empty_lit() {
 pub fn guided_array_vec() {
     let mut ovu8: Vec<u8> = vec![1, 2, 3, 4];
     print_owned_vec_u8(ovu8);
+}
+#[no_mangle]
+pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
+    let rsu8: &[u8] = b"";
+    strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
+}
+#[no_mangle]
+pub unsafe fn guided_immutable_u8_pointer() {
+    let mut rsu8: &[u8] = b"";
+    strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
 }
 #[no_mangle]
 pub fn recognize_call_exit() {

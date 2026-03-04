@@ -31,6 +31,36 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite `e1.as_mut_ptr()[e2]` into `e1[e2]`
+    /// (it's an artifact of guidance).
+    pub fn rewrite_decayed_array_subscript(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Index(index) = expr else {
+            return None;
+        };
+        let Expr::MethodCall(method_call) = &*index.expr else {
+            return None;
+        };
+        eprintln!("checking method call: {:?}", method_call);
+        let is_array_decay_method_call = method_call.args.is_empty()
+            && (method_call.method == "as_mut_ptr" || method_call.method == "as_ptr");
+
+        if !is_array_decay_method_call {
+            return None;
+        }
+        let receiver = &method_call.receiver;
+        let subscript = &index.index;
+
+        let replacement: Expr = syn::parse_quote! {
+            #receiver[#subscript]
+        };
+
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite let-binding statements.
     pub fn rewrite_local(&self, symbols: &SymbolTable, stmt: &Stmt) -> Option<(Stmt, Depth)> {
         let Stmt::Local(local) = stmt else {

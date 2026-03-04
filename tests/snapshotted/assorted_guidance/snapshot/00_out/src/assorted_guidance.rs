@@ -99,6 +99,16 @@ pub unsafe fn guided_array_vec() {
     print_owned_vec_u8(ovu8);
 }
 #[no_mangle]
+pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
+    let rsu8: &[u8] = ::core::mem::transmute::<[u8; 1], [::core::ffi::c_uchar; 1]>(*b"\0");
+    strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
+}
+#[no_mangle]
+pub unsafe fn guided_immutable_u8_pointer() {
+    let mut rsu8: &[u8] = b"\0" as *const u8 as *const ::core::ffi::c_char;
+    strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
+}
+#[no_mangle]
 pub unsafe fn recognize_call_exit() {
     ::std::process::exit(1 as i32);
 }
@@ -161,8 +171,8 @@ pub unsafe fn guided_1d_slice(
     mut x: &[::core::ffi::c_int],
     mut index: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
-    let mut x2: &[::core::ffi::c_int] = &x[3 as usize..];
-    return x[index as usize];
+    let mut x2: &[::core::ffi::c_int] = &x.as_ptr()[3 as usize..];
+    return x.as_ptr()[index as usize];
 }
 #[no_mangle]
 pub unsafe fn guided_2d_slice(
@@ -170,7 +180,7 @@ pub unsafe fn guided_2d_slice(
     mut i: ::core::ffi::c_int,
     mut j: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
-    return x2d[i as usize][j as usize];
+    return x2d.as_ptr()[i as usize][j as usize];
 }
 #[no_mangle]
 pub unsafe fn guided_1d_vec(
@@ -219,7 +229,7 @@ pub unsafe fn struct_guided_ptr_with_guided_members(mut gm_ptr: &mut StructWithM
     *gm_ptr.uptr.offset(0 as isize) = 42 as ::core::ffi::c_uchar;
     gm_ptr.zu8 = 43 as ::core::ffi::c_uchar;
 }
-unsafe fn __tenjin_bvm_265_7_float_to_unsigned_int(
+unsafe fn __tenjin_bvm_278_7_float_to_unsigned_int(
     mut x: ::core::ffi::c_float,
     mut out: *mut ::core::ffi::c_uint,
 ) {
@@ -238,7 +248,7 @@ pub unsafe fn guided_union_float_int_bitcast(mut f: ::core::ffi::c_float) -> ::c
     __tenjin_tmp_out_u = __tenjin_tmp_in_u.to_bits() as ::core::ffi::c_uint;
     return __tenjin_tmp_out_u;
 }
-unsafe fn __tenjin_bvm_265_7_unsigned_int_to_float(
+unsafe fn __tenjin_bvm_278_7_unsigned_int_to_float(
     mut x: ::core::ffi::c_uint,
     mut out: *mut ::core::ffi::c_float,
 ) {
