@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from tenjin_pytest_helpers import annotate_pytest_request_with_translation_notes
 import covset
 import hermetic
 import translation
@@ -16,7 +17,7 @@ def run_cargo_on_final(cwd: Path, args: list[str], capture_output: bool = False)
     )
 
 
-def test_single_c_file(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
+def test_single_c_file(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, extras, request):
     codebase = test_dir / "single_c_file" / "main.c"
 
     translation_preparation.copy_codebase(codebase, tmp_codebase)
@@ -92,8 +93,11 @@ Total covered lines: 6 / 8 = 75.00%
 """  # noqa: W293
     )
 
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
 
 def test_chkc_trivial(test_dir, tmp_codebase):
+    """Test that chkc can parse, analyze, and report on a trivial C file."""
     codebase = test_dir / "chkc_trivial" / "main.c"
     target = tmp_codebase / "main.c"
     translation_preparation.copy_codebase(codebase, tmp_codebase)
@@ -102,7 +106,9 @@ def test_chkc_trivial(test_dir, tmp_codebase):
     hermetic.run_chkc(["c-file", "report", str(target)], check=True)
 
 
-def test_cmake_lone_exe(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir):
+def test_cmake_lone_exe(
+    root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, request, extras
+):
     codebase = test_dir / "cmake_lone_exe"
     build_dir = test_tmp_dir / "build"
 
@@ -129,8 +135,10 @@ def test_cmake_lone_exe(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsd
 
     assert rs_prog_output.stdout == c_prog_output.stdout
 
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
-def test_triplicated_compilation(root, test_dir, tmp_codebase, tmp_resultsdir):
+
+def test_triplicated_compilation(root, test_dir, tmp_codebase, tmp_resultsdir, request, extras):
     codebase = test_dir / "triplicated_exeonly"
     # Run translation
     translation.do_translate(
@@ -183,3 +191,5 @@ def test_triplicated_compilation(root, test_dir, tmp_codebase, tmp_resultsdir):
     assert rs_prog_result.returncode == 40, (
         f"Expected Rust return code 40, got {rs_prog_result.returncode}"
     )
+
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
