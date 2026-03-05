@@ -15,7 +15,7 @@ Single-commit merges may be squashed. Multi-commit PRs should use a merge reques
 `git log --first-parent --oneline` lists the tested ancestors of the current commit.
 `git bisect --first-parent` likewise has bisection ignore untested commits.
 
-The tests run in CI should be equivalent (for now) to `10j check-star && 10j check-unit-rs && 10j runtests tests`.
+The tests run in CI should be equivalent (for now) to `10j check-star && 10j check-unit-rs && 10j pytest tests`.
 
 Some commits should have their message prefixed with a tag:
 - `NFC: ` -- No Functional Change, for behavior-preserving refactorings
@@ -46,6 +46,10 @@ tool version, which will be checked against the HAVE list. Thus, as the active r
 either from `git pull` or `bisect`, the support projects should be kept in sync automatically.
 
 ## How Do I…?
+
+### Run regression tests and see HTML output
+
+* `10j pytest tests -n auto --html=../xj_pytest_report.html --self-contained-html`. This generates an HTML report; the `-n auto` runs the tests in parallel.
 
 ### disable formatting selectively
 
