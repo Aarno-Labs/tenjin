@@ -30,12 +30,13 @@ def annotate_pytest_request_with_translation_notes(request, tmp_resultsdir: Path
         request.node.summary_html = f"unsafe: {before}->{after}"
 
 
-def run_cargo_on_final(cwd: Path, args: list[str], capture_output: bool = False):
+def run_cargo_on_final(cwd: Path, args: list[str], capture_output: bool = False, input=None):
     return hermetic.run_cargo_on_translated_code(
         args,
         cwd=cwd,
         check=True,
         capture_output=capture_output,
+        input=input,
     )
 
 

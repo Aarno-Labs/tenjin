@@ -20,6 +20,13 @@ def suckless_sbase_git_clone() -> Path:
     # clang libutil/mode.c libutil/eprintf.c libutil/parseoffset.c libutil/fshut.c uudecode.c -o uudecode.exe
 
 
+def tractor_public_tests_git_clone() -> Path:
+    return cached_git_clone_at_commit(
+        "https://github.com/DARPA-TRACTOR-Program/PUBLIC-Test-Corpus.git",
+        "6ec7ae65c906bffded2a24544825de4087bc2a61",
+    )
+
+
 @pytest.mark.slow
 def test_sbase_cal(
     root: Path,
@@ -103,6 +110,58 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
     rs_prog_output = run_cargo_on_final(
         tmp_resultsdir / "final", ["run", "2024"], capture_output=True
+    )
+
+    assert rs_prog_output.stdout == c_prog_output.stdout, (
+        f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
+    )
+
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_022_app(
+    root: Path,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    request: pytest.FixtureRequest,
+    extras: list,
+):
+    codebase = tractor_public_tests_git_clone()
+
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # Ensure it compiles and runs as expected
+    buildcmd_args = [
+        "cc",
+        "Public-Tests/B01_synthetic/022_stdlib_div/test_case/src/main.c",
+        "-o",
+        "app.exe",
+    ]
+    hermetic.run(buildcmd_args, cwd=str(tmp_codebase), check=True)
+    c_prog_output = hermetic.run(
+        [str(tmp_codebase / "app.exe")],
+        check=True,
+        capture_output=True,
+        input=b"-37\n-5",
+    )
+    assert c_prog_output.stdout == b"quotient: 7, remainder: -2\n", f"Got: {c_prog_output.stdout!r}"
+
+    # Run translation
+    translation.do_translate(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="b1_synthetic_022",
+        buildcmd=hermetic.shellize(buildcmd_args),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(
+        tmp_resultsdir / "final",
+        ["run"],
+        capture_output=True,
+        input=b"-37\n-5",
     )
 
     assert rs_prog_output.stdout == c_prog_output.stdout, (
