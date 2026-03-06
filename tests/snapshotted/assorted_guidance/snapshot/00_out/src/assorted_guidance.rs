@@ -29,6 +29,7 @@ extern "C" {
     fn isalnum(c: ::core::ffi::c_int) -> ::core::ffi::c_int;
     fn tolower(c: ::core::ffi::c_int) -> ::core::ffi::c_char;
     fn exit(status: ::core::ffi::c_int) -> !;
+    fn putchar(c: ::core::ffi::c_int) -> ::core::ffi::c_int;
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
@@ -218,7 +219,7 @@ pub unsafe fn struct_guided_ptr_with_guided_members(mut gm_ptr: &mut StructWithM
     *gm_ptr.uptr.offset(0 as isize) = 42 as ::core::ffi::c_uchar;
     gm_ptr.zu8 = 43 as ::core::ffi::c_uchar;
 }
-unsafe fn __tenjin_bvm_264_7_float_to_unsigned_int(
+unsafe fn __tenjin_bvm_265_7_float_to_unsigned_int(
     mut x: ::core::ffi::c_float,
     mut out: *mut ::core::ffi::c_uint,
 ) {
@@ -237,7 +238,7 @@ pub unsafe fn guided_union_float_int_bitcast(mut f: ::core::ffi::c_float) -> ::c
     __tenjin_tmp_out_u = __tenjin_tmp_in_u.to_bits() as ::core::ffi::c_uint;
     return __tenjin_tmp_out_u;
 }
-unsafe fn __tenjin_bvm_264_7_unsigned_int_to_float(
+unsafe fn __tenjin_bvm_265_7_unsigned_int_to_float(
     mut x: ::core::ffi::c_uint,
     mut out: *mut ::core::ffi::c_float,
 ) {
@@ -255,6 +256,18 @@ pub unsafe fn guided_union_int_float_bitcast(mut ui: ::core::ffi::c_uint) -> ::c
     __tenjin_tmp_in_u = ui;
     __tenjin_tmp_out_u = f32::from_bits(__tenjin_tmp_in_u as u32);
     return __tenjin_tmp_out_u;
+}
+#[no_mangle]
+pub unsafe fn unguided_int_putchar(mut c: ::core::ffi::c_int) {
+    print!("{:}", c as u8 as char);
+}
+#[no_mangle]
+pub unsafe fn guided_int_putchar(mut oc: char) {
+    print!("{:}", oc as u8 as char);
+}
+#[no_mangle]
+pub unsafe fn unguided_char_putchar(mut c: ::core::ffi::c_char) {
+    print!("{:}", c as ::core::ffi::c_int as u8 as char);
 }
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
     if lim == Some(0) {

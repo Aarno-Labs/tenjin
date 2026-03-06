@@ -10,6 +10,7 @@ unsigned long strcspn(const char *, const char *);
 int isalnum(int c);
 char tolower(int c);
 void exit(int status);
+int putchar(int c);
 
 extern int extern_int_unguided;
 // XREF:extern_var_nonmutbl
@@ -277,3 +278,7 @@ float guided_union_int_float_bitcast(unsigned int ui) {
     u.ui = ui;
     return u.f;
 }
+
+void unguided_int_putchar(int c) { putchar(c); }
+void guided_int_putchar(int oc) { putchar(oc); }
+void unguided_char_putchar(char c) { putchar(c); }

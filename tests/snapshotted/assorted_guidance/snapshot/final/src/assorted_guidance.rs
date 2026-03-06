@@ -201,6 +201,18 @@ pub fn guided_union_int_float_bitcast(mut ui: ::core::ffi::c_uint) -> ::core::ff
     __tenjin_tmp_out_u = f32::from_bits(__tenjin_tmp_in_u as u32);
     __tenjin_tmp_out_u
 }
+#[no_mangle]
+pub fn unguided_int_putchar(mut c: ::core::ffi::c_int) {
+    print!("{:}", c as u8 as char);
+}
+#[no_mangle]
+pub fn guided_int_putchar(mut oc: char) {
+    print!("{:}", oc as u8 as char);
+}
+#[no_mangle]
+pub fn unguided_char_putchar(mut c: ::core::ffi::c_char) {
+    print!("{:}", c as ::core::ffi::c_int as u8 as char);
+}
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
     if lim == Some(0) {
         return 0;
