@@ -82,7 +82,7 @@ pub unsafe extern "C" fn my_printf(mut fmt: *const ::core::ffi::c_char, mut args
                 }
             }
             _ => {
-                putchar(*fmt as ::core::ffi::c_int);
+                print!("{:}", *fmt as ::core::ffi::c_int as u8 as char);
             }
         }
         fmt = fmt.offset(1);
