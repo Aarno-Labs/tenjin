@@ -89,11 +89,13 @@ bool UnionAccessCollector::VisitMemberExpr(MemberExpr *ME) {
 
     if (VERBOSE)
         llvm::outs() << "[Debug] Parent is union: ";
-    if (parentRD->getIdentifier())
-        if (VERBOSE)
+    if (parentRD->getIdentifier()) {
+        if (VERBOSE) {
             llvm::outs() << parentRD->getName() << "\n";
-        else if (VERBOSE)
+        } else if (VERBOSE) {
             llvm::outs() << "(anonymous)\n";
+        }
+    }
 
     const FieldDecl *a_field = nullptr, *b_field = nullptr;
     int num_bytes;
@@ -222,6 +224,40 @@ bool UnionAccessCollector::VisitVarDecl(VarDecl *VD) {
                 if (VERBOSE)
                     llvm::outs() << "[Debug] Found union initialization for variable: "
                                  << VD->getNameAsString() << " (write to first field)\n";
+
+                // For struct source fields, track individual member writes from init
+                if (a_field->getType()->isStructureType()) {
+                    const InitListExpr *structILE = nullptr;
+                    // Init could be a direct InitListExpr or a CompoundLiteralExpr wrapping one
+                    if (const auto *CLE = dyn_cast<CompoundLiteralExpr>(firstInit->IgnoreParenImpCasts())) {
+                        structILE = dyn_cast<InitListExpr>(CLE->getInitializer());
+                    } else {
+                        structILE = dyn_cast<InitListExpr>(firstInit);
+                    }
+                    // Use the semantic form which has one entry per field,
+                    // with ImplicitValueInitExpr for fields not explicitly initialized
+                    if (structILE && structILE->isSemanticForm())
+                        ; // already semantic
+                    else if (structILE && structILE->getSemanticForm())
+                        structILE = structILE->getSemanticForm();
+                    if (structILE) {
+                        const RecordDecl *structRD = a_field->getType()->getAsRecordDecl();
+                        if (structRD) {
+                            unsigned initIdx = 0;
+                            for (const FieldDecl *member : structRD->fields()) {
+                                if (initIdx < structILE->getNumInits() &&
+                                    !isa<ImplicitValueInitExpr>(structILE->getInit(initIdx))) {
+                                    FieldAccess memberAr = {a_field, VD->getLocation(), true, nullptr, -1, member};
+                                    accesses[ui].push_back(memberAr);
+                                    if (VERBOSE)
+                                        llvm::outs() << "[Debug] Init writes to struct member: "
+                                                     << member->getNameAsString() << "\n";
+                                }
+                                initIdx++;
+                            }
+                        }
+                    }
+                }
             }
         }
     }

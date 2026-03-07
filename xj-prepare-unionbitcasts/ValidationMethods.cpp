@@ -285,6 +285,47 @@ bool FunctionAccessAnalyzer::findCutPoint(ValidationContext &ctx) {
             return false;
         }
 
+        // Check for mixed blocks: blocks that contain both src writes and dst
+        // accesses. When a block has both (e.g., a loop body that writes the
+        // src field then reads the dst field each iteration), the conversion
+        // must happen within that block. Earlier src writes in other blocks
+        // are overwritten before any dst read, so they don't affect placement.
+        std::set<CFGBlock *> srcWriteBlockSet(ctx.srcWriteBlocks.begin(),
+                                               ctx.srcWriteBlocks.end());
+        for (CFGBlock *dstBlock : uniqueDstBlocks) {
+            if (srcWriteBlockSet.count(dstBlock)) {
+                // This block has both src writes and dst accesses.
+                // The cut point must be this block. Check if it dominates
+                // all dst access blocks. If not, dst reads exist on paths
+                // that may skip this block (e.g., post-loop reads when
+                // the loop might execute 0 times), making conversion unsafe.
+                bool dominatesAllDst = true;
+                for (CFGBlock *otherDst : uniqueDstBlocks) {
+                    if (otherDst != dstBlock &&
+                        !ctx.DT.dominates(dstBlock, otherDst)) {
+                        dominatesAllDst = false;
+                        break;
+                    }
+                }
+
+                if (dominatesAllDst) {
+                    ctx.cutPoint = dstBlock;
+                    if (VERBOSE)
+                        llvm::outs() << "[Debug] Found mixed src/dst block as cut point: B"
+                                     << dstBlock->getBlockID() << "\n";
+                    return true;
+                }
+
+                // Mixed block doesn't dominate all dst blocks - reject
+                gLog.error = "Mixed src/dst block does not dominate all dst "
+                             "accesses (dst reads exist on paths that may "
+                             "skip the conversion)";
+                if (VERBOSE)
+                    llvm::outs() << "[Error] " + gLog.error + "\n";
+                return false;
+            }
+        }
+
         // Find blocks that post-dominate all src write blocks
         std::vector<CFGBlock *> candidates;
         for (CFGBlock *block : *ctx.cfg) {

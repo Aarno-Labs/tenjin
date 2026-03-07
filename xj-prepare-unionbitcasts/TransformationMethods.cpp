@@ -152,7 +152,34 @@ FunctionAccessAnalyzer::analyzeCutPoint(TransformContext &ctx) {
     return info;
 }
 
-void FunctionAccessAnalyzer::generateDeclarations(TransformContext &ctx) {
+bool FunctionAccessAnalyzer::generateConversionFunctionCode(TransformContext &ctx) {
+    // Generate conversion function name and code
+    ctx.funcName =
+        generateFuncName(ctx.src_field->getType(), ctx.dst_field->getType(), ctx.unionLoc, ctx.Ctx);
+    std::string funcCode = generateUnionConversionFunction(
+        ctx.src_field->getType(), ctx.dst_field->getType(),
+        ctx.unionLoc, ctx.Ctx, ctx.num_bytes);
+
+    if (ctx.funcName.empty() || funcCode.empty()) {
+        gLog.error = "Could not generate conversion function";
+        if (VERBOSE)
+            llvm::outs() << "[Error] " + gLog.error + "\n";
+        return false;
+    }
+
+    // Queue edit to insert typedefs and function definition before the enclosing function
+    if (generatedObjects.find(ctx.funcName) == generatedObjects.end()) {
+        SourceLocation funcStart = ctx.FD->getSourceRange().getBegin();
+        ctx.edits.push_back({Edit::InsertBefore, ctx.SM.getFileOffset(funcStart), funcStart,
+                             SourceLocation(),
+                             ctx.src_typedef_code + ctx.dst_typedef_code + funcCode + "\n"});
+        generatedObjects.insert(ctx.funcName);
+    }
+
+    return true;
+}
+
+void FunctionAccessAnalyzer::generateTemporaryVariables(TransformContext &ctx) {
     // Generate tmp variable names
     ctx.tmp_in_name = "__tenjin_tmp_in_" + ctx.VD->getNameAsString();
     ctx.tmp_out_name = "__tenjin_tmp_out_" + ctx.VD->getNameAsString();
@@ -263,6 +290,30 @@ bool FunctionAccessAnalyzer::tryDeleteUnionDecl(TransformContext &ctx, const Dec
         generateTmpDeclaration(ctx.tmp_out_name, ctx.dst_field->getType(), ctx.Ctx) +
         ctx.indentation;
 
+    // If the union had an initializer, fold it into the tmp_in declaration
+    if (ctx.VD->hasInit()) {
+        if (const InitListExpr *ILE = dyn_cast<InitListExpr>(ctx.VD->getInit())) {
+            if (ILE->getNumInits() > 0) {
+                const Expr *initExpr = ILE->getInit(0);
+                SourceRange initRange = initExpr->getSourceRange();
+                SourceLocation initStart = initRange.getBegin();
+                SourceLocation initEnd =
+                    Lexer::getLocForEndOfToken(initRange.getEnd(), 0, ctx.SM, ctx.LO);
+                if (initStart.isValid() && initEnd.isValid()) {
+                    StringRef initText = Lexer::getSourceText(
+                        CharSourceRange::getCharRange(initStart, initEnd), ctx.SM, ctx.LO);
+                    size_t pos = src_and_dst_tmp_decls.find(ctx.tmp_in_name);
+                    if (pos != std::string::npos) {
+                        size_t semi = src_and_dst_tmp_decls.find(";\n", pos);
+                        if (semi != std::string::npos) {
+                            src_and_dst_tmp_decls.insert(semi, " = " + initText.str());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Replace union declaration with just the tmp declarations
     // Note: Don't extend past union_end - other edits may insert content there
     ctx.edits.push_back({Edit::Replace, ctx.SM.getFileOffset(ctx.union_start),
@@ -312,14 +363,19 @@ bool FunctionAccessAnalyzer::handleInitOnlyCase(TransformContext &ctx) {
                     StringRef initText = Lexer::getSourceText(
                         CharSourceRange::getCharRange(initStart, initEnd), ctx.SM, ctx.LO);
 
-                    if (ctx.Ctx.getAsArrayType(ctx.src_field->getType())) {
-                        std::string arrayTypeStr = ctx.src_field->getType().getAsString();
-                        initCode = "\n" + ctx.indentation + "memcpy(" + ctx.tmp_in_name + ", (" +
-                                   arrayTypeStr + ")" + initText.str() + ", sizeof(" +
-                                   ctx.tmp_in_name + "));";
-                    } else {
-                        initCode = "\n" + ctx.indentation + ctx.tmp_in_name + " = " +
-                                   initText.str() + ";";
+                    // Patch the declaration edit to include the initializer directly
+                    // e.g. "int __tenjin_tmp_in_d3[2];\n" -> "int __tenjin_tmp_in_d3[2] = {0x55555555, (int)flt};\n"
+                    //       "float __tenjin_tmp_in_in;\n"  -> "float __tenjin_tmp_in_in = flt;\n"
+                    //       "struct s_t __tenjin_tmp_in_u;\n" -> "struct s_t __tenjin_tmp_in_u = (struct s_t){...};\n"
+                    for (auto &edit : ctx.edits) {
+                        size_t pos = edit.text.find(ctx.tmp_in_name);
+                        if (pos != std::string::npos) {
+                            size_t semi = edit.text.find(";\n", pos);
+                            if (semi != std::string::npos) {
+                                edit.text.insert(semi, " = " + initText.str());
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -358,7 +414,6 @@ bool FunctionAccessAnalyzer::handleInitOnlyCase(TransformContext &ctx) {
         }
     }
 
-    emitTypedefAndFunction(ctx);
     return true;
 }
 
@@ -409,7 +464,7 @@ void FunctionAccessAnalyzer::collectReplacementEdits(TransformContext &ctx) {
     }
 }
 
-void FunctionAccessAnalyzer::emitConversionCall(TransformContext &ctx,
+void FunctionAccessAnalyzer::generateConversionCall(TransformContext &ctx,
                                                   const InsertionInfo &info) {
     bool isArrayDst = ctx.Ctx.getAsArrayType(ctx.dst_field->getType()) != nullptr;
 
@@ -492,31 +547,20 @@ void FunctionAccessAnalyzer::emitConversionCall(TransformContext &ctx,
     }
 }
 
-void FunctionAccessAnalyzer::emitTypedefAndFunction(TransformContext &ctx) {
-    if (generatedObjects.find(ctx.funcName) == generatedObjects.end()) {
-        SourceLocation funcStart = ctx.FD->getSourceRange().getBegin();
-        ctx.edits.push_back({Edit::InsertBefore, ctx.SM.getFileOffset(funcStart), funcStart,
-                             SourceLocation(),
-                             ctx.src_typedef_code + ctx.dst_typedef_code + ctx.funcCode + "\n"});
-        generatedObjects.insert(ctx.funcName);
-    }
-}
-
 // ============================================================================
 // Main Transformation Entry Point
 // ============================================================================
 
-bool FunctionAccessAnalyzer::emitTransformation(const FunctionDecl *FD, const VarDecl *VD,
+bool FunctionAccessAnalyzer::generateTransformation(const FunctionDecl *FD, const VarDecl *VD,
                                          const std::vector<FieldAccess> &seq,
                                          const FieldDecl *src_field, const FieldDecl *dst_field,
-                                         const std::string &srcC, const std::string &funcName,
-                                         const std::string &funcCode, ASTContext &Ctx,
-                                         CFGBlock *cutPoint) {
+                                         SourceLocation unionLoc, int num_bytes,
+                                         ASTContext &Ctx, CFGBlock *cutPoint) {
     // Initialize transformation context
     TransformContext ctx{FD,       VD,       seq,      src_field,     dst_field,
-                         funcName, funcCode, Ctx,      Ctx.getSourceManager(),
-                         Ctx.getLangOpts(),  cutPoint, "",
-                         "",       "",       "",       "",
+                         "",       Ctx,      Ctx.getSourceManager(),
+                         Ctx.getLangOpts(),  cutPoint, unionLoc, num_bytes,
+                         "",       "",       "",       "",       "",
                          SourceLocation(),   SourceLocation(), {}};
 
     // Ensure memcpy is declared
@@ -525,8 +569,14 @@ bool FunctionAccessAnalyzer::emitTransformation(const FunctionDecl *FD, const Va
     // Analyze cut point for insertion location
     InsertionInfo insertInfo = analyzeCutPoint(ctx);
 
-    // Generate declarations and typedefs
-    generateDeclarations(ctx);
+    // Generate temporary variables and typedefs
+    generateTemporaryVariables(ctx);
+
+    // Generate conversion function and queue before-function edit
+    if (!generateConversionFunctionCode(ctx)) {
+        logFailedUnion(VD, Ctx, gLog.error);
+        return false;
+    }
 
     // Handle initialization-only case
     if (handleInitOnlyCase(ctx)) {
@@ -537,18 +587,15 @@ bool FunctionAccessAnalyzer::emitTransformation(const FunctionDecl *FD, const Va
     // Collect replacement edits for member expressions
     collectReplacementEdits(ctx);
 
-    // Emit conversion function call
-    emitConversionCall(ctx, insertInfo);
-
-    // Emit typedef and conversion function definition
-    emitTypedefAndFunction(ctx);
+    // Generate conversion function call
+    generateConversionCall(ctx, insertInfo);
 
     // Apply all edits
     applyEdits(ctx.edits, ctx.SM);
 
     if (VERBOSE)
         llvm::outs() << "Rewrote union pun for variable '" << VD->getNameAsString() << "' using "
-                     << funcName << " with tmps " << ctx.tmp_in_name << " " << ctx.tmp_out_name
+                     << ctx.funcName << " with tmps " << ctx.tmp_in_name << " " << ctx.tmp_out_name
                      << "\n";
 
     return true;
