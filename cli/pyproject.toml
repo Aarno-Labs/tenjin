@@ -17,4 +17,6 @@ dependencies = [
     "types-requests>=2.32.4.20250611",
     "pytest>=9.0.0",
     "pytest-xdist>=3.8.0",
+    "pytest-html>=4.2.0",
+    "ansi2html>=1.9.2",
 ]
