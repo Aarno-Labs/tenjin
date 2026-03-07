@@ -1,20 +1,10 @@
 import json
-from pathlib import Path
 
-from tenjin_pytest_helpers import annotate_pytest_request_with_translation_notes
+from tenjin_pytest_helpers import annotate_pytest_request_with_translation_notes, run_cargo_on_final
 import covset
 import hermetic
 import translation
 import translation_preparation
-
-
-def run_cargo_on_final(cwd: Path, args: list[str], capture_output: bool = False):
-    return hermetic.run_cargo_on_translated_code(
-        args,
-        cwd=cwd,
-        check=True,
-        capture_output=capture_output,
-    )
 
 
 def test_single_c_file(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, extras, request):

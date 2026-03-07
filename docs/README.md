@@ -49,7 +49,7 @@ either from `git pull` or `bisect`, the support projects should be kept in sync 
 
 ### Run regression tests and see HTML output
 
-* `10j pytest tests -n auto --html=../xj_pytest_report.html --self-contained-html`. This generates an HTML report; the `-n auto` runs the tests in parallel.
+* `10j pytest tests -n auto --also-slow --html=../xj_pytest_report.html --self-contained-html`. This generates an HTML report; the `-n auto` runs the tests in parallel, and `--also-slow` enables tests that may take minutes or more due to static analysis.
 
 ### disable formatting selectively
 
