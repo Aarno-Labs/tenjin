@@ -187,6 +187,14 @@ def copy_codebase(pristine: Path, newdir: Path):
     if pristine.is_file():
         newdir.mkdir()
         shutil.copy2(pristine, newdir / pristine.name)
+
+        # When the input is a single C file, we also copy any header files
+        # from the same directory in case they end up being included.
+        for header in pristine.parent.glob("*.h"):
+            dest = newdir / header.relative_to(pristine.parent)
+            if not dest.parent.exists():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(header, dest)
     else:
         copy_codebase_dir(pristine, newdir)
 
