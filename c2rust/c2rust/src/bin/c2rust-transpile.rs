@@ -280,6 +280,7 @@ fn main() {
         emit_c_decl_map: args.emit_c_decl_map,
         verbose: args.verbose,
 
+        use_raw_ref_op: false,
         guidance_json,
 
         incremental_relooper: !args.no_incremental_relooper,

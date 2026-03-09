@@ -48,6 +48,7 @@ fn config(guidance: serde_json::Value) -> TranspilerConfig {
         preserve_unused_functions: false,
         log_level: log::LevelFilter::Warn,
         guidance_json: guidance,
+        use_raw_ref_op: true, // keep compatibility with upstream c2rust
         emit_build_files: false,
         binaries: Vec::new(),
         c2rust_dir: Some(
