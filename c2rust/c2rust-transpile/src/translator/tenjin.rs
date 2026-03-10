@@ -2125,7 +2125,7 @@ impl Translation<'_> {
 
             let int_bits = |k: &CTypeKind| -> Option<u32> {
                 match k {
-                    CTypeKind::Int | CTypeKind::UInt => Some(32),
+                    CTypeKind::Int | CTypeKind::UInt | CTypeKind::UInt32 => Some(32),
                     CTypeKind::Long
                     | CTypeKind::ULong
                     | CTypeKind::LongLong
