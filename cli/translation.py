@@ -187,16 +187,6 @@ def create_translation_snapshot(
     return results_snapshot
 
 
-def apply_behind_the_scenes_guidance_to(guidance: dict) -> dict:
-    # Some bits of guidance are internal to Tenjin and not exposed to users.
-
-    if "vars_of_type" not in guidance:
-        guidance["vars_of_type"] = {}
-
-    guidance["vars_of_type"]["&mut XjGlobals"] = ["*:xjg"]
-    return guidance
-
-
 def do_translate(
     root: Path,
     codebase: Path,
