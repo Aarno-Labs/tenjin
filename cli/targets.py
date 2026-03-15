@@ -4,6 +4,7 @@ from pathlib import Path
 import pprint
 
 import bencodepy  # type: ignore
+import click
 
 import compilation_database
 import hermetic
@@ -149,18 +150,64 @@ class BuildInfo:
         def cmd_target_name(link_cmd: targets_from_intercept.InterceptedCommand) -> str:
             return Path(link_cmd.output).name if link_cmd.output else "unknown"
 
-        target_names = [
+        def cmd_invokes_ld(c: targets_from_intercept.InterceptedCommand) -> bool:
+            return not c.compile_only and c.entry["arguments"][0].endswith("ld")
+
+        cc_and_ld_dups: set[str] = set()
+
+        all_target_names = [
             cmd_target_name(c) for c in self._intercepted_commands if not c.compile_only
         ]
-        assert len(target_names) == len(set(target_names)), "Duplicate target names detected"
+
+        # When we intercept a link command done via the compiler driver, we'll also get
+        # a corresponding link command done directly by the linker. This isn't a "real"
+        # duplicate; we should ignore the compiler driver link command in this case, since
+        # all it did was construct the appropriate linker command (which we have).
+        for name in all_target_names:
+            cmds_for_name = [
+                c
+                for c in self._intercepted_commands
+                if not c.compile_only and cmd_target_name(c) == name
+            ]
+            if (
+                len(cmds_for_name) == 2
+                and len([c for c in cmds_for_name if cmd_invokes_ld(c)]) == 1
+            ):
+                cc_and_ld_dups.add(name)
+
+        # Filter out redundant link steps done via compiler driver invocations.
+        sans_redundant_link_commands: list[targets_from_intercept.InterceptedCommand] = []
+        for c in self._intercepted_commands:
+            name = cmd_target_name(c)
+            if name in cc_and_ld_dups and cmd_invokes_ld(c):
+                continue
+            sans_redundant_link_commands.append(c)
+
+        target_names_sans_redundants = [cmd_target_name(c) for c in sans_redundant_link_commands]
+
+        if len(target_names_sans_redundants) != len(set(target_names_sans_redundants)):
+            duplicates = set([
+                name
+                for name in target_names_sans_redundants
+                if target_names_sans_redundants.count(name) > 1
+            ])
+
+            for c in sans_redundant_link_commands:
+                if not c.compile_only and cmd_target_name(c) in duplicates:
+                    click.echo(
+                        click.style("ERROR:", fg="red")
+                        + f" Duplicate target name '{click.style(cmd_target_name(c), fg='red')}' for command: "
+                        + click.style(str(c), fg=(142, 142, 142))
+                    )
+            raise ValueError(f"Duplicate target names detected: {duplicates}")
 
         intermediates: dict[str, targets_from_intercept.InterceptedCommand] = {}
         for c in self._intercepted_commands:
             if c.compile_only:
-                assert c.output is not None
+                assert c.output is not None, f"Compile command missing output: {c}"
                 intermediates[c.output] = c
 
-        link_commands = list(filter(lambda c: not c.compile_only, self._intercepted_commands))
+        link_commands = list(filter(lambda c: not c.compile_only, sans_redundant_link_commands))
 
         targets: dict[str, BuildTarget] = {}
         for link_cmd in link_commands:

@@ -1376,6 +1376,10 @@ def run_preparation_passes(
             compdb_entries = json.load(f)
         source_files = [entry["file"] for entry in compdb_entries]
 
+        assert len(source_files) > 0, (
+            "No source files found in compilation database: " + compdb_path.as_posix()
+        )
+
         xj_start = time.time()
         cp = hermetic.run(
             [
