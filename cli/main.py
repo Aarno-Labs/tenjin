@@ -114,7 +114,11 @@ def translate(
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
 
-    if Path(codebase).is_dir() and list(Path(codebase).glob("*.*")) == []:
+    if (
+        Path(codebase).is_dir()
+        and list(Path(codebase).glob("*.*")) == []
+        and list(Path(codebase).glob("**/*.c")) == []
+    ):
         click.echo(
             f"Error: Codebase directory {codebase} contains no files to translate.", err=True
         )

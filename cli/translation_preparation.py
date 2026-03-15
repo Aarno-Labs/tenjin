@@ -602,6 +602,8 @@ def run_preparation_passes(
         # Then all remaining commands, which are assumed to be executables
         for cmd in profile_compdb.commands:
             if cmd.output is not None and cmd.output not in cmd_for_output:
+                print(f"Running command for executable output: {cmd.output}")
+                print(f"  Command arguments: {cmd.arguments}")
                 runcmd(cmd)
 
         # TODO: run the above steps in parallel batches
