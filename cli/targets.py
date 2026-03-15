@@ -204,6 +204,16 @@ class BuildInfo:
         intermediates: dict[str, targets_from_intercept.InterceptedCommand] = {}
         for c in self._intercepted_commands:
             if c.compile_only:
+                if (
+                    c.output is None
+                    and "-o" not in c.entry["arguments"]
+                    and len(c.c_inputs) == 1
+                    and not Path(c.c_inputs[0]).is_absolute()  # at least for now
+                ):
+                    # When no output is explicitly provided, the compiler will generate an object file
+                    # with the same stem as the input file.
+                    c.output = Path(c.c_inputs[0]).with_suffix(".o").as_posix()
+
                 assert c.output is not None, f"Compile command missing output: {c}"
                 intermediates[c.output] = c
 
