@@ -6,6 +6,8 @@ import pprint
 import bencodepy  # type: ignore
 
 import compilation_database
+import hermetic
+import repo_root
 import targets_from_intercept
 from intercept_exec import InterceptedCommandInfo
 
@@ -58,6 +60,12 @@ class LinkCommandHandling(Enum):
     INCLUDE = "include"
     EXCLUDE = "exclude"
     ADAPT_FOR_C2RUST = "adapt-for-c2rust"
+
+
+@dataclass
+class ExtraCompileOrLinkFlags:
+    cc: list[str]
+    ld: list[str]
 
 
 type BuildTargetName = str
@@ -186,7 +194,7 @@ class BuildInfo:
             self._intercepted_commands,
             current_codebase,
             link_cmd_handling=link_cmd_handling,
-            extra_compile_or_link_flags=[],
+            extra_compile_or_link_flags=None,
         )
 
     def get_all_targets(self) -> list[BuildTarget]:
@@ -210,7 +218,7 @@ class BuildInfo:
             cmds,
             current_codebase,
             link_cmd_handling=link_cmd_handling,
-            extra_compile_or_link_flags=[],
+            extra_compile_or_link_flags=None,
         )
 
     def _compdb_for_commands_within(
@@ -218,7 +226,7 @@ class BuildInfo:
         commands: list[targets_from_intercept.InterceptedCommand],
         current_codebase: Path,
         link_cmd_handling: LinkCommandHandling,
-        extra_compile_or_link_flags: list[str],
+        extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None,
     ) -> compilation_database.CompileCommands:
         cc_cmds = [
             _CompileCommand_from_intercepted_command(
@@ -239,11 +247,22 @@ class BuildInfo:
     def compdb_for_profiled_build(
         self, current_codebase: Path
     ) -> compilation_database.CompileCommands:
+        clang_lib_path = hermetic.xj_llvm_root(repo_root.localdir()) / "lib" / "clang"
+        libclang_rt_profile_a = list(clang_lib_path.glob("**/libclang_rt.profile.a"))
+        assert len(libclang_rt_profile_a) == 1, (
+            f"Expected exactly one libclang_rt.profile.a, found: {libclang_rt_profile_a}"
+        )
         return self._compdb_for_commands_within(
             self._intercepted_commands,
             current_codebase,
             link_cmd_handling=LinkCommandHandling.INCLUDE,
-            extra_compile_or_link_flags=["-fprofile-instr-generate", "-fcoverage-mapping"],
+            extra_compile_or_link_flags=ExtraCompileOrLinkFlags(
+                cc=["-fprofile-instr-generate", "-fcoverage-mapping"],
+                ld=[
+                    "-u__llvm_profile_runtime",
+                    libclang_rt_profile_a[0].as_posix(),
+                ],
+            ),
         )
 
     def is_empty(self) -> bool:
@@ -256,7 +275,7 @@ def _CompileCommand_from_intercepted_command(
     current_codebase: Path,
     use_preprocessed_files: bool,
     link_cmd_handling: LinkCommandHandling,
-    extra_compile_or_link_flags: list[str] = [],
+    extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None = None,
 ) -> compilation_database.CompileCommand:
     """Convert an InterceptedCommand to a CompileCommand."""
 
@@ -322,7 +341,14 @@ def _CompileCommand_from_intercepted_command(
         elif len(icmd.c_inputs) == 0 and not icmd.compile_only and len(icmd.rest_inputs) == 1:
             filename = icmd.rest_inputs[0]
 
-    raw_arguments = icmd.entry["arguments"] + extra_compile_or_link_flags
+    raw_arguments = list(icmd.entry["arguments"])  # make a mutable copy
+    if extra_compile_or_link_flags:
+        if not icmd.compile_only and raw_arguments[0].endswith("ld"):
+            # We only use ld-specific flags when linking is being done directly by ld;
+            # we use cc flags for both compile and link steps.
+            raw_arguments += extra_compile_or_link_flags.ld
+        else:
+            raw_arguments += extra_compile_or_link_flags.cc
 
     if link_cmd_handling == LinkCommandHandling.ADAPT_FOR_C2RUST and not icmd.compile_only:
         # For link commands, we need to adapt the arguments
