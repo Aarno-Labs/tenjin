@@ -45,6 +45,7 @@ impl CompileCmd {
     }
 }
 
+// XREF:c2rust_target_link_type
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkType {

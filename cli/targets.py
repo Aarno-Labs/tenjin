@@ -57,6 +57,16 @@ class TargetType(Enum):
                 raise ValueError(f"Unknown TargetType: {self}")
 
 
+def compute_target_type(link_cmd: targets_from_intercept.InterceptedCommand) -> TargetType:
+    if any("-shared" in arg for arg in link_cmd.entry["arguments"]):
+        return TargetType.SHARED
+    if (link_cmd.output or "").endswith(".a"):
+        return TargetType.STATIC
+    if (link_cmd.output or "").endswith(".o"):
+        return TargetType.OBJECT
+    return TargetType.EXECUTABLE
+
+
 class LinkCommandHandling(Enum):
     INCLUDE = "include"
     EXCLUDE = "exclude"
@@ -222,12 +232,9 @@ class BuildInfo:
         targets: dict[str, BuildTarget] = {}
         for link_cmd in link_commands:
             target_name = cmd_target_name(link_cmd)
-            target_type = (
-                TargetType.SHARED
-                if any("-shared" in arg for arg in link_cmd.entry["arguments"])
-                else TargetType.EXECUTABLE
-            )
+            target_type = compute_target_type(link_cmd)
             target_stem = Path(target_name).stem
+            assert target_name != "unknown", f"Link command missing target name: {link_cmd}"
             target = BuildTarget(name=target_name, type=target_type, stem=target_stem)
             targets[target_name] = target
 
@@ -404,6 +411,8 @@ def _CompileCommand_from_intercepted_command(
             # We only use ld-specific flags when linking is being done directly by ld;
             # we use cc flags for both compile and link steps.
             raw_arguments += extra_compile_or_link_flags.ld
+        elif icmd.static_lib:
+            pass
         else:
             raw_arguments += extra_compile_or_link_flags.cc
 
@@ -412,16 +421,25 @@ def _CompileCommand_from_intercepted_command(
         # to be suitable for c2rust.
         assert icmd.output is not None, "Link command must have an output"
         assert not icmd.c_inputs, f"Link command should not have c_inputs: {icmd}"
+
+        # XREF:c2rust_target_link_type
+        if icmd.shared_lib:
+            link_type = "shared"
+        elif icmd.static_lib:
+            link_type = "static"
+        else:
+            link_type = "exe"
         link_info = {
             "inputs": icmd.rest_inputs,  # FIXME: wrong order???
             "c_files": [],
             "libs": icmd.libs,
             "lib_dirs": icmd.lib_dirs,
-            "type": "shared" if icmd.shared_lib else "exe",
+            "type": link_type,
             # TODO: parse and add in other linker flags
             # for now, we don't do this because rustc doesn't use them
         }
         filename = "/c2rust/link/" + bencodepy.encode(link_info).decode("utf-8")
+        print("@@@@@@@@@@@@@@@@@@@@ targets.py Link info for", icmd.output, ":", link_info)
 
     if not filename and not icmd.compile_only and not icmd.c_inputs and len(icmd.rest_inputs) > 0:
         # At this point, if we don't have a filename, it's most likely

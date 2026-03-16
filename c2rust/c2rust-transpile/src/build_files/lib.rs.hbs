@@ -1,5 +1,5 @@
 {{#each pragmas~}}
-    #![{{this.0}}({{this.1}})]
+#![{{this.0}}({{this.1}})]
 {{/each}}
 
 {{#each crates~}}
@@ -9,7 +9,7 @@
 extern crate {{this.ident}};
 {{~/each}}
 
-{{#each cdylib_crate_names~}}
+{{#each workspace_crate_names~}}
 pub use {{this}};
 {{~/each}}
 
