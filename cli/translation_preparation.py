@@ -1381,8 +1381,7 @@ def run_preparation_passes(
         )
 
         xj_clang_resource_dir = (
-            hermetic
-            .run(["clang", "-print-resource-dir"], capture_output=True, check=True)
+            hermetic.run(["clang", "-print-resource-dir"], capture_output=True, check=True)
             .stdout.decode()
             .strip()
         )
@@ -1431,10 +1430,17 @@ def run_preparation_passes(
         ("expand_preprocessor", prep_expand_preprocessor),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
         ("uniquify_statics", prep_uniquify_statics),
-        ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
-        ("localize_mutable_globals", prep_localize_mutable_globals),
-        ("lift_subfield_args", prep_lift_subfield_args),
     ]
+
+    if os.environ.get("XJ_SKIP_CCLYZERPP", "0") == "0":
+        # cclyzer++ can be expensive (7+ hours for Lua as of cclyzerpp 2077e60).
+        # Until we find a way to optimize its cost, we allow skipping it
+        # to allow translation of larger codebases.
+        preparation_passes.extend([
+            ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
+            ("localize_mutable_globals", prep_localize_mutable_globals),
+            ("lift_subfield_args", prep_lift_subfield_args),
+        ])
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") == "1":
         preparation_passes.extend([
