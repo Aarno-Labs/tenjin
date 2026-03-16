@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Literal, TypedDict
 
-type InterceptedBuildType = Literal["cc", "ld"]
+type InterceptedBuildType = Literal["cc", "ld", "ar"]
 
 
 class InterceptedCommandInfo(TypedDict):

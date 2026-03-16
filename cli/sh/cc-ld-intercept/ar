@@ -1,0 +1,11 @@
+#!/bin/sh
+# shellcheck shell=dash
+
+set -eu
+
+SELF_PATH=$(realpath "$0")
+INT_DIR=$(dirname "$SELF_PATH")
+CLI_DIR=$(realpath "$INT_DIR/../..")
+
+# 10j might not be on the PATH, so we have to call it via absolute path.
+$CLI_DIR/10j intercept-exec ar $0 "$@"
