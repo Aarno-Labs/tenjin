@@ -411,7 +411,7 @@ def _CompileCommand_from_intercepted_command(
         # For link commands, we need to adapt the arguments
         # to be suitable for c2rust.
         assert icmd.output is not None, "Link command must have an output"
-        assert not icmd.c_inputs, "Link command should not have c_inputs"
+        assert not icmd.c_inputs, f"Link command should not have c_inputs: {icmd}"
         link_info = {
             "inputs": icmd.rest_inputs,  # FIXME: wrong order???
             "c_files": [],
