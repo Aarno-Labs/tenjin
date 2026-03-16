@@ -1,0 +1,3 @@
+/home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/build/CMakeFiles/assign.dir
+/home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/build/CMakeFiles/edit_cache.dir
+/home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/build/CMakeFiles/rebuild_cache.dir

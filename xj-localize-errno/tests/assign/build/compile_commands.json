@@ -1,0 +1,14 @@
+[
+{
+  "directory": "/home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/build",
+  "command": "/usr/bin/clang  -I/home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/include  -o CMakeFiles/assign.dir/src/assign.c.o -c /home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/src/assign.c",
+  "file": "/home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/src/assign.c",
+  "output": "CMakeFiles/assign.dir/src/assign.c.o"
+},
+{
+  "directory": "/home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/build",
+  "command": "/usr/bin/clang  -I/home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/include  -o CMakeFiles/assign.dir/src/bar.c.o -c /home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/src/bar.c",
+  "file": "/home/abakst/tractor/tenjin/xj-localize-errno/tests/assign/src/bar.c",
+  "output": "CMakeFiles/assign.dir/src/bar.c.o"
+}
+]

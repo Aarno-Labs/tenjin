@@ -1,0 +1,1 @@
+/usr/bin/cc CMakeFiles/assign.dir/src/assign.c.o CMakeFiles/assign.dir/src/bar.c.o -o assign 
