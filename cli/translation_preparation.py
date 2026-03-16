@@ -1380,6 +1380,13 @@ def run_preparation_passes(
             "No source files found in compilation database: " + compdb_path.as_posix()
         )
 
+        xj_clang_resource_dir = (
+            hermetic
+            .run(["clang", "-print-resource-dir"], capture_output=True, check=True)
+            .stdout.decode()
+            .strip()
+        )
+
         xj_start = time.time()
         cp = hermetic.run(
             [
@@ -1390,6 +1397,7 @@ def run_preparation_passes(
                 "--extra-arg=-Wno-zero-length-array",
                 "--extra-arg=-Wno-implicit-int-conversion",
                 "--extra-arg=-Wno-unused-function",
+                f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
                 *source_files,
             ],
             cwd=current_codebase,
