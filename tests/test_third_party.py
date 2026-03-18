@@ -252,6 +252,92 @@ def eval_tractor_ta3_corpus_app(
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
+def eval_tractor_ta3_corpus_lib(
+    root: Path,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    request: pytest.FixtureRequest,
+    extras: list,
+    case_dir: str,
+):
+    codebase = tractor_public_tests_git_clone()
+
+    # Copying the whole Test-Corpus repo results in huge numbers of temporary files,
+    # resulting in noticeable delays both for test steps and for post-test cleanups.
+    translation_preparation.copy_codebase(codebase / case_dir, tmp_codebase)
+
+    lib_name = "drivee"
+    buildcmd_args = [
+        "cc",
+        "-I",
+        "test_case/include",
+        "test_case/src/lib.c",
+        "-shared",
+        "-o",
+        f"lib{candidate_stem}.so",
+    ]
+
+    translation.do_translate(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="tractor_ta3_corpus_lib",
+        buildcmd=hermetic.shellize(buildcmd_args),
+        guidance_path_or_literal="{}",
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    # Copy runner to results dir & build it
+    translation_preparation.copy_codebase(codebase / case_dir / "runner", tmp_resultsdir / "runner")
+
+    runner_cargo_toml = tmp_resultsdir / "runner" / "Cargo.toml"
+    runner_cargo_toml_contents = runner_cargo_toml.read_text(encoding="utf-8")
+    runner_cargo_toml_contents = runner_cargo_toml_contents.replace(
+        'cando2 = { path = "../../../../tools/cando2" }',
+        f'cando2 = {{ path = "{codebase}/tools/cando2" }}',
+    )
+    run_cargo_on_final(tmp_resultsdir / "runner", ["build"])
+
+    shutil.copytree(tmp_resultsdir, "/home/brk/ta3_lib_")
+
+    vectors_run = 0
+    vectors_skipped = 0
+    for test_vector in (tmp_codebase / "test_vectors").glob("*.json"):
+        spec = json.loads(test_vector.read_text(encoding="utf-8"))
+        outcome_c = run_tractor_test_vector(
+            tmp_resultsdir / "_build_1" / exe_name,
+            test_vector.stem,
+            spec,
+            cwd=tmp_resultsdir / "final",
+        )
+        if outcome_c.skipped:
+            vectors_skipped += 1
+            continue
+
+        vectors_run += 1
+
+        assert outcome_c.ok, (
+            f"Test vector {test_vector.stem} failed on the C version: {outcome_c.message}"
+        )
+
+        outcome_rs = run_tractor_test_vector(
+            rs_bin, test_vector.stem, spec, cwd=tmp_resultsdir / "final"
+        )
+        assert outcome_rs.ok, (
+            f"Test vector {test_vector.stem} failed on the Rust version: {outcome_rs.message}"
+        )
+
+    print(f"Ran {vectors_run} test vectors, skipped {vectors_skipped}.")
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_collided_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/collided_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
 @pytest.mark.slow
 def test_tractor_b1_synthetic_002_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/002_stdin_echo"
