@@ -394,7 +394,7 @@ def _CompileCommand_from_intercepted_command(
 
     def update_arg(p: str) -> str:
         # Applies update to an include (-Ipath) argument
-        if p.startswith("-I"):
+        if p.startswith("-I") and len(p) > 2:
             return f"-I{update(p[2:])}"
         return update(p)
 
