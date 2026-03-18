@@ -22,9 +22,9 @@ set(CMAKE_CXX_SIMULATE_VERSION "")
 
 
 
-set(CMAKE_AR "/usr/bin/ar")
+set(CMAKE_AR "/usr/bin/llvm-ar")
 set(CMAKE_CXX_COMPILER_AR "/usr/bin/gcc-ar-13")
-set(CMAKE_RANLIB "/usr/bin/ranlib")
+set(CMAKE_RANLIB "/usr/bin/llvm-ranlib")
 set(CMAKE_CXX_COMPILER_RANLIB "/usr/bin/gcc-ranlib-13")
 set(CMAKE_LINKER "/usr/bin/ld")
 set(CMAKE_MT "")

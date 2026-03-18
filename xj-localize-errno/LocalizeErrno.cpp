@@ -36,11 +36,11 @@ const std::string USE_DECL = "decl";
 const std::string USE_CALL_EXPR = "call";
 const std::string USE_CALL_EXPR_CALLEE = "callee";
 const std::string CALL_BODY = "body";
+const std::string USE_CONTEXT = "context";
 
 class StdlibCallCollector : public MatchFinder::MatchCallback
 {
 private:
-  InsertPointsMap *InsertPoints;
   std::set<SmallString<32>> *ExternalUSRs;
   std::set<const clang::CompoundStmt*> InsertedDeclaration;
   std::map<std::string, std::vector<clang::FunctionDecl>> RequiredWrappers;
@@ -98,9 +98,66 @@ private:
 
   std::set<std::pair<SourceLocation, transformer::ASTEdit>> Wrappers;
   std::set<USRString> InsertedWrappers;
-  std::string PendingWrappers;
+  std::vector<std::pair<USRString, std::string>> PendingWrappers;
   SourceManager *PendingSM = nullptr;
-  SourceLocation WrapperInsertLoc;
+  std::map<USRString, SourceLocation> insertLocations;
+  bool HasErrnoDecl = false;
+
+  void CollectPendingWrapper(SourceManager *SM, const FunctionDecl *funCtxt, const FunctionDecl *funDecl, clang::FileID FileID, const USRString &Buf)
+  {
+    // Even if we've generated a wrapper, still need to 
+    // push the insertion point back if we found an earlier use.
+    auto thisContextInsertLoc = funCtxt->getBeginLoc();
+
+    auto prevLoc = insertLocations.find(Buf);
+    if (prevLoc == insertLocations.end() || SM->isBeforeInTranslationUnit(thisContextInsertLoc, prevLoc->second))
+    {
+      llvm::outs() << "USR: " << Buf << " " << (prevLoc == insertLocations.end() ? "(first)" : prevLoc->second.printToString(*SM)) << " --> " << thisContextInsertLoc.printToString(*SM) << "\n";
+      insertLocations.insert(std::pair<USRString, SourceLocation>(Buf, thisContextInsertLoc));
+    }
+
+    if (InsertedWrappers.find(Buf) != InsertedWrappers.end())
+    {
+      return;
+    }
+    InsertedWrappers.insert(Buf);
+
+    auto retType = funDecl->getReturnType();
+    std::string retTypeStr = retType.getAsString();
+    std::string funcName = funDecl->getNameAsString();
+    bool isVoid = retType->isVoidType();
+
+    std::string wrapperStr = retTypeStr + " _xj_wrap_" + funcName + "(int *_xj_error";
+    std::string callArgs;
+    for (auto *param : funDecl->parameters()) {
+      std::string paramType = param->getType().getAsString();
+      std::string paramName = param->getNameAsString();
+      wrapperStr += ", " + paramType + " " + paramName;
+      if (!callArgs.empty()) callArgs += ", ";
+      callArgs += paramName;
+    }
+    if (funDecl->isVariadic()) {
+      wrapperStr += ", ...";
+      callArgs += ", args";
+    }
+    wrapperStr += ") { ";
+    if (funDecl->isVariadic()) {
+      wrapperStr += "va_list args; ";
+      wrapperStr += "__builtin_va_start(args, " + funDecl->parameters().back()->getNameAsString() + "); ";
+    }
+    if (!isVoid) {
+      wrapperStr += retTypeStr + " ret = ";
+    }
+    // TODO: assuming #define errno (*errno_location())
+    wrapperStr += funcName + "(" + callArgs + "); *_xj_error = (*__errno_location()); ";
+    if (!isVoid) {
+      wrapperStr += "return ret; ";
+    }
+    wrapperStr += "}\n";
+
+    PendingWrappers.push_back(std::pair(Buf, wrapperStr));
+    PendingSM = SM;
+  }
 
   void ApplyErrnoUseRewrite(const MatchFinder::MatchResult &Result, const UnaryOperator *errnoUse)
   {
@@ -109,23 +166,57 @@ private:
 
 
 public:
-  StdlibCallCollector(std::set<USRString> *ExternalUSRs, InsertPointsMap *InsertPoints) : ExternalUSRs(ExternalUSRs), InsertPoints(InsertPoints) {}
+  StdlibCallCollector(std::set<USRString> *ExternalUSRs) : ExternalUSRs(ExternalUSRs) {}
   AtomicChanges changes;
 
-  virtual void onStartOfTranslationUnit() {
+  void onStartOfTranslationUnit() override {
     Wrappers.clear();
     PendingWrappers.clear();
     InsertedWrappers.clear();
     PendingSM = nullptr;
+    HasErrnoDecl = false;
   }
-  virtual void onEndOfTranslationUnit() {
+
+  void onEndOfTranslationUnit() override {
+    std::map<SourceLocation, std::string> ChangesByLoc;
     if (PendingSM && !PendingWrappers.empty()) {
-      AtomicChange wrapperChange(*PendingSM, WrapperInsertLoc);
-      auto err = wrapperChange.insert(*PendingSM, WrapperInsertLoc, PendingWrappers, /*InsertAfter=*/false);
-      if (err) {
-        llvm::errs() << "Error inserting wrappers: " << err << "\n";
-      } else {
-        changes.push_back(wrapperChange);
+      for (auto &Pending : PendingWrappers) {
+        auto USR = Pending.first;
+        auto Wrapper = Pending.second;
+        // This should definitely exist
+        auto Loc = insertLocations[USR];
+        auto Changes = ChangesByLoc.find(Loc);
+        if (Changes == ChangesByLoc.end())
+        {
+          ChangesByLoc.insert(std::pair(Loc, Wrapper));
+        }
+        else
+        {
+          Changes->second.append("\n" + Wrapper);
+        }
+      }
+      FileID f;
+      for (auto &LocChange : ChangesByLoc)
+      {
+        AtomicChange wrapperChange(*PendingSM, LocChange.first);
+        // This assumes we're all inlined so all changes are in the same file.
+        f = PendingSM->getFileID(LocChange.first);
+        auto err = wrapperChange.insert(*PendingSM, LocChange.first, LocChange.second, /*InsertAfter=*/false);
+        if (err) {
+          llvm::errs() << "Error inserting wrappers: " << err << "\n";
+        } else {
+          changes.push_back(wrapperChange);
+        }
+      }
+      if (!HasErrnoDecl)
+      {
+        AtomicChange declareErrno(*PendingSM, PendingSM->getLocForStartOfFile(f));
+        auto err = declareErrno.insert(*PendingSM, PendingSM->getLocForStartOfFile(f), "int *__errno_location();\n", false);
+        if (err) {
+          llvm::errs() << "Error inserting wrappers: " << err << "\n";
+        } else {
+          changes.push_back(declareErrno);
+        }
       }
     }
   }
@@ -133,17 +224,23 @@ public:
   // TODO signal error so that transform is aborted if we're in an unexpected state
   virtual void run(const MatchFinder::MatchResult &Result)
   {
+
     if (auto errnoUse = Result.Nodes.getNodeAs<UnaryOperator>("errno_use"))
     {
       ApplyErrnoUseRewrite(Result, errnoUse);
       return;
     }
+    else if (auto errnoDecl = Result.Nodes.getNodeAs<FunctionDecl>("errno_decl"))
+    {
+      HasErrnoDecl = true;
+    }
 
     const clang::CompoundStmt *body = Result.Nodes.getNodeAs<CompoundStmt>(CALL_BODY);
     auto funDecl = Result.Nodes.getNodeAs<FunctionDecl>(USE_DECL);
     auto callExpr = Result.Nodes.getNodeAs<CallExpr>(USE_CALL_EXPR);
+    auto context = Result.Nodes.getNodeAs<FunctionDecl>(USE_CONTEXT);
 
-    if (!funDecl || !callExpr || !body)
+    if (!funDecl || !callExpr || !body || !context)
     {
       llvm::errs() << "Unbound f or call\n";
       return;
@@ -157,13 +254,6 @@ public:
       ApplyEdit(localDecl, Result, body->getBeginLoc(), "Error inserting local decl");
     }
 
-    // Here we should generate a NEW function that wraps the body (`body`) of `funDecl`.
-    // If `funDecl` is an (extern) function like T foo(T1 a1, T2 a2, ...); then we want to generate
-    // T _xj_foo(int *_xj_error, T1 a1, T2 a2, ) { T ret = foo(a1, a2); *_xj_error = errno; return ret; }
-    // That is, it wraps the original call to foo and then writes the value of errno
-    // to the new integer pointer parameter.
-
-//    DeclsToWrap->insert(funDecl);
 
     auto range = transformer::callArgs("call")(Result);
     USRString Buf;
@@ -181,38 +271,7 @@ public:
     }
 
     // Generate and insert wrapper function at the file's insert point
-    auto InsertPt = InsertPoints->find(FileID);
-    if (InsertPt != InsertPoints->end() && InsertedWrappers.find(Buf) == InsertedWrappers.end()) {
-      InsertedWrappers.insert(Buf);
-
-      auto retType = funDecl->getReturnType();
-      std::string retTypeStr = retType.getAsString();
-      std::string funcName = funDecl->getNameAsString();
-      bool isVoid = retType->isVoidType();
-
-      std::string wrapperStr = retTypeStr + " _xj_wrap_" + funcName + "(int *_xj_error";
-      std::string callArgs;
-      for (auto *param : funDecl->parameters()) {
-        std::string paramType = param->getType().getAsString();
-        std::string paramName = param->getNameAsString();
-        wrapperStr += ", " + paramType + " " + paramName;
-        if (!callArgs.empty()) callArgs += ", ";
-        callArgs += paramName;
-      }
-      wrapperStr += ") { ";
-      if (!isVoid) {
-        wrapperStr += retTypeStr + " ret = ";
-      }
-      wrapperStr += funcName + "(" + callArgs + "); *_xj_error = errno; ";
-      if (!isVoid) {
-        wrapperStr += "return ret; ";
-      }
-      wrapperStr += "}\n";
-
-      PendingWrappers += wrapperStr;
-      PendingSM = Result.SourceManager;
-      WrapperInsertLoc = InsertPt->second;
-    }
+    CollectPendingWrapper(Result.SourceManager, context, funDecl, FileID, Buf);
 
     llvm::SmallVector<transformer::ASTEdit, 1> callEdits;
     callEdits.push_back(changeToWrapperCall);
@@ -244,10 +303,10 @@ int main(int argc, const char **argv)
   Tool.run(&Action);
 
   auto ExternalUSRs = Action.GetExternalDecls();
-  auto InsertPoints = Action.GetInsertPoints();
-  // std::set<const FunctionDecl*> DeclsToWrap;
 
-  // TODO merge with below..
+  clang::ast_matchers::DeclarationMatcher errnoDecl =
+    functionDecl(hasName("__errno_location")).bind("errno_decl");
+
   clang::ast_matchers::StatementMatcher errnoUse = 
     unaryOperator(hasOperatorName("*"), hasUnaryOperand(callExpr(callee(functionDecl(hasName("__errno_location")))))).bind("errno_use");
 
@@ -268,9 +327,10 @@ int main(int argc, const char **argv)
             )
           ).bind(CALL_BODY)
         )
-      );
+      ).bind(USE_CONTEXT);
 
-  StdlibCallCollector collector(&ExternalUSRs, &InsertPoints);
+  StdlibCallCollector collector(&ExternalUSRs);
+  Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, errnoDecl), &collector);
   Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, errnoUse), &collector);
   Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, callExtern), &collector);
 

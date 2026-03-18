@@ -4,6 +4,7 @@
 #include <string.h>
 #include <limits.h>
 
+__attribute__((external_source_symbol(language="C",defined_in="foo.h")))
 int foo(void)
 {
   return 0;
