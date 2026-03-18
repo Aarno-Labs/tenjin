@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
     cached_git_clone_at_commit,
     run_cargo_on_final,
+    run_tractor_test_vector,
 )
 import translation_preparation
 import translation
@@ -177,35 +179,25 @@ def test_lua_5_4_0_immunant(
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
-@pytest.mark.slow
-def test_tractor_b1_synthetic_022_app(
+def eval_tractor_ta3_corpus_app(
     root: Path,
     tmp_codebase: Path,
     tmp_resultsdir: Path,
     request: pytest.FixtureRequest,
     extras: list,
+    case_dir: str,
 ):
     codebase = tractor_public_tests_git_clone()
 
     translation_preparation.copy_codebase(codebase, tmp_codebase)
 
-    # Ensure it compiles and runs as expected
     buildcmd_args = [
         "cc",
-        "Public-Tests/B01_synthetic/022_stdlib_div/test_case/src/main.c",
+        f"{case_dir}/test_case/src/main.c",
         "-o",
         "app.exe",
     ]
-    hermetic.run(buildcmd_args, cwd=str(tmp_codebase), check=True)
-    c_prog_output = hermetic.run(
-        [str(tmp_codebase / "app.exe")],
-        check=True,
-        capture_output=True,
-        input=b"-37\n-5",
-    )
-    assert c_prog_output.stdout == b"quotient: 7, remainder: -2\n", f"Got: {c_prog_output.stdout!r}"
 
-    # Run translation
     translation.do_translate(
         root,
         tmp_codebase,
@@ -215,15 +207,52 @@ def test_tractor_b1_synthetic_022_app(
         guidance_path_or_literal="{}",
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
-    rs_prog_output = run_cargo_on_final(
-        tmp_resultsdir / "final",
-        ["run"],
-        capture_output=True,
-        input=b"-37\n-5",
+    # The binary may be `main` or `main_nolines`
+    rs_bins = list((tmp_resultsdir / "final" / "target" / "debug").glob("main*"))
+    rs_bins = [p for p in rs_bins if p.is_file() and os.access(p, os.X_OK)]
+    assert len(rs_bins) == 1, (
+        f"Expected exactly one binary in {tmp_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in rs_bins]}"
     )
+    rs_bin = rs_bins[0]
 
-    assert rs_prog_output.stdout == c_prog_output.stdout, (
-        f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
-    )
+    vectors_run = 0
+    vectors_skipped = 0
+    for test_vector in (codebase / case_dir / "test_vectors").glob("*.json"):
+        spec = json.loads(test_vector.read_text(encoding="utf-8"))
+        outcome_c = run_tractor_test_vector(
+            tmp_resultsdir / "_build_1" / "app.exe",
+            test_vector.stem,
+            spec,
+            cwd=tmp_resultsdir / "final",
+        )
+        if outcome_c.skipped:
+            vectors_skipped += 1
+            continue
 
+        vectors_run += 1
+
+        assert outcome_c.ok, (
+            f"Test vector {test_vector.stem} failed on the C version: {outcome_c.message}"
+        )
+
+        outcome_rs = run_tractor_test_vector(
+            rs_bin, test_vector.stem, spec, cwd=tmp_resultsdir / "final"
+        )
+        assert outcome_rs.ok, (
+            f"Test vector {test_vector.stem} failed on the Rust version: {outcome_rs.message}"
+        )
+
+    print(f"Ran {vectors_run} test vectors, skipped {vectors_skipped}.")
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_022_app(
+    root: Path,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    request: pytest.FixtureRequest,
+    extras: list,
+):
+    case_dir = "Public-Tests/B01_synthetic/022_stdlib_div"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
