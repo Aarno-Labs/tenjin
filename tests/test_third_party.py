@@ -189,11 +189,13 @@ def eval_tractor_ta3_corpus_app(
 ):
     codebase = tractor_public_tests_git_clone()
 
-    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    # Copying the whole Test-Corpus repo results in huge numbers of temporary files,
+    # resulting in noticeable delays both for test steps and for post-test cleanups.
+    translation_preparation.copy_codebase(codebase / case_dir, tmp_codebase)
 
     buildcmd_args = [
         "cc",
-        f"{case_dir}/test_case/src/main.c",
+        "test_case/src/main.c",
         "-o",
         "app.exe",
     ]
@@ -217,7 +219,7 @@ def eval_tractor_ta3_corpus_app(
 
     vectors_run = 0
     vectors_skipped = 0
-    for test_vector in (codebase / case_dir / "test_vectors").glob("*.json"):
+    for test_vector in (tmp_codebase / "test_vectors").glob("*.json"):
         spec = json.loads(test_vector.read_text(encoding="utf-8"))
         outcome_c = run_tractor_test_vector(
             tmp_resultsdir / "_build_1" / "app.exe",
