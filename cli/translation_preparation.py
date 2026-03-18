@@ -602,6 +602,8 @@ def run_preparation_passes(
         # Then all remaining commands, which are assumed to be executables
         for cmd in profile_compdb.commands:
             if cmd.output is not None and cmd.output not in cmd_for_output:
+                print(f"Running command for executable output: {cmd.output}")
+                print(f"  Command arguments: {cmd.arguments}")
                 runcmd(cmd)
 
         # TODO: run the above steps in parallel batches
@@ -1374,6 +1376,16 @@ def run_preparation_passes(
             compdb_entries = json.load(f)
         source_files = [entry["file"] for entry in compdb_entries]
 
+        assert len(source_files) > 0, (
+            "No source files found in compilation database: " + compdb_path.as_posix()
+        )
+
+        xj_clang_resource_dir = (
+            hermetic.run(["clang", "-print-resource-dir"], capture_output=True, check=True)
+            .stdout.decode()
+            .strip()
+        )
+
         xj_start = time.time()
         cp = hermetic.run(
             [
@@ -1384,6 +1396,7 @@ def run_preparation_passes(
                 "--extra-arg=-Wno-zero-length-array",
                 "--extra-arg=-Wno-implicit-int-conversion",
                 "--extra-arg=-Wno-unused-function",
+                f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
                 *source_files,
             ],
             cwd=current_codebase,
@@ -1417,10 +1430,17 @@ def run_preparation_passes(
         ("expand_preprocessor", prep_expand_preprocessor),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
         ("uniquify_statics", prep_uniquify_statics),
-        ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
-        ("localize_mutable_globals", prep_localize_mutable_globals),
-        ("lift_subfield_args", prep_lift_subfield_args),
     ]
+
+    if os.environ.get("XJ_SKIP_CCLYZERPP", "0") == "0":
+        # cclyzer++ can be expensive (7+ hours for Lua as of cclyzerpp 2077e60).
+        # Until we find a way to optimize its cost, we allow skipping it
+        # to allow translation of larger codebases.
+        preparation_passes.extend([
+            ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
+            ("localize_mutable_globals", prep_localize_mutable_globals),
+            ("lift_subfield_args", prep_lift_subfield_args),
+        ])
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") == "1":
         preparation_passes.extend([

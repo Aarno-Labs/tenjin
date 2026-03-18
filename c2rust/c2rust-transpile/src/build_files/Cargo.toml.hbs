@@ -38,7 +38,7 @@ name = "{{name}}"
 this.features}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}}{{#if this.path}}, path = "{{this.path}}"{{/if}} }
 {{/each}}
 
-{{#each cdylib_path_dependencies~}}
+{{#each workspace_dependencies~}}
 {{this.name}} = { path = "{{this.path}}" }
 {{/each}}
 

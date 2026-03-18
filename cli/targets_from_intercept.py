@@ -25,6 +25,7 @@ class InterceptedCommand:
     lib_dirs: list[str]
     compile_only: bool
     shared_lib: bool
+    static_lib: bool
     output: str | None = None
 
     def abs_path(self, p: Path) -> Path:
@@ -53,6 +54,21 @@ def convert_json_entries(
     return entry_infos
 
 
+def is_ar_creation(args: list[str]) -> bool:
+    def is_ar_creation_flags(arg: str) -> bool:
+        if "q" in arg:
+            raise ValueError("ar command with 'q' flag is not supported: " + " ".join(args))
+        if "r" not in arg:
+            return False
+        arg = arg.replace("r", "")
+        # Remaining flags can be in any order, but not 'u' since we wouldn't
+        # get an accurate picture of the full dependency graph.
+        return all(c in "csv" for c in arg)
+
+    # If the command is `ar rcs libfoo.a ...`, then it's creating a static library.
+    return len(args) > 2 and Path(args[0]).name == "ar" and is_ar_creation_flags(args[1])
+
+
 def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> InterceptedCommand:
     # old_args, entry["arguments"] = entry["arguments"], []
     old_args = list(entry["arguments"])
@@ -67,8 +83,19 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
         lib_dirs=[],
         compile_only=False,
         shared_lib=False,
+        static_lib=False,
         output=None,
     )
+
+    if is_ar_creation(old_args):
+        # Heuristic: if this is an ar command, treat it as a static lib, even if it doesn't have -static
+        ei.static_lib = True
+        if len(old_args) > 2:
+            assert ei.output is None, f"Unexpected output argument in ar command: {ei.new_args}"
+            assert old_args[2].endswith(".a"), (
+                f"Unexpected non-.a output in ar command: {ei.new_args}"
+            )
+            ei.output = old_args[2]
 
     ei.new_args.append(next(arg_iter))  # Copy over old_args[0]
     for arg in arg_iter:
@@ -110,10 +137,16 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
         elif arg == "-shared":
             ei.shared_lib = True
 
+        elif arg == "-static":
+            ei.static_lib = True
+
         elif arg[-2:] == ".c":
             ei.c_inputs.append(arg)
 
         elif arg[-2:] == ".o":
+            ei.rest_inputs.append(arg)
+
+        elif arg[-2:] == ".a" and ei.output != arg:
             ei.rest_inputs.append(arg)
 
         elif arg[-3:] == ".so" and not arg.startswith("-Wl,"):
@@ -210,7 +243,7 @@ def extract_link_compile_commands(
             # TODO: parse and add in other linker flags
             # for now, we don't do this because rustc doesn't use them
         }
-        print("Link info:", link_info)
+        print("@@@@@@@@@@@@@@@@@@@@ targets_from_intercept.py Link info:", link_info)
         # new_entry["_c2rust_link"] = link_info  # delay bencoding, to allow editing of paths
         new_entry["file"] = "/c2rust/link/" + bencodepy.encode(link_info).decode("utf-8")
         # new_entry["file"] = "/c2rust/link"

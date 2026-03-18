@@ -261,7 +261,7 @@ fn emit_lib_rs(
 
     let modules = convert_module_list(tcfg, build_dir, modules.to_owned(), ModuleSubset::Libraries);
     let crates = convert_dependencies_list(crates.clone(), tcfg.c2rust_dir.as_deref());
-    let cdylib_crate_names = compute_cdylib_crate_names(link_cmd);
+    let workspace_crate_names = compute_workspace_crate_names(link_cmd);
     let file_name = get_lib_rs_file_name(tcfg);
     let rs_xcheck_backend = tcfg.cross_check_backend.replace("-", "_");
     let json = json!({
@@ -274,7 +274,7 @@ fn emit_lib_rs(
         "modules": modules,
         "pragmas": pragmas,
         "crates": crates,
-        "cdylib_crate_names": cdylib_crate_names,
+        "workspace_crate_names": workspace_crate_names,
     });
 
     let output_path = build_dir.join(file_name);
@@ -322,8 +322,8 @@ fn emit_cargo_toml(
         );
         let dependencies =
             convert_dependencies_list(ccfg.crates.clone(), tcfg.c2rust_dir.as_deref());
-        let cdylib_crate_names = compute_cdylib_crate_names(ccfg.link_cmd);
-        let cdylib_path_dependencies: Vec<WorkspaceCrateDetails> = cdylib_crate_names
+        let workspace_crate_names = compute_workspace_crate_names(ccfg.link_cmd);
+        let workspace_crate_dependencies: Vec<WorkspaceCrateDetails> = workspace_crate_names
             .iter()
             .map(|module_name| WorkspaceCrateDetails {
                 name: module_name.clone(),
@@ -340,7 +340,7 @@ fn emit_cargo_toml(
             "cross_checks": tcfg.cross_checks,
             "cross_check_backend": tcfg.cross_check_backend,
             "dependencies": dependencies,
-            "cdylib_path_dependencies": cdylib_path_dependencies,
+            "workspace_dependencies": workspace_crate_dependencies,
         });
         json.as_object_mut().unwrap().extend(
             crate_json
@@ -356,10 +356,10 @@ fn emit_cargo_toml(
     maybe_write_to_file(&output_path, output, tcfg.overwrite_existing);
 }
 
-fn compute_cdylib_crate_names(link_cmd: &LinkCmd) -> Vec<String> {
+fn compute_workspace_crate_names(link_cmd: &LinkCmd) -> Vec<String> {
     let mut res = vec![];
     for input in link_cmd.inputs.iter() {
-        if input.ends_with(".so") {
+        if input.ends_with(".so") || input.ends_with(".a") {
             let module_name = Path::new(input)
                 .file_stem()
                 .unwrap()

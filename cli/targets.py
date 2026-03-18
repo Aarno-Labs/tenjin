@@ -4,8 +4,11 @@ from pathlib import Path
 import pprint
 
 import bencodepy  # type: ignore
+import click
 
 import compilation_database
+import hermetic
+import repo_root
 import targets_from_intercept
 from intercept_exec import InterceptedCommandInfo
 
@@ -54,10 +57,26 @@ class TargetType(Enum):
                 raise ValueError(f"Unknown TargetType: {self}")
 
 
+def compute_target_type(link_cmd: targets_from_intercept.InterceptedCommand) -> TargetType:
+    if any("-shared" in arg for arg in link_cmd.entry["arguments"]):
+        return TargetType.SHARED
+    if (link_cmd.output or "").endswith(".a"):
+        return TargetType.STATIC
+    if (link_cmd.output or "").endswith(".o"):
+        return TargetType.OBJECT
+    return TargetType.EXECUTABLE
+
+
 class LinkCommandHandling(Enum):
     INCLUDE = "include"
     EXCLUDE = "exclude"
     ADAPT_FOR_C2RUST = "adapt-for-c2rust"
+
+
+@dataclass
+class ExtraCompileOrLinkFlags:
+    cc: list[str]
+    ld: list[str]
 
 
 type BuildTargetName = str
@@ -141,28 +160,81 @@ class BuildInfo:
         def cmd_target_name(link_cmd: targets_from_intercept.InterceptedCommand) -> str:
             return Path(link_cmd.output).name if link_cmd.output else "unknown"
 
-        target_names = [
+        def cmd_invokes_ld(c: targets_from_intercept.InterceptedCommand) -> bool:
+            return not c.compile_only and c.entry["arguments"][0].endswith("ld")
+
+        cc_and_ld_dups: set[str] = set()
+
+        all_target_names = [
             cmd_target_name(c) for c in self._intercepted_commands if not c.compile_only
         ]
-        assert len(target_names) == len(set(target_names)), "Duplicate target names detected"
+
+        # When we intercept a link command done via the compiler driver, we'll also get
+        # a corresponding link command done directly by the linker. This isn't a "real"
+        # duplicate; we should ignore the compiler driver link command in this case, since
+        # all it did was construct the appropriate linker command (which we have).
+        for name in all_target_names:
+            cmds_for_name = [
+                c
+                for c in self._intercepted_commands
+                if not c.compile_only and cmd_target_name(c) == name
+            ]
+            if (
+                len(cmds_for_name) == 2
+                and len([c for c in cmds_for_name if cmd_invokes_ld(c)]) == 1
+            ):
+                cc_and_ld_dups.add(name)
+
+        # Filter out redundant link steps done via compiler driver invocations.
+        sans_redundant_link_commands: list[targets_from_intercept.InterceptedCommand] = []
+        for c in self._intercepted_commands:
+            name = cmd_target_name(c)
+            if name in cc_and_ld_dups and cmd_invokes_ld(c):
+                continue
+            sans_redundant_link_commands.append(c)
+
+        target_names_sans_redundants = [cmd_target_name(c) for c in sans_redundant_link_commands]
+
+        if len(target_names_sans_redundants) != len(set(target_names_sans_redundants)):
+            duplicates = set([
+                name
+                for name in target_names_sans_redundants
+                if target_names_sans_redundants.count(name) > 1
+            ])
+
+            for c in sans_redundant_link_commands:
+                if not c.compile_only and cmd_target_name(c) in duplicates:
+                    click.echo(
+                        click.style("ERROR:", fg="red")
+                        + f" Duplicate target name '{click.style(cmd_target_name(c), fg='red')}' for command: "
+                        + click.style(str(c), fg=(142, 142, 142))
+                    )
+            raise ValueError(f"Duplicate target names detected: {duplicates}")
 
         intermediates: dict[str, targets_from_intercept.InterceptedCommand] = {}
         for c in self._intercepted_commands:
             if c.compile_only:
-                assert c.output is not None
+                if (
+                    c.output is None
+                    and "-o" not in c.entry["arguments"]
+                    and len(c.c_inputs) == 1
+                    and not Path(c.c_inputs[0]).is_absolute()  # at least for now
+                ):
+                    # When no output is explicitly provided, the compiler will generate an object file
+                    # with the same stem as the input file.
+                    c.output = Path(c.c_inputs[0]).with_suffix(".o").as_posix()
+
+                assert c.output is not None, f"Compile command missing output: {c}"
                 intermediates[c.output] = c
 
-        link_commands = list(filter(lambda c: not c.compile_only, self._intercepted_commands))
+        link_commands = list(filter(lambda c: not c.compile_only, sans_redundant_link_commands))
 
         targets: dict[str, BuildTarget] = {}
         for link_cmd in link_commands:
             target_name = cmd_target_name(link_cmd)
-            target_type = (
-                TargetType.SHARED
-                if any("-shared" in arg for arg in link_cmd.entry["arguments"])
-                else TargetType.EXECUTABLE
-            )
+            target_type = compute_target_type(link_cmd)
             target_stem = Path(target_name).stem
+            assert target_name != "unknown", f"Link command missing target name: {link_cmd}"
             target = BuildTarget(name=target_name, type=target_type, stem=target_stem)
             targets[target_name] = target
 
@@ -186,7 +258,7 @@ class BuildInfo:
             self._intercepted_commands,
             current_codebase,
             link_cmd_handling=link_cmd_handling,
-            extra_compile_or_link_flags=[],
+            extra_compile_or_link_flags=None,
         )
 
     def get_all_targets(self) -> list[BuildTarget]:
@@ -210,7 +282,7 @@ class BuildInfo:
             cmds,
             current_codebase,
             link_cmd_handling=link_cmd_handling,
-            extra_compile_or_link_flags=[],
+            extra_compile_or_link_flags=None,
         )
 
     def _compdb_for_commands_within(
@@ -218,7 +290,7 @@ class BuildInfo:
         commands: list[targets_from_intercept.InterceptedCommand],
         current_codebase: Path,
         link_cmd_handling: LinkCommandHandling,
-        extra_compile_or_link_flags: list[str],
+        extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None,
     ) -> compilation_database.CompileCommands:
         cc_cmds = [
             _CompileCommand_from_intercepted_command(
@@ -239,11 +311,22 @@ class BuildInfo:
     def compdb_for_profiled_build(
         self, current_codebase: Path
     ) -> compilation_database.CompileCommands:
+        clang_lib_path = hermetic.xj_llvm_root(repo_root.localdir()) / "lib" / "clang"
+        libclang_rt_profile_a = list(clang_lib_path.glob("**/libclang_rt.profile*.a"))
+        assert len(libclang_rt_profile_a) == 1, (
+            f"Expected exactly one libclang_rt.profile.a, found: {libclang_rt_profile_a}"
+        )
         return self._compdb_for_commands_within(
             self._intercepted_commands,
             current_codebase,
             link_cmd_handling=LinkCommandHandling.INCLUDE,
-            extra_compile_or_link_flags=["-fprofile-instr-generate", "-fcoverage-mapping"],
+            extra_compile_or_link_flags=ExtraCompileOrLinkFlags(
+                cc=["-fprofile-instr-generate", "-fcoverage-mapping"],
+                ld=[
+                    "-u__llvm_profile_runtime",
+                    libclang_rt_profile_a[0].as_posix(),
+                ],
+            ),
         )
 
     def is_empty(self) -> bool:
@@ -256,7 +339,7 @@ def _CompileCommand_from_intercepted_command(
     current_codebase: Path,
     use_preprocessed_files: bool,
     link_cmd_handling: LinkCommandHandling,
-    extra_compile_or_link_flags: list[str] = [],
+    extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None = None,
 ) -> compilation_database.CompileCommand:
     """Convert an InterceptedCommand to a CompileCommand."""
 
@@ -322,23 +405,41 @@ def _CompileCommand_from_intercepted_command(
         elif len(icmd.c_inputs) == 0 and not icmd.compile_only and len(icmd.rest_inputs) == 1:
             filename = icmd.rest_inputs[0]
 
-    raw_arguments = icmd.entry["arguments"] + extra_compile_or_link_flags
+    raw_arguments = list(icmd.entry["arguments"])  # make a mutable copy
+    if extra_compile_or_link_flags:
+        if not icmd.compile_only and raw_arguments[0].endswith("ld"):
+            # We only use ld-specific flags when linking is being done directly by ld;
+            # we use cc flags for both compile and link steps.
+            raw_arguments += extra_compile_or_link_flags.ld
+        elif icmd.static_lib:
+            pass
+        else:
+            raw_arguments += extra_compile_or_link_flags.cc
 
     if link_cmd_handling == LinkCommandHandling.ADAPT_FOR_C2RUST and not icmd.compile_only:
         # For link commands, we need to adapt the arguments
         # to be suitable for c2rust.
         assert icmd.output is not None, "Link command must have an output"
-        assert not icmd.c_inputs, "Link command should not have c_inputs"
+        assert not icmd.c_inputs, f"Link command should not have c_inputs: {icmd}"
+
+        # XREF:c2rust_target_link_type
+        if icmd.shared_lib:
+            link_type = "shared"
+        elif icmd.static_lib:
+            link_type = "static"
+        else:
+            link_type = "exe"
         link_info = {
             "inputs": icmd.rest_inputs,  # FIXME: wrong order???
             "c_files": [],
             "libs": icmd.libs,
             "lib_dirs": icmd.lib_dirs,
-            "type": "shared" if icmd.shared_lib else "exe",
+            "type": link_type,
             # TODO: parse and add in other linker flags
             # for now, we don't do this because rustc doesn't use them
         }
         filename = "/c2rust/link/" + bencodepy.encode(link_info).decode("utf-8")
+        print("@@@@@@@@@@@@@@@@@@@@ targets.py Link info for", icmd.output, ":", link_info)
 
     if not filename and not icmd.compile_only and not icmd.c_inputs and len(icmd.rest_inputs) > 0:
         # At this point, if we don't have a filename, it's most likely

@@ -289,4 +289,8 @@ File: /PATH/TO/xj-cdr/final/src/xj_covset_demo_nolines.rs
 Total covered lines: 24 / 25 = 96.00%
 ```
 
+# Error Cases
+
+* If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`
+  the project you're trying to translate is using GCC but we require Clang.
 

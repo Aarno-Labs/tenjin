@@ -422,6 +422,17 @@ def collect_cursors_by_loc(
     return by_loc
 
 
+def duplicates_within(lst: list[str]) -> set[str]:
+    seen = set()
+    duplicates = set()
+    for item in lst:
+        if item in seen:
+            duplicates.add(item)
+        else:
+            seen.add(item)
+    return duplicates
+
+
 XJG_PLACEHOLDER = "((struct XjGlobals*)0)"
 
 
@@ -487,18 +498,20 @@ def localize_mutable_globals_phase1(
 
     mutd_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
     mutd_global_names = set(mutd_global_names_list)
-    assert len(mutd_global_names) == len(mutd_global_names_list), (
-        "Expected all mutated global names to be unique after demangling, "
-        + f"but got duplicates within: {mutd_global_names_list}"
-    )
+    if len(mutd_global_names) != len(mutd_global_names_list):
+        raise ValueError(
+            "Expected all mutated global names to be unique after demangling, "
+            + f"but saw duplicates of: {duplicates_within(mutd_global_names_list)}"
+        )
     print("mutated_globals:", list(mutd_global_names))
 
     escd_global_names_list = [demangle_meg(name) for name in mangled_escaped_globals]
     escd_global_names = set(escd_global_names_list)
-    assert len(escd_global_names) == len(escd_global_names_list), (
-        "Expected all escaped global names to be unique after demangling, "
-        + f"but got duplicates within: {escd_global_names_list}"
-    )
+    if len(escd_global_names) != len(escd_global_names_list):
+        raise ValueError(
+            "Expected all escaped global names to be unique after demangling, "
+            + f"but saw duplicates of: {duplicates_within(escd_global_names_list)}"
+        )
     print("escaped_globals:", list(escd_global_names))
 
     # globals_and_statics = compute_globals_and_statics_for_translation_units(

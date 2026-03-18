@@ -114,7 +114,11 @@ def translate(
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
 
-    if Path(codebase).is_dir() and list(Path(codebase).glob("*.*")) == []:
+    if (
+        Path(codebase).is_dir()
+        and list(Path(codebase).glob("*.*")) == []
+        and list(Path(codebase).glob("**/*.c")) == []
+    ):
         click.echo(
             f"Error: Codebase directory {codebase} contains no files to translate.", err=True
         )
@@ -533,10 +537,10 @@ if __name__ == "__main__":
 
             category = sys.argv[2]
             run_as = sys.argv[3]
-            assert category in ("cc", "ld")
+            assert category in ("cc", "ld", "ar")
             sys.exit(
                 intercept_exec.intercept_exec(
-                    cast(Literal["cc", "ld"], category), Path(run_as), sys.argv[4:]
+                    cast(Literal["cc", "ld", "ar"], category), Path(run_as), sys.argv[4:]
                 )
             )
         if sys.argv[1] == "covset-gen":
