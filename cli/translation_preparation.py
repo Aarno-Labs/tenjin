@@ -1366,6 +1366,40 @@ def run_preparation_passes(
             f"Collected declarations after preprocessing: {len(store.items_defined_after_pp)} TUs"
         )
 
+    def prep_localize_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        builddir = hermetic.xj_localize_errno_build_dir(repo_root.localdir())
+        assert builddir.exists(), (
+            f"Build directory {builddir} does not exist, should have been built already"
+        )
+        # Keep in sync with `xj-localize-errno/CMakeLists.txt`
+        binary_path = builddir / "xj-localize-errno"
+
+        compdb_path = current_codebase / "compile_commands.json"
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
+
+        # Extract source file paths from the compilation database
+        with open(compdb_path, encoding="utf-8") as f:
+            compdb_entries = json.load(f)
+        source_files = [entry["file"] for entry in compdb_entries]
+        xj_start = time.time()
+        cp = hermetic.run(
+            [
+                binary_path.as_posix(),
+                "-i",
+                "-p",
+                current_codebase.as_posix(),
+                *source_files,
+            ],
+            cwd=current_codebase,
+            check=True,
+            capture_output=True,
+        )
+        xj_elapsed = time.time() - xj_start
+        print(f"xj-localize-errno completed in {xj_elapsed:.1f} seconds")
+        print("xj-localize-errno stderr:")
+        print(cp.stderr.decode("utf-8"))
+        return cp
+
     def prep_convert_union_bitcasts(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         builddir = hermetic.xj_prepare_unionbitcasts_build_dir(repo_root.localdir())
         assert builddir.exists(), (
@@ -1435,6 +1469,7 @@ def run_preparation_passes(
         ("uniquify_built", prep_uniquify_built_files),
         ("split_joined_decls", prep_split_joined_decls),
         ("expand_preprocessor", prep_expand_preprocessor),
+        ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
         ("uniquify_statics", prep_uniquify_statics),
     ]

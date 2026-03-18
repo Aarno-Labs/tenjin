@@ -5,6 +5,4 @@
 
 int bar();
 
-void gloob() { printf("asdf"); }
-
 #endif // BAR_H_
