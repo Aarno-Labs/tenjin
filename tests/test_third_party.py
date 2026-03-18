@@ -10,6 +10,7 @@ from tenjin_pytest_helpers import (
 import translation_preparation
 import translation
 import hermetic
+import os
 
 
 def suckless_sbase_git_clone() -> Path:
@@ -18,6 +19,12 @@ def suckless_sbase_git_clone() -> Path:
     )
 
     # clang libutil/mode.c libutil/eprintf.c libutil/parseoffset.c libutil/fshut.c uudecode.c -o uudecode.exe
+
+
+def lua_5_4_0_immunant_git_clone() -> Path:
+    return cached_git_clone_at_commit(
+        "https://github.com/immunant/lua.git", "b13c3c5b9caed83d0543bbea9b0d4e637ba3340d"
+    )
 
 
 def tractor_public_tests_git_clone() -> Path:
@@ -110,6 +117,57 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
     rs_prog_output = run_cargo_on_final(
         tmp_resultsdir / "final", ["run", "2024"], capture_output=True
+    )
+
+    assert rs_prog_output.stdout == c_prog_output.stdout, (
+        f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
+    )
+
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
+@pytest.mark.slow  # expected runtime: 470 seconds (~8 minutes)
+def test_lua_5_4_0_immunant(
+    root: Path,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    request: pytest.FixtureRequest,
+    extras: list,
+):
+    codebase = lua_5_4_0_immunant_git_clone()
+
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    buildcmd_args = [
+        "make",
+        "-j3",
+        "MYCFLAGS=-std=c99 -DLUA_USE_POSIX -DLUA_USE_JUMPTABLE=0",
+        "CC=clang",
+        "MYLIBS=-ldl",
+        "lua",
+    ]
+
+    # cclyzer takes 7+ hours to analyze Lua, ain't nobody got time for that.
+    os.environ["XJ_SKIP_CCLYZERPP"] = "1"
+    translation.do_translate(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="tenjinized",
+        buildcmd=hermetic.shellize(buildcmd_args),
+        guidance_path_or_literal="{}",
+    )
+    del os.environ["XJ_SKIP_CCLYZERPP"]
+
+    c_prog_output = hermetic.run(
+        [str(tmp_resultsdir / "_build_1" / "lua"), "-v"], check=True, capture_output=True
+    )
+    assert c_prog_output.stdout == b"Lua 5.4.0  Copyright (C) 1994-2019 Lua.org, PUC-Rio\n", (
+        f"Got: {c_prog_output.stdout!r}"
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(
+        tmp_resultsdir / "final", ["run", "--", "-v"], capture_output=True
     )
 
     assert rs_prog_output.stdout == c_prog_output.stdout, (
