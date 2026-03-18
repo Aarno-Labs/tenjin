@@ -247,12 +247,243 @@ def eval_tractor_ta3_corpus_app(
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_022_app(
-    root: Path,
-    tmp_codebase: Path,
-    tmp_resultsdir: Path,
-    request: pytest.FixtureRequest,
-    extras: list,
-):
+def test_tractor_b1_synthetic_002_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/002_stdin_echo"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_003_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/003_string_slicing"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_004_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/004_nineality_sieve"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_005_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/005_static_loop"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_006_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/006_static_alias"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_007_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/007_errno_pow"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+# omitting 008_long_run for now
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_009_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/009_stack_buffer_overflow"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_010_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/010_integer_overflow"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_011_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/011_uninit_char_ptr"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_012_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/012_uninit_int_ptr"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_013_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/013_poor_quality_addition"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_014_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/014_dead_code"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_015_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/015_return_stack_buffer"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_016_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/016_divide_by_zero_float"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_017_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/017_signed_length_confusion"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_018_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/018_stack_buffer_overflow_loop1"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_019_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/019_integer_overflow_char_max_multiply"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_021_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/021_complex_goto"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_022_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/022_stdlib_div"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_023_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/023_struct_and_errno"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_024_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/024_struct_and_static"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_025_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/025_struct_and_errno_and_static"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_026_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/026_goto_and_static"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_027_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/027_ctype_ascii"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_028_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/028_strchr"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_029_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/029_strcspn"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_030_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/030_mutable_buffer_overlap_extrahard"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_031_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/031_disjoint_arrays"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_032_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/032_comma_operator"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_033_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/033_bitfield"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_034_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/034_cast_to_char_ptr_int"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_035_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/035_cast_to_char_ptr_float"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_036_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/036_cast_to_char_ptr_struct"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_037_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/037_cast_to_char_ptr_int_no_strict_aliasing"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_038_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/038_cast_to_char_ptr_float_no_strict_aliasing"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_039_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/039_cast_to_char_ptr_struct_no_strict_aliasing"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_040_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/040_storage_class_auto"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_041_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/041_storage_class_register"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_042_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/042_float_union"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_043_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_synthetic/043_iso646_and_digraphs"
     eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
