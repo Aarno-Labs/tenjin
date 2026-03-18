@@ -312,7 +312,7 @@ class BuildInfo:
         self, current_codebase: Path
     ) -> compilation_database.CompileCommands:
         clang_lib_path = hermetic.xj_llvm_root(repo_root.localdir()) / "lib" / "clang"
-        libclang_rt_profile_a = list(clang_lib_path.glob("**/libclang_rt.profile.a"))
+        libclang_rt_profile_a = list(clang_lib_path.glob("**/libclang_rt.profile*.a"))
         assert len(libclang_rt_profile_a) == 1, (
             f"Expected exactly one libclang_rt.profile.a, found: {libclang_rt_profile_a}"
         )
