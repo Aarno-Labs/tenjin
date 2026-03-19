@@ -422,7 +422,6 @@ def test_tractor_b1_organic_flip_horizontal_lib(root: Path, tmp_codebase: Path, 
     eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
 
 
-@pytest.mark.slow
 def test_tractor_b1_organic_float2half_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/float2half_lib"
     eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
@@ -805,7 +804,6 @@ def test_tractor_b1_synthetic_028_app(root: Path, tmp_codebase: Path, tmp_result
     eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
 
 
-@pytest.mark.slow
 def test_tractor_b1_synthetic_029_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/029_strcspn"
     eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
