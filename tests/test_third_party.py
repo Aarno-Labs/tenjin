@@ -584,6 +584,66 @@ def test_tractor_b1_organic_wcscat_lib(root: Path, tmp_codebase: Path, tmp_resul
     eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
 
 
+@pytest.mark.slow
+def test_tractor_b1_organic_compress_bc5_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/compress_bc5_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_convex_clip_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/convex_clip_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_decorrelate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/decorrelate_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_ima_decode_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/ima_decode_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_md5_transform_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/md5_transform_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_png_qsort_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/png_qsort_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_predict_sample_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/predict_sample_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_read_scalefactors_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/read_scalefactors_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_refine_block_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/refine_block_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_stereo_samples_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_organic/stereo_samples_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
 # ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗     ██╗     █████╗ ██████╗ ██████╗ ███████╗
 # ██╔══██╗██╔══██╗╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗╚██╗ ██╔╝    ███║    ██╔══██╗██╔══██╗██╔══██╗██╔════╝
 # ██████╔╝███████║   ██║      ██║   █████╗  ██████╔╝ ╚████╔╝     ╚██║    ███████║██████╔╝██████╔╝███████╗
