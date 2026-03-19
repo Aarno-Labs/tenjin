@@ -895,3 +895,57 @@ def test_tractor_b1_synthetic_042_app(root: Path, tmp_codebase: Path, tmp_result
 def test_tractor_b1_synthetic_043_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/043_iso646_and_digraphs"
     eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_002_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_synthetic/002_echo"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_004_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_synthetic/004_loop"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_011_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_synthetic/011_static_dag"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_014_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_synthetic/014_errno-pow-subfunction"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_016_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_synthetic/016_switch-arith"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_027_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_synthetic/027_stack_buffer_overflow_loop2"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_030_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_synthetic/030_integer_underflow_char_min_multiply"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_045_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_synthetic/045_strtok"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_048_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Hidden-Tests/B01_synthetic/048_mutable_buffer_overlap2"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
