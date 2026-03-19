@@ -482,12 +482,11 @@ def fixup_binary_crates_in_workspace(outdir: Path, workspace_cratename: str):
 
     cargo_toml_path = outdir / "Cargo.toml"
     assert cargo_toml_path.is_file(), f"Expected Cargo.toml in output directory {outdir}"
+
     ct = tomllib.load(cargo_toml_path.open("rb"))
     if "workspace" not in ct:
         return
     member_names = ct["workspace"].get("members", [])
-    if len(member_names) <= 1:
-        return
 
     for member in member_names:
         member_path = outdir / member
