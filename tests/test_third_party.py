@@ -218,7 +218,13 @@ def eval_tractor_ta3_corpus_app(
     assert len(rs_bins) == 1, (
         f"Expected exactly one binary in {tmp_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in rs_bins]}"
     )
-    rs_bin = tmp_resultsdir / "final" / exe_name
+
+    # Some of TA3's tests require the binary be named `driver`, and in some build setups
+    # we end up with a workspace member also called `driver`. To avoid clashes, we simply
+    # put the binary in a fresh empty directory.
+    freshdir = tmp_resultsdir / "final" / "_fresh_"
+    freshdir.mkdir(exist_ok=False)
+    rs_bin = freshdir / exe_name
     shutil.copy(rs_bins[0], rs_bin)
 
     vectors_run = 0
