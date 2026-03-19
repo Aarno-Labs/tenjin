@@ -362,6 +362,228 @@ def test_tractor_b1_organic_collided_lib(root: Path, tmp_codebase: Path, tmp_res
     eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
 
 
+@pytest.mark.slow
+def test_tractor_b1_organic_bin2hex_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/bin2hex_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_bitwriter_add_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/bitwriter_add_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_colourblind_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/colourblind_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_contrast_ratio_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/contrast_ratio_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_crc16_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/crc16_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_dequantize_granule_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/dequantize_granule_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_div_euclid_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/div_euclid_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_encode_quant_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/encode_quant_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_flac_validate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/flac_validate_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_flip_horizontal_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/flip_horizontal_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_float2half_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/float2half_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_gaussian_kernel_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/gaussian_kernel_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_half2float_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/half2float_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_hdr_bitrate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/hdr_bitrate_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_hdr_compare_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/hdr_compare_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_hex2bin_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/hex2bin_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_hsl_to_rgb_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/hsl_to_rgb_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_hsv_to_rgb_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/hsv_to_rgb_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_ima_parse_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/ima_parse_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_ldexp_q2_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/ldexp_q2_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_max_size_frame_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/max_size_frame_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_md5_digest_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/md5_digest_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_merge_sort_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/merge_sort_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_next_double_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/next_double_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_normalize_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/normalize_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_pow43_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/pow43_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_premultiply_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/premultiply_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_read_side_info_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/read_side_info_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_rev16_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/rev16_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_rgb_to_hsv_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/rgb_to_hsv_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_synth_pair_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/synth_pair_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_tfm_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/tfm_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_to_barycentric_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/to_barycentric_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_tritanopia_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/tritanopia_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_update_frame_header_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/update_frame_header_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_update_md5_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/update_md5_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_wcscat_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+    case_dir = "Public-Tests/B01_organic/wcscat_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+
+
 # ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗     ██╗     █████╗ ██████╗ ██████╗ ███████╗
 # ██╔══██╗██╔══██╗╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗╚██╗ ██╔╝    ███║    ██╔══██╗██╔══██╗██╔══██╗██╔════╝
 # ██████╔╝███████║   ██║      ██║   █████╗  ██████╔╝ ╚████╔╝     ╚██║    ███████║██████╔╝██████╔╝███████╗
