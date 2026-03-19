@@ -304,7 +304,6 @@ def eval_tractor_ta3_corpus_lib(
         'cando2 = { path = "../../../../tools/cando2" }',
         f'cando2 = {{ path = "{codebase}/tools/cando2" }}',
     )
-    print(f"@@@@@@@@@ Updated runner Cargo.toml:\n{runner_cargo_toml_contents}\n")
     runner_cargo_toml.write_text(runner_cargo_toml_contents, encoding="utf-8")
 
     run_cargo_on_final(candidate_resultsdir / "runner", ["build"])
@@ -318,8 +317,6 @@ def eval_tractor_ta3_corpus_lib(
         guidance_path_or_literal="{}",
     )
 
-    print("=== Running cargo build on the translated library ===")
-    print((candidate_resultsdir / "final" / "Cargo.toml").read_text(encoding="utf-8"))
     run_cargo_on_final(candidate_resultsdir / "final", ["build"])
 
     # cando2 requires the built library exist in a `build-ninja` directory
