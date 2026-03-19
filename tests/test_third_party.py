@@ -266,13 +266,19 @@ def eval_tractor_ta3_corpus_lib(
     extras: list,
     case_dir: str,
 ):
+    # cando2 requires the candidate name (e.g. "collided_lib") end in `_lib`.
+    candidate_name = Path(case_dir).name
+    assert candidate_name.endswith("_lib"), (
+        f"Expected case_dir name to end in '_lib', got {candidate_name}"
+    )
+    candidate_stem = candidate_name[: -len("_lib")]
+
     codebase = tractor_public_tests_git_clone()
 
     # Copying the whole Test-Corpus repo results in huge numbers of temporary files,
     # resulting in noticeable delays both for test steps and for post-test cleanups.
     translation_preparation.copy_codebase(codebase / case_dir, tmp_codebase)
 
-    lib_name = "drivee"
     buildcmd_args = [
         "cc",
         "-I",
@@ -283,58 +289,60 @@ def eval_tractor_ta3_corpus_lib(
         f"lib{candidate_stem}.so",
     ]
 
-    translation.do_translate(
-        root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="tractor_ta3_corpus_lib",
-        buildcmd=hermetic.shellize(buildcmd_args),
-        guidance_path_or_literal="{}",
-    )
-
-    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    # cando2 requires our runner exist in a candidate-named directory.
+    candidate_resultsdir = tmp_resultsdir / candidate_name
+    candidate_resultsdir.mkdir(exist_ok=False)
 
     # Copy runner to results dir & build it
-    translation_preparation.copy_codebase(codebase / case_dir / "runner", tmp_resultsdir / "runner")
+    translation_preparation.copy_codebase(
+        codebase / case_dir / "runner", candidate_resultsdir / "runner"
+    )
 
-    runner_cargo_toml = tmp_resultsdir / "runner" / "Cargo.toml"
+    runner_cargo_toml = candidate_resultsdir / "runner" / "Cargo.toml"
     runner_cargo_toml_contents = runner_cargo_toml.read_text(encoding="utf-8")
     runner_cargo_toml_contents = runner_cargo_toml_contents.replace(
         'cando2 = { path = "../../../../tools/cando2" }',
         f'cando2 = {{ path = "{codebase}/tools/cando2" }}',
     )
-    run_cargo_on_final(tmp_resultsdir / "runner", ["build"])
+    print(f"@@@@@@@@@ Updated runner Cargo.toml:\n{runner_cargo_toml_contents}\n")
+    runner_cargo_toml.write_text(runner_cargo_toml_contents, encoding="utf-8")
 
-    shutil.copytree(tmp_resultsdir, "/home/brk/ta3_lib_")
+    run_cargo_on_final(candidate_resultsdir / "runner", ["build"])
 
-    vectors_run = 0
-    vectors_skipped = 0
+    translation.do_translate(
+        root,
+        tmp_codebase,
+        candidate_resultsdir,
+        cratename="tractor_ta3_corpus_lib",
+        buildcmd=hermetic.shellize(buildcmd_args),
+        guidance_path_or_literal="{}",
+    )
+
+    print("=== Running cargo build on the translated library ===")
+    print((candidate_resultsdir / "final" / "Cargo.toml").read_text(encoding="utf-8"))
+    run_cargo_on_final(candidate_resultsdir / "final", ["build"])
+
+    # cando2 requires the built library exist in a `build-ninja` directory
+    # and be named `{candidate_name}.so`.
+    build_ninja_dir = Path(candidate_resultsdir / "build-ninja")
+    build_ninja_dir.mkdir(exist_ok=False)
+    built_libs = list((candidate_resultsdir / "final" / "target" / "debug").glob("lib*.so"))
+    assert len(built_libs) == 1, (
+        f"Expected exactly one built library in {candidate_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in built_libs]}"
+    )
+    built_lib = built_libs[0]
+    shutil.copyfile(built_lib, build_ninja_dir / f"lib{candidate_name}.so")
+
+    # shutil.copytree(candidate_resultsdir, "/home/brk/ta3_lib_/" + candidate_name)
+
     for test_vector in (tmp_codebase / "test_vectors").glob("*.json"):
-        spec = json.loads(test_vector.read_text(encoding="utf-8"))
-        outcome_c = run_tractor_test_vector(
-            tmp_resultsdir / "_build_1" / exe_name,
-            test_vector.stem,
-            spec,
-            cwd=tmp_resultsdir / "final",
+        cp = run_cargo_on_final(
+            candidate_resultsdir / "runner",
+            ["-q", "run", "lib", "-c", str(test_vector)],
+            capture_output=False,
         )
-        if outcome_c.skipped:
-            vectors_skipped += 1
-            continue
+        cp.check_returncode()
 
-        vectors_run += 1
-
-        assert outcome_c.ok, (
-            f"Test vector {test_vector.stem} failed on the C version: {outcome_c.message}"
-        )
-
-        outcome_rs = run_tractor_test_vector(
-            rs_bin, test_vector.stem, spec, cwd=tmp_resultsdir / "final"
-        )
-        assert outcome_rs.ok, (
-            f"Test vector {test_vector.stem} failed on the Rust version: {outcome_rs.message}"
-        )
-
-    print(f"Ran {vectors_run} test vectors, skipped {vectors_skipped}.")
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
