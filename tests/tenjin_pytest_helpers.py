@@ -134,7 +134,10 @@ def run_tractor_test_vector(
         )
 
     # Build command
-    cmd = [str(binary), *spec.get("argv", [])]
+    argv_strs = [
+        str(arg) for arg in spec.get("argv", [])
+    ]  # TA3's JSON may have raw ints, not just strings
+    cmd = [str(binary), *argv_strs]
     stdin = spec.get("stdin", None)
 
     try:
