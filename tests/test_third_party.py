@@ -333,6 +333,11 @@ def eval_tractor_ta3_corpus_lib(
     # shutil.copytree(candidate_resultsdir, "/home/brk/ta3_lib_/" + candidate_name)
 
     for test_vector in (tmp_codebase / "test_vectors").glob("*.json"):
+        spec = json.loads(test_vector.read_text(encoding="utf-8"))
+        if spec.get("has_ub") is not None:
+            print(f"Skipping test vector {test_vector.stem} because it has UB")
+            continue
+
         cp = run_cargo_on_final(
             candidate_resultsdir / "runner",
             ["-q", "run", "lib", "-c", str(test_vector)],
