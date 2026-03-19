@@ -303,8 +303,8 @@ fn emit_cargo_toml(
     crate_cfg: &Option<CrateConfig<'_>>,
     workspace_members: Option<Vec<String>>,
 ) {
-    let is_workspace = workspace_members.is_some();
     let workspace_members_vec = workspace_members.unwrap_or_default();
+    let is_workspace = !workspace_members_vec.is_empty();
     // rust_checks_path is gone because we don't want to refer to the source
     // path but instead want the cross-check libs to be installed via cargo.
 
