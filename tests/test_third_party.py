@@ -323,14 +323,13 @@ def eval_tractor_ta3_corpus_lib(
     # and be named `{candidate_name}.so`.
     build_ninja_dir = Path(candidate_resultsdir / "build-ninja")
     build_ninja_dir.mkdir(exist_ok=False)
-    built_libs = list((candidate_resultsdir / "final" / "target" / "debug").glob("lib*.so"))
+    built_dir = candidate_resultsdir / "final" / "target" / "debug"
+    built_libs = list(built_dir.glob("lib*.so")) + list(built_dir.glob("lib*.dylib"))
     assert len(built_libs) == 1, (
         f"Expected exactly one built library in {candidate_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in built_libs]}"
     )
     built_lib = built_libs[0]
-    shutil.copyfile(built_lib, build_ninja_dir / f"lib{candidate_name}.so")
-
-    # shutil.copytree(candidate_resultsdir, "/home/brk/ta3_lib_/" + candidate_name)
+    shutil.copyfile(built_lib, build_ninja_dir / f"lib{candidate_name}{built_lib.suffix}")
 
     for test_vector in (tmp_codebase / "test_vectors").glob("*.json"):
         spec = json.loads(test_vector.read_text(encoding="utf-8"))
