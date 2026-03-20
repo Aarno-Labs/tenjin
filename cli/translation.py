@@ -272,16 +272,11 @@ def do_translate(
     output = resultsdir / cratename
     output.mkdir(parents=True, exist_ok=False)
 
-    if len(build_info.get_all_targets()) == 1:
-        # With one target, we don't want to create a workspace.
-        link_cmd_handling = targets.LinkCommandHandling.EXCLUDE
-    else:
-        link_cmd_handling = targets.LinkCommandHandling.ADAPT_FOR_C2RUST
     compdb = final_prepared_codebase / "compile_commands.json"
 
     build_info.compdb_for_all_targets_within(
         final_prepared_codebase,
-        link_cmd_handling=link_cmd_handling,
+        targets.LinkCommandHandling.ADAPT_FOR_C2RUST,
     ).to_json_file(compdb)
 
     # We must explicitly pass c2rust our sysroot
@@ -482,12 +477,11 @@ def fixup_binary_crates_in_workspace(outdir: Path, workspace_cratename: str):
 
     cargo_toml_path = outdir / "Cargo.toml"
     assert cargo_toml_path.is_file(), f"Expected Cargo.toml in output directory {outdir}"
+
     ct = tomllib.load(cargo_toml_path.open("rb"))
     if "workspace" not in ct:
         return
     member_names = ct["workspace"].get("members", [])
-    if len(member_names) <= 1:
-        return
 
     for member in member_names:
         member_path = outdir / member

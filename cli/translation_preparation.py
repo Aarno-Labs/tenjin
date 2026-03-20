@@ -622,6 +622,13 @@ def run_preparation_passes(
         built_cov.mkdir(exist_ok=True)
         for o, cmd in cmd_for_output.items():
             po = Path(o)
+            if po.stem.endswith("_xji_"):
+                # This is a synthetic intermediate file representing the object file corresponding
+                # to a source file used in a link command. Example: `cc foo.c -o foo.exe` would
+                # get split into `cc foo.c -c -o foo_xji_.o`` and `cc foo_xji_.o -o foo.exe`.
+                # Since this file is never actually generated on disk, we should skip it here.
+                continue
+
             if not po.is_absolute():
                 po = Path(cmd.directory) / o
             assert po.exists(), f"Expected built coverage output file not found: {o}"

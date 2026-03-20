@@ -16,17 +16,30 @@ def combine(path1: str, path2: str) -> str:
 
 
 @dataclass
+class CategorizedCommandArgs:
+    shared: list[str]
+    compile_only: list[str]
+    link_only: list[str]
+
+
+@dataclass
 class InterceptedCommand:
     entry: intercept_exec.InterceptedCommandInfo
-    new_args: list[str]
+    args: CategorizedCommandArgs
     c_inputs: list[str]
     rest_inputs: list[str]
     libs: list[str]
     lib_dirs: list[str]
-    compile_only: bool
+    compile_only: bool  # `-c` flag
     shared_lib: bool
     static_lib: bool
     output: str | None = None
+
+    def effective_args(self) -> list[str]:
+        if self.compile_only:
+            return self.args.shared + self.args.compile_only
+        else:
+            return self.args.shared + self.args.link_only
 
     def abs_path(self, p: Path) -> Path:
         if p.is_absolute():
@@ -76,7 +89,7 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
 
     ei = InterceptedCommand(
         entry=entry,
-        new_args=[],
+        args=CategorizedCommandArgs(shared=[], compile_only=[], link_only=[]),
         c_inputs=[],
         rest_inputs=[],
         libs=[],
@@ -91,31 +104,29 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
         # Heuristic: if this is an ar command, treat it as a static lib, even if it doesn't have -static
         ei.static_lib = True
         if len(old_args) > 2:
-            assert ei.output is None, f"Unexpected output argument in ar command: {ei.new_args}"
-            assert old_args[2].endswith(".a"), (
-                f"Unexpected non-.a output in ar command: {ei.new_args}"
-            )
+            assert ei.output is None, f"Unexpected output argument in ar command: {ei}"
+            assert old_args[2].endswith(".a"), f"Unexpected non-.a output in ar command: {ei}"
             ei.output = old_args[2]
 
-    ei.new_args.append(next(arg_iter))  # Copy over old_args[0]
+    ei.args.shared.append(next(arg_iter))  # Copy over old_args[0]
     for arg in arg_iter:
         if arg in {"-D", "-U", "-I", "-include"}:
             # TODO: use the full list of `Separate` options from gcc
-            ei.new_args.append(arg)
-            ei.new_args.append(next(arg_iter))
+            ei.args.compile_only.append(arg)
+            ei.args.compile_only.append(next(arg_iter))
 
         elif arg == "-c":
             ei.compile_only = True
 
         elif arg == "-o":
             ei.output = next(arg_iter)
-            ei.new_args.append(arg)
+            ei.args.shared.append(arg)
             assert ei.output is not None
-            ei.new_args.append(ei.output)
+            ei.args.shared.append(ei.output)
 
         elif arg[:2] == "-o":
             ei.output = arg[2:]
-            ei.new_args.append(arg)
+            ei.args.shared.append(arg)
 
         elif arg == "-l":
             ei.libs.append(next(arg_iter))
@@ -126,7 +137,7 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
         # -pthread implicitly adds -lpthread
         elif arg == "-pthread":
             ei.libs.append("pthread")
-            ei.new_args.append(arg)
+            ei.args.shared.append(arg)
 
         elif arg == "-L":
             ei.lib_dirs.append(next(arg_iter))
@@ -153,7 +164,7 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
             ei.rest_inputs.append(arg)
 
         else:
-            ei.new_args.append(arg)
+            ei.args.shared.append(arg)
 
     return ei
 
@@ -213,7 +224,7 @@ def extract_link_compile_commands(
             object_map[inp] = c_object
 
             new_entry: dict[str, str | list[str]] = ei.entry.copy()  # type: ignore
-            new_entry["arguments"] = [*ei.new_args, "-c", inp]
+            new_entry["arguments"] = [*ei.effective_args(), "-c", inp]
             new_entry["file"] = inp_path.as_posix()  # .relative_to(codebase).as_posix()
             new_entry["output"] = c_object
             del new_entry["type"]  # this field is not allowed in compile_commands.json
@@ -229,7 +240,7 @@ def extract_link_compile_commands(
         # print()
         assert not ei.c_inputs
 
-        new_entry["arguments"] = ei.new_args
+        new_entry["arguments"] = ei.effective_args()
         # Hacky solution: c2rust-tranpile needs an absolute path here,
         # so we add a path-like prefix so that the transpiler can both
         # parse it correctly and recognize it as a bencoded link command

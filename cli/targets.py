@@ -129,10 +129,64 @@ class BuildInfo:
         cmd_infos = [to_intercepted(c) for c in ccmds.commands]
         self.set_intercepted_commands(cmd_infos)
 
+    def _split_hybrid_command(
+        self, cmd: targets_from_intercept.InterceptedCommand
+    ) -> list[targets_from_intercept.InterceptedCommand]:
+        """Split a command that includes both compile and link steps into separate commands."""
+        if cmd.compile_only or not cmd.c_inputs:
+            return [cmd]
+
+        def o_file_for(c_input: str) -> str:
+            p = Path(c_input)
+            return (
+                p.with_stem(p.stem + "_xji_").with_suffix(".o").as_posix()
+            )  # xji = tenjin intermediate
+
+        # This is a hybrid command. We need to split it into one or more compile steps
+        # (which produce one object file each) and a link step.
+        def mk_compile_cmd(c_input: str) -> targets_from_intercept.InterceptedCommand:
+            return targets_from_intercept.InterceptedCommand(
+                entry=cmd.entry,
+                args=targets_from_intercept.CategorizedCommandArgs(
+                    shared=cmd.args.shared,
+                    compile_only=cmd.args.compile_only,
+                    link_only=[],
+                ),
+                c_inputs=[c_input],
+                rest_inputs=[],
+                libs=[],
+                lib_dirs=[],
+                shared_lib=False,
+                static_lib=False,
+                compile_only=True,
+                output=o_file_for(c_input),
+            )
+
+        link_cmd = targets_from_intercept.InterceptedCommand(
+            entry=cmd.entry,
+            args=targets_from_intercept.CategorizedCommandArgs(
+                shared=cmd.args.shared,
+                compile_only=[],
+                link_only=cmd.args.link_only,
+            ),
+            c_inputs=[],
+            rest_inputs=cmd.rest_inputs + [o_file_for(c_input) for c_input in cmd.c_inputs],
+            libs=cmd.libs,
+            lib_dirs=cmd.lib_dirs,
+            shared_lib=cmd.shared_lib,
+            static_lib=cmd.static_lib,
+            compile_only=False,
+            output=cmd.output,
+        )
+
+        return [mk_compile_cmd(c_input) for c_input in cmd.c_inputs] + [link_cmd]
+
     def set_intercepted_commands(
         self, intercepted_commands: list[targets_from_intercept.InterceptedCommand]
     ):
-        self._intercepted_commands = intercepted_commands
+        self._intercepted_commands = []
+        for cmd in intercepted_commands:
+            self._intercepted_commands.extend(self._split_hybrid_command(cmd))
 
     def _process_targets(
         self,
@@ -394,7 +448,7 @@ def _CompileCommand_from_intercepted_command(
 
     def update_arg(p: str) -> str:
         # Applies update to an include (-Ipath) argument
-        if p.startswith("-I"):
+        if p.startswith("-I") and len(p) > 2:
             return f"-I{update(p[2:])}"
         return update(p)
 

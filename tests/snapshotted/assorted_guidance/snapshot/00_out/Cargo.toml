@@ -1,7 +1,4 @@
-[workspace]
-resolver = "2"
-members = [
-]
+
 [package]
 name = "tenjinized"
 authors = ["C2Rust"]

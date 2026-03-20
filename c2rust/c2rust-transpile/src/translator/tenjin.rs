@@ -985,7 +985,7 @@ impl Translation<'_> {
 
                 for carg in cargs {
                     let un_addr = self.c_expr_get_addr_of(carg).unwrap();
-                    let arg = self.convert_expr(ctx, un_addr, None)?;
+                    let arg = self.convert_expr(ctx.used(), un_addr, None)?;
                     let addr_mut_arg = arg.map(|arg| mk().mutbl().borrow_expr(arg));
                     args_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
                     args_tts.push(TokenTree::Group(proc_macro2::Group::new(
