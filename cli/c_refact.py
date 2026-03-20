@@ -1733,9 +1733,9 @@ def localize_mutable_globals(
                 for name, decl_cursor in typedefs_sorted:
                     start_offset = decl_cursor.extent.start.offset
                     end_offset = decl_cursor.extent.end.offset
-                    for tu_path, tu in tus.items():
-                        if str(tu_path) == decl_cursor.location.file.name:
-                            content = rewriter.get_content(tu_path)
+                    for local_tu_path, _ in tus.items():
+                        if str(local_tu_path) == decl_cursor.location.file.name:
+                            content = rewriter.get_content(local_tu_path)
                             typedef_text = content[start_offset:end_offset].decode("utf-8")
                             type_defs_lines.append(typedef_text + ";")
                             break
@@ -1745,9 +1745,9 @@ def localize_mutable_globals(
                 for type_name, decl_cursor in types_to_emit_structs.items():
                     start_offset = decl_cursor.extent.start.offset
                     end_offset = decl_cursor.extent.end.offset
-                    for tu_path, tu in tus.items():
-                        if str(tu_path) == decl_cursor.location.file.name:
-                            content = rewriter.get_content(tu_path)
+                    for local_tu_path, _ in tus.items():
+                        if str(local_tu_path) == decl_cursor.location.file.name:
+                            content = rewriter.get_content(local_tu_path)
                             struct_text = content[start_offset:end_offset].decode("utf-8")
                             type_defs_lines.append(struct_text + ";")
                             break
