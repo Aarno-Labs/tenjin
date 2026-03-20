@@ -210,11 +210,12 @@ impl<'c> Translation<'c> {
             }
 
             if is_array_decay {
-                needs_cast = false;
                 let method = match mutbl {
                     Mutability::Mutable => "as_mut_ptr",
+                    Mutability::Immutable if needs_cast => "as_mut_ptr",
                     Mutability::Immutable => "as_ptr",
                 };
+                needs_cast = false;
                 val = val.map(|val| mk().method_call_expr(val, method, vec![]));
             } else {
                 val = val.map(|val| mk().set_mutbl(mutbl).raw_borrow_expr(val));
