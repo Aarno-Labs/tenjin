@@ -6,6 +6,7 @@ import re
 from difflib import unified_diff
 from dataclasses import dataclass
 
+import filelock
 import pytest_html.extras
 
 import hermetic
@@ -53,17 +54,29 @@ def cached_git_clone_at_commit(repo_url: str, commit: str) -> Path:
 
     cache_dir = Path(tempfile.gettempdir()) / "tenjin_pytest_repo_cache"
     repo_cache_path = cache_dir / f"{repo_url.replace('/', '_')}_{commit}"
-    if repo_cache_path.exists():
-        return repo_cache_path
+    done_sentinel = repo_cache_path / ".clone_complete"
 
-    try:
-        hermetic.run(["git", "clone", repo_url, str(repo_cache_path)], check=True)
-        hermetic.run(["git", "checkout", "--detach", commit], cwd=repo_cache_path, check=True)
-    except Exception:
-        # If something goes wrong, remove the cache directory to avoid leaving a broken clone around
-        if repo_cache_path.exists():
-            hermetic.run(["rm", "-rf", str(repo_cache_path)], check=True)
-        raise
+    with filelock.FileLock(str(repo_cache_path) + ".lock"):
+        # The lock is held: either we're the first in, or we
+        # waited and someone else already finished.
+        if not done_sentinel.exists():
+            # We're the first worker. Do the clone + checkout.
+            assert not repo_cache_path.exists()
+
+            try:
+                hermetic.run(
+                    ["git", "clone", "--no-checkout", repo_url, str(repo_cache_path)], check=True
+                )
+                hermetic.run(
+                    ["git", "checkout", "--detach", commit], cwd=repo_cache_path, check=True
+                )
+                done_sentinel.touch()
+            except Exception:
+                # If something goes wrong, remove the cache directory to avoid leaving a broken clone around
+                if repo_cache_path.exists():
+                    hermetic.run(["rm", "-rf", str(repo_cache_path)], check=True)
+                raise
+
     return repo_cache_path
 
 
