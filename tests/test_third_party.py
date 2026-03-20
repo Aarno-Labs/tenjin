@@ -129,6 +129,49 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
+@pytest.mark.slow  # expected runtime: 540 seconds (~9 minutes)
+def test_Old_Man_Programmer__tree_2_3_2(
+    root: Path,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    request: pytest.FixtureRequest,
+    extras: list,
+):
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/brk/Old-Man-Programmer__tree.git",
+        "3f3077dbd87fc89396c8dc74fcf7920ec8b0c7d5",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    buildcmd_args = ["make"]
+    translation.do_translate(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="tenjinized",
+        buildcmd=hermetic.shellize(buildcmd_args),
+        guidance_path_or_literal="{}",
+    )
+
+    c_prog_output = hermetic.run(
+        [str(tmp_resultsdir / "_build_1" / "tree"), "--version"], check=True, capture_output=True
+    )
+    assert (
+        c_prog_output.stdout
+        == b"tree v2.3.2 \xc2\xa9 1996 - 2026 by Steve Baker, Thomas Moore, Francesc Rocher, Florian Sesser, Kyosuke Tokoro\n"
+    ), f"Got: {c_prog_output.stdout!r}"
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(
+        tmp_resultsdir / "final", ["run", "--", "--version"], capture_output=True
+    )
+
+    assert rs_prog_output.stdout == c_prog_output.stdout, (
+        f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
+    )
+
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
 @pytest.mark.slow  # expected runtime: 470 seconds (~8 minutes)
 def test_lua_5_4_0_immunant(
     root: Path,
