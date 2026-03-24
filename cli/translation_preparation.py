@@ -1366,7 +1366,31 @@ def run_preparation_passes(
             f"Collected declarations after preprocessing: {len(store.items_defined_after_pp)} TUs"
         )
 
+    def prep_analyze_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        builddir = hermetic.xj_localize_errno_build_dir(repo_root.localdir())
+        assert builddir.exists(), (
+            f"Build directory {builddir} does not exist, should have been built already"
+        )
+        compdb_path = current_codebase / "compile_commands.json"
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
+        hermetic.run_chkc(
+           ["c-project", "parse", current_codebase.as_posix(), "errno_analysis"]
+        )
+        hermetic.run_chkc(
+           ["c-project", "analyze", current_codebase.as_posix(), "errno_analysis"]
+        )
+
     def prep_localize_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        # Should we do anything?
+        with open(current_codebase / "errno_analysis_summaryresults.json", encoding="utf-8") as errno_results:
+            results = json.load(errno_results)
+            ppos = results["tagresults"]["ppos"]
+            if "errno-must-written" in ppos:
+                errno = ppos["errno-must-written"]
+                if errno["violated"] > 0 or errno["open"] > 0:
+                    print("xj-localize-errno will not run as errno analysis failed to prove safety")
+                    return
+        print("xj-localize-errno will run as errno analysis proved safety")
         builddir = hermetic.xj_localize_errno_build_dir(repo_root.localdir())
         assert builddir.exists(), (
             f"Build directory {builddir} does not exist, should have been built already"
@@ -1376,7 +1400,6 @@ def run_preparation_passes(
 
         compdb_path = current_codebase / "compile_commands.json"
         store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
-
         # Extract source file paths from the compilation database
         with open(compdb_path, encoding="utf-8") as f:
             compdb_entries = json.load(f)
@@ -1468,6 +1491,7 @@ def run_preparation_passes(
         ("build_coverage", prep_02_build_coverage),
         ("uniquify_built", prep_uniquify_built_files),
         ("split_joined_decls", prep_split_joined_decls),
+        ("analyze_errno", prep_analyze_errno),
         ("expand_preprocessor", prep_expand_preprocessor),
         ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
