@@ -4,7 +4,6 @@
 #include <string.h>
 #include <limits.h>
 
-__attribute__((external_source_symbol(language="C",defined_in="foo.h")))
 int foo(void)
 {
   return 0;
@@ -12,6 +11,7 @@ int foo(void)
 
 int main(int argc, char **argv)
 {
+    errno = 0;
     if (foo() == 0 && bar() == 1 && errno == EINVAL) {
         printf("LOL: [%s]\n", strerror(errno));
     }

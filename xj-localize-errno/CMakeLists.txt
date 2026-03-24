@@ -14,8 +14,9 @@ add_definitions(-DCLANG_LIBDIR_SUFFIX="${LLVM_LIBDIR_SUFFIX}")
 
 add_executable(xj-localize-errno 
   FindExternal.cpp
-  StdlibCallCollector.cpp
-  LocalizeErrno.cpp)
+  LocalizeErrnoASTVisitor.cpp
+  LocalizeErrno.cpp
+)
 
 set_target_properties(xj-localize-errno PROPERTIES
   CXX_STANDARD 17

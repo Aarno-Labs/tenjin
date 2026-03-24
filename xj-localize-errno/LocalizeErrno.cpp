@@ -16,7 +16,7 @@
 #include "llvm/Support/Signals.h"
 
 #include "FindExternal.h"
-#include "StdlibCallCollector.h"
+#include "LocalizeErrnoASTVisitor.h"
 
 #include <iostream>
 #include <fstream>
@@ -56,43 +56,12 @@ int main(int argc, const char **argv)
 
   auto ExternalUSRs = Action.GetExternalDecls();
 
-  clang::ast_matchers::DeclarationMatcher errnoDecl =
-    functionDecl(hasName("__errno_location")).bind("errno_decl");
-
-  clang::ast_matchers::StatementMatcher errnoUse = 
-    unaryOperator(hasOperatorName("*"), hasUnaryOperand(callExpr(callee(functionDecl(hasName("__errno_location")))))).bind("errno_use");
-
-  clang::ast_matchers::DeclarationMatcher callExtern =
-      functionDecl(
-        hasBody(
-          compoundStmt(
-            hasDescendant(
-              findAll(
-                callExpr(
-                  callee(
-                    declRefExpr(
-                      hasDeclaration(functionDecl(isExternC(), unless(hasName("__errno_location"))).bind(StdlibCallCollector::USE_DECL))
-                    ).bind(StdlibCallCollector::USE_CALL_EXPR_CALLEE)
-                  )
-                ).bind(StdlibCallCollector::USE_CALL_EXPR)
-              )
-            )
-          ).bind(StdlibCallCollector::CALL_BODY)
-        )
-      ).bind(StdlibCallCollector::USE_CONTEXT);
-
-  StdlibCallCollector collector(&ExternalUSRs);
-  Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, errnoDecl), &collector);
-  Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, errnoUse), &collector);
-  Finder.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, callExtern), &collector);
-
-  Tool.run(newFrontendActionFactory(&Finder).get());
-  AtomicChanges Changes = collector.changes;
+  LocalizeErrnoActionFactory LocalizeAction(ExternalUSRs);
+  Tool.run(&LocalizeAction);
 
   tooling::ApplyChangesSpec Spec;
-
   std::map<std::string, AtomicChanges> file_changes;
-  for (const auto &Change : Changes)
+  for (const auto &Change : LocalizeAction.Changes)
   {
     auto changes = file_changes.find(Change.getFilePath());
     if (changes == file_changes.end())
