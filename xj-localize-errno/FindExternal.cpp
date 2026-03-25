@@ -14,20 +14,18 @@ bool FindExternallyDefinedFunctionASTVisitor::VisitFunctionDecl(FunctionDecl *De
   {
     USRString Buf;
     bool shouldDiscard = index::generateUSRForDecl(Decl, Buf);
-    if (!shouldDiscard)
+    assert (!shouldDiscard);
+    DeclSet->insert(Buf);
+    if (Decl->hasBody())
     {
-      DeclSet->insert(Buf);
-      if (Decl->hasBody())
-      {
-        BodySet->insert(Buf);
-      }
+      BodySet->insert(Buf);
     }
   }
   return true;
 }
 
-FindExternallyDefinedFunctionConsumer::FindExternallyDefinedFunctionConsumer(clang::ASTContext *Context, std::set<USRString> *Decl, std::set<USRString> *Body, InsertPointsMap *InsertPoints)
-    : Visitor(Context, Decl, Body), Decl(Decl), Body(Body), InsertPoints(InsertPoints)
+FindExternallyDefinedFunctionConsumer::FindExternallyDefinedFunctionConsumer(clang::ASTContext *Context, std::set<USRString> *Decl, std::set<USRString> *Body)
+    : Visitor(Context, Decl, Body), Decl(Decl), Body(Body)
 {
 }
 
@@ -44,17 +42,16 @@ void FindExternallyDefinedFunctionConsumer::HandleTranslationUnit(clang::ASTCont
     }
   }
   auto File = Context.getSourceManager().getFileID(InsertWrapperLoc);
-  InsertPoints->insert(std::pair { File, InsertWrapperLoc });
   Visitor.TraverseDecl(Context.getTranslationUnitDecl());
 }
 
-FindExternallyDefinedFunctionAction::FindExternallyDefinedFunctionAction(std::set<USRString> *Decl, std::set<USRString> *Body, InsertPointsMap *InsertPoints)
-    : Decl(Decl), Body(Body), InsertPoints(InsertPoints) {}
+FindExternallyDefinedFunctionAction::FindExternallyDefinedFunctionAction(std::set<USRString> *Decl, std::set<USRString> *Body)
+    : Decl(Decl), Body(Body) {}
 
 std::unique_ptr<clang::ASTConsumer> FindExternallyDefinedFunctionAction::CreateASTConsumer(
     clang::CompilerInstance &Compiler, llvm::StringRef InFile)
 {
-  return std::make_unique<FindExternallyDefinedFunctionConsumer>(&Compiler.getASTContext(), Decl, Body, InsertPoints);
+  return std::make_unique<FindExternallyDefinedFunctionConsumer>(&Compiler.getASTContext(), Decl, Body);
 }
 
 std::set<USRString> FindExternalFunctionActionFactory::GetExternalDecls()

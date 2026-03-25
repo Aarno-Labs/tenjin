@@ -8,14 +8,12 @@ using namespace clang::tooling;
 
 const std::string LOCAL_ERRNO_NAME = "local_errno";
 
-bool DeclUSR(FunctionDecl *Decl, USRString &Buf)
+USRString DeclUSR(FunctionDecl *Decl)
 {
+  USRString Buf;
   bool shouldDiscard = index::generateUSRForDecl(Decl, Buf);
-  if (shouldDiscard)
-  {
-    llvm::errs() << "Should discard USR result\n";
-  }
-  return !shouldDiscard;
+  assert (!shouldDiscard);
+  return Buf;
 }
 
 std::string WrapperString(FunctionDecl *Decl)
@@ -25,7 +23,7 @@ std::string WrapperString(FunctionDecl *Decl)
   std::string funcName = Decl->getNameAsString();
   bool isVoid = retType->isVoidType();
 
-  std::string wrapperStr = retTypeStr + " _xj_wrap_" + funcName + "(int *_xj_error";
+  std::string wrapperStr = "static " + retTypeStr + " _xj_wrap_" + funcName + "(int *_xj_error";
   std::string callArgs;
   for (auto *param : Decl->parameters()) {
     std::string paramType = param->getType().getAsString();
@@ -92,12 +90,7 @@ bool LocalizeErrnoASTVisitor::TraverseFunctionDecl(FunctionDecl *Decl)
       AtomicChange InsertLocalDecl(Context->getSourceManager(), Decl->getBody()->getBeginLoc(), /* insert_after = */false);
       auto InsertLoc = Body->body_front()->getBeginLoc();
       auto err = InsertLocalDecl.insert(Context->getSourceManager(), InsertLoc, "int " + LOCAL_ERRNO_NAME + ";\n");
-      if (err)
-      {
-        llvm::errs() << "Error inserting local errno declaration for " << Decl->getNameAsString() << "\n";
-        llvm::errs() << err << "\n";
-        return false;
-      }
+      assert(!err);
       Changes.push_back(InsertLocalDecl);
     }
   }
@@ -106,69 +99,37 @@ bool LocalizeErrnoASTVisitor::TraverseFunctionDecl(FunctionDecl *Decl)
   return res;
 }
 
-bool LocalizeErrnoASTVisitor::ReplaceErrnoUsage(Expr *E)
+void LocalizeErrnoASTVisitor::ReplaceErrnoUsage(Expr *E)
 {
   AtomicChange ReplaceUsage(Context->getSourceManager(), E->getBeginLoc());
   CharSourceRange Range(E->getSourceRange(), true);
   llvm::StringRef Replacement = LOCAL_ERRNO_NAME;
   auto err = ReplaceUsage.replace(Context->getSourceManager(), Range, Replacement);
-  if (err) {
-    llvm::errs() << "Error inserting wrappers: " << err << "\n";
-  } else {
-    Changes.push_back(ReplaceUsage);
-  }
-  return !err;
+  assert(!err);
 }
 
 bool LocalizeErrnoASTVisitor::VisitParenExpr(clang::ParenExpr *Paren)
 {
   if (IsErrnoCall(Paren))
   {
-    if (!ReplaceErrnoUsage(Paren))
-    {
-      // TODO signal error
-    }
+    ReplaceErrnoUsage(Paren);
     CurrentFunctionNeedsDecl = true;
-    llvm::outs() << "Found needs Decl\n";
-    llvm::outs() << "CurrentFunction " << CurrentFunction->getNameAsString() << "\n";
-    return true;
   }
   return true;
 }
 
-// bool LocalizeErrnoASTVisitor::VisitUnaryOperator(UnaryOperator *Op)
-// {
-//   if (IsErrnoCall(Op))
-//   {
-//     if (!ReplaceErrnoUsage(Op))
-//     {
-//       // TODO signal error
-//     }
-//     return true;
-//   }
-//   return true;
-// }
-
 bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
 {
-  if (!CurrentFunction)
-  {
-    return false;
-  }
-
+  assert(CurrentFunction != nullptr);
   FunctionDecl *Callee = llvm::dyn_cast<FunctionDecl, Decl>(Call->getCalleeDecl());
+
   if (!Callee)
   {
     Call->getCalleeDecl()->dump();
     return false;
   }
 
-  USRString CalleeUSR;
-  if (!DeclUSR(Callee, CalleeUSR))
-  {
-    // Signal error?
-    return false;
-  }
+  USRString CalleeUSR = DeclUSR(Callee);
 
   if (External.find(CalleeUSR) == External.end())
   {
@@ -186,11 +147,7 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
   AtomicChange CallWrapper(Context->getSourceManager(), Call->getBeginLoc());
   CharSourceRange CalleeRange(Call->getCallee()->getSourceRange(), true);
   auto err = CallWrapper.replace(Context->getSourceManager(), CalleeRange, "_xj_wrap_" + Callee->getNameAsString());
-  if (err)
-  {
-    llvm::errs() << "Error calling wrapper for: " << Callee->getNameAsString() << "\n";
-    return false;
-  }
+  assert (!err);
   if (Callee->getNumParams() == 0) 
   {
     err = CallWrapper.insert(Context->getSourceManager(), Call->getRParenLoc(), "&" + LOCAL_ERRNO_NAME, false);
@@ -199,48 +156,37 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
   {
     err = CallWrapper.insert(Context->getSourceManager(), Call->getArg(0)->getBeginLoc(), "&" + LOCAL_ERRNO_NAME + ", ", false);
   }
-  if (err)
-  {
-    llvm::errs() << "Error calling wrapper for: " << Callee->getNameAsString() << "\n";
-    return false;
-  }
+  assert (!err);
   Changes.push_back(CallWrapper);
 
-  if (!GenerateWrapper(CurrentFunction, Callee))
-  {
-    llvm::errs() << "Error generating wrapper for: " << Callee->getNameAsString() << "\n";
-    return false;
-  }
+  GenerateWrapper(CurrentFunction, Callee);
 
   return true;
 }
 
-bool LocalizeErrnoASTVisitor::GenerateWrapper(FunctionDecl *CallContext, FunctionDecl *Callee)
+void LocalizeErrnoASTVisitor::GenerateWrapper(FunctionDecl *CallContext, FunctionDecl *Callee)
 {
-  USRString CalleeUSR;
-  if (!DeclUSR(Callee, CalleeUSR)) {
-    // TODO: signal error
-    return false;
-  }
+  USRString CalleeUSR = DeclUSR(Callee);
 
   auto ThisInsertLoc = CallContext->getBeginLoc();
   auto PrevLoc = InsertLocations.find(CalleeUSR);
 
+  // Even if we've already generated the wrapper text,
+  // This CallContext might be an earlier usage, so we should
+  // bump the wrapper insertion point up
   if (PrevLoc == InsertLocations.end() || Context->getSourceManager().isBeforeInTranslationUnit(ThisInsertLoc, PrevLoc->second))
   {
     InsertLocations.insert(std::pair(CalleeUSR, ThisInsertLoc));
   }
 
+  // If we've already generated the wrapper, then we're done
   if (Wrappers.find(CalleeUSR) != Wrappers.end())
   {
-    return true;
+    return;
   }
   Wrappers.insert(CalleeUSR);
-
   auto WrapperText = WrapperString(Callee);
   PendingWrappers.push_back(std::pair(CalleeUSR, WrapperText));
-
-  return true;
 }
 
 void
@@ -277,11 +223,7 @@ LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context) {
       // This assumes we're all inlined so all changes are in the same file.
       f = SM.getFileID(LocChange.first);
       auto err = wrapperChange.insert(SM, LocChange.first, LocChange.second, /*InsertAfter=*/false);
-      if (err) {
-        llvm::errs() << "Error inserting wrappers: " << err << "\n";
-      } else {
-        Changes.push_back(wrapperChange);
-      }
+      assert (!err);
     }
 
     // Do we need the __errno_location() decl?
@@ -292,11 +234,7 @@ LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context) {
     if (needsErrnoDecl) {
       AtomicChange declareErrno(SM, SM.getLocForStartOfFile(f));
       auto err = declareErrno.insert(SM, SM.getLocForStartOfFile(f), "int *__errno_location();\n", false);
-      if (err) {
-        llvm::errs() << "Error inserting wrappers: " << err << "\n";
-      } else {
-        Changes.push_back(declareErrno);
-      }
+      assert (!err);
     }
   }
 }

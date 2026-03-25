@@ -74,14 +74,17 @@ int main(int argc, const char **argv)
     }
   }
 
+  std::vector<std::pair<std::string, std::string>> ToWrite;
+  bool Abort = false;
   for (const auto &InFile : Tool.getSourcePaths())
   {
     auto File = std::filesystem::absolute(InFile).string();
-    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> BufferErr =
-        llvm::MemoryBuffer::getFile(File);
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> BufferErr = llvm::MemoryBuffer::getFile(File);
+
     if (!BufferErr)
     {
       llvm::errs() << BufferErr.getError().message();
+      Abort = true;
       continue;
     }
 
@@ -97,17 +100,26 @@ int main(int argc, const char **argv)
       if (!applyResult)
       {
         llvm::errs() << toString(applyResult.takeError());
+        Abort = true;
         continue;
       }
       result = applyResult.get();
     }
     std::ofstream NewFile;
-    if (InPlace) {
-      NewFile.open(File);
-    } else {
-      NewFile.open(File + ".errno");
-    }
-    NewFile << result;
+    ToWrite.push_back(std::pair(InPlace ? File : (File + ".errno"), result));
+  }
+
+  if (Abort) 
+  {
+    llvm::errs() << "Errors found when applying changes, not writing changes.\n";
+    return 1;
+  }
+
+  for (auto &W : ToWrite)
+  {
+    std::ofstream NewFile;
+    NewFile.open(W.first);
+    NewFile << W.second;
     NewFile.close();
   }
 
