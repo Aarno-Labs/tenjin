@@ -1377,7 +1377,7 @@ def run_preparation_passes(
            ["c-project", "parse", current_codebase.as_posix(), "errno_analysis"]
         )
         hermetic.run_chkc(
-           ["c-project", "analyze", current_codebase.as_posix(), "errno_analysis"]
+           ["c-project", "analyze", "--analysis", "errno", current_codebase.as_posix(), "errno_analysis"]
         )
 
     def prep_localize_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
