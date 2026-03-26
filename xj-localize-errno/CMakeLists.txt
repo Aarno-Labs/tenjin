@@ -24,11 +24,7 @@ set_target_properties(xj-localize-errno PROPERTIES
   CXX_EXTENSIONS OFF
   )
 
-target_link_libraries(xj-localize-errno
-  libclang
-  clang-cpp
+target_link_libraries(xj-localize-errno PRIVATE
   clangTooling
-  clangBasic
-  clangASTMatchers
   clangTransformer
-  LLVM)
+)
