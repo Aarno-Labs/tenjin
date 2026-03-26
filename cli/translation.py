@@ -240,9 +240,7 @@ def do_translate(
     for target in build_info.get_all_targets():
         print("Found build target:", target)
         if target.type == targets.TargetType.EXECUTABLE:
-            target_compdb = build_info.compdb_for_target_within(
-                target.name, final_prepared_codebase
-            )
+            target_compdb = build_info.compdb_for_target_within(target.key, final_prepared_codebase)
             ccs_with_main_funcs = find_main_translation_units(target_compdb)
             assert len(ccs_with_main_funcs) == 1, f"Expected one main function in target {target}"
             # We eventually want to use target.stem as the name of the Rust binary,

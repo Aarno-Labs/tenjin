@@ -540,7 +540,7 @@ def run_preparation_passes(
 
         for target in store.build_info.get_all_targets():
             compdb_for_target = store.build_info.compdb_for_target_within(
-                target.name, current_codebase
+                target.key, current_codebase
             )
             defs = compilation_database.extract_preprocessor_definitions_from_compile_commands(
                 compdb_for_target,
@@ -608,16 +608,6 @@ def run_preparation_passes(
 
         # TODO: run the above steps in parallel batches
 
-        # cov_outputs = set(
-        #     cmd.output
-        #     for cmd in profile_compdb.commands
-        #     if cmd.output is not None and not cmd.output.endswith(".o")
-        # )
-        cov_output_names = [Path(p).name for p in cmd_for_output.keys()]
-        assert len(cov_output_names) == len(set(cov_output_names)), (
-            f"Expected unique exe/lib file names, got duplicates: {cov_output_names}"
-        )
-
         built_cov = Path(current_codebase.parent / "_built_cov")
         built_cov.mkdir(exist_ok=True)
         for o, cmd in cmd_for_output.items():
@@ -637,7 +627,8 @@ def run_preparation_passes(
                 f" got\n{po}"
             )
             rel = po.relative_to(original_builddir)
-            shutil.move(po, built_cov / po.name)
+            (built_cov / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(po, built_cov / rel)
             shutil.move(preserved_builddir / rel, po)
 
         shutil.rmtree(preserved_builddir)
@@ -672,6 +663,11 @@ def run_preparation_passes(
                 # Only one command for this file, keep as-is
                 new_commands.append(cmds[0])
                 continue
+
+            orig_root = resultsdir / "c_01_intercept_build"
+            assert stale_abs_path.is_relative_to(orig_root)
+            # stale_rel_path = stale_abs_path.relative_to(orig_root)
+            # stale_rel_dir = stale_rel_path.parent
 
             # Multiple commands for same file - need to duplicate all of them
             for idx, cmd in enumerate(cmds):
@@ -734,9 +730,7 @@ def run_preparation_passes(
         all_targets = store.build_info.get_all_targets()
         if len(all_targets) == 1 and all_targets[0].type == TargetType.EXECUTABLE:
             # Case A
-            compdb = store.build_info.compdb_for_target_within(
-                all_targets[0].name, current_codebase
-            )
+            compdb = store.build_info.compdb_for_target_within(all_targets[0].key, current_codebase)
 
             c_refact.localize_mutable_globals(
                 current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
@@ -752,7 +746,7 @@ def run_preparation_passes(
         # without concern for overlapping source files.
         for target in store.build_info.get_all_targets():
             compdb_for_target = store.build_info.compdb_for_target_within(
-                target.name, current_codebase
+                target.key, current_codebase
             )
             c_refact_arglifter.lift_subfield_args(compdb_for_target)
 
@@ -831,9 +825,9 @@ def run_preparation_passes(
             return
 
         curr_compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase
+            all_build_targets[0].key, current_codebase
         )
-        print("compdb for target:", all_build_targets[0].name)
+        print("compdb for target:", all_build_targets[0].key)
         print(curr_compdb)
         print()
         print()
@@ -857,7 +851,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase
+            all_build_targets[0].key, current_codebase
         )
 
         all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
@@ -975,7 +969,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase
+            all_build_targets[0].key, current_codebase
         )
 
         items_src_by_tu: dict[FilePathStr, dict[QUSS_and_defn, FileContentsStr]] = {}
@@ -1329,7 +1323,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase
+            all_build_targets[0].key, current_codebase
         )
 
         # We want to capture decl information after the header contents have stabilized,
@@ -1351,7 +1345,7 @@ def run_preparation_passes(
         c_refact.preprocess_build(store.build_info, all_build_targets[0], current_codebase)
         # build_info now marked to use preprocessed files, so re-generate compdb
         new_compdb: compilation_database.CompileCommands = (
-            store.build_info.compdb_for_target_within(all_build_targets[0].name, current_codebase)
+            store.build_info.compdb_for_target_within(all_build_targets[0].key, current_codebase)
         )
 
         for cmd in new_compdb.commands:
