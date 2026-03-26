@@ -13,6 +13,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 add_definitions(-DCLANG_LIBDIR_SUFFIX="${LLVM_LIBDIR_SUFFIX}")
 
 add_executable(xj-localize-errno 
+  StdlibSpec.cpp
   FindExternal.cpp
   LocalizeErrnoASTVisitor.cpp
   LocalizeErrno.cpp

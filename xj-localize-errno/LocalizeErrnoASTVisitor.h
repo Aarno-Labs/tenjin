@@ -26,13 +26,12 @@ class LocalizeErrnoASTVisitor : public clang::RecursiveASTVisitor<LocalizeErrnoA
 friend class LocalizeErrnoConsumer;
 public:
   LocalizeErrnoASTVisitor(clang::ASTContext *Context, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes)
-      : CurrentFunction(nullptr), Context(Context), External(External), Changes(Changes), ShouldApply(true)
+      : CurrentFunction(nullptr), Context(Context), External(External), Changes(Changes)
       {}
 
   bool TraverseFunctionDecl(clang::FunctionDecl *Decl);
 
   bool VisitCallExpr(clang::CallExpr *Call);
-  // bool VisitUnaryOperator(clang::UnaryOperator *Op);
   bool VisitParenExpr(clang::ParenExpr *Paren);
 
 private:
@@ -59,8 +58,6 @@ private:
   clang::ASTContext *Context; 
   // The accumulated changes
   clang::tooling::AtomicChanges &Changes;
-  // ShouldApply is false if an error was encountered
-  bool ShouldApply;
 };
 
 class LocalizeErrnoConsumer : public clang::ASTConsumer {

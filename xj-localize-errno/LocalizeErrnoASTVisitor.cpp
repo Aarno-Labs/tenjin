@@ -1,7 +1,8 @@
-#include "LocalizeErrnoASTVisitor.h"
-
 #include "clang/Index/USRGeneration.h"
 #include "clang/Tooling/Refactoring/AtomicChange.h"
+
+#include "LocalizeErrnoASTVisitor.h"
+#include "StdlibSpec.h"
 
 using namespace clang;
 using namespace clang::tooling;
@@ -25,9 +26,14 @@ std::string WrapperString(FunctionDecl *Decl)
 
   std::string wrapperStr = "static " + retTypeStr + " _xj_wrap_" + funcName + "(int *_xj_error";
   std::string callArgs;
+  uint anonCtr = 0;
   for (auto *param : Decl->parameters()) {
     std::string paramType = param->getType().getAsString();
-    std::string paramName = param->getNameAsString();
+    std::string paramName = param->getName().str();
+    if (paramName.length() == 0)
+    {
+      paramName = "_xj_arg_" + std::to_string(anonCtr++);
+    }
     wrapperStr += ", " + paramType + " " + paramName;
     if (!callArgs.empty()) callArgs += ", ";
     callArgs += paramName;
@@ -38,7 +44,7 @@ std::string WrapperString(FunctionDecl *Decl)
   }
   wrapperStr += ") { ";
   if (Decl->isVariadic()) {
-    wrapperStr += "va_list args; ";
+    wrapperStr += "__builtin_va_list args; ";
     wrapperStr += "__builtin_va_start(args, " + Decl->parameters().back()->getNameAsString() + "); ";
   }
   if (!isVoid) {
@@ -106,6 +112,7 @@ void LocalizeErrnoASTVisitor::ReplaceErrnoUsage(Expr *E)
   llvm::StringRef Replacement = LOCAL_ERRNO_NAME;
   auto err = ReplaceUsage.replace(Context->getSourceManager(), Range, Replacement);
   assert(!err);
+  Changes.push_back(ReplaceUsage);
 }
 
 bool LocalizeErrnoASTVisitor::VisitParenExpr(clang::ParenExpr *Paren)
@@ -122,14 +129,14 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
 {
   assert(CurrentFunction != nullptr);
   FunctionDecl *Callee = llvm::dyn_cast<FunctionDecl, Decl>(Call->getCalleeDecl());
-
-  if (!Callee)
-  {
-    Call->getCalleeDecl()->dump();
-    return false;
-  }
+  assert(Callee != nullptr);
 
   USRString CalleeUSR = DeclUSR(Callee);
+
+  if (!NeedsWrapper(Callee))
+  {
+    return true;
+  }
 
   if (External.find(CalleeUSR) == External.end())
   {
@@ -170,7 +177,6 @@ void LocalizeErrnoASTVisitor::GenerateWrapper(FunctionDecl *CallContext, Functio
 
   auto ThisInsertLoc = CallContext->getBeginLoc();
   auto PrevLoc = InsertLocations.find(CalleeUSR);
-
   // Even if we've already generated the wrapper text,
   // This CallContext might be an earlier usage, so we should
   // bump the wrapper insertion point up
@@ -224,6 +230,7 @@ LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context) {
       f = SM.getFileID(LocChange.first);
       auto err = wrapperChange.insert(SM, LocChange.first, LocChange.second, /*InsertAfter=*/false);
       assert (!err);
+      Changes.push_back(wrapperChange);
     }
 
     // Do we need the __errno_location() decl?
@@ -235,6 +242,7 @@ LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context) {
       AtomicChange declareErrno(SM, SM.getLocForStartOfFile(f));
       auto err = declareErrno.insert(SM, SM.getLocForStartOfFile(f), "int *__errno_location();\n", false);
       assert (!err);
+      Changes.push_back(declareErrno);
     }
   }
 }
