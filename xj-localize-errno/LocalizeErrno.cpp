@@ -1,7 +1,5 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
-#include "clang/ASTMatchers/ASTMatchFinder.h"
-#include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Tooling/CommonOptionsParser.h"
@@ -25,7 +23,6 @@
 
 using namespace clang;
 using namespace clang::tooling;
-using namespace clang::ast_matchers;
 using namespace llvm;
 
 // Apply a custom category to all command-line options so that they are the
@@ -48,7 +45,6 @@ int main(int argc, const char **argv)
   CommonOptionsParser &OptionsParser = ExpectedParser.get();
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
-  MatchFinder Finder;
 
   // Collect all decls we will consider to be external;
   FindExternalFunctionActionFactory Action;
