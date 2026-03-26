@@ -1382,14 +1382,18 @@ def run_preparation_passes(
 
     def prep_localize_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # Should we do anything?
-        with open(current_codebase / "errno_analysis_summaryresults.json", encoding="utf-8") as errno_results:
-            results = json.load(errno_results)
-            ppos = results["tagresults"]["ppos"]
-            if "errno-must-written" in ppos:
-                errno = ppos["errno-must-written"]
-                if errno["violated"] > 0 or errno["open"] > 0:
-                    print("xj-localize-errno will not run as errno analysis failed to prove safety")
-                    return
+        try:
+            with open(current_codebase / "errno_analysis_summaryresults.json", encoding="utf-8") as errno_results:
+                results = json.load(errno_results)
+                ppos = results["tagresults"]["ppos"]
+                if "errno-must-written" in ppos:
+                    errno = ppos["errno-must-written"]
+                    if errno["violated"] > 0 or errno["open"] > 0:
+                        print("xj-localize-errno will not run as errno analysis failed to prove safety")
+                        return
+        except FileNotFoundError:
+            print("xj-localize-errno will not run as errno analysis results are missing")
+
         print("xj-localize-errno will run as errno analysis proved safety")
         builddir = hermetic.xj_localize_errno_build_dir(repo_root.localdir())
         assert builddir.exists(), (
