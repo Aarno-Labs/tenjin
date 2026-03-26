@@ -13,6 +13,16 @@
 #ifndef LOCALIZE_ERRNO_AST_VISITOR_
 #define LOCALIZE_ERRNO_AST_VISITOR_
 
+// Platform-specific information about how errno is implemented.
+// Discovered at runtime by compiling a small test snippet.
+struct ErrnoSpec {
+  // Name of the function errno expands to, e.g. "__errno_location" or "__error"
+  std::string FuncName;
+  // Forward declaration text needed when the function is not already declared,
+  // e.g. "int *__errno_location(void);"
+  std::string FuncDeclStr;
+};
+
 // This visitor traverses the AST to find and generate changes:
 // 1. Reads of errno (*__errno_location()) are replaced with reads of
 //    a local errno int
@@ -25,8 +35,8 @@ class LocalizeErrnoASTVisitor : public clang::RecursiveASTVisitor<LocalizeErrnoA
 {
 friend class LocalizeErrnoConsumer;
 public:
-  LocalizeErrnoASTVisitor(clang::ASTContext *Context, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes)
-      : CurrentFunction(nullptr), Context(Context), External(External), Changes(Changes)
+  LocalizeErrnoASTVisitor(clang::ASTContext *Context, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes, ErrnoSpec Spec)
+      : CurrentFunction(nullptr), Context(Context), External(External), Changes(Changes), Spec(std::move(Spec))
       {}
 
   bool TraverseFunctionDecl(clang::FunctionDecl *Decl);
@@ -58,18 +68,27 @@ private:
   clang::ASTContext *Context; 
   // The accumulated changes
   clang::tooling::AtomicChanges &Changes;
+  // Platform-specific errno information
+  ErrnoSpec Spec;
 };
 
 class LocalizeErrnoConsumer : public clang::ASTConsumer {
 public:
-  explicit LocalizeErrnoConsumer(clang::ASTContext *Context, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes) 
-    : Visitor(Context, External, Changes), Changes(Changes) {}
+  explicit LocalizeErrnoConsumer(clang::ASTContext *Context, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes, ErrnoSpec Spec)
+    : Visitor(Context, External, Changes, Spec), Changes(Changes), Spec(std::move(Spec)) {}
 
   virtual void HandleTranslationUnit(clang::ASTContext &Context) override;
+
+  // Compile a small test program with the same include paths as CI to discover
+  // what function errno expands to on this platform (e.g. __errno_location on
+  // Linux/glibc, __error on macOS). Falls back to __errno_location if the
+  // discovery fails.
+  static ErrnoSpec discoverErrnoSpec(clang::CompilerInstance &CI);
 
 private:
   LocalizeErrnoASTVisitor Visitor;
   clang::tooling::AtomicChanges &Changes;
+  ErrnoSpec Spec;
 };
 
 class LocalizeErrnoAction : public clang::ASTFrontendAction {
@@ -78,7 +97,8 @@ public:
 
   virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
     clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
-      return std::make_unique<LocalizeErrnoConsumer>(&Compiler.getASTContext(), External, Changes);
+      auto Spec = LocalizeErrnoConsumer::discoverErrnoSpec(Compiler);
+      return std::make_unique<LocalizeErrnoConsumer>(&Compiler.getASTContext(), External, Changes, std::move(Spec));
     }
 private:
   std::set<USRString> &External;
