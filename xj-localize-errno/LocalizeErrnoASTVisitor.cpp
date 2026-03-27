@@ -1,105 +1,11 @@
 #include "clang/Index/USRGeneration.h"
 #include "clang/Tooling/Refactoring/AtomicChange.h"
-#include "clang/Lex/HeaderSearchOptions.h"
 
 #include "LocalizeErrnoASTVisitor.h"
 #include "StdlibSpec.h"
 
 using namespace clang;
 using namespace clang::tooling;
-
-// Small AST visitor used only by discoverErrnoSpec to find the function that
-// errno dereferences, i.e. the callee in (*callee()) inside a test snippet.
-namespace {
-class ErrnoDiscoveryVisitor : public RecursiveASTVisitor<ErrnoDiscoveryVisitor> {
-public:
-  FunctionDecl *ErrnoFunc = nullptr;
-
-  bool VisitUnaryOperator(UnaryOperator *Op) {
-    if (Op->getOpcode() == UO_Deref) {
-      if (auto *Call = dyn_cast<CallExpr>(Op->getSubExpr())) {
-        if (auto *FD = dyn_cast_or_null<FunctionDecl>(Call->getCalleeDecl())) {
-          ErrnoFunc = FD;
-        }
-      }
-    }
-    return true;
-  }
-};
-} // namespace
-
-ErrnoSpec LocalizeErrnoConsumer::discoverErrnoSpec(CompilerInstance &CI) {
-  // Fallback for platforms where discovery fails.
-  ErrnoSpec Fallback;
-  Fallback.FuncName = "__errno_location";
-  Fallback.FuncDeclStr = "int *__errno_location(void);";
-
-  // Build compile args that mirror the current compiler's include paths so
-  // that the same <errno.h> is found.
-  std::vector<std::string> Args;
-  Args.push_back("-x");
-  Args.push_back("c");
-
-  const HeaderSearchOptions &HSOpts = CI.getHeaderSearchOpts();
-  if (!HSOpts.ResourceDir.empty()) {
-    Args.push_back("-resource-dir");
-    Args.push_back(HSOpts.ResourceDir);
-  }
-  for (const auto &Entry : HSOpts.UserEntries) {
-    switch (Entry.Group) {
-    case frontend::System:
-    case frontend::ExternCSystem:
-      Args.push_back("-isystem");
-      Args.push_back(Entry.Path);
-      break;
-    case frontend::Angled:
-      Args.push_back("-I");
-      Args.push_back(Entry.Path);
-      break;
-    default:
-      break;
-    }
-  }
-  if (!HSOpts.Sysroot.empty()) {
-    Args.push_back("--sysroot=" + HSOpts.Sysroot);
-  }
-
-  // Compile a tiny C file whose only expression is errno.  After preprocessing
-  // this becomes (*__errno_location()) on Linux/glibc or (*__error()) on macOS.
-  auto TestAST = buildASTFromCodeWithArgs(
-      "#include <errno.h>\nvoid f(void) { (void)errno; }", Args, "errno_test.c");
-  if (!TestAST)
-    return Fallback;
-
-  ASTContext &TestCtx = TestAST->getASTContext();
-
-  // Locate the body of f().
-  FunctionDecl *F = nullptr;
-  for (auto *D : TestCtx.getTranslationUnitDecl()->decls()) {
-    if (auto *FD = dyn_cast<FunctionDecl>(D)) {
-      if (FD->getNameAsString() == "f" && FD->hasBody()) {
-        F = FD;
-        break;
-      }
-    }
-  }
-  if (!F)
-    return Fallback;
-
-  // Find the (*callee()) pattern inside f's body.
-  ErrnoDiscoveryVisitor Visitor;
-  Visitor.TraverseDecl(F);
-  if (!Visitor.ErrnoFunc)
-    return Fallback;
-
-  FunctionDecl *ErrnoFD = Visitor.ErrnoFunc;
-  ErrnoSpec Spec;
-  Spec.FuncName = ErrnoFD->getNameAsString();
-  // Build a minimal forward declaration from the return type.
-  Spec.FuncDeclStr =
-      ErrnoFD->getReturnType().getAsString() + " " + Spec.FuncName + "(void);";
-  return Spec;
-}
 
 const std::string LOCAL_ERRNO_NAME = "local_errno";
 
@@ -111,7 +17,7 @@ USRString DeclUSR(FunctionDecl *Decl)
   return Buf;
 }
 
-std::string WrapperString(FunctionDecl *Decl, const std::string &ErrnoFuncName)
+std::string WrapperString(FunctionDecl *Decl)
 {
   auto retType = Decl->getReturnType();
   std::string retTypeStr = retType.getAsString();
@@ -144,7 +50,8 @@ std::string WrapperString(FunctionDecl *Decl, const std::string &ErrnoFuncName)
   if (!isVoid) {
     wrapperStr += retTypeStr + " ret = ";
   }
-  wrapperStr += funcName + "(" + callArgs + "); *_xj_error = (*" + ErrnoFuncName + "()); ";
+  // TODO: assuming #define errno (*errno_location())
+  wrapperStr += funcName + "(" + callArgs + "); *_xj_error = (*__errno_location()); ";
   if (!isVoid) {
     wrapperStr += "return ret; ";
   }
@@ -152,13 +59,13 @@ std::string WrapperString(FunctionDecl *Decl, const std::string &ErrnoFuncName)
   return wrapperStr;
 }
 
-bool IsErrnoCall(Expr *E, const std::string &ErrnoFuncName)
+bool IsErrnoCall(Expr *E)
 {
   if (auto Paren = llvm::dyn_cast<ParenExpr, Expr>(E))
   {
-    return IsErrnoCall(Paren->getSubExpr(), ErrnoFuncName);
+    return IsErrnoCall(Paren->getSubExpr());
   }
-  else if (auto Op = llvm::dyn_cast<UnaryOperator, Expr>(E))
+  else if (auto Op = llvm::dyn_cast<UnaryOperator, Expr>(E)) 
   {
     if (Op->getOpcode() == UnaryOperatorKind::UO_Deref)
     {
@@ -166,7 +73,7 @@ bool IsErrnoCall(Expr *E, const std::string &ErrnoFuncName)
       {
         if (FunctionDecl *Callee = llvm::dyn_cast<FunctionDecl, Decl>(Call->getCalleeDecl()))
         {
-          return Callee->getNameAsString() == ErrnoFuncName;
+          return Callee->getNameAsString() == "__errno_location";
         }
       }
     }
@@ -210,7 +117,7 @@ void LocalizeErrnoASTVisitor::ReplaceErrnoUsage(Expr *E)
 
 bool LocalizeErrnoASTVisitor::VisitParenExpr(clang::ParenExpr *Paren)
 {
-  if (IsErrnoCall(Paren, Spec.FuncName))
+  if (IsErrnoCall(Paren))
   {
     ReplaceErrnoUsage(Paren);
     CurrentFunctionNeedsDecl = true;
@@ -237,7 +144,7 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
     return true;
   }
 
-  if (Callee->getNameAsString() == Spec.FuncName)
+  if (Callee->getNameAsString() == "__errno_location")
   {
     return true;
   }
@@ -284,7 +191,7 @@ void LocalizeErrnoASTVisitor::GenerateWrapper(FunctionDecl *CallContext, Functio
     return;
   }
   Wrappers.insert(CalleeUSR);
-  auto WrapperText = WrapperString(Callee, Spec.FuncName);
+  auto WrapperText = WrapperString(Callee);
   PendingWrappers.push_back(std::pair(CalleeUSR, WrapperText));
 }
 
@@ -326,14 +233,14 @@ LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context) {
       Changes.push_back(wrapperChange);
     }
 
-    // Do we need a forward declaration for the errno function?
+    // Do we need the __errno_location() decl?
     auto *TUDeclContext = Context.getTranslationUnitDecl();
-    DeclarationName ErrnoLocName = &Context.Idents.get(Spec.FuncName);
+    DeclarationName ErrnoLocName = &Context.Idents.get("__errno_location");
     auto ErrnoLocResults = TUDeclContext->lookup(ErrnoLocName);
     bool needsErrnoDecl = ErrnoLocResults.empty();
     if (needsErrnoDecl) {
       AtomicChange declareErrno(SM, SM.getLocForStartOfFile(f));
-      auto err = declareErrno.insert(SM, SM.getLocForStartOfFile(f), Spec.FuncDeclStr + "\n", false);
+      auto err = declareErrno.insert(SM, SM.getLocForStartOfFile(f), "int *__errno_location();\n", false);
       assert (!err);
       Changes.push_back(declareErrno);
     }
