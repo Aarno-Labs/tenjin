@@ -45,6 +45,13 @@ const std::set<std::string> ERRNO_UNMODIFIED = {
     "vdprintf",
     "vsprintf",
     "vsnprintf",
+    // input format conversion,
+    "fscanf",
+    "scanf",
+    "sscanf",
+    "vfscanf",
+    "vscanf",
+    "vsscanf",
     // output of characters and strings
     "fputc",
     "fputs",
