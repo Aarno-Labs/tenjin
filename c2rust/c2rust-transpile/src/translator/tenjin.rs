@@ -1012,6 +1012,30 @@ impl Translation<'_> {
     }
 
     #[allow(clippy::borrowed_box)]
+    pub fn preconvert_decl_ref(
+        &self,
+        e: &Box<Expr>,
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        match tenjin::expr_get_path(e) {
+            Some(p) if tenjin::is_path_exactly_1(p, "errno") => {
+                let call_last_os_error = mk().call_expr(
+                    mk().abs_path_expr(vec!["std", "io", "Error", "last_os_error"]),
+                    vec![],
+                );
+                let extract_i32 = mk().method_chain_expr(
+                    call_last_os_error, 
+                    vec![
+                        (mk().path_segment("raw_os_error"), vec![]),
+                        (mk().path_segment("unwrap"), vec![]),
+                    ]
+                );
+                Ok(Some(WithStmts::new_val(extract_i32)))
+            }
+            _ => Ok(None)
+        }
+    }
+
+    #[allow(clippy::borrowed_box)]
     pub fn call_form_cases_preconversion(
         &self,
         call_type_id: CTypeId,
