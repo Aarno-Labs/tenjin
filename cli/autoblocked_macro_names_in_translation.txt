@@ -26,6 +26,9 @@ tolower
 toupper
 toascii
 
+# assumed to be from <errno.h>
+errno
+
 # Apple's <math.h> defines macro implementations of these functions
 isnormal
 isfinite

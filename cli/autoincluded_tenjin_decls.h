@@ -7,3 +7,4 @@
 // The converted Rust code translates the condition as a boolean, but on the C side
 // it should be treated as an integral type.
 void assert(int);
+extern int errno;

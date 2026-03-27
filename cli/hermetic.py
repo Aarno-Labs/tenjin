@@ -79,6 +79,7 @@ def xj_prepare_locatejoineddecls_build_dir(localdir: Path) -> Path:
 def xj_prepare_unionbitcasts_build_dir(localdir: Path) -> Path:
     return localdir / "_build_unionbitcasts"
 
+
 def xj_localize_errno_build_dir(localdir: Path) -> Path:
     return localdir / "_build_localize_errno"
 
@@ -501,6 +502,7 @@ def check_output_git(args: list[str]):
 def run_chkc(
     cmd: RunSpec,
     check=False,
+    capture_output: bool=False,
 ) -> subprocess.CompletedProcess:
     localdir = repo_root.localdir()
     env_ext = {"PYTHONPATH": xj_codehawk_c(localdir).as_posix()}
@@ -510,4 +512,4 @@ def run_chkc(
         cmd = f"chkc {cmd}"
     else:
         cmd = ["chkc", *cmd]
-    return run_shell_cmd(cmd, check=check, env_ext=env_ext)
+    return run_shell_cmd(cmd, check=check, env_ext=env_ext, capture_output=capture_output)
