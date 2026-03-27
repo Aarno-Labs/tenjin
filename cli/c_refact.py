@@ -202,6 +202,9 @@ def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: P
             str(clang_path),
             "-E",
             str(abs_src_path),
+            # Insert autoincludes and block certain macros from expansion
+            *compilation_database.autoinclude_tenjin_decl_args(),
+            *compilation_database.autoexpand_macro_file_args(),
             *compiler_args,
         ]
 

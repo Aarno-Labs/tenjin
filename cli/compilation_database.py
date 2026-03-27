@@ -283,6 +283,17 @@ def _is_cc_command(args: list[str]) -> bool:
             return True
     return False
 
+def autoinclude_tenjin_decl_args() -> list[str]:
+    decl_header = str(repo_root.find_repo_root_dir_Path() / "cli" / "autoincluded_tenjin_decls.h")
+    return ["-include", decl_header]
+
+def autoexpand_macro_file_args() -> list[str]:
+    macros_file = (
+        repo_root.find_repo_root_dir_Path() / "cli" / "autoblocked_macro_names_in_translation.txt"
+    )
+    # See https://github.com/Aarno-Labs/llvm-project/commit/4256d14834810a78a1a61679316441172e0f0dd2
+    return ["--block-macros-file=" + macros_file.as_posix()]
+
 
 def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     """Modify compile_commands.json to include Tenjin-specific declarations
@@ -293,18 +304,8 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     for cc in ccs_orig.commands:
         args = cc.get_command_parts()
         if _is_cc_command(args):
-            args.append("-include")
-            args.append(
-                str(repo_root.find_repo_root_dir_Path() / "cli" / "autoincluded_tenjin_decls.h")
-            )
-
-            macros_file = (
-                repo_root.find_repo_root_dir_Path()
-                / "cli"
-                / "autoblocked_macro_names_in_translation.txt"
-            )
-            args.append("--block-macros-file=" + macros_file.as_posix())
-            # See https://github.com/Aarno-Labs/llvm-project/commit/4256d14834810a78a1a61679316441172e0f0dd2
+            args.extend(autoinclude_tenjin_decl_args())
+            args.append(autoexpand_macro_file_args())
 
         ccs.append(cc.with_command_parts(args))
     CompileCommands(commands=ccs).to_json_file(compile_commands_path)

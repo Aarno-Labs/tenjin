@@ -5026,6 +5026,10 @@ impl<'c> Translation<'c> {
                     }
                 }
 
+                if let Some(e) = self.preconvert_decl_ref(&val)? {
+                    return Ok(e);
+                }
+
                 let mut res = WithStmts::new_val(val);
                 res.merge_unsafe(set_unsafe);
                 Ok(res)

@@ -475,7 +475,7 @@ def want_codehawk():
         xj_codehawk: Path,
     ):
         clone_or_fetch_git_repo(
-            repo_url="https://github.com/static-analysis-engineering/codehawk.git",
+            repo_url="https://github.com/abakst/codehawk.git",
             target_dir=xj_codehawk,
             version=version,
             log_prefix="xj-codehawk",
@@ -539,7 +539,7 @@ def want_codehawk_c():
         xj_codehawk: Path,
     ):
         clone_or_fetch_git_repo(
-            repo_url="https://github.com/static-analysis-engineering/CodeHawk-C.git",
+            repo_url="https://github.com/abakst/CodeHawk-C.git",
             target_dir=xj_codehawk,
             version=version,
             log_prefix="xj-codehawk-c",
@@ -1153,6 +1153,7 @@ def provision_10j_llvm_with(version: str, keyname: str):
                         CFILE=machdep-ml-clangcompat.c
                         # Remove references to Clang-unsupported type _Float128.
                         cat machdep-ml.c \\
+                                | sed 's/_Nullable//g' \\
                                 | sed 's/_Float128 _Complex/struct { char _[32]; }/g' \\
                                 | sed 's/_Float128 _Complex/struct { char _[32]; }/g' \\
                                 | sed 's/_Float128/struct { char _[16]; }/g' \\

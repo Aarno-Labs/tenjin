@@ -1366,6 +1366,93 @@ def run_preparation_passes(
             f"Collected declarations after preprocessing: {len(store.items_defined_after_pp)} TUs"
         )
 
+    def prep_analyze_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        builddir = hermetic.xj_localize_errno_build_dir(repo_root.localdir())
+        assert builddir.exists(), (
+            f"Build directory {builddir} does not exist, should have been built already"
+        )
+        compdb_path = current_codebase / "compile_commands.json"
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
+
+        xj_start = time.time()
+        cp = hermetic.run_chkc(
+            ["c-project", "parse", current_codebase.as_posix(), "errno_analysis"], check=False, capture_output=True
+        )
+        xj_elapsed = time.time() - xj_start
+        print(f"Codehawk parsed project in {xj_elapsed:.1f} seconds")
+        print("Codehawk stderr:")
+        print(cp.stderr.decode("utf-8"))
+
+        xj_start = time.time()
+        cp = hermetic.run_chkc(
+            [
+                "c-project",
+                "analyze",
+                "--analysis",
+                "errno",
+                current_codebase.as_posix(),
+                "errno_analysis",
+            ],
+            check=False,
+            capture_output=True
+        )
+        xj_elapsed = time.time() - xj_start
+        print(f"Codehawk analyzed project in {xj_elapsed:.1f} seconds")
+        print("Codehawk stderr:")
+        print(cp.stderr.decode("utf-8"))
+
+    def prep_localize_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        # Should we do anything?
+        try:
+            with open(
+                current_codebase / "errno_analysis_summaryresults.json", encoding="utf-8"
+            ) as errno_results:
+                results = json.load(errno_results)
+                ppos = results["tagresults"]["ppos"]
+                if "errno-must-written" in ppos:
+                    errno = ppos["errno-must-written"]
+                    if errno["violated"] > 0 or errno["open"] > 0:
+                        print(
+                            "xj-localize-errno will not run as errno analysis failed to prove safety"
+                        )
+                        return
+        except FileNotFoundError:
+            print("xj-localize-errno will not run as errno analysis results are missing")
+            return
+
+        print("xj-localize-errno will run as errno analysis proved safety")
+        builddir = hermetic.xj_localize_errno_build_dir(repo_root.localdir())
+        assert builddir.exists(), (
+            f"Build directory {builddir} does not exist, should have been built already"
+        )
+        # Keep in sync with `xj-localize-errno/CMakeLists.txt`
+        binary_path = builddir / "xj-localize-errno"
+
+        compdb_path = current_codebase / "compile_commands.json"
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
+        # Extract source file paths from the compilation database
+        with open(compdb_path, encoding="utf-8") as f:
+            compdb_entries = json.load(f)
+        source_files = [entry["file"] for entry in compdb_entries]
+        xj_start = time.time()
+        cp = hermetic.run(
+            [
+                binary_path.as_posix(),
+                "-i",
+                "-p",
+                current_codebase.as_posix(),
+                *source_files,
+            ],
+            cwd=current_codebase,
+            check=True,
+            capture_output=True,
+        )
+        xj_elapsed = time.time() - xj_start
+        print(f"xj-localize-errno completed in {xj_elapsed:.1f} seconds")
+        print("xj-localize-errno stderr:")
+        print(cp.stderr.decode("utf-8"))
+        return cp
+
     def prep_convert_union_bitcasts(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         builddir = hermetic.xj_prepare_unionbitcasts_build_dir(repo_root.localdir())
         assert builddir.exists(), (
@@ -1434,7 +1521,9 @@ def run_preparation_passes(
         ("build_coverage", prep_02_build_coverage),
         ("uniquify_built", prep_uniquify_built_files),
         ("split_joined_decls", prep_split_joined_decls),
+        ("analyze_errno", prep_analyze_errno),
         ("expand_preprocessor", prep_expand_preprocessor),
+        ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
         ("uniquify_statics", prep_uniquify_statics),
     ]
