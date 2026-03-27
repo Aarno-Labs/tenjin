@@ -32,7 +32,7 @@ public:
   bool TraverseFunctionDecl(clang::FunctionDecl *Decl);
 
   bool VisitCallExpr(clang::CallExpr *Call);
-  bool VisitParenExpr(clang::ParenExpr *Paren);
+  bool VisitDeclRefExpr(clang::DeclRefExpr *Ref);
 
 private:
   void ReplaceErrnoUsage(clang::Expr *Expr);

@@ -7,7 +7,7 @@
 using namespace clang;
 using namespace clang::tooling;
 
-const std::string LOCAL_ERRNO_NAME = "local_errno";
+const std::string LOCAL_ERRNO_NAME = "_xj_local_errno";
 
 USRString DeclUSR(FunctionDecl *Decl)
 {
@@ -50,35 +50,12 @@ std::string WrapperString(FunctionDecl *Decl)
   if (!isVoid) {
     wrapperStr += retTypeStr + " ret = ";
   }
-  // TODO: assuming #define errno (*errno_location())
-  wrapperStr += funcName + "(" + callArgs + "); *_xj_error = (*__errno_location()); ";
+  wrapperStr += funcName + "(" + callArgs + "); *_xj_error = errno; ";
   if (!isVoid) {
     wrapperStr += "return ret; ";
   }
   wrapperStr += "}\n";
   return wrapperStr;
-}
-
-bool IsErrnoCall(Expr *E)
-{
-  if (auto Paren = llvm::dyn_cast<ParenExpr, Expr>(E))
-  {
-    return IsErrnoCall(Paren->getSubExpr());
-  }
-  else if (auto Op = llvm::dyn_cast<UnaryOperator, Expr>(E)) 
-  {
-    if (Op->getOpcode() == UnaryOperatorKind::UO_Deref)
-    {
-      if (CallExpr *Call = llvm::dyn_cast<CallExpr, Expr>(Op->getSubExpr()))
-      {
-        if (FunctionDecl *Callee = llvm::dyn_cast<FunctionDecl, Decl>(Call->getCalleeDecl()))
-        {
-          return Callee->getNameAsString() == "__errno_location";
-        }
-      }
-    }
-  }
-  return false;
 }
 
 bool LocalizeErrnoASTVisitor::TraverseFunctionDecl(FunctionDecl *Decl)
@@ -115,12 +92,11 @@ void LocalizeErrnoASTVisitor::ReplaceErrnoUsage(Expr *E)
   Changes.push_back(ReplaceUsage);
 }
 
-bool LocalizeErrnoASTVisitor::VisitParenExpr(clang::ParenExpr *Paren)
+bool LocalizeErrnoASTVisitor::VisitDeclRefExpr(clang::DeclRefExpr *Ref)
 {
-  if (IsErrnoCall(Paren))
+  if (Ref->getNameInfo().getAsString() == "errno")
   {
-    ReplaceErrnoUsage(Paren);
-    CurrentFunctionNeedsDecl = true;
+    ReplaceErrnoUsage(Ref);
   }
   return true;
 }
@@ -141,11 +117,6 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
   if (External.find(CalleeUSR) == External.end())
   {
     // Not external
-    return true;
-  }
-
-  if (Callee->getNameAsString() == "__errno_location")
-  {
     return true;
   }
 
@@ -231,18 +202,6 @@ LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context) {
       auto err = wrapperChange.insert(SM, LocChange.first, LocChange.second, /*InsertAfter=*/false);
       assert (!err);
       Changes.push_back(wrapperChange);
-    }
-
-    // Do we need the __errno_location() decl?
-    auto *TUDeclContext = Context.getTranslationUnitDecl();
-    DeclarationName ErrnoLocName = &Context.Idents.get("__errno_location");
-    auto ErrnoLocResults = TUDeclContext->lookup(ErrnoLocName);
-    bool needsErrnoDecl = ErrnoLocResults.empty();
-    if (needsErrnoDecl) {
-      AtomicChange declareErrno(SM, SM.getLocForStartOfFile(f));
-      auto err = declareErrno.insert(SM, SM.getLocForStartOfFile(f), "int *__errno_location();\n", false);
-      assert (!err);
-      Changes.push_back(declareErrno);
     }
   }
 }
