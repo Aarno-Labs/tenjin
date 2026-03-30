@@ -605,6 +605,34 @@ struct StructureState {
     current_block: Box<Expr>,
 }
 
+enum ToStmtTask {
+    Eval(Box<StructuredAST<Box<Expr>, Pat, Label, Stmt>>),
+    BuildAppendEmpty {
+        ast_span: Span,
+        lhs_span: Span,
+    },
+    BuildAppend {
+        ast_span: Span,
+    },
+    BuildMatch {
+        span: Span,
+        cond: Box<Expr>,
+        pats: Vec<Pat>,
+    },
+    BuildIf {
+        span: Span,
+        cond: Box<Expr>,
+    },
+    BuildGotoTable {
+        span: Span,
+        labels: Vec<Label>,
+    },
+    BuildLoop {
+        span: Span,
+        label: Option<Label>,
+    },
+}
+
 /// Returns a `Span` between the beginning of `span` or `other`, whichever is
 /// non-zero, and the end of `span`. If both `span` and `other` have non-zero
 /// beginnings, return `None`.
@@ -633,6 +661,22 @@ fn span_subst_hi(span: Span, other: Span) -> Option<Span> {
     Some(span)
 }
 
+fn adjust_stmt_block_span(
+    stmts: &mut [Stmt],
+    span: Span,
+    comment_store: &mut comment_store::CommentStore,
+) {
+    if let Some(stmt) = stmts.first_mut() {
+        stmt.set_span(span_subst_lo(stmt.span(), span).unwrap_or_else(|| {
+            comment_store.move_comments(stmt.span().lo(), span.lo());
+            stmt.span().with_lo(span.lo())
+        }));
+    }
+    if let Some(stmt) = stmts.last_mut() {
+        stmt.set_span(span_subst_hi(stmt.span(), span).unwrap_or_else(|| stmt.span()));
+    }
+}
+
 impl StructureState {
     pub fn to_stmt(
         &self,
@@ -641,168 +685,208 @@ impl StructureState {
     ) -> (Vec<Stmt>, Span) {
         use crate::cfg::structures::StructuredASTKind::*;
 
-        let span = ast.span;
+        let mut tasks = vec![ToStmtTask::Eval(Box::new(ast))];
+        let mut results = Vec::new();
 
-        let stmt = match ast.node {
-            Empty => return (vec![], ast.span),
+        while let Some(task) = tasks.pop() {
+            match task {
+                ToStmtTask::Eval(ast) => {
+                    let span = ast.span;
 
-            Singleton(mut s) => {
-                let span = s.span().substitute_dummy(ast.span);
-                s.set_span(span);
-                return (vec![s], span);
-            }
+                    match ast.node {
+                        Empty => results.push((vec![], span)),
 
-            Append(spanned, rhs) if matches!(spanned.node, Empty) => {
-                let lhs_span = spanned.span;
-                let span = ast.span.substitute_dummy(lhs_span);
-                let span = span_subst_lo(span, lhs_span).unwrap_or_else(|| {
-                    comment_store.move_comments(lhs_span.lo(), span.lo());
-                    span
-                });
-
-                let (mut stmts, stmts_span) = self.to_stmt(*rhs, comment_store);
-                let span = span_subst_hi(span, stmts_span).unwrap_or(span);
-
-                // Adjust the first and last elements of the block if this AST
-                // node has a span.
-                if let Some(stmt) = stmts.first_mut() {
-                    stmt.set_span(span_subst_lo(stmt.span(), span).unwrap_or_else(|| {
-                        comment_store.move_comments(stmt.span().lo(), span.lo());
-                        stmt.span().with_lo(span.lo())
-                    }));
-                }
-                if let Some(stmt) = stmts.last_mut() {
-                    stmt.set_span(span_subst_hi(stmt.span(), span).unwrap_or_else(|| stmt.span()));
-                }
-                return (stmts, span);
-            }
-
-            Append(lhs, rhs) => {
-                let (mut stmts, lhs_span) = self.to_stmt(*lhs, comment_store);
-                let span = ast.span.substitute_dummy(lhs_span);
-                let span = span_subst_lo(span, lhs_span).unwrap_or_else(|| {
-                    comment_store.move_comments(lhs_span.lo(), span.lo());
-                    span
-                });
-                let (rhs_stmts, rhs_span) = self.to_stmt(*rhs, comment_store);
-                let span = span_subst_hi(span, rhs_span).unwrap_or(span);
-                stmts.extend(rhs_stmts);
-                // Adjust the first and last elements of the block if this AST
-                // node has a span.
-                if let Some(stmt) = stmts.first_mut() {
-                    stmt.set_span(span_subst_lo(stmt.span(), span).unwrap_or_else(|| {
-                        comment_store.move_comments(stmt.span().lo(), span.lo());
-                        stmt.span().with_lo(span.lo())
-                    }));
-                }
-                if let Some(stmt) = stmts.last_mut() {
-                    stmt.set_span(span_subst_hi(stmt.span(), span).unwrap_or_else(|| stmt.span()));
-                }
-                return (stmts, span);
-            }
-
-            Goto(to) => {
-                // Assign to `current_block` the next label we want to go to.
-
-                let lbl_expr = if self.debug_labels {
-                    to.to_string_expr()
-                } else {
-                    to.to_num_expr()
-                };
-                mk().span(span)
-                    .semi_stmt(mk().assign_expr(self.current_block.clone(), lbl_expr))
-            }
-
-            Match(cond, cases) => {
-                // Make a `match`.
-
-                let arms: Vec<Arm> = cases
-                    .into_iter()
-                    .map(|(pat, stmts)| -> Arm {
-                        let (stmts, span) = self.to_stmt(stmts, comment_store);
-
-                        let body = mk().block_expr(mk().span(span).block(stmts));
-                        mk().arm(pat, None, body)
-                    })
-                    .collect();
-
-                let e = mk().match_expr(cond, arms);
-
-                mk().span(span).expr_stmt(e)
-            }
-
-            If(cond, then, els) => {
-                // Construct a Rust `if` statement from a condition and then/else branches
-                //
-                //   * `if <cond-expr> { } else { }` turns into `<cond-expr>;`
-                //   * `if <cond-expr> { .. } else { }` turns into `if <cond-expr> { .. }`
-                //   * `if <cond-expr> { } else { .. }` turns into `if !<cond-expr> { .. }`
-                //
-
-                let (then_stmts, then_span) = self.to_stmt(*then, comment_store);
-
-                let (mut els_stmts, els_span) = self.to_stmt(*els, comment_store);
-
-                let mut if_stmt = match (then_stmts.is_empty(), els_stmts.is_empty()) {
-                    (true, true) => mk().semi_stmt(cond),
-                    (false, true) => {
-                        let if_expr =
-                            mk().ifte_expr(cond, mk().span(then_span).block(then_stmts), None);
-                        mk().expr_stmt(if_expr)
-                    }
-                    (true, false) => {
-                        let negated_cond = not(&cond);
-                        let if_expr = mk().ifte_expr(
-                            negated_cond,
-                            mk().span(els_span).block(els_stmts),
-                            None,
-                        );
-                        mk().expr_stmt(if_expr)
-                    }
-                    (false, false) => {
-                        fn is_expr(kind: &Stmt) -> bool {
-                            matches!(kind, Stmt::Expr(Expr::If(..) | Expr::Block(..), None))
+                        Singleton(mut s) => {
+                            let span = s.span().substitute_dummy(span);
+                            s.set_span(span);
+                            results.push((vec![s], span));
                         }
 
-                        // Do the else statements contain a single If, IfLet or
-                        // Block expression? The pretty printer handles only
-                        // these kinds of expressions for the else case.
-                        let is_els_expr = els_stmts.len() == 1 && is_expr(&els_stmts[0]);
+                        Append(spanned, rhs) if matches!(spanned.node, Empty) => {
+                            tasks.push(ToStmtTask::BuildAppendEmpty {
+                                ast_span: span,
+                                lhs_span: spanned.span,
+                            });
+                            tasks.push(ToStmtTask::Eval(Box::new(*rhs)));
+                        }
 
-                        let els_branch = if is_els_expr {
-                            let stmt_expr = els_stmts.swap_remove(0);
-                            let stmt_expr_span = stmt_expr.span();
-                            let mut els_expr = match stmt_expr {
-                                Stmt::Expr(e, None) => e,
-                                _ => panic!("is_els_expr out of sync"),
+                        Append(lhs, rhs) => {
+                            tasks.push(ToStmtTask::BuildAppend { ast_span: span });
+                            tasks.push(ToStmtTask::Eval(Box::new(*rhs)));
+                            tasks.push(ToStmtTask::Eval(Box::new(*lhs)));
+                        }
+
+                        Goto(to) => {
+                            let lbl_expr = if self.debug_labels {
+                                to.to_string_expr()
+                            } else {
+                                to.to_num_expr()
                             };
-                            els_expr.set_span(stmt_expr_span);
-                            Box::new(els_expr)
-                        } else {
-                            mk().block_expr(mk().span(els_span).block(els_stmts))
-                        };
+                            let stmt = mk()
+                                .span(span)
+                                .semi_stmt(mk().assign_expr(self.current_block.clone(), lbl_expr));
+                            results.push((vec![stmt], span));
+                        }
 
-                        let if_expr = mk().ifte_expr(
-                            cond,
-                            mk().span(then_span).block(then_stmts),
-                            Some(els_branch),
-                        );
-                        mk().expr_stmt(if_expr)
+                        Match(cond, cases) => {
+                            let mut pats = Vec::with_capacity(cases.len());
+                            let mut case_stmts = Vec::with_capacity(cases.len());
+                            for (pat, stmts) in cases {
+                                pats.push(pat);
+                                case_stmts.push(stmts);
+                            }
+
+                            tasks.push(ToStmtTask::BuildMatch { span, cond, pats });
+                            for stmts in case_stmts.into_iter().rev() {
+                                tasks.push(ToStmtTask::Eval(Box::new(stmts)));
+                            }
+                        }
+
+                        If(cond, then, els) => {
+                            tasks.push(ToStmtTask::BuildIf { span, cond });
+                            tasks.push(ToStmtTask::Eval(Box::new(*els)));
+                            tasks.push(ToStmtTask::Eval(Box::new(*then)));
+                        }
+
+                        GotoTable(cases, then) => {
+                            let mut labels = Vec::with_capacity(cases.len());
+                            let mut case_stmts = Vec::with_capacity(cases.len());
+                            for (lbl, stmts) in cases {
+                                labels.push(lbl);
+                                case_stmts.push(stmts);
+                            }
+
+                            tasks.push(ToStmtTask::BuildGotoTable { span, labels });
+                            tasks.push(ToStmtTask::Eval(Box::new(*then)));
+                            for stmts in case_stmts.into_iter().rev() {
+                                tasks.push(ToStmtTask::Eval(Box::new(stmts)));
+                            }
+                        }
+
+                        Loop(lbl, body) => {
+                            tasks.push(ToStmtTask::BuildLoop { span, label: lbl });
+                            tasks.push(ToStmtTask::Eval(Box::new(*body)));
+                        }
+
+                        Exit(exit_style, lbl) => {
+                            let lbl = lbl.map(|l| l.pretty_print());
+                            let e = match exit_style {
+                                ExitStyle::Break => mk().break_expr(lbl),
+                                ExitStyle::Continue => mk().continue_expr(lbl),
+                            };
+                            results.push((vec![mk().span(span).semi_stmt(e)], span));
+                        }
                     }
-                };
+                }
 
-                if_stmt.set_span(span);
-                if_stmt
-            }
+                ToStmtTask::BuildAppendEmpty { ast_span, lhs_span } => {
+                    let (mut stmts, stmts_span) = results
+                        .pop()
+                        .expect("to_stmt lost an append-empty rhs result");
+                    let span = ast_span.substitute_dummy(lhs_span);
+                    let span = span_subst_lo(span, lhs_span).unwrap_or_else(|| {
+                        comment_store.move_comments(lhs_span.lo(), span.lo());
+                        span
+                    });
+                    let span = span_subst_hi(span, stmts_span).unwrap_or(span);
+                    adjust_stmt_block_span(&mut stmts, span, comment_store);
+                    results.push((stmts, span));
+                }
 
-            GotoTable(cases, then) => {
-                // Dispatch based on the next `current_block` value.
+                ToStmtTask::BuildAppend { ast_span } => {
+                    let (rhs_stmts, rhs_span) =
+                        results.pop().expect("to_stmt lost an append rhs result");
+                    let (mut stmts, lhs_span) =
+                        results.pop().expect("to_stmt lost an append lhs result");
+                    let span = ast_span.substitute_dummy(lhs_span);
+                    let span = span_subst_lo(span, lhs_span).unwrap_or_else(|| {
+                        comment_store.move_comments(lhs_span.lo(), span.lo());
+                        span
+                    });
+                    let span = span_subst_hi(span, rhs_span).unwrap_or(span);
+                    stmts.extend(rhs_stmts);
+                    adjust_stmt_block_span(&mut stmts, span, comment_store);
+                    results.push((stmts, span));
+                }
 
-                let mut arms: Vec<Arm> = cases
-                    .into_iter()
-                    .map(|(lbl, stmts)| -> Arm {
-                        let (stmts, stmts_span) = self.to_stmt(stmts, comment_store);
+                ToStmtTask::BuildMatch { span, cond, pats } => {
+                    let mut arms = Vec::with_capacity(pats.len());
+                    for pat in pats.into_iter().rev() {
+                        let (stmts, stmts_span) =
+                            results.pop().expect("to_stmt lost a match arm result");
+                        let body = mk().block_expr(mk().span(stmts_span).block(stmts));
+                        arms.push(mk().arm(pat, None, body));
+                    }
+                    arms.reverse();
 
+                    let e = mk().match_expr(cond, arms);
+                    results.push((vec![mk().span(span).expr_stmt(e)], span));
+                }
+
+                ToStmtTask::BuildIf { span, cond } => {
+                    let (mut els_stmts, els_span) =
+                        results.pop().expect("to_stmt lost an else branch result");
+                    let (then_stmts, then_span) =
+                        results.pop().expect("to_stmt lost a then branch result");
+
+                    fn is_expr(kind: &Stmt) -> bool {
+                        matches!(kind, Stmt::Expr(Expr::If(..) | Expr::Block(..), None))
+                    }
+
+                    let mut if_stmt = match (then_stmts.is_empty(), els_stmts.is_empty()) {
+                        (true, true) => mk().semi_stmt(cond),
+                        (false, true) => {
+                            let if_expr =
+                                mk().ifte_expr(cond, mk().span(then_span).block(then_stmts), None);
+                            mk().expr_stmt(if_expr)
+                        }
+                        (true, false) => {
+                            let negated_cond = not(&cond);
+                            let if_expr = mk().ifte_expr(
+                                negated_cond,
+                                mk().span(els_span).block(els_stmts),
+                                None,
+                            );
+                            mk().expr_stmt(if_expr)
+                        }
+                        (false, false) => {
+                            let is_els_expr = els_stmts.len() == 1 && is_expr(&els_stmts[0]);
+
+                            let els_branch = if is_els_expr {
+                                let stmt_expr = els_stmts.swap_remove(0);
+                                let stmt_expr_span = stmt_expr.span();
+                                let mut els_expr = match stmt_expr {
+                                    Stmt::Expr(e, None) => e,
+                                    _ => panic!("is_els_expr out of sync"),
+                                };
+                                els_expr.set_span(stmt_expr_span);
+                                Box::new(els_expr)
+                            } else {
+                                mk().block_expr(mk().span(els_span).block(els_stmts))
+                            };
+
+                            let if_expr = mk().ifte_expr(
+                                cond,
+                                mk().span(then_span).block(then_stmts),
+                                Some(els_branch),
+                            );
+                            mk().expr_stmt(if_expr)
+                        }
+                    };
+
+                    if_stmt.set_span(span);
+                    results.push((vec![if_stmt], span));
+                }
+
+                ToStmtTask::BuildGotoTable { span, labels } => {
+                    let (then, then_span) = results
+                        .pop()
+                        .expect("to_stmt lost a goto-table default result");
+                    let mut arms = Vec::with_capacity(labels.len() + 1);
+                    for lbl in labels.into_iter().rev() {
+                        let (stmts, stmts_span) = results
+                            .pop()
+                            .expect("to_stmt lost a goto-table case result");
                         let lbl_lit = if self.debug_labels {
                             lbl.to_string_lit()
                         } else {
@@ -810,88 +894,71 @@ impl StructureState {
                         };
                         let pat = mk().lit_pat(lbl_lit);
                         let body = mk().block_expr(mk().span(stmts_span).block(stmts));
-                        mk().arm(pat, None, body)
-                    })
-                    .collect();
-
-                let (then, then_span) = self.to_stmt(*then, comment_store);
-
-                arms.push(mk().arm(
-                    mk().wild_pat(),
-                    None,
-                    mk().block_expr(mk().span(then_span).block(then)),
-                ));
-
-                let e = mk().match_expr(self.current_block.clone(), arms);
-
-                mk().span(span).expr_stmt(e)
-            }
-
-            Loop(lbl, body) => {
-                // Make (possibly labelled) `loop`.
-                //
-                //   * Loops that start with an `if <cond-expr> { break; }` get converted into `while` loops
-                //
-
-                let (body, body_span) = self.to_stmt(*body, comment_store);
-
-                // TODO: this is ugly but it needn't be. We are just pattern matching on particular ASTs.
-                if let Some(stmt @ &Stmt::Expr(ref expr, None)) = body.first() {
-                    let stmt_span = stmt.span();
-                    let span = if !stmt_span.is_dummy() {
-                        stmt_span
-                    } else {
-                        span
-                    };
-                    if let syn::Expr::If(ExprIf {
-                        cond,
-                        then_branch,
-                        else_branch: None,
-                        ..
-                    }) = expr
-                    {
-                        if let [Stmt::Expr(
-                            syn::Expr::Break(ExprBreak {
-                                label: None,
-                                expr: None,
-                                ..
-                            }),
-                            Some(_),
-                        )] = then_branch.stmts.as_slice()
-                        {
-                            let e = mk().while_expr(
-                                not(cond),
-                                mk().span(body_span)
-                                    .block(body.iter().skip(1).cloned().collect()),
-                                lbl.map(|l| l.pretty_print()),
-                            );
-                            return (vec![mk().span(span).expr_stmt(e)], ast.span);
-                        }
+                        arms.push(mk().arm(pat, None, body));
                     }
+                    arms.reverse();
+
+                    arms.push(mk().arm(
+                        mk().wild_pat(),
+                        None,
+                        mk().block_expr(mk().span(then_span).block(then)),
+                    ));
+
+                    let e = mk().match_expr(self.current_block.clone(), arms);
+                    results.push((vec![mk().span(span).expr_stmt(e)], span));
                 }
 
-                let e = mk().loop_expr(
-                    mk().span(body_span).block(body),
-                    lbl.map(|l| l.pretty_print()),
-                );
+                ToStmtTask::BuildLoop { span, label } => {
+                    let (body, body_span) = results.pop().expect("to_stmt lost a loop body result");
 
-                mk().span(span).expr_stmt(e)
+                    if let Some(stmt @ &Stmt::Expr(ref expr, None)) = body.first() {
+                        let stmt_span = stmt.span();
+                        let span = if !stmt_span.is_dummy() {
+                            stmt_span
+                        } else {
+                            span
+                        };
+                        if let syn::Expr::If(ExprIf {
+                            cond,
+                            then_branch,
+                            else_branch: None,
+                            ..
+                        }) = expr
+                        {
+                            if let [Stmt::Expr(
+                                syn::Expr::Break(ExprBreak {
+                                    label: None,
+                                    expr: None,
+                                    ..
+                                }),
+                                Some(_),
+                            )] = then_branch.stmts.as_slice()
+                            {
+                                let e = mk().while_expr(
+                                    not(cond),
+                                    mk().span(body_span)
+                                        .block(body.iter().skip(1).cloned().collect()),
+                                    label.map(|l| l.pretty_print()),
+                                );
+                                results.push((vec![mk().span(span).expr_stmt(e)], span));
+                                continue;
+                            }
+                        }
+                    }
+
+                    let e = mk().loop_expr(
+                        mk().span(body_span).block(body),
+                        label.map(|l| l.pretty_print()),
+                    );
+                    results.push((vec![mk().span(span).expr_stmt(e)], span));
+                }
             }
+        }
 
-            Exit(exit_style, lbl) => {
-                // Make a (possibly labelled) `break` or `continue`.
-
-                let lbl = lbl.map(|l| l.pretty_print());
-                let e = match exit_style {
-                    ExitStyle::Break => mk().break_expr(lbl),
-                    ExitStyle::Continue => mk().continue_expr(lbl),
-                };
-
-                mk().span(span).semi_stmt(e)
-            }
-        };
-
-        (vec![stmt], ast.span)
+        match results.len() {
+            1 => results.pop().expect("checked result length"),
+            _ => panic!("to_stmt finished with an invalid result stack"),
+        }
     }
 }
 
