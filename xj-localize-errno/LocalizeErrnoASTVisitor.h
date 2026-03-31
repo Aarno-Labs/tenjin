@@ -43,19 +43,28 @@ private:
   // to be wrapped. This can be further refined in the future to
   // indicate which functions are known not to modify errno.
   std::set<USRString> &External;
+
   // f |-> L if f is the USR of a function for which we will generate a wrapper,
   // and L is a location that precedes all uses of f
   std::map<USRString, clang::SourceLocation> InsertLocations;
+  
   // All f that we've generated wrappers for
   std::set<USRString> Wrappers;
+
   // Pairs of (f, <wrapper decl/definition of f>)
   std::vector<std::pair<USRString, std::string>> PendingWrappers;
+
   // During traversal, tracks which function body we're in
   clang::FunctionDecl *CurrentFunction;
+
   // If we need to declare the local error number var in the current
   // function being traversed
   bool CurrentFunctionNeedsDecl;
+  bool CurrentFunctionNonDeclCall;
+  bool CurrentFunctionHasErrnoReference;
   clang::ASTContext *Context; 
+  // Changes for CurrentFunction
+  clang::tooling::AtomicChanges StagedChanges;
   // The accumulated changes
   clang::tooling::AtomicChanges &Changes;
 };

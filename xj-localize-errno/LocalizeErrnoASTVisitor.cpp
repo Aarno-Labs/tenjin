@@ -13,7 +13,7 @@ USRString DeclUSR(FunctionDecl *Decl)
 {
   USRString Buf;
   bool shouldDiscard = index::generateUSRForDecl(Decl, Buf);
-  assert (!shouldDiscard);
+  assert(!shouldDiscard);
   return Buf;
 }
 
@@ -27,7 +27,8 @@ std::string WrapperString(FunctionDecl *Decl)
   std::string wrapperStr = "static " + retTypeStr + " _xj_wrap_" + funcName + "(int *_xj_error";
   std::string callArgs;
   uint anonCtr = 0;
-  for (auto *param : Decl->parameters()) {
+  for (auto *param : Decl->parameters())
+  {
     std::string paramType = param->getType().getAsString();
     std::string paramName = param->getName().str();
     if (paramName.length() == 0)
@@ -35,23 +36,28 @@ std::string WrapperString(FunctionDecl *Decl)
       paramName = "_xj_arg_" + std::to_string(anonCtr++);
     }
     wrapperStr += ", " + paramType + " " + paramName;
-    if (!callArgs.empty()) callArgs += ", ";
+    if (!callArgs.empty())
+      callArgs += ", ";
     callArgs += paramName;
   }
-  if (Decl->isVariadic()) {
+  if (Decl->isVariadic())
+  {
     wrapperStr += ", ...";
     callArgs += ", args";
   }
   wrapperStr += ") { ";
-  if (Decl->isVariadic()) {
+  if (Decl->isVariadic())
+  {
     wrapperStr += "__builtin_va_list args; ";
     wrapperStr += "__builtin_va_start(args, " + Decl->parameters().back()->getNameAsString() + "); ";
   }
-  if (!isVoid) {
+  if (!isVoid)
+  {
     wrapperStr += retTypeStr + " ret = ";
   }
   wrapperStr += funcName + "(" + callArgs + "); *_xj_error = errno; ";
-  if (!isVoid) {
+  if (!isVoid)
+  {
     wrapperStr += "return ret; ";
   }
   wrapperStr += "}\n";
@@ -62,21 +68,37 @@ bool LocalizeErrnoASTVisitor::TraverseFunctionDecl(FunctionDecl *Decl)
 {
   if (Decl->hasBody())
   {
+    assert(StagedChanges.empty());
+    assert(!CurrentFunction);
+    assert(!CurrentFunctionHasErrnoReference);
+    assert(!CurrentFunctionNonDeclCall);
+    assert(!CurrentFunctionNeedsDecl);
     CurrentFunction = Decl;
   }
-  bool res = RecursiveASTVisitor::TraverseFunctionDecl(Decl); 
-  if (CurrentFunctionNeedsDecl)
+  bool res = RecursiveASTVisitor::TraverseFunctionDecl(Decl);
+  if (CurrentFunctionHasErrnoReference && CurrentFunctionNonDeclCall)
   {
-    llvm::outs() << "Needs Decl\n";
-    if (auto Body = llvm::dyn_cast<CompoundStmt, Stmt>(Decl->getBody())) 
+    // Can not apply changes here
+    llvm::errs() << "Unable to transform function " << CurrentFunction->getNameAsString() << "\n";
+  }
+  else
+  {
+    Changes.insert(Changes.begin(), StagedChanges.begin(), StagedChanges.end());
+    if (CurrentFunctionNeedsDecl)
     {
-      AtomicChange InsertLocalDecl(Context->getSourceManager(), Decl->getBody()->getBeginLoc(), /* insert_after = */false);
-      auto InsertLoc = Body->body_front()->getBeginLoc();
-      auto err = InsertLocalDecl.insert(Context->getSourceManager(), InsertLoc, "int " + LOCAL_ERRNO_NAME + ";\n");
-      assert(!err);
-      Changes.push_back(InsertLocalDecl);
+      if (auto Body = llvm::dyn_cast<CompoundStmt, Stmt>(Decl->getBody()))
+      {
+        AtomicChange InsertLocalDecl(Context->getSourceManager(), Decl->getBody()->getBeginLoc(), /* insert_after = */ false);
+        auto InsertLoc = Body->body_front()->getBeginLoc();
+        auto err = InsertLocalDecl.insert(Context->getSourceManager(), InsertLoc, "int " + LOCAL_ERRNO_NAME + ";\n");
+        assert(!err);
+        Changes.push_back(InsertLocalDecl);
+      }
     }
   }
+  StagedChanges.clear();
+  CurrentFunctionHasErrnoReference = false;
+  CurrentFunctionNonDeclCall = false;
   CurrentFunctionNeedsDecl = false;
   CurrentFunction = nullptr;
   return res;
@@ -89,13 +111,14 @@ void LocalizeErrnoASTVisitor::ReplaceErrnoUsage(Expr *E)
   llvm::StringRef Replacement = LOCAL_ERRNO_NAME;
   auto err = ReplaceUsage.replace(Context->getSourceManager(), Range, Replacement);
   assert(!err);
-  Changes.push_back(ReplaceUsage);
+  StagedChanges.push_back(ReplaceUsage);
 }
 
 bool LocalizeErrnoASTVisitor::VisitDeclRefExpr(clang::DeclRefExpr *Ref)
 {
   if (Ref->getNameInfo().getAsString() == "errno")
   {
+    CurrentFunctionHasErrnoReference = true;
     ReplaceErrnoUsage(Ref);
   }
   return true;
@@ -105,7 +128,15 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
 {
   assert(CurrentFunction != nullptr);
   FunctionDecl *Callee = llvm::dyn_cast<FunctionDecl, Decl>(Call->getCalleeDecl());
-  assert(Callee != nullptr);
+  if (!Callee)
+  {
+    // Then this could be something like a call through a var or struct field,
+    // i.e., a function pointer.
+    // We just mark the calling context. If we also find a reference to
+    // errno here, then we can not perform the transformation on this function.
+    CurrentFunctionNonDeclCall = true;
+    return true;
+  }
 
   USRString CalleeUSR = DeclUSR(Callee);
 
@@ -125,8 +156,8 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
   AtomicChange CallWrapper(Context->getSourceManager(), Call->getBeginLoc());
   CharSourceRange CalleeRange(Call->getCallee()->getSourceRange(), true);
   auto err = CallWrapper.replace(Context->getSourceManager(), CalleeRange, "_xj_wrap_" + Callee->getNameAsString());
-  assert (!err);
-  if (Callee->getNumParams() == 0) 
+  assert(!err);
+  if (Callee->getNumParams() == 0)
   {
     err = CallWrapper.insert(Context->getSourceManager(), Call->getRParenLoc(), "&" + LOCAL_ERRNO_NAME, false);
   }
@@ -134,8 +165,8 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
   {
     err = CallWrapper.insert(Context->getSourceManager(), Call->getArg(0)->getBeginLoc(), "&" + LOCAL_ERRNO_NAME + ", ", false);
   }
-  assert (!err);
-  Changes.push_back(CallWrapper);
+  assert(!err);
+  StagedChanges.push_back(CallWrapper);
 
   GenerateWrapper(CurrentFunction, Callee);
 
@@ -166,18 +197,22 @@ void LocalizeErrnoASTVisitor::GenerateWrapper(FunctionDecl *CallContext, Functio
   PendingWrappers.push_back(std::pair(CalleeUSR, WrapperText));
 }
 
-void
-LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context) {
-    Visitor.CurrentFunction = nullptr;
-    Visitor.CurrentFunctionNeedsDecl = false;
-    Visitor.PendingWrappers.clear();
-    Visitor.InsertLocations.clear();
-    Visitor.Wrappers.clear();
-    Visitor.TraverseDecl(Context.getTranslationUnitDecl());
+void LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context)
+{
+  Visitor.CurrentFunction = nullptr;
+  Visitor.CurrentFunctionNeedsDecl = false;
+  Visitor.CurrentFunctionHasErrnoReference = false;
+  Visitor.CurrentFunctionNonDeclCall = false;
+  Visitor.PendingWrappers.clear();
+  Visitor.InsertLocations.clear();
+  Visitor.Wrappers.clear();
+  Visitor.TraverseDecl(Context.getTranslationUnitDecl());
 
-    std::map<SourceLocation, std::string> ChangesByLoc;
-    if (!Visitor.PendingWrappers.empty()) {
-    for (auto &Pending : Visitor.PendingWrappers) {
+  std::map<SourceLocation, std::string> ChangesByLoc;
+  if (!Visitor.PendingWrappers.empty())
+  {
+    for (auto &Pending : Visitor.PendingWrappers)
+    {
       auto USR = Pending.first;
       auto Wrapper = Pending.second;
       // This should definitely exist
@@ -200,7 +235,7 @@ LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context) {
       // This assumes we're all inlined so all changes are in the same file.
       f = SM.getFileID(LocChange.first);
       auto err = wrapperChange.insert(SM, LocChange.first, LocChange.second, /*InsertAfter=*/false);
-      assert (!err);
+      assert(!err);
       Changes.push_back(wrapperChange);
     }
   }
