@@ -305,7 +305,7 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
         args = cc.get_command_parts()
         if _is_cc_command(args):
             args.extend(autoinclude_tenjin_decl_args())
-            args.append(autoexpand_macro_file_args())
+            args.extend(autoexpand_macro_file_args())
 
         ccs.append(cc.with_command_parts(args))
     CompileCommands(commands=ccs).to_json_file(compile_commands_path)
