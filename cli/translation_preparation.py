@@ -12,6 +12,7 @@ from enum import Enum
 
 from clang.cindex import Cursor, CursorKind  # type: ignore
 from cmake_file_api import CMakeProject
+import click
 
 import compilation_database
 import batching_rewriter
@@ -664,10 +665,15 @@ def run_preparation_passes(
                 new_commands.append(cmds[0])
                 continue
 
-            orig_root = resultsdir / "c_01_intercept_build"
-            assert stale_abs_path.is_relative_to(orig_root)
-            # stale_rel_path = stale_abs_path.relative_to(orig_root)
-            # stale_rel_dir = stale_rel_path.parent
+            # The _triplicated smoke test compiles a file from `_build_1`;
+            # most others use `c_01_intercept_build`.
+            orig_root_candidates = [resultsdir / "c_01_intercept_build", resultsdir / "_build_1"]
+            orig_roots = [r for r in orig_root_candidates if stale_abs_path.is_relative_to(r)]
+            assert any(orig_roots), (
+                f"Expected stale path {stale_abs_path} to be within one of {orig_root_candidates}"
+            )
+            stale_rel_path = stale_abs_path.relative_to(orig_roots[0])
+            stale_rel_dir = stale_rel_path.parent
 
             # Multiple commands for same file - need to duplicate all of them
             for idx, cmd in enumerate(cmds):
@@ -676,11 +682,18 @@ def run_preparation_passes(
                 suffix = stale_abs_path.suffix
                 new_filename = f"{stem}_xjdup_{idx}{suffix}"
                 stale_dedup_path = stale_abs_path.parent / new_filename
-                curr_dedup_path = current_codebase / new_filename
+                curr_dedup_path = current_codebase / stale_rel_dir / new_filename
 
                 # Copy the source file to the new file.
                 assert stale_abs_path.exists()
                 shutil.copyfile(stale_abs_path, curr_dedup_path)
+                # Backfill because _CompileCommand_from_intercepted_command.update()
+                # will be looking for the file in the original location.
+                shutil.copyfile(stale_abs_path, stale_dedup_path)
+                print("Created duplicate source file for uniquification:")
+                click.echo(f"    {click.style(str(stale_abs_path), fg='red')}")
+                click.echo(f"    {click.style(str(curr_dedup_path), fg='green')}")
+                click.echo(f"    prev = {click.style(str(prev), fg='yellow')}")
 
                 # Cache this to reduce the number of repeated resolve() calls.
                 resolved_stale_path = stale_abs_path.resolve()
@@ -694,7 +707,8 @@ def run_preparation_passes(
                         pass
                     return arg
 
-                new_commands.append(cmd.fmap_input_paths(update_arg))
+                updated_cmd = cmd.fmap_input_paths(update_arg)
+                new_commands.append(updated_cmd)
 
         # compile_commands_for_path omits fake link thingy commands,
         # so we need to add them back in.
