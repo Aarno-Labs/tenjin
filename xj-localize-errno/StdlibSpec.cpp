@@ -2,6 +2,8 @@
 #include "StdlibSpec.h"
 
 const std::set<std::string> ERRNO_UNMODIFIED = {
+    // <assert.h>
+    "assert", // Actually assert is usually a macro, but in tenjin we use an extern
     // <ctype.h>
     "isalnum",
     "isalpha",

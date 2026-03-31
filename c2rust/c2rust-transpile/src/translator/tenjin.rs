@@ -60,6 +60,7 @@ impl GuidedType {
             ["&", _] => false,
             ["&", life, _] if life.starts_with("'") => false,
             ["&", life, "mut", _] if life.starts_with("'") => true,
+            ["&mut", _] => true,
             ["&", "mut", _] => true,
             ["&", "mut", _, _] => true,
             ["&", _, _, _] => false,
@@ -556,7 +557,57 @@ pub fn trim_unique_suffix(s: &str) -> &str {
         .unwrap_or_else(|| panic!("Empty name after trimming tenjin suffix: {}", s))
 }
 
+pub fn builtin_unconditional_variable_guidance(
+    has_static_duration: &bool,
+    has_thread_duration: &bool,
+    is_externally_visible: &bool,
+    is_defn: &bool,
+    has_global_storage: &bool,
+    ident: &str,
+    initializer: &Option<CExprId>,
+    typ: &CQualTypeId,
+    attrs: &IndexSet<Attribute>,
+) -> Option<GuidedType> {
+    match ident {
+        "_xj_local_errno" =>
+            Some(GuidedType::from_str("i32").expect("failed to parse 'i32'!?")),
+
+        "_xj_errno" =>
+            Some(GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?")),
+
+        _ => None
+    }
+}
+
 impl Translation<'_> {
+    pub fn builtin_unconditional_guidance(&self, id: CDeclId) -> Option<GuidedType> {
+        self.ast_context.get_decl(&id).and_then(|d| match &d.kind {
+            CDeclKind::Variable {
+                has_static_duration,
+                has_thread_duration,
+                is_externally_visible,
+                is_defn,
+                has_global_storage,
+                ident,
+                initializer,
+                typ,
+                attrs,
+            } => builtin_unconditional_variable_guidance(
+                has_static_duration,
+                has_thread_duration,
+                is_externally_visible,
+                is_defn,
+                has_global_storage,
+                &ident,
+                initializer,
+                typ,
+                attrs,
+            ),
+
+            _ => None,
+        })
+    }
+
     pub fn recognize_c_assignment_cases(
         &self,
         ctx: ExprContext,

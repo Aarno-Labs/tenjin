@@ -24,7 +24,7 @@ std::string WrapperString(FunctionDecl *Decl)
   std::string funcName = Decl->getNameAsString();
   bool isVoid = retType->isVoidType();
 
-  std::string wrapperStr = "static " + retTypeStr + " _xj_wrap_" + funcName + "(int *_xj_error";
+  std::string wrapperStr = "static " + retTypeStr + " _xj_wrap_" + funcName + "(int *_xj_errno";
   std::string callArgs;
   uint anonCtr = 0;
   for (auto *param : Decl->parameters())
@@ -55,7 +55,7 @@ std::string WrapperString(FunctionDecl *Decl)
   {
     wrapperStr += retTypeStr + " ret = ";
   }
-  wrapperStr += funcName + "(" + callArgs + "); *_xj_error = errno; ";
+  wrapperStr += funcName + "(" + callArgs + "); *_xj_errno = errno; ";
   if (!isVoid)
   {
     wrapperStr += "return ret; ";
