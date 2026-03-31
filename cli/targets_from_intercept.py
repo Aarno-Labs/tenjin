@@ -17,7 +17,9 @@ def combine(path1: str, path2: str) -> str:
 
 @dataclass
 class CategorizedCommandArgs:
-    shared: list[str]
+    shared: list[
+        str
+    ]  # as in shared between compile- and link-mode invocations; not about shared libraries.
     compile_only: list[str]
     link_only: list[str]
 
@@ -150,6 +152,10 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
 
         elif arg == "-static":
             ei.static_lib = True
+
+        elif arg in ("-MT", "-MQ"):
+            # These flags specify the name of the main output file; we eat the next arg and drop it.
+            arg = next(arg_iter)
 
         elif arg[-2:] == ".c":
             ei.c_inputs.append(arg)

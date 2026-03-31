@@ -31,7 +31,7 @@ use std::io::Write;
 use std::ops::Deref;
 use std::ops::Index;
 use syn::Lit;
-use syn::{spanned::Spanned, Arm, Expr, Pat, Stmt};
+use syn::{spanned::Spanned, Expr, Pat, Stmt};
 
 use failure::format_err;
 use indexmap::indexset;

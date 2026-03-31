@@ -55,7 +55,13 @@ def compute_caveman_safety_metrics(cargo_project_dir: Path) -> dict[str, int | f
         if file_path.is_file():
             process_file(file_path)
 
-    assert total_fns_count > 0, "No functions found in the codebase"
+    if total_fns_count == 0:
+        print("Warning: No functions found in the codebase. Cannot compute unsafe function ratio.")
+        print("Inspected files in cargo project directory:", cargo_project_dir)
+        for file_path in cargo_project_dir.glob("**/*.rs"):
+            if file_path.is_file():
+                print(" -", file_path)
+        raise ValueError("No functions found in the codebase")
     total_unsafe_fns_ratio = total_unsafe_fns_count / total_fns_count
     total_unsafe_fns_ratio = round(total_unsafe_fns_ratio, 3)
 

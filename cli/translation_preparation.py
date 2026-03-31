@@ -12,6 +12,7 @@ from enum import Enum
 
 from clang.cindex import Cursor, CursorKind  # type: ignore
 from cmake_file_api import CMakeProject
+import click
 
 import compilation_database
 import batching_rewriter
@@ -540,7 +541,7 @@ def run_preparation_passes(
 
         for target in store.build_info.get_all_targets():
             compdb_for_target = store.build_info.compdb_for_target_within(
-                target.name, current_codebase
+                target.key, current_codebase
             )
             defs = compilation_database.extract_preprocessor_definitions_from_compile_commands(
                 compdb_for_target,
@@ -608,16 +609,6 @@ def run_preparation_passes(
 
         # TODO: run the above steps in parallel batches
 
-        # cov_outputs = set(
-        #     cmd.output
-        #     for cmd in profile_compdb.commands
-        #     if cmd.output is not None and not cmd.output.endswith(".o")
-        # )
-        cov_output_names = [Path(p).name for p in cmd_for_output.keys()]
-        assert len(cov_output_names) == len(set(cov_output_names)), (
-            f"Expected unique exe/lib file names, got duplicates: {cov_output_names}"
-        )
-
         built_cov = Path(current_codebase.parent / "_built_cov")
         built_cov.mkdir(exist_ok=True)
         for o, cmd in cmd_for_output.items():
@@ -637,7 +628,8 @@ def run_preparation_passes(
                 f" got\n{po}"
             )
             rel = po.relative_to(original_builddir)
-            shutil.move(po, built_cov / po.name)
+            (built_cov / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(po, built_cov / rel)
             shutil.move(preserved_builddir / rel, po)
 
         shutil.rmtree(preserved_builddir)
@@ -673,6 +665,16 @@ def run_preparation_passes(
                 new_commands.append(cmds[0])
                 continue
 
+            # The _triplicated smoke test compiles a file from `_build_1`;
+            # most others use `c_01_intercept_build`.
+            orig_root_candidates = [resultsdir / "c_01_intercept_build", resultsdir / "_build_1"]
+            orig_roots = [r for r in orig_root_candidates if stale_abs_path.is_relative_to(r)]
+            assert any(orig_roots), (
+                f"Expected stale path {stale_abs_path} to be within one of {orig_root_candidates}"
+            )
+            stale_rel_path = stale_abs_path.relative_to(orig_roots[0])
+            stale_rel_dir = stale_rel_path.parent
+
             # Multiple commands for same file - need to duplicate all of them
             for idx, cmd in enumerate(cmds):
                 # Create unique file name: foo.c -> foo_xjdup_0.c, foo_xjdup_1.c, ...
@@ -680,11 +682,18 @@ def run_preparation_passes(
                 suffix = stale_abs_path.suffix
                 new_filename = f"{stem}_xjdup_{idx}{suffix}"
                 stale_dedup_path = stale_abs_path.parent / new_filename
-                curr_dedup_path = current_codebase / new_filename
+                curr_dedup_path = current_codebase / stale_rel_dir / new_filename
 
                 # Copy the source file to the new file.
                 assert stale_abs_path.exists()
                 shutil.copyfile(stale_abs_path, curr_dedup_path)
+                # Backfill because _CompileCommand_from_intercepted_command.update()
+                # will be looking for the file in the original location.
+                shutil.copyfile(stale_abs_path, stale_dedup_path)
+                print("Created duplicate source file for uniquification:")
+                click.echo(f"    {click.style(str(stale_abs_path), fg='red')}")
+                click.echo(f"    {click.style(str(curr_dedup_path), fg='green')}")
+                click.echo(f"    prev = {click.style(str(prev), fg='yellow')}")
 
                 # Cache this to reduce the number of repeated resolve() calls.
                 resolved_stale_path = stale_abs_path.resolve()
@@ -698,7 +707,8 @@ def run_preparation_passes(
                         pass
                     return arg
 
-                new_commands.append(cmd.fmap_input_paths(update_arg))
+                updated_cmd = cmd.fmap_input_paths(update_arg)
+                new_commands.append(updated_cmd)
 
         # compile_commands_for_path omits fake link thingy commands,
         # so we need to add them back in.
@@ -734,9 +744,7 @@ def run_preparation_passes(
         all_targets = store.build_info.get_all_targets()
         if len(all_targets) == 1 and all_targets[0].type == TargetType.EXECUTABLE:
             # Case A
-            compdb = store.build_info.compdb_for_target_within(
-                all_targets[0].name, current_codebase
-            )
+            compdb = store.build_info.compdb_for_target_within(all_targets[0].key, current_codebase)
 
             c_refact.localize_mutable_globals(
                 current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
@@ -752,7 +760,7 @@ def run_preparation_passes(
         # without concern for overlapping source files.
         for target in store.build_info.get_all_targets():
             compdb_for_target = store.build_info.compdb_for_target_within(
-                target.name, current_codebase
+                target.key, current_codebase
             )
             c_refact_arglifter.lift_subfield_args(compdb_for_target)
 
@@ -831,9 +839,9 @@ def run_preparation_passes(
             return
 
         curr_compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase
+            all_build_targets[0].key, current_codebase
         )
-        print("compdb for target:", all_build_targets[0].name)
+        print("compdb for target:", all_build_targets[0].key)
         print(curr_compdb)
         print()
         print()
@@ -857,7 +865,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase
+            all_build_targets[0].key, current_codebase
         )
 
         all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
@@ -975,7 +983,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase
+            all_build_targets[0].key, current_codebase
         )
 
         items_src_by_tu: dict[FilePathStr, dict[QUSS_and_defn, FileContentsStr]] = {}
@@ -1329,7 +1337,7 @@ def run_preparation_passes(
             return
 
         compdb = store.build_info.compdb_for_target_within(
-            all_build_targets[0].name, current_codebase
+            all_build_targets[0].key, current_codebase
         )
 
         # We want to capture decl information after the header contents have stabilized,
@@ -1351,7 +1359,7 @@ def run_preparation_passes(
         c_refact.preprocess_build(store.build_info, all_build_targets[0], current_codebase)
         # build_info now marked to use preprocessed files, so re-generate compdb
         new_compdb: compilation_database.CompileCommands = (
-            store.build_info.compdb_for_target_within(all_build_targets[0].name, current_codebase)
+            store.build_info.compdb_for_target_within(all_build_targets[0].key, current_codebase)
         )
 
         for cmd in new_compdb.commands:

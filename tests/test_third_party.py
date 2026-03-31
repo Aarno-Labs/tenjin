@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
 import shutil
-
 import pytest
+import os
+import resource
 
 from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
@@ -13,7 +14,6 @@ from tenjin_pytest_helpers import (
 import translation_preparation
 import translation
 import hermetic
-import os
 
 
 def suckless_sbase_git_clone() -> Path:
@@ -218,6 +218,76 @@ def test_lua_5_4_0_immunant(
 
     assert rs_prog_output.stdout == c_prog_output.stdout, (
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
+    )
+
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
+# This test requires <openssl/conf.h> to compile and dynamically links against `libcrypto`.
+# On Mac, we should query `brew --prefix openssl`.
+# It also appears that setrlimit doesn't work properly on Mac, so anyone running this test
+# would need to set `ulimit -s 32000` before invoking pytest.
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_005(
+    root: Path,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    request: pytest.FixtureRequest,
+    extras: list,
+):
+    codebase = tractor_public_tests_git_clone()
+
+    translation_preparation.copy_codebase(
+        codebase
+        / "Public-Tests"
+        / "P01_sphincs_plus"
+        / "005_sphincs_PQCgenKAT_sign_blake_128f_simple",
+        tmp_codebase,
+    )
+    exe_name = "PQCgenKAT_sign"
+
+    # blake256.c has a very large function (~1600 statements) which causes c2rust to
+    # blow the stack with the default 8MB limit.
+    try:
+        mb_32 = 32 * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_STACK, (mb_32, mb_32))
+    except ValueError:
+        return pytest.skip(
+            "P01 requires a large stack which we can't set up on this platform; skipping test.",
+        )
+
+    os.environ["XJ_CMAKE_PRESET"] = "test"  # without this, we'll compile the wrong code
+    translation.do_translate(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="tractor_ta3_corpus_p01",
+        guidance_path_or_literal="{}",
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    # The P01 build may or may not have a `_nolines` suffix; currently it will not
+    # but let's not have this test break if that changes in the future.
+    rs_bins = list((tmp_resultsdir / "final" / "target" / "debug").glob(f"{exe_name}*"))
+    rs_bins = [p for p in rs_bins if p.is_file() and os.access(p, os.X_OK)]
+    assert len(rs_bins) == 1, (
+        f"Expected exactly one binary in {tmp_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in rs_bins]}"
+    )
+    rs_bin = rs_bins[0]
+
+    test_vector = tmp_codebase / "test_vectors" / "test.json"
+    spec = json.loads(test_vector.read_text(encoding="utf-8"))
+
+    os.environ["XJ_LD_SYSROOT"] = (
+        "1"  # Note: P01 dynamically links against libcrypto; this makes it available.
+    )
+
+    outcome_rs = run_tractor_test_vector(
+        rs_bin, test_vector.stem, spec, cwd=tmp_resultsdir / "final"
+    )
+    assert outcome_rs.ok, (
+        f"Test vector {test_vector.stem} failed on the Rust version: {outcome_rs.message}"
     )
 
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
