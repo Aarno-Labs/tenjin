@@ -1023,15 +1023,15 @@ impl Translation<'_> {
                     vec![],
                 );
                 let extract_i32 = mk().method_chain_expr(
-                    call_last_os_error, 
+                    call_last_os_error,
                     vec![
                         (mk().path_segment("raw_os_error"), vec![]),
                         (mk().path_segment("unwrap"), vec![]),
-                    ]
+                    ],
                 );
                 Ok(Some(WithStmts::new_val(extract_i32)))
             }
-            _ => Ok(None)
+            _ => Ok(None),
         }
     }
 

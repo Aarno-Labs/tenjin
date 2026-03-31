@@ -502,7 +502,7 @@ def check_output_git(args: list[str]):
 def run_chkc(
     cmd: RunSpec,
     check=False,
-    capture_output: bool=False,
+    capture_output: bool = False,
 ) -> subprocess.CompletedProcess:
     localdir = repo_root.localdir()
     env_ext = {"PYTHONPATH": xj_codehawk_c(localdir).as_posix()}

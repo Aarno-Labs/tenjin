@@ -283,9 +283,11 @@ def _is_cc_command(args: list[str]) -> bool:
             return True
     return False
 
+
 def autoinclude_tenjin_decl_args() -> list[str]:
     decl_header = str(repo_root.find_repo_root_dir_Path() / "cli" / "autoincluded_tenjin_decls.h")
     return ["-include", decl_header]
+
 
 def autoexpand_macro_file_args() -> list[str]:
     macros_file = (

@@ -1184,9 +1184,7 @@ def localize_mutable_globals(
         print("No liftable mutated globals found; skipping further localization steps.")
         return
 
-    mutated_globals_cursors_by_name = {
-        c.spelling: c for c in liftable_mutated_globals_and_statics
-    }
+    mutated_globals_cursors_by_name = {c.spelling: c for c in liftable_mutated_globals_and_statics}
 
     assert len(mutated_globals_cursors_by_name) == len(liftable_mutated_globals_and_statics), (
         "Expected all (liftable) mutated global names to be unique, "

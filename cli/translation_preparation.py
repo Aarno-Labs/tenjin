@@ -1376,7 +1376,9 @@ def run_preparation_passes(
 
         xj_start = time.time()
         cp = hermetic.run_chkc(
-            ["c-project", "parse", current_codebase.as_posix(), "errno_analysis"], check=False, capture_output=True
+            ["c-project", "parse", current_codebase.as_posix(), "errno_analysis"],
+            check=False,
+            capture_output=True,
         )
         xj_elapsed = time.time() - xj_start
         print(f"Codehawk parsed project in {xj_elapsed:.1f} seconds")
@@ -1394,7 +1396,7 @@ def run_preparation_passes(
                 "errno_analysis",
             ],
             check=False,
-            capture_output=True
+            capture_output=True,
         )
         xj_elapsed = time.time() - xj_start
         print(f"Codehawk analyzed project in {xj_elapsed:.1f} seconds")
