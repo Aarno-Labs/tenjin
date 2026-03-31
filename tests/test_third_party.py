@@ -223,6 +223,10 @@ def test_lua_5_4_0_immunant(
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
+# This test requires <openssl/conf.h> to compile and dynamically links against `libcrypto`.
+# On Mac, we should query `brew --prefix openssl`.
+# It also appears that setrlimit doesn't work properly on Mac, so anyone running this test
+# would need to set `ulimit -s 32000` before invoking pytest.
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_005(
     root: Path,
