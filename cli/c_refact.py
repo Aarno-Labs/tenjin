@@ -1184,6 +1184,15 @@ def localize_mutable_globals(
         print("No liftable mutated globals found; skipping further localization steps.")
         return
 
+    mutated_globals_cursors_by_name = {
+        c.spelling: c for c in liftable_mutated_globals_and_statics
+    }
+
+    assert len(mutated_globals_cursors_by_name) == len(liftable_mutated_globals_and_statics), (
+        "Expected all (liftable) mutated global names to be unique, "
+        + f"but got duplicates within: {mutated_globals_cursors_by_name.keys()}"
+    )
+
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
     print("STEP 2b: Finding struct/union dependencies")
@@ -1376,8 +1385,7 @@ def localize_mutable_globals(
 
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling in phase1results.mutd_global_names
-                    and child.spelling not in phase1results.all_function_names
+                    and child.spelling in mutated_globals_cursors_by_name
                 ):
                     # Get the extent of the variable reference
                     start_offset = child.extent.start.offset
@@ -1488,14 +1496,6 @@ def localize_mutable_globals(
         #                 break
 
         # Add the XjGlobals struct definition
-        mutated_globals_cursors_by_name = {
-            c.spelling: c for c in liftable_mutated_globals_and_statics
-        }
-        assert len(mutated_globals_cursors_by_name) == len(liftable_mutated_globals_and_statics), (
-            "Expected all (liftable) mutated global names to be unique, "
-            + f"but got duplicates within: {mutated_globals_cursors_by_name.keys()}"
-        )
-
         header_lines.append("struct XjGlobals {")
         for global_name in sorted(mutated_globals_cursors_by_name.keys()):
             var_cursor = mutated_globals_cursors_by_name[global_name]
