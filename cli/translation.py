@@ -1,5 +1,4 @@
 import shutil
-import sys
 from pathlib import Path
 from subprocess import CompletedProcess, CalledProcessError
 import re
@@ -282,7 +281,7 @@ def do_translate(
 
     click.echo("Running upstream c2rust translation...")
     # First run the upstream c2rust tool to get a baseline translation.
-    run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
+    upstream_c2rust_ok = run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
 
     output = output.rename(output.with_name("vanilla_c2rust"))
 
@@ -353,14 +352,18 @@ def do_translate(
         tracker.mark_translation_finished()
         print("Translation finished.")
         print("Collecting static code quality measurements...")
-        baseline_metrics = static_measurements_rust.static_rust_metrics(
-            resultsdir / "vanilla_c2rust"
-        )
         xj_start_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "00_out")
         xj_final_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "final")
 
-        print("Baseline from upstream c2rust:")
-        pprint.pprint(baseline_metrics)
+        if upstream_c2rust_ok:
+            baseline_metrics = static_measurements_rust.static_rust_metrics(
+                resultsdir / "vanilla_c2rust"
+            )
+
+            print("Baseline from upstream c2rust:")
+            pprint.pprint(baseline_metrics)
+        else:
+            baseline_metrics = {}
 
         print("Tenjin's initial, un-improved Rust output:")
         pprint.pprint(xj_start_metrics)
@@ -385,7 +388,7 @@ def do_translate(
             f.write(results_snapshot.to_json(indent=2))
 
 
-def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output):
+def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output) -> bool:
     upstream_c2rust_bin = localdir() / "upstream-c2rust" / "target" / "debug" / "c2rust"
     try:
         _up_cp = run_c2rust(
@@ -401,9 +404,6 @@ def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output):
         def oops(msg: str):
             click.secho("TENJIN: " + msg, err=True, fg="red", bg="white")
 
-        oops(f"Upstream c2rust failed with error code {e.returncode}.")
-        oops("When upstream c2rust cannot translate a codebase, it's very unlikely that Tenjin")
-        oops("will succeed, so there's not much we can do.")
         oops("The command we ran was:")
         click.echo(" ".join(e.cmd))
         oops("    but note that it was invoked in a modified environment.")
@@ -413,8 +413,12 @@ def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output):
         click.echo(e.stdout)
         oops("and stderr:")
         click.echo(e.stderr)
-
-        sys.exit(1)
+        oops("")
+        oops(f"Upstream c2rust failed with error code {e.returncode}. See details above.")
+        oops("Usually this means that Tenjin will encounter the same problem.")
+        oops("But we'll try, at least. Fingers crossed!")
+        return False
+    return True
 
 
 def load_and_parse_guidance(guidance_path_or_literal: str) -> dict:
