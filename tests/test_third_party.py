@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 import pytest
 import os
+import resource
 
 from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
@@ -240,6 +241,16 @@ def test_tractor_ta3_corpus_p01_005(
         tmp_codebase,
     )
     exe_name = "PQCgenKAT_sign"
+
+    # blake256.c has a very large function (~1600 statements) which causes c2rust to
+    # blow the stack with the default 8MB limit.
+    try:
+        mb_32 = 32 * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_STACK, (mb_32, mb_32))
+    except ValueError:
+        return pytest.skip(
+            "P01 requires a large stack which we can't set up on this platform; skipping test.",
+        )
 
     os.environ["XJ_CMAKE_PRESET"] = "test"  # without this, we'll compile the wrong code
     translation.do_translate(
