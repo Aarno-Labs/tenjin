@@ -61,7 +61,12 @@ def cached_git_clone_at_commit(repo_url: str, commit: str) -> Path:
         # waited and someone else already finished.
         if not done_sentinel.exists():
             # We're the first worker. Do the clone + checkout.
-            assert not repo_cache_path.exists()
+            if repo_cache_path.exists():
+                # If the cache directory exists but the sentinel doesn't, it means
+                # a previous clone attempt failed, or was interrupted, or we have
+                # an older checkout from before using file locks.
+                # In any case: Remove the invalid cache before retrying.
+                hermetic.run(["rm", "-rf", str(repo_cache_path)], check=True)
 
             try:
                 hermetic.run(
