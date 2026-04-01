@@ -13,6 +13,48 @@
 #ifndef LOCALIZE_ERRNO_AST_VISITOR_
 #define LOCALIZE_ERRNO_AST_VISITOR_
 
+namespace localize {
+enum TransformPolicy {
+  Unconditional,
+  OnDemand,
+};
+
+// This stages the transformation for each function so that we conditionally apply 
+// the localization pass (e.g. if a function does not actually use errno even
+// though it may call stdlib functions, we can decide whether to generate wrappers)
+struct FunctionTransaction
+{
+  FunctionTransaction() : Decl(nullptr), NeedsDecl(false), HasNonDeclCall(false), HasErrnoReference(false) {}
+  // During traversal, tracks which function body we're in
+  clang::FunctionDecl *Decl;
+  // If we need to declare the local error number var in the current
+  // function being traversed
+  bool NeedsDecl;
+  bool HasNonDeclCall;
+  bool HasErrnoReference;
+  clang::tooling::AtomicChanges Changes;
+  std::set<clang::FunctionDecl*> NeededWrappers;
+
+  bool ShouldApply(TransformPolicy Policy);
+  bool CanApply();
+
+  void CommitChanges(clang::ASTContext *Context,
+                    clang::tooling::AtomicChanges &DestChanges, 
+                     std::set<USRString> &DestWrappedFunctions,
+                     std::map<USRString, std::string> &DestWrappers,
+                     std::map<USRString, clang::SourceLocation> &DestInsertLocations);
+
+  bool empty();
+  void clear();
+  void begin(clang::FunctionDecl *F);
+
+  void GenerateWrapper(clang::ASTContext *Context,
+                       clang::FunctionDecl *Callee,
+                       std::set<USRString> &Wrappers,
+                       std::map<USRString, std::string> &PendingWrappers,
+                       std::map<USRString, clang::SourceLocation> &InsertLocations);
+};
+
 // This visitor traverses the AST to find and generate changes:
 // 1. Reads of errno (*__errno_location()) are replaced with reads of
 //    a local errno int
@@ -25,8 +67,8 @@ class LocalizeErrnoASTVisitor : public clang::RecursiveASTVisitor<LocalizeErrnoA
 {
 friend class LocalizeErrnoConsumer;
 public:
-  LocalizeErrnoASTVisitor(clang::ASTContext *Context, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes)
-      : CurrentFunction(nullptr), Context(Context), External(External), Changes(Changes)
+  LocalizeErrnoASTVisitor(clang::ASTContext *Context, TransformPolicy Policy, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes)
+      : Context(Context), External(External), Changes(Changes), Policy(Policy)
       {}
 
   bool TraverseFunctionDecl(clang::FunctionDecl *Decl);
@@ -36,7 +78,10 @@ public:
 
 private:
   void ReplaceErrnoUsage(clang::Expr *Expr);
-  void GenerateWrapper(clang::FunctionDecl *Context, clang::FunctionDecl *Callee);
+  void EnterFunction(clang::FunctionDecl *F);
+  void ExitFunction(clang::FunctionDecl *F);
+
+  TransformPolicy Policy;
 
   // USRs of functions that we should consider external to this
   // project (that is, all TUs being considered), and hence need
@@ -52,27 +97,18 @@ private:
   std::set<USRString> Wrappers;
 
   // Pairs of (f, <wrapper decl/definition of f>)
-  std::vector<std::pair<USRString, std::string>> PendingWrappers;
+  std::map<USRString, std::string> PendingWrappers;
 
-  // During traversal, tracks which function body we're in
-  clang::FunctionDecl *CurrentFunction;
-
-  // If we need to declare the local error number var in the current
-  // function being traversed
-  bool CurrentFunctionNeedsDecl;
-  bool CurrentFunctionNonDeclCall;
-  bool CurrentFunctionHasErrnoReference;
-  clang::ASTContext *Context; 
-  // Changes for CurrentFunction
-  clang::tooling::AtomicChanges StagedChanges;
+  FunctionTransaction CurrentFunctionTxn;
   // The accumulated changes
   clang::tooling::AtomicChanges &Changes;
+  clang::ASTContext *Context; 
 };
 
 class LocalizeErrnoConsumer : public clang::ASTConsumer {
 public:
-  explicit LocalizeErrnoConsumer(clang::ASTContext *Context, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes) 
-    : Visitor(Context, External, Changes), Changes(Changes) {}
+  explicit LocalizeErrnoConsumer(clang::ASTContext *Context, TransformPolicy Policy, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes) 
+    : Visitor(Context, Policy, External, Changes), Changes(Changes) {}
 
   virtual void HandleTranslationUnit(clang::ASTContext &Context) override;
 
@@ -83,30 +119,32 @@ private:
 
 class LocalizeErrnoAction : public clang::ASTFrontendAction {
 public:
-  LocalizeErrnoAction(std::set<USRString> &External, clang::tooling::AtomicChanges &Changes) : External(External), Changes(Changes) {}
+  LocalizeErrnoAction(TransformPolicy Policy, std::set<USRString> &External, clang::tooling::AtomicChanges &Changes) : Policy(Policy), External(External), Changes(Changes) {}
 
   virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
     clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
-      return std::make_unique<LocalizeErrnoConsumer>(&Compiler.getASTContext(), External, Changes);
+      return std::make_unique<LocalizeErrnoConsumer>(&Compiler.getASTContext(), Policy, External, Changes);
     }
 private:
+  TransformPolicy Policy;
   std::set<USRString> &External;
   clang::tooling::AtomicChanges &Changes;
 };
 
 class LocalizeErrnoActionFactory : public clang::tooling::FrontendActionFactory {
 public:
-  LocalizeErrnoActionFactory(std::set<USRString> &External)
-  : External(External) {}
+  LocalizeErrnoActionFactory(TransformPolicy Policy, std::set<USRString> &External)
+  : External(External), Policy(Policy) {}
 
   std::unique_ptr<clang::FrontendAction> create() override
   {
-    return std::make_unique<LocalizeErrnoAction>(External, Changes);
+    return std::make_unique<LocalizeErrnoAction>(Policy, External, Changes);
   }
 
   clang::tooling::AtomicChanges Changes;
 private:
+  TransformPolicy Policy;
   std::set<USRString> &External;
 };
-
+}
 #endif

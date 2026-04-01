@@ -10,6 +10,22 @@ int foo(void)
   return 0;
 }
 
+int doesnt_use_errno(FILE *f)
+{
+  (void)fclose(f); 
+  return 0;
+}
+
+int does_use_errno(FILE *f)
+{
+  int r = fclose(f); 
+  if (r < 0)
+  {
+    return errno;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
     errno = 0;

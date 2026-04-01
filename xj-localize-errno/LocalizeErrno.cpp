@@ -28,7 +28,8 @@ using namespace llvm;
 // Apply a custom category to all command-line options so that they are the
 // only ones displayed.
 static cl::OptionCategory LocalizeCategory("xj-localize-errno options");
-cl::opt<bool> InPlace("i", cl::desc("Run localization in-place"), cl::cat(LocalizeCategory), cl::init(false));
+cl::opt<bool> InPlace("in-place", cl::desc("Run localization in-place"), cl::cat(LocalizeCategory), cl::init(false));
+cl::opt<bool> OnDemand("on-demand", cl::desc("Generate wrapper functions only when errno is referenced"), cl::cat(LocalizeCategory), cl::init(false));
 
 int main(int argc, const char **argv)
 {
@@ -45,6 +46,7 @@ int main(int argc, const char **argv)
   CommonOptionsParser &OptionsParser = ExpectedParser.get();
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
+  localize::TransformPolicy Policy = OnDemand ? localize::OnDemand : localize::Unconditional;
 
   // Collect all decls we will consider to be external;
   FindExternalFunctionActionFactory Action;
@@ -52,7 +54,7 @@ int main(int argc, const char **argv)
 
   auto ExternalUSRs = Action.GetExternalDecls();
 
-  LocalizeErrnoActionFactory LocalizeAction(ExternalUSRs);
+  localize::LocalizeErrnoActionFactory LocalizeAction(Policy, ExternalUSRs);
   Tool.run(&LocalizeAction);
 
   tooling::ApplyChangesSpec Spec;

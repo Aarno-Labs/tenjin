@@ -1440,7 +1440,8 @@ def run_preparation_passes(
         cp = hermetic.run(
             [
                 binary_path.as_posix(),
-                "-i",
+                "--in-place",
+                "--on-demand",
                 "-p",
                 current_codebase.as_posix(),
                 *source_files,
