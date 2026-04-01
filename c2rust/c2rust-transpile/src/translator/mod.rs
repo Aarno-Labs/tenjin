@@ -3674,8 +3674,7 @@ impl<'c> Translation<'c> {
                     is_inline && is_extern && !attrs.contains(&c_ast::Attribute::GnuInline);
 
                 // Only add linkage attributes if the function is `extern`
-                let mut mk_ = 
-                if is_builtin_wrapper {
+                let mut mk_ = if is_builtin_wrapper {
                     mk()
                 } else if is_main {
                     // Cross-check this function as if it was called `main`

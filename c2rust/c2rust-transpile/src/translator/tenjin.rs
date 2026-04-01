@@ -569,13 +569,13 @@ pub fn builtin_unconditional_variable_guidance(
     _attrs: &IndexSet<Attribute>,
 ) -> Option<GuidedType> {
     match ident {
-        "_xj_local_errno" =>
-            Some(GuidedType::from_str("i32").expect("failed to parse 'i32'!?")),
+        "_xj_local_errno" => Some(GuidedType::from_str("i32").expect("failed to parse 'i32'!?")),
 
-        "_xj_errno" =>
-            Some(GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?")),
+        "_xj_errno" => {
+            Some(GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?"))
+        }
 
-        _ => None
+        _ => None,
     }
 }
 
@@ -598,7 +598,7 @@ impl Translation<'_> {
                 is_externally_visible,
                 is_defn,
                 has_global_storage,
-                &ident,
+                ident,
                 initializer,
                 typ,
                 attrs,
