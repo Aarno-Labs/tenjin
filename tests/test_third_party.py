@@ -181,11 +181,11 @@ def test_url_h_aka_urlparser(
     extras: list,
 ):
     codebase = cached_git_clone_at_commit(
-        "https://github.com/jwerle/url.h.git", "a65623ad107be19ca4efb5a36379f3440eb48091"
+        "https://github.com/jwerle/url.h.git", "752635e46be6b13ad045f7216a28417fdf533950"
     )
 
     translation_preparation.copy_codebase(codebase, tmp_codebase)
-    buildcmd_args = ["make"]
+    buildcmd_args = ["make", "url-test"]
 
     translation.do_translate(
         root,
@@ -200,49 +200,37 @@ def test_url_h_aka_urlparser(
         [str(tmp_resultsdir / "_build_1" / "url-test")], check=True, capture_output=True
     )
 
-    def sanitize(bs: bytes) -> bytes:
-        # The original C program prints some garbage bytes from uninitialized memory;
-        # we'll replace those bytes with a placeholder so that we can compare the outputs.
-        b = bytearray(bs)
-        b[0x26D:0x272] = b"AAAAA"
-        assert len(b) == len(bs)
-        b[0x280:0x285] = b"AAAAA"
-        assert len(b) == len(bs)
-        return bytes(b)
-
     assert (
-        sanitize(c_prog_output.stdout)
+        c_prog_output.stdout
         == b"""#url =>
-    .href: "http://user:pass@subdomain.host.com:8080/p/a/t/h?query=string#hash"
     .protocol: "http"
     .host: "subdomain.host.com"
-    .auth: "user:pass"
-    .hostname: "subdomain.host.com:8080"
-    .pathname: "/p/a/t/h"
-    .search: "?query=string"
-    .path: "/p/a/t/h?query=string#hash"
-    .hash: "#hash"
-    .query: "query=string"
+    .userinfo: "user:pass"
+    .host: "subdomain.host.com"
     .port: "8080"
+    .path: "/p/\xc3\xa5/t/h"
+    .query[0]: "qu\xc3\xabry" -> "strin\xc4\x9f"
+    .query[1]: "foo" -> "bar=yuk"
+    .query[2]: "key#&=" -> "%"
+    .query[3]: "lol" -> ""
+    .fragment: "h\xc3\xa6sh"
 #url =>
-    .href: "git://git@github.com:jwerle/url.h.git"
     .protocol: "git"
     .host: "github.com"
-    .auth: "git"
-    .hostname: "github.com"
-    .pathname: "jwerle/url.h.git"
-    .search: ""
+    .userinfo: "git"
+    .host: "github.com"
+    .port: (NULL)
     .path: "jwerle/url.h.git"
-    .hash: ""
-    .query: "AAAAA"
-    .port: "AAAAA"
+    .fragment: (NULL)
 """
     ), f"Got: {c_prog_output.stdout!r}"
 
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
-    rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
+    rs_prog_output = run_cargo_on_final(
+        tmp_resultsdir / "final", ["run", "--bin", "test"], capture_output=True
+    )
 
-    assert sanitize(rs_prog_output.stdout) == sanitize(c_prog_output.stdout), (
+    assert rs_prog_output.stdout == c_prog_output.stdout, (
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
