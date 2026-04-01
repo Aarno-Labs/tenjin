@@ -558,15 +558,15 @@ pub fn trim_unique_suffix(s: &str) -> &str {
 }
 
 pub fn builtin_unconditional_variable_guidance(
-    has_static_duration: &bool,
-    has_thread_duration: &bool,
-    is_externally_visible: &bool,
-    is_defn: &bool,
-    has_global_storage: &bool,
+    _has_static_duration: &bool,
+    _has_thread_duration: &bool,
+    _is_externally_visible: &bool,
+    _is_defn: &bool,
+    _has_global_storage: &bool,
     ident: &str,
-    initializer: &Option<CExprId>,
-    typ: &CQualTypeId,
-    attrs: &IndexSet<Attribute>,
+    _initializer: &Option<CExprId>,
+    _typ: &CQualTypeId,
+    _attrs: &IndexSet<Attribute>,
 ) -> Option<GuidedType> {
     match ident {
         "_xj_local_errno" =>
