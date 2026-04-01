@@ -307,6 +307,11 @@ def lift_subfield_args(
     rewrites_by_file: dict[str, list[CallSiteRewrite]] = {}
 
     for tu_path, tu in tus.items():
+        if Path(tu_path).suffix != ".i":
+            print(f"TENJIN: NOTE: Subfield arg lifting skipping non-preprocessed file: {tu_path}")
+            # If we ended up not expanding source, we cannot reliably apply rewrites, so skip this file.
+            continue
+
         content = Path(tu_path).read_bytes()
         for cursor, ancestors in yield_matching_cursors(tu.cursor, [CursorKind.CALL_EXPR]):
             rewrite = analyze_call_site(cursor, content, tu_path, ancestors)
