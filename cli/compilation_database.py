@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shlex
 from dataclasses import dataclass
+from typing import Callable
 
 import repo_root
 import hermetic
@@ -81,6 +82,18 @@ class CompileCommand:
                 command=" ".join(new_parts),
                 output=self.output,
             )
+
+    def with_sanitized_output(self, sanitizer_func: Callable[[str], str]) -> CompileCommand:
+        """Return a copy of this CompileCommand with the output field sanitized using the provided function."""
+        if not self.output:
+            return self
+        return CompileCommand(
+            directory=self.directory,
+            file=self.file,
+            command=self.command,
+            arguments=self.arguments,
+            output=sanitizer_func(self.output),
+        )
 
 
 @dataclass
@@ -284,6 +297,17 @@ def _is_cc_command(args: list[str]) -> bool:
     return False
 
 
+def legalize_output_name_for_rust(output: str) -> str:
+    p = Path(output)
+    if "-" in p.name:
+        if p.parent:
+            return str(p.parent / p.name.replace("-", "_"))
+        else:
+            return p.name.replace("-", "_")
+    else:
+        return output
+
+
 def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     """Modify compile_commands.json to include Tenjin-specific declarations
     and block expansion of macros that Tenjin gives special treatment."""
@@ -306,5 +330,5 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
             args.append("--block-macros-file=" + macros_file.as_posix())
             # See https://github.com/Aarno-Labs/llvm-project/commit/4256d14834810a78a1a61679316441172e0f0dd2
 
-        ccs.append(cc.with_command_parts(args))
+        ccs.append(cc.with_command_parts(args).with_sanitized_output(legalize_output_name_for_rust))
     CompileCommands(commands=ccs).to_json_file(compile_commands_path)

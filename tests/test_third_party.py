@@ -172,6 +172,71 @@ def test_Old_Man_Programmer__tree_2_3_2(
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
+# Expected runtime: 10 s
+def test_url_h_aka_urlparser(
+    root: Path,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    request: pytest.FixtureRequest,
+    extras: list,
+):
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/jwerle/url.h.git", "752635e46be6b13ad045f7216a28417fdf533950"
+    )
+
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    buildcmd_args = ["make", "url-test"]
+
+    translation.do_translate(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="tenjinized",
+        buildcmd=hermetic.shellize(buildcmd_args),
+        guidance_path_or_literal="{}",
+    )
+
+    c_prog_output = hermetic.run(
+        [str(tmp_resultsdir / "_build_1" / "url-test")], check=True, capture_output=True
+    )
+
+    assert (
+        c_prog_output.stdout
+        == b"""#url =>
+    .protocol: "http"
+    .host: "subdomain.host.com"
+    .userinfo: "user:pass"
+    .host: "subdomain.host.com"
+    .port: "8080"
+    .path: "/p/\xc3\xa5/t/h"
+    .query[0]: "qu\xc3\xabry" -> "strin\xc4\x9f"
+    .query[1]: "foo" -> "bar=yuk"
+    .query[2]: "key#&=" -> "%"
+    .query[3]: "lol" -> ""
+    .fragment: "h\xc3\xa6sh"
+#url =>
+    .protocol: "git"
+    .host: "github.com"
+    .userinfo: "git"
+    .host: "github.com"
+    .port: (NULL)
+    .path: "jwerle/url.h.git"
+    .fragment: (NULL)
+"""
+    ), f"Got: {c_prog_output.stdout!r}"
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(
+        tmp_resultsdir / "final", ["run", "--bin", "test"], capture_output=True
+    )
+
+    assert rs_prog_output.stdout == c_prog_output.stdout, (
+        f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
+    )
+
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
 @pytest.mark.slow  # expected runtime: 470 seconds (~8 minutes)
 def test_lua_5_4_0_immunant(
     root: Path,
