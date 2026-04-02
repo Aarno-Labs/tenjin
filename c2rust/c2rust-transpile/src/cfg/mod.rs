@@ -31,7 +31,7 @@ use std::io::Write;
 use std::ops::Deref;
 use std::ops::Index;
 use syn::Lit;
-use syn::{spanned::Spanned, Arm, Expr, Pat, Stmt};
+use syn::{spanned::Spanned, Expr, Pat, Stmt};
 
 use failure::format_err;
 use indexmap::indexset;
@@ -976,6 +976,14 @@ impl PerStmt {
     }
 }
 
+fn make_pat_binding_mutable(pat: &mut syn::Pat) {
+    if let syn::Pat::Ident(ref mut pat_ident) = pat {
+        pat_ident.mutability = Some(Default::default());
+    } else if let syn::Pat::Type(ref mut pat_type) = pat {
+        make_pat_binding_mutable(&mut pat_type.pat);
+    }
+}
+
 /// Stores information about translating C declarations to Rust statements. When seeing a C
 /// declaration, we often don't know if it is already in the right place. The fix is to punt: we
 /// put into a `DeclStmtStore` information about what to do in all possible cases and we delay
@@ -1038,7 +1046,7 @@ impl DeclStmtStore {
             .swap_remove(&decl_id)
             .ok_or_else(|| format_err!("Cannot find information on declaration 1 {:?}", decl_id))?;
 
-        let decl: Vec<Stmt> = decl.ok_or_else(|| {
+        let mut decl: Vec<Stmt> = decl.ok_or_else(|| {
             format_err!("Declaration for {:?} has already been extracted", decl_id)
         })?;
 
@@ -1048,6 +1056,12 @@ impl DeclStmtStore {
             decl_and_assign: None,
         };
         self.store.insert(decl_id, pruned);
+
+        // Since lifted variables get mutated, we need to ensure that the declaration winds up being mutable.
+        // XREF:relooper_lifted_decls_must_be_mutable
+        if let Some(syn::Stmt::Local(local)) = decl.last_mut() {
+            make_pat_binding_mutable(&mut local.pat);
+        }
 
         Ok(decl)
     }

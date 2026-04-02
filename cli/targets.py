@@ -79,14 +79,14 @@ class ExtraCompileOrLinkFlags:
     ld: list[str]
 
 
-type BuildTargetName = str
+type BuildTargetKey = str
 
 
 @dataclass
 class BuildTarget:
-    name: BuildTargetName
+    key: BuildTargetKey
     type: TargetType
-    stem: str
+    stem_not_unique: str
 
 
 class BuildInfo:
@@ -190,14 +190,14 @@ class BuildInfo:
 
     def _process_targets(
         self,
-    ) -> dict[BuildTargetName, tuple[BuildTarget, list[targets_from_intercept.InterceptedCommand]]]:
-        """Returns a mapping from target names to (BuildTarget, list of commands).
+    ) -> dict[BuildTargetKey, tuple[BuildTarget, list[targets_from_intercept.InterceptedCommand]]]:
+        """Returns a mapping from target outputs to (BuildTarget, list of commands).
 
         The list of commands includes both compilation and linking commands."""
         if self._implicit_target is not None:
             # When an implicit target is given, we assume all commands
             # belong to that target.
-            return {self._implicit_target.name: (self._implicit_target, self._intercepted_commands)}
+            return {self._implicit_target.key: (self._implicit_target, self._intercepted_commands)}
 
         # Without an implicit target, we must try to reconstruct
         # the targets from the intercepted commands.
@@ -210,60 +210,57 @@ class BuildInfo:
             "Duplicate object file outputs detected"
         )
 
-        # Sanity check: ensure no duplicate target names
-        def cmd_target_name(link_cmd: targets_from_intercept.InterceptedCommand) -> str:
-            return Path(link_cmd.output).name if link_cmd.output else "unknown"
+        # Sanity check: ensure no duplicate target keys
+        def cmd_target_key(link_cmd: targets_from_intercept.InterceptedCommand) -> str:
+            return link_cmd.output if link_cmd.output else "unknown"
 
         def cmd_invokes_ld(c: targets_from_intercept.InterceptedCommand) -> bool:
             return not c.compile_only and c.entry["arguments"][0].endswith("ld")
 
         cc_and_ld_dups: set[str] = set()
 
-        all_target_names = [
-            cmd_target_name(c) for c in self._intercepted_commands if not c.compile_only
+        all_target_keys = [
+            cmd_target_key(c) for c in self._intercepted_commands if not c.compile_only
         ]
 
         # When we intercept a link command done via the compiler driver, we'll also get
         # a corresponding link command done directly by the linker. This isn't a "real"
         # duplicate; we should ignore the compiler driver link command in this case, since
         # all it did was construct the appropriate linker command (which we have).
-        for name in all_target_names:
-            cmds_for_name = [
+        for key in all_target_keys:
+            cmds_for_key = [
                 c
                 for c in self._intercepted_commands
-                if not c.compile_only and cmd_target_name(c) == name
+                if not c.compile_only and cmd_target_key(c) == key
             ]
-            if (
-                len(cmds_for_name) == 2
-                and len([c for c in cmds_for_name if cmd_invokes_ld(c)]) == 1
-            ):
-                cc_and_ld_dups.add(name)
+            if len(cmds_for_key) == 2 and len([c for c in cmds_for_key if cmd_invokes_ld(c)]) == 1:
+                cc_and_ld_dups.add(key)
 
         # Filter out redundant link steps done via compiler driver invocations.
         sans_redundant_link_commands: list[targets_from_intercept.InterceptedCommand] = []
         for c in self._intercepted_commands:
-            name = cmd_target_name(c)
-            if name in cc_and_ld_dups and cmd_invokes_ld(c):
+            key = cmd_target_key(c)
+            if key in cc_and_ld_dups and cmd_invokes_ld(c):
                 continue
             sans_redundant_link_commands.append(c)
 
-        target_names_sans_redundants = [cmd_target_name(c) for c in sans_redundant_link_commands]
+        target_keys_sans_redundants = [cmd_target_key(c) for c in sans_redundant_link_commands]
 
-        if len(target_names_sans_redundants) != len(set(target_names_sans_redundants)):
+        if len(target_keys_sans_redundants) != len(set(target_keys_sans_redundants)):
             duplicates = set([
-                name
-                for name in target_names_sans_redundants
-                if target_names_sans_redundants.count(name) > 1
+                key
+                for key in target_keys_sans_redundants
+                if target_keys_sans_redundants.count(key) > 1
             ])
 
             for c in sans_redundant_link_commands:
-                if not c.compile_only and cmd_target_name(c) in duplicates:
+                if not c.compile_only and cmd_target_key(c) in duplicates:
                     click.echo(
                         click.style("ERROR:", fg="red")
-                        + f" Duplicate target name '{click.style(cmd_target_name(c), fg='red')}' for command: "
+                        + f" Duplicate target key '{click.style(cmd_target_key(c), fg='red')}' for command: "
                         + click.style(str(c), fg=(142, 142, 142))
                     )
-            raise ValueError(f"Duplicate target names detected: {duplicates}")
+            raise ValueError(f"Duplicate target keys detected: {duplicates}")
 
         intermediates: dict[str, targets_from_intercept.InterceptedCommand] = {}
         for c in self._intercepted_commands:
@@ -283,24 +280,25 @@ class BuildInfo:
 
         link_commands = list(filter(lambda c: not c.compile_only, sans_redundant_link_commands))
 
-        targets: dict[str, BuildTarget] = {}
+        targets: dict[str, tuple[BuildTarget, targets_from_intercept.InterceptedCommand]] = {}
         for link_cmd in link_commands:
-            target_name = cmd_target_name(link_cmd)
+            target_output = link_cmd.output
+            assert target_output, f"Link command missing target output: {link_cmd}"
             target_type = compute_target_type(link_cmd)
-            target_stem = Path(target_name).stem
-            assert target_name != "unknown", f"Link command missing target name: {link_cmd}"
-            target = BuildTarget(name=target_name, type=target_type, stem=target_stem)
-            targets[target_name] = target
+            target_stem = Path(target_output).stem
+            target = BuildTarget(key=target_output, type=target_type, stem_not_unique=target_stem)
+            targets[target_output] = (target, link_cmd)
 
-        target_to_cmds = {}
-        for link_cmd in link_commands:
-            target = targets[cmd_target_name(link_cmd)]
+        target_to_cmds: dict[
+            BuildTargetKey, tuple[BuildTarget, list[targets_from_intercept.InterceptedCommand]]
+        ] = {}
+        for target_output, (target, link_cmd) in targets.items():
             target_cmds = [link_cmd]
             for intermediate in link_cmd.rest_inputs:
                 if intermediate in intermediates:
                     c_cmd = intermediates[intermediate]
                     target_cmds.append(c_cmd)
-            target_to_cmds[target.name] = (target, target_cmds)
+            target_to_cmds[target_output] = (target, target_cmds)
 
         return target_to_cmds
 
@@ -322,16 +320,16 @@ class BuildInfo:
 
     def compdb_for_target_within(
         self,
-        target_name: BuildTargetName,
+        target_key: BuildTargetKey,
         current_codebase: Path,
         link_cmd_handling=LinkCommandHandling.EXCLUDE,
     ) -> compilation_database.CompileCommands:
         """Return a compilation database for the given target."""
         target_map = self._process_targets()
-        if target_name not in target_map:
-            raise ValueError(f"Target {target_name} not found in BuildInfo")
+        if target_key not in target_map:
+            raise ValueError(f"Target {target_key} not found in BuildInfo")
 
-        _, cmds = target_map[target_name]
+        _, cmds = target_map[target_key]
         return self._compdb_for_commands_within(
             cmds,
             current_codebase,

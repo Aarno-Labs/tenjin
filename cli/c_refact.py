@@ -161,7 +161,7 @@ def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: P
 
     clang_path = hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "clang"
 
-    compdb = b.compdb_for_target_within(t.name, target_dir)
+    compdb = b.compdb_for_target_within(t.key, target_dir)
     for cmd in compdb.commands:
         # 1. Determine paths
         abs_src_path = cmd.absolute_file_path
@@ -234,7 +234,7 @@ def refold_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir_path: 
     For each TU in compdb, run clang-refold to produce .c files from modified .i files
     """
     target_dir_path.mkdir(parents=True, exist_ok=True)
-    compdb = b.compdb_for_target_within(t.name, target_dir_path)
+    compdb = b.compdb_for_target_within(t.key, target_dir_path)
     for cmd in compdb.commands:
         abs_src_path = cmd.absolute_file_path
 
