@@ -66,6 +66,7 @@ const std::set<std::string> ERRNO_UNMODIFIED = {
     "free",
     "exit",
     // <string.h>
+    "memmove",
     "memset",
     "strcmp",
     "strncmp",
