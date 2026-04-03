@@ -52,14 +52,16 @@ int main(int argc, const char **argv)
   FindExternalFunctionActionFactory Action;
   Tool.run(&Action);
 
+  // Collect all localization changes
+  tooling::AtomicChanges Changes;
   auto ExternalUSRs = Action.GetExternalDecls();
-
-  localize::LocalizeErrnoActionFactory LocalizeAction(Policy, ExternalUSRs);
+  localize::LocalizeErrnoActionFactory LocalizeAction(Policy, Changes, ExternalUSRs);
   Tool.run(&LocalizeAction);
 
+  // Apply changes to each file
   tooling::ApplyChangesSpec Spec;
   std::map<std::string, AtomicChanges> file_changes;
-  for (const auto &Change : LocalizeAction.Changes)
+  for (const auto &Change : Changes)
   {
     auto changes = file_changes.find(Change.getFilePath());
     if (changes == file_changes.end())

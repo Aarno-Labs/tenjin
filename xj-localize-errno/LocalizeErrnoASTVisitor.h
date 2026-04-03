@@ -15,8 +15,8 @@
 
 namespace localize {
 enum TransformPolicy {
-  Unconditional,
-  OnDemand,
+  Unconditional, // Wrap all external calls
+  OnDemand,      // Wrap external calls only when errno is referenced by the calling function
 };
 
 // This stages the transformation for each function so that we conditionally apply 
@@ -24,19 +24,15 @@ enum TransformPolicy {
 // though it may call stdlib functions, we can decide whether to generate wrappers)
 struct FunctionTransaction
 {
-  FunctionTransaction() : Decl(nullptr), NeedsDecl(false), HasNonDeclCall(false), HasErrnoReference(false) {}
+  FunctionTransaction() : Decl(nullptr), HasNonDeclCall(false), HasErrnoAccess(false) {}
   // During traversal, tracks which function body we're in
   clang::FunctionDecl *Decl;
-  // If we need to declare the local error number var in the current
-  // function being traversed
-  bool NeedsDecl;
-  bool HasNonDeclCall;
-  bool HasErrnoReference;
+  bool HasNonDeclCall; // If there is a function call through a pointer or otherwise that we can not handle
+  bool HasErrnoAccess; // If the function accesses errno
   clang::tooling::AtomicChanges Changes;
   std::set<clang::FunctionDecl*> NeededWrappers;
 
   bool ShouldApply(TransformPolicy Policy);
-  bool CanApply();
 
   void CommitChanges(clang::ASTContext *Context,
                     clang::tooling::AtomicChanges &DestChanges, 
@@ -44,15 +40,17 @@ struct FunctionTransaction
                      std::map<USRString, std::string> &DestWrappers,
                      std::map<USRString, clang::SourceLocation> &DestInsertLocations);
 
-  bool empty();
-  void clear();
-  void begin(clang::FunctionDecl *F);
+  bool Empty();
+  void Begin(clang::FunctionDecl *F);
+  void End(clang::FunctionDecl *F);
 
   void GenerateWrapper(clang::ASTContext *Context,
                        clang::FunctionDecl *Callee,
                        std::set<USRString> &Wrappers,
-                       std::map<USRString, std::string> &PendingWrappers,
+                       std::map<USRString, std::string> &WrapperDefinitions,
                        std::map<USRString, clang::SourceLocation> &InsertLocations);
+private:
+  void Clear();
 };
 
 // This visitor traverses the AST to find and generate changes:
@@ -78,9 +76,10 @@ public:
 
 private:
   void ReplaceErrnoUsage(clang::Expr *Expr);
-  void EnterFunction(clang::FunctionDecl *F);
-  void ExitFunction(clang::FunctionDecl *F);
 
+  clang::ASTContext *Context; 
+
+  // Dictates when to apply rewrites
   TransformPolicy Policy;
 
   // USRs of functions that we should consider external to this
@@ -88,6 +87,10 @@ private:
   // to be wrapped. This can be further refined in the future to
   // indicate which functions are known not to modify errno.
   std::set<USRString> &External;
+
+  // All changes related to the current function. This must be comitted
+  // to populate InsertLocations, Wrappers, WrapperDefinitions, and Changes
+  FunctionTransaction CurrentFunctionTxn;
 
   // f |-> L if f is the USR of a function for which we will generate a wrapper,
   // and L is a location that precedes all uses of f
@@ -97,12 +100,10 @@ private:
   std::set<USRString> Wrappers;
 
   // Pairs of (f, <wrapper decl/definition of f>)
-  std::map<USRString, std::string> PendingWrappers;
+  std::map<USRString, std::string> WrapperDefinitions;
 
-  FunctionTransaction CurrentFunctionTxn;
   // The accumulated changes
   clang::tooling::AtomicChanges &Changes;
-  clang::ASTContext *Context; 
 };
 
 class LocalizeErrnoConsumer : public clang::ASTConsumer {
@@ -133,16 +134,16 @@ private:
 
 class LocalizeErrnoActionFactory : public clang::tooling::FrontendActionFactory {
 public:
-  LocalizeErrnoActionFactory(TransformPolicy Policy, std::set<USRString> &External)
-  : External(External), Policy(Policy) {}
+  LocalizeErrnoActionFactory(TransformPolicy Policy, clang::tooling::AtomicChanges &Changes, std::set<USRString> &External)
+  : External(External), Policy(Policy), Changes(Changes) {}
 
   std::unique_ptr<clang::FrontendAction> create() override
   {
     return std::make_unique<LocalizeErrnoAction>(Policy, External, Changes);
   }
 
-  clang::tooling::AtomicChanges Changes;
 private:
+  clang::tooling::AtomicChanges &Changes;
   TransformPolicy Policy;
   std::set<USRString> &External;
 };

@@ -18,34 +18,35 @@ USRString DeclUSR(FunctionDecl *Decl)
   return Buf;
 }
 
-bool FunctionTransaction::empty()
+bool FunctionTransaction::Empty()
 {
-  return !Decl && !NeedsDecl && !HasNonDeclCall && !HasErrnoReference && Changes.empty() && NeededWrappers.empty();
+  return !Decl && !HasNonDeclCall && !HasErrnoAccess && Changes.empty() && NeededWrappers.empty();
 }
 
-void FunctionTransaction::clear()
+void FunctionTransaction::Clear()
 {
   Decl = nullptr;
-  NeedsDecl = false;
   HasNonDeclCall = false;
-  HasErrnoReference = false;
+  HasErrnoAccess = false;
   Changes.clear();
   NeededWrappers.clear();
 }
 
-void FunctionTransaction::begin(FunctionDecl *F)
+void FunctionTransaction::Begin(FunctionDecl *F)
 {
+  assert(Empty());
   Decl = F;
+}
+
+void FunctionTransaction::End(FunctionDecl *F)
+{
+  assert(Decl == F);
+  Clear();
 }
 
 bool FunctionTransaction::ShouldApply(TransformPolicy Policy)
 {
-  return CanApply() && (Policy == TransformPolicy::Unconditional || (Policy == TransformPolicy::OnDemand && HasErrnoReference));
-}
-
-bool FunctionTransaction::CanApply()
-{
-  return !(HasNonDeclCall && HasErrnoReference);
+  return Policy == TransformPolicy::Unconditional || (Policy == TransformPolicy::OnDemand && HasErrnoAccess);
 }
 
 void FunctionTransaction::CommitChanges(ASTContext *Context,
@@ -68,6 +69,11 @@ void FunctionTransaction::CommitChanges(ASTContext *Context,
       auto err = InsertLocalDecl.insert(Context->getSourceManager(), InsertLoc, "int " + LOCAL_ERRNO_NAME + ";\n");
       assert(!err);
       DestChanges.push_back(InsertLocalDecl);
+    }
+    else
+    {
+      Decl->getBody()->dump();
+      assert(0);
     }
 }
 
@@ -118,38 +124,19 @@ std::string WrapperString(FunctionDecl *Decl)
   return wrapperStr;
 }
 
-void LocalizeErrnoASTVisitor::EnterFunction(FunctionDecl *F)
-{
-  assert(CurrentFunctionTxn.empty());
-  CurrentFunctionTxn.Decl = F;
-}
-
-void LocalizeErrnoASTVisitor::ExitFunction(FunctionDecl *F)
-{
-  assert(CurrentFunctionTxn.Decl == F);
-  CurrentFunctionTxn.clear();
-}
-
-
 bool LocalizeErrnoASTVisitor::TraverseFunctionDecl(FunctionDecl *Decl)
 {
-  EnterFunction(Decl);
+  if (!Decl->hasBody()) {
+    return true;
+  }
+
+  CurrentFunctionTxn.Begin(Decl);
   bool res = RecursiveASTVisitor::TraverseFunctionDecl(Decl);
-  if (!CurrentFunctionTxn.CanApply())
+  if (CurrentFunctionTxn.ShouldApply(Policy))
   {
-    // Can not apply changes here
-    llvm::errs() << "Unable to transform function " << Decl->getNameAsString() << "\n";
+    CurrentFunctionTxn.CommitChanges(Context, Changes, Wrappers, WrapperDefinitions, InsertLocations);
   }
-  else if (CurrentFunctionTxn.ShouldApply(Policy))
-  {
-    llvm::outs() << "Needs Decl? " << CurrentFunctionTxn.NeedsDecl << "\n";
-    CurrentFunctionTxn.CommitChanges(Context, Changes, Wrappers, PendingWrappers, InsertLocations);
-  }
-  else 
-  {
-    llvm::errs() << "Not applying any changes for " << Decl->getNameAsString() << "\n";
-  }
-  ExitFunction(Decl);
+  CurrentFunctionTxn.End(Decl);
   return res;
 }
 
@@ -167,7 +154,7 @@ bool LocalizeErrnoASTVisitor::VisitDeclRefExpr(clang::DeclRefExpr *Ref)
 {
   if (Ref->getNameInfo().getAsString() == "errno")
   {
-    CurrentFunctionTxn.HasErrnoReference = true;
+    CurrentFunctionTxn.HasErrnoAccess = true;
     ReplaceErrnoUsage(Ref);
   }
   return true;
@@ -179,27 +166,22 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
   FunctionDecl *Callee = llvm::dyn_cast<FunctionDecl, Decl>(Call->getCalleeDecl());
   if (!Callee)
   {
-    // Then this could be something like a call through a var or struct field,
-    // i.e., a function pointer.
-    // We just mark the calling context. If we also find a reference to
-    // errno here, then we can not perform the transformation on this function.
-    CurrentFunctionTxn.HasNonDeclCall = true;
+    // This is OK, then we don't need to wrap this function
+    // Why? Because the codehawk-based analysis does not handle anything but direct calls
+    // to library functions
     return true;
   }
 
   USRString CalleeUSR = DeclUSR(Callee);
 
-  if (!NeedsWrapper(Callee))
+  if (External.find(CalleeUSR) == External.end() || !NeedsWrapper(Callee))
   {
+    // Nothing to do: either not external or our spec says it does not need to be wrapped
     return true;
   }
 
-  if (External.find(CalleeUSR) == External.end())
-  {
-    // Not external
-    return true;
-  }
-
+  // Build and stage the change to the call expression:
+  // replace foo(...) with xj_wrap_foo(&local_errno, ...)
   AtomicChange CallWrapper(Context->getSourceManager(), Call->getBeginLoc());
   CharSourceRange CalleeRange(Call->getCallee()->getSourceRange(), true);
   auto err = CallWrapper.replace(Context->getSourceManager(), CalleeRange, "_xj_wrap_" + Callee->getNameAsString());
@@ -212,7 +194,13 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
   {
     err = CallWrapper.insert(Context->getSourceManager(), Call->getArg(0)->getBeginLoc(), "&" + LOCAL_ERRNO_NAME + ", ", false);
   }
-  assert(!err);
+  if (err)
+  {
+    llvm::errs() << "Error inserting call to wrapper: " << err << "\n";
+    assert(false);
+  }
+  
+  // Stages the change in the current transaction
   CurrentFunctionTxn.Changes.push_back(CallWrapper);
   CurrentFunctionTxn.NeededWrappers.insert(Callee);
 
@@ -222,7 +210,7 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
 void FunctionTransaction::GenerateWrapper(ASTContext *Context,
                                           FunctionDecl *Callee, 
                                           std::set<USRString> &Wrappers,
-                                          std::map<USRString, std::string> &PendingWrappers,
+                                          std::map<USRString, std::string> &WrapperDefinitions,
                                           std::map<USRString, SourceLocation> &InsertLocations)
 {
   FunctionDecl *CallContext = Decl;
@@ -245,23 +233,22 @@ void FunctionTransaction::GenerateWrapper(ASTContext *Context,
   }
   Wrappers.insert(CalleeUSR);
   auto WrapperText = WrapperString(Callee);
-  assert(PendingWrappers.find(CalleeUSR) == PendingWrappers.end());
-  PendingWrappers.insert(std::pair(CalleeUSR, WrapperText));
+  assert(WrapperDefinitions.find(CalleeUSR) == WrapperDefinitions.end());
+  WrapperDefinitions.insert(std::pair(CalleeUSR, WrapperText));
 }
 
 void LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context)
 {
-  Visitor.CurrentFunctionTxn.clear();
-  Visitor.PendingWrappers.clear();
+  Visitor.WrapperDefinitions.clear();
   Visitor.InsertLocations.clear();
   Visitor.Wrappers.clear();
   Visitor.TraverseDecl(Context.getTranslationUnitDecl());
-  assert (Visitor.CurrentFunctionTxn.empty());
+  assert (Visitor.CurrentFunctionTxn.Empty());
 
   std::map<SourceLocation, std::string> ChangesByLoc;
-  if (!Visitor.PendingWrappers.empty())
+  if (!Visitor.WrapperDefinitions.empty())
   {
-    for (auto &Pending : Visitor.PendingWrappers)
+    for (auto &Pending : Visitor.WrapperDefinitions)
     {
       auto USR = Pending.first;
       auto Wrapper = Pending.second;
