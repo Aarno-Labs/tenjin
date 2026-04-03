@@ -153,7 +153,7 @@ def parse_project(
     return tus
 
 
-def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: Path) -> None:
+def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: Path, apply_autoblocks: bool) -> None:
     """
     For each TU, run clang -E to preprocess it into target_dir.
     """
@@ -198,13 +198,17 @@ def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: P
                 temp_args.append(arg)
         compiler_args = temp_args
 
+        # Insert autoincludes and block certain macros from expansion
+        autoblocks = []
+        if apply_autoblocks:
+            autoblocks.extend(compilation_database.autoinclude_tenjin_decl_args())
+            autoblocks.extend(compilation_database.autoexpand_macro_file_args())
+
         base_pp_command = [
             str(clang_path),
             "-E",
             str(abs_src_path),
-            # Insert autoincludes and block certain macros from expansion
-            *compilation_database.autoinclude_tenjin_decl_args(),
-            *compilation_database.autoexpand_macro_file_args(),
+            *autoblocks,
             *compiler_args,
         ]
 
