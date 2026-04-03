@@ -4148,9 +4148,7 @@ impl<'c> Translation<'c> {
                 }
                 .expect("Expected decl initializer to not have any statements");
 
-                let mut_guidance = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
-                let mutspec = mut_guidance.unwrap_or(mutbl);
-                let pat_mut = mk().set_mutbl(mutspec).ident_pat(rust_name.clone());
+                let pat_mut = mk().mutbl().ident_pat(rust_name.clone());
                 let local_mut = mk().local(pat_mut, Some(ty.clone()), Some(zeroed));
                 if has_self_reference {
                     let assign = mk().assign_expr(mk().ident_expr(rust_name), init);
