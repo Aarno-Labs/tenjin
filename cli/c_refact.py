@@ -293,6 +293,7 @@ class NamedDeclInfo:
     start_col: int
     end_line: int
     end_col: int
+    usr: str
 
 
 @dataclass
@@ -352,6 +353,7 @@ def mk_NamedDeclInfo(node: Cursor) -> NamedDeclInfo:
         start_col=start.column,
         end_line=end.line,
         end_col=end.column,
+        usr=node.get_usr(),
     )
 
 
