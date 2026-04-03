@@ -899,6 +899,17 @@ def run_preparation_passes(
                 g_s.spelling,
             )
 
+        def is_c_identifier_continuation_byte(b: int) -> bool:
+            return (
+                chr(b).encode()
+                in b"_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            )
+
+        def is_c_identifier_continuation_byte_at(bs: bytes, idx: int) -> bool:
+            if idx < 0 or idx >= len(bs):
+                return False
+            return is_c_identifier_continuation_byte(bs[idx])
+
         for srcfile, editdict in rewrites_per_file.items():
             contents = Path(srcfile).read_bytes()
             edits = []
@@ -913,7 +924,11 @@ def run_preparation_passes(
                     idx = contents.find(
                         prefix_bytes + name_bytes, decl_start_byte_offset, decl_end_byte_offset
                     )
-                    if idx != -1:
+                    # We've found the variant we're looking for if we locate a non-identifer
+                    # prefix, then our name bytes, then a non-identifier byte (or end of file).
+                    if idx != -1 and not is_c_identifier_continuation_byte_at(
+                        contents, idx + len(prefix_bytes) + len(name_bytes)
+                    ):
                         return idx + len(prefix_bytes)
                     return -1
 
