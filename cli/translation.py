@@ -209,6 +209,11 @@ def do_translate(
     have files called `translation_metadata.json` and `translation_snapshot.json`.
     """
 
+    assert codebase.exists(), f"Codebase path `{codebase}` does not exist!"
+    assert not resultsdir.resolve().is_relative_to(codebase.resolve()), (
+        f"Results directory `{resultsdir}` cannot be inside the codebase `{codebase}`!"
+    )
+
     for rp in do_not_refactor_headers_within:
         assert rp == rp.resolve(), f"`do_not_refactor` path {rp} not resolved!"
 
