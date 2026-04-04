@@ -765,6 +765,10 @@ def run_preparation_passes(
             )
             c_refact_arglifter.lift_subfield_args(compdb_for_target)
 
+    def should_use_cclyzer_cache():
+        # Don't use cached results during parallel tests.
+        return "PYTEST_XDIST_WORKER" not in os.environ
+
     def get_cached_cclyzer_results(
         cache_signature: list[str], xj_cclyzer_results_cache_path: Path
     ) -> dict | None:
@@ -812,13 +816,14 @@ def run_preparation_passes(
         cache_signature = [bitcode_hash, WANT["10j-more-deps"], *cache_relevant_cc2json_flags]
 
         xj_cclyzer_results_cache_path = repo_root.localdir() / "xj-cclyzer-cache.json"
-        cached_results = get_cached_cclyzer_results(cache_signature, xj_cclyzer_results_cache_path):
-        if cached_results is not None:
-            print("Reusing cached cclyzer++ analysis results...")
-            json.dump(
-                cached_results, open(json_out_path, "w", encoding="utf-8"), indent=2
+        if should_use_cclyzer_cache():
+            cached_results = get_cached_cclyzer_results(
+                cache_signature, xj_cclyzer_results_cache_path
             )
-            return
+            if cached_results is not None:
+                print("Reusing cached cclyzer++ analysis results...")
+                json.dump(cached_results, open(json_out_path, "w", encoding="utf-8"), indent=2)
+                return
 
         print("Running cclyzer++ analysis, this can take a while for larger programs...")
         hermetic.run_command_with_progress(
@@ -834,12 +839,13 @@ def run_preparation_passes(
             env_ext={"XJ_USE_LLVM14": "1"},
         )
 
-        contents = json.load(open(json_out_path, "r", encoding="utf-8"))
-        json.dump(
-            {"signature": cache_signature, "contents": contents},
-            open(xj_cclyzer_results_cache_path, "w", encoding="utf-8"),
-            indent=2,
-        )
+        if should_use_cclyzer_cache():
+            contents = json.load(open(json_out_path, "r", encoding="utf-8"))
+            json.dump(
+                {"signature": cache_signature, "contents": contents},
+                open(xj_cclyzer_results_cache_path, "w", encoding="utf-8"),
+                indent=2,
+            )
 
     def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # For now, we restrict analysis to single-target projects,
