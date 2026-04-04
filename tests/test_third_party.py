@@ -380,20 +380,12 @@ def eval_tractor_ta3_corpus_app(
     translation_preparation.copy_codebase(codebase / case_dir, tmp_codebase)
 
     exe_name = "driver"  # Some test vectors require the binary to be named "driver".
-    buildcmd_args = [
-        "cc",
-        "test_case/src/main.c",
-        "-lm",
-        "-o",
-        exe_name,
-    ]
 
     translation.do_translate(
         root,
-        tmp_codebase,
+        tmp_codebase / "test_case",
         tmp_resultsdir,
         cratename="tractor_ta3_corpus_app",
-        buildcmd=hermetic.shellize(buildcmd_args),
         guidance_path_or_literal="{}",
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
@@ -456,23 +448,12 @@ def eval_tractor_ta3_corpus_lib(
     assert candidate_name.endswith("_lib"), (
         f"Expected case_dir name to end in '_lib', got {candidate_name}"
     )
-    candidate_stem = candidate_name[: -len("_lib")]
 
     codebase = tractor_public_tests_git_clone()
 
     # Copying the whole Test-Corpus repo results in huge numbers of temporary files,
     # resulting in noticeable delays both for test steps and for post-test cleanups.
     translation_preparation.copy_codebase(codebase / case_dir, tmp_codebase)
-
-    buildcmd_args = [
-        "cc",
-        "-I",
-        "test_case/include",
-        "test_case/src/lib.c",
-        "-shared",
-        "-o",
-        f"lib{candidate_stem}.so",
-    ]
 
     # cando2 requires our runner exist in a candidate-named directory.
     candidate_resultsdir = tmp_resultsdir / candidate_name
@@ -495,10 +476,9 @@ def eval_tractor_ta3_corpus_lib(
 
     translation.do_translate(
         root,
-        tmp_codebase,
+        tmp_codebase / "test_case",
         candidate_resultsdir,
         cratename="tractor_ta3_corpus_lib",
-        buildcmd=hermetic.shellize(buildcmd_args),
         guidance_path_or_literal="{}",
     )
 
@@ -791,6 +771,7 @@ def test_tractor_b1_organic_ima_decode_lib(root: Path, tmp_codebase: Path, tmp_r
     eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
 
 
+# This one fails with stacks of < 4 MB.
 @pytest.mark.slow
 def test_tractor_b1_organic_md5_transform_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/md5_transform_lib"
