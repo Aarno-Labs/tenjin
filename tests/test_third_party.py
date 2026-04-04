@@ -4,6 +4,7 @@ import shutil
 import pytest
 import os
 import resource
+from subprocess import SubprocessError
 
 from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
@@ -30,7 +31,14 @@ def lua_5_4_0_immunant_git_clone() -> Path:
     )
 
 
-def tractor_public_tests_git_clone() -> Path:
+def tractor_tests_git_clone_for(case_dir: str) -> Path:
+    if case_dir.startswith("Public-Tests/B02_"):
+        # Currently Battery 2 requires authentication to access,
+        # so the https URL won't work.
+        return cached_git_clone_at_commit(
+            "git@github.com:DARPA-TRACTOR-Program/Test-Corpus.git",
+            "f4fa82f9472a1c5c0a6b8a42da0a262ccbb560ff",
+        )
     return cached_git_clone_at_commit(
         "https://github.com/DARPA-TRACTOR-Program/PUBLIC-Test-Corpus.git",
         "6ec7ae65c906bffded2a24544825de4087bc2a61",
@@ -307,7 +315,7 @@ def test_tractor_ta3_corpus_p01_005(
     request: pytest.FixtureRequest,
     extras: list,
 ):
-    codebase = tractor_public_tests_git_clone()
+    codebase = tractor_tests_git_clone_for("Public-Tests/P01_sphincs_plus")
 
     translation_preparation.copy_codebase(
         codebase
@@ -365,30 +373,56 @@ def test_tractor_ta3_corpus_p01_005(
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
+def translate_and_build_ta3_test(
+    root: Path,
+    cratename: str,
+    orig_codebase: Path,
+    tmp_codebase: Path,
+    case_dir: str,
+    resultsdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    translation.do_translate(
+        root,
+        tmp_codebase / "test_case",
+        resultsdir,
+        cratename,
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(resultsdir / "final", ["build"])
+
+
 def eval_tractor_ta3_corpus_app(
     root: Path,
     tmp_codebase: Path,
     tmp_resultsdir: Path,
     request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
     extras: list,
     case_dir: str,
 ):
-    codebase = tractor_public_tests_git_clone()
+    try:
+        codebase = tractor_tests_git_clone_for(case_dir)
+    except SubprocessError:
+        return pytest.skip(
+            f"Could not clone repo for {case_dir}; likely requires authentication. Skipping test."
+        )
 
     # Copying the whole Test-Corpus repo results in huge numbers of temporary files,
     # resulting in noticeable delays both for test steps and for post-test cleanups.
     translation_preparation.copy_codebase(codebase / case_dir, tmp_codebase)
 
     exe_name = "driver"  # Some test vectors require the binary to be named "driver".
-
-    translation.do_translate(
+    translate_and_build_ta3_test(
         root,
-        tmp_codebase / "test_case",
-        tmp_resultsdir,
         cratename="tractor_ta3_corpus_app",
-        guidance_path_or_literal="{}",
+        orig_codebase=codebase,
+        tmp_codebase=tmp_codebase,
+        case_dir=case_dir,
+        resultsdir=tmp_resultsdir,
+        monkeypatch=monkeypatch,
     )
-    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
     # The binary may be `main` or `main_nolines`
     rs_bins = list((tmp_resultsdir / "final" / "target" / "debug").glob("main*"))
     rs_bins = [p for p in rs_bins if p.is_file() and os.access(p, os.X_OK)]
@@ -440,6 +474,7 @@ def eval_tractor_ta3_corpus_lib(
     tmp_codebase: Path,
     tmp_resultsdir: Path,
     request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
     extras: list,
     case_dir: str,
 ):
@@ -449,7 +484,12 @@ def eval_tractor_ta3_corpus_lib(
         f"Expected case_dir name to end in '_lib', got {candidate_name}"
     )
 
-    codebase = tractor_public_tests_git_clone()
+    try:
+        codebase = tractor_tests_git_clone_for(case_dir)
+    except SubprocessError:
+        return pytest.skip(
+            f"Could not clone repo for {case_dir}; likely requires authentication. Skipping test."
+        )
 
     # Copying the whole Test-Corpus repo results in huge numbers of temporary files,
     # resulting in noticeable delays both for test steps and for post-test cleanups.
@@ -474,18 +514,19 @@ def eval_tractor_ta3_corpus_lib(
 
     run_cargo_on_final(candidate_resultsdir / "runner", ["build"])
 
-    translation.do_translate(
+    translate_and_build_ta3_test(
         root,
-        tmp_codebase / "test_case",
-        candidate_resultsdir,
         cratename="tractor_ta3_corpus_lib",
-        guidance_path_or_literal="{}",
+        orig_codebase=codebase,
+        tmp_codebase=tmp_codebase,
+        case_dir=case_dir,
+        resultsdir=candidate_resultsdir,
+        monkeypatch=monkeypatch,
     )
 
-    run_cargo_on_final(candidate_resultsdir / "final", ["build"])
-
-    # cando2 requires the built library exist in a `build-ninja` directory
-    # and be named `{candidate_name}.so`.
+    # cando2 usually requires the built library exist in a `build-ninja` directory
+    # and be named `{candidate_name}.so`. Sometimes they hardcode the name `driver.so`.
+    # (B02_organic/encode_base64_lib is an example of the latter.)
     build_ninja_dir = Path(candidate_resultsdir / "build-ninja")
     build_ninja_dir.mkdir(exist_ok=False)
     built_dir = candidate_resultsdir / "final" / "target" / "debug"
@@ -495,6 +536,7 @@ def eval_tractor_ta3_corpus_lib(
     )
     built_lib = built_libs[0]
     shutil.copyfile(built_lib, build_ninja_dir / f"lib{candidate_name}{built_lib.suffix}")
+    shutil.copyfile(built_lib, build_ninja_dir / f"libdriver{built_lib.suffix}")
 
     for test_vector in (tmp_codebase / "test_vectors").glob("*.json"):
         spec = json.loads(test_vector.read_text(encoding="utf-8"))
@@ -521,291 +563,291 @@ def eval_tractor_ta3_corpus_lib(
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_collided_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_collided_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/collided_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_bin2hex_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_bin2hex_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/bin2hex_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_bitwriter_add_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_bitwriter_add_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/bitwriter_add_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_colourblind_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_colourblind_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/colourblind_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_contrast_ratio_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_contrast_ratio_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/contrast_ratio_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_crc16_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_crc16_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/crc16_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_dequantize_granule_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_dequantize_granule_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/dequantize_granule_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_div_euclid_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_div_euclid_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/div_euclid_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_encode_quant_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_encode_quant_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/encode_quant_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_flac_validate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_flac_validate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/flac_validate_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_flip_horizontal_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_flip_horizontal_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/flip_horizontal_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
-def test_tractor_b1_organic_float2half_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_float2half_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/float2half_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_gaussian_kernel_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_gaussian_kernel_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/gaussian_kernel_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_half2float_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_half2float_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/half2float_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_hdr_bitrate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_hdr_bitrate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/hdr_bitrate_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_hdr_compare_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_hdr_compare_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/hdr_compare_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_hex2bin_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_hex2bin_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/hex2bin_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_hsl_to_rgb_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_hsl_to_rgb_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/hsl_to_rgb_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_hsv_to_rgb_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_hsv_to_rgb_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/hsv_to_rgb_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_ima_parse_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_ima_parse_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/ima_parse_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_ldexp_q2_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_ldexp_q2_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/ldexp_q2_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_max_size_frame_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_max_size_frame_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/max_size_frame_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_md5_digest_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_md5_digest_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/md5_digest_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_merge_sort_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_merge_sort_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/merge_sort_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_next_double_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_next_double_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/next_double_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_normalize_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_normalize_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/normalize_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_pow43_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_pow43_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/pow43_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_premultiply_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_premultiply_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/premultiply_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_read_side_info_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_read_side_info_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/read_side_info_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_rev16_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_rev16_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/rev16_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_rgb_to_hsv_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_rgb_to_hsv_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/rgb_to_hsv_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_synth_pair_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_synth_pair_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/synth_pair_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_tfm_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_tfm_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/tfm_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_to_barycentric_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_to_barycentric_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/to_barycentric_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_tritanopia_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_tritanopia_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/tritanopia_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_update_frame_header_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_update_frame_header_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/update_frame_header_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_update_md5_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_update_md5_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/update_md5_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_wcscat_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_wcscat_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_organic/wcscat_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_compress_bc5_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_compress_bc5_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/compress_bc5_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_convex_clip_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_convex_clip_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/convex_clip_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_decorrelate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_decorrelate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/decorrelate_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_ima_decode_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_ima_decode_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/ima_decode_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 # This one fails with stacks of < 4 MB.
 @pytest.mark.slow
-def test_tractor_b1_organic_md5_transform_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_md5_transform_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/md5_transform_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_png_qsort_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_png_qsort_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/png_qsort_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_predict_sample_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_predict_sample_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/predict_sample_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_read_scalefactors_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_read_scalefactors_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/read_scalefactors_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_refine_block_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_refine_block_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/refine_block_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_stereo_samples_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_organic_stereo_samples_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_organic/stereo_samples_lib"
-    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 # ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗     ██╗     █████╗ ██████╗ ██████╗ ███████╗
@@ -817,298 +859,716 @@ def test_tractor_b1_organic_stereo_samples_lib(root: Path, tmp_codebase: Path, t
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_002_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_002_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/002_stdin_echo"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_003_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_003_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/003_string_slicing"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_004_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_004_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/004_nineality_sieve"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_005_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_005_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/005_static_loop"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_006_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_006_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/006_static_alias"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_007_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_007_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/007_errno_pow"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 # omitting 008_long_run for now
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_009_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_009_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/009_stack_buffer_overflow"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_010_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_010_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/010_integer_overflow"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_011_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_011_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/011_uninit_char_ptr"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_012_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_012_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/012_uninit_int_ptr"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_013_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_013_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/013_poor_quality_addition"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_014_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_014_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/014_dead_code"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_015_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_015_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/015_return_stack_buffer"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_016_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_016_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/016_divide_by_zero_float"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_017_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_017_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/017_signed_length_confusion"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_018_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_018_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/018_stack_buffer_overflow_loop1"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_019_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_019_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/019_integer_overflow_char_max_multiply"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_021_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_021_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/021_complex_goto"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_022_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_022_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/022_stdlib_div"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_023_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_023_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/023_struct_and_errno"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_024_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_024_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/024_struct_and_static"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_025_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_025_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/025_struct_and_errno_and_static"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_026_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_026_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/026_goto_and_static"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_027_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_027_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/027_ctype_ascii"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_028_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_028_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/028_strchr"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
-def test_tractor_b1_synthetic_029_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_029_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/029_strcspn"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_030_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_030_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/030_mutable_buffer_overlap_extrahard"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_031_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_031_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/031_disjoint_arrays"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_032_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_032_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/032_comma_operator"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.skip(reason="need to pull in fixes for bitfields from upstream c2rust")
 @pytest.mark.slow
-def test_tractor_b1_synthetic_033_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_033_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/033_bitfield"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_034_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_034_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/034_cast_to_char_ptr_int"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_035_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_035_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/035_cast_to_char_ptr_float"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_036_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_036_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/036_cast_to_char_ptr_struct"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_037_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_037_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/037_cast_to_char_ptr_int_no_strict_aliasing"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_038_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_038_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/038_cast_to_char_ptr_float_no_strict_aliasing"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_039_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_039_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/039_cast_to_char_ptr_struct_no_strict_aliasing"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_040_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_040_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/040_storage_class_auto"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_041_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_041_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/041_storage_class_register"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.skip(reason="we print hex floats without an explicit + sign")
 @pytest.mark.slow
-def test_tractor_b1_synthetic_042_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_042_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/042_float_union"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_043_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_043_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B01_synthetic/043_iso646_and_digraphs"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_002_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_002_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_synthetic/002_echo"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_004_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_004_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_synthetic/004_loop"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_011_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_011_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_synthetic/011_static_dag"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_014_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_014_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_synthetic/014_errno-pow-subfunction"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_016_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_016_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_synthetic/016_switch-arith"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_027_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_027_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_synthetic/027_stack_buffer_overflow_loop2"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_030_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_030_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_synthetic/030_integer_underflow_char_min_multiply"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_045_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_045_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_synthetic/045_strtok"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_048_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list):  # fmt: skip
+def test_tractor_b1_synthetic_048_app_hidden(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Hidden-Tests/B01_synthetic/048_mutable_buffer_overlap2"
-    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, extras, case_dir)
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+# ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗    ██████╗     ██╗     ██╗██████╗ ███████╗
+# ██╔══██╗██╔══██╗╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗╚██╗ ██╔╝    ╚════██╗    ██║     ██║██╔══██╗██╔════╝
+# ██████╔╝███████║   ██║      ██║   █████╗  ██████╔╝ ╚████╔╝      █████╔╝    ██║     ██║██████╔╝███████╗
+# ██╔══██╗██╔══██║   ██║      ██║   ██╔══╝  ██╔══██╗  ╚██╔╝      ██╔═══╝     ██║     ██║██╔══██╗╚════██║
+# ██████╔╝██║  ██║   ██║      ██║   ███████╗██║  ██║   ██║       ███████╗    ███████╗██║██████╔╝███████║
+# ╚═════╝ ╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝       ╚══════╝    ╚══════╝╚═╝╚═════╝ ╚══════╝
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_arity_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/arity_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_arrayfunc_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/arrayfunc_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_betagamma_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/betagamma_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_buffapp_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/buffapp_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_charinbuf_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/charinbuf_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_checkshift_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/checkshift_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_cleanup_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/cleanup_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_complexmode_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/complexmode_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_dataentry_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/dataentry_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_doubleneg_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/doubleneg_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_fallcalc_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/fallcalc_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_findrep_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/findrep_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_goto_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/goto_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_gotomach_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/gotomach_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_inreftree_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/inreftree_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_jumpnode_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/jumpnode_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_matrix_mult_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/matrix_mult_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_matrix_sum_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/matrix_sum_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_maxnmin_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/maxnmin_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_memchra2_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/memchra2_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_modeselect_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/modeselect_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_overunder_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/overunder_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_task_manager_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/task_manager_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_aabb_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/aabb_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_agglom_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/agglom_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_arr_del_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/arr_del_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_arr_ins_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/arr_ins_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_arr_push_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/arr_push_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_basename_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/basename_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_call_predict_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/call_predict_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_capsule_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/capsule_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_circle_collide_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/circle_collide_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_convert_pix_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/convert_pix_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_decode_base64_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/decode_base64_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_encode_base64_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/encode_base64_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_file_queue_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/file_queue_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_gen_ray_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/gen_ray_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_get_predict_func_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/get_predict_func_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_gjk_cache_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/gjk_cache_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_gjk_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/gjk_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_hm_geti_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/hm_geti_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_intput_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/intput_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_lines_in_buffer_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/lines_in_buffer_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_load_png_mem_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/load_png_mem_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_omni_collide_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/omni_collide_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_omni_manifold_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/omni_manifold_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_parse_number_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/parse_number_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_pinflate_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/pinflate_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_poly_ray_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/poly_ray_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_rdg_genstdout_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/rdg_genstdout_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_reverse_collide_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/reverse_collide_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_search_and_replace_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/search_and_replace_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_siphash_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/siphash_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_underhanded_c_nuke_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/underhanded_c_nuke_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_unfilter_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/unfilter_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_utf8_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/utf8_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+# ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗    ██████╗     █████╗ ██████╗ ██████╗ ███████╗
+# ██╔══██╗██╔══██╗╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗╚██╗ ██╔╝    ╚════██╗   ██╔══██╗██╔══██╗██╔══██╗██╔════╝
+# ██████╔╝███████║   ██║      ██║   █████╗  ██████╔╝ ╚████╔╝      █████╔╝   ███████║██████╔╝██████╔╝███████╗
+# ██╔══██╗██╔══██║   ██║      ██║   ██╔══╝  ██╔══██╗  ╚██╔╝      ██╔═══╝    ██╔══██║██╔═══╝ ██╔═══╝ ╚════██║
+# ██████╔╝██║  ██║   ██║      ██║   ███████╗██║  ██║   ██║       ███████╗   ██║  ██║██║     ██║     ███████║
+# ╚═════╝ ╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝       ╚══════╝   ╚═╝  ╚═╝╚═╝     ╚═╝     ╚══════╝
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_char_to_bool_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/char_to_bool"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_generic_foreach_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/generic_foreach"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_macrodepth_add_5_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/macrodepth_add_5"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_macrodepth_mul_4_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/macrodepth_mul_4"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_macrodepth_sub_6_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/macrodepth_sub_6"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_memcpy_fun_buffers_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/memcpy_fun_buffers"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_memmove_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/memmove"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_mutable_duplication_dag_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/mutable_duplication_dag"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_strcmp_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/strcmp"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_strcpy_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/strcpy"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_qmath_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/qmath"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
