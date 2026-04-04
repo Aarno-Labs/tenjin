@@ -114,6 +114,15 @@ A few commands (`cargo`, `clang`, `opam` and `dune`) can be run as direct subcom
 Tenjin clang version 18.1.8
 ```
 
+## Other Notes
+
+- We use `XREF:` as a marker in comments to cross-reference disparate pieces
+  of code which are implicitly linked by shared assumptions, preconditions, etc.
+  For the implementation of guidance, and other such extensions we make to c2rust,
+  we also (try to) cross-reference test cases and the associated code implementing
+  the tested functionality. This is a lightweight alternative to
+  [coverage markers](https://matklad.github.io/2018/06/18/a-trick-for-test-maintenance.html).
+
 # Project Infrastructure
 
 Tenjin's build dependencies are maintained in the [tenjin-build-deps](https://github.com/Aarno-Labs/tenjin-build-deps) repo.

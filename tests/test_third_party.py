@@ -30,7 +30,7 @@ def lua_5_4_0_immunant_git_clone() -> Path:
     )
 
 
-@pytest.mark.slow
+@pytest.mark.slow  # expected runtime: 30 s
 def test_sbase_cal(
     tenjin_fixtures: TenjinFixtures,
 ):
