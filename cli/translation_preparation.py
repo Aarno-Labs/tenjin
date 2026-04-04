@@ -765,7 +765,27 @@ def run_preparation_passes(
             )
             c_refact_arglifter.lift_subfield_args(compdb_for_target)
 
+    def get_cached_cclyzer_results(
+        cache_signature: list[str], xj_cclyzer_results_cache_path: Path
+    ) -> dict | None:
+        if xj_cclyzer_results_cache_path.exists():
+            cache_data = json.load(open(xj_cclyzer_results_cache_path, "r", encoding="utf-8"))
+            print("cached  signature:", cache_data["signature"])
+            print("current signature:", cache_signature)
+            if cache_data["signature"] == cache_signature:
+                return cache_data["contents"]
+            if cache_data["signature"][0] == cache_signature[0]:
+                print(
+                    "Bitcode matches cached cclyzer++ results, but flags differ; recomputing analysis..."
+                )
+            else:
+                print("Bitcode differs from cached cclyzer++ results; recomputing analysis...")
+        return None
+
     def run_cc2json_or_cached(bitcode_module_path: Path, current_codebase: Path) -> None:
+        """Postcondition: produces `xj-cclyzer.json` in `current_codebase`, containing
+        the results of cclyzer++ analysis on the bitcode module.
+        """
         assert bitcode_module_path.exists()
 
         cp = hermetic.run(
@@ -792,23 +812,13 @@ def run_preparation_passes(
         cache_signature = [bitcode_hash, WANT["10j-more-deps"], *cache_relevant_cc2json_flags]
 
         xj_cclyzer_results_cache_path = repo_root.localdir() / "xj-cclyzer-cache.json"
-        if xj_cclyzer_results_cache_path.exists():
-            cache_data = json.load(open(xj_cclyzer_results_cache_path, "r", encoding="utf-8"))
-            print("cached  signature:", cache_data["signature"])
-            print("current signature:", cache_signature)
-            if cache_data["signature"] == cache_signature:
-                print("Reusing cached cclyzer++ analysis results...")
-                json.dump(
-                    cache_data["contents"], open(json_out_path, "w", encoding="utf-8"), indent=2
-                )
-
-                return
-            if cache_data["signature"][0] == cache_signature[0]:
-                print(
-                    "Bitcode matches cached cclyzer++ results, but flags differ; recomputing analysis..."
-                )
-            else:
-                print("Bitcode differs from cached cclyzer++ results; recomputing analysis...")
+        cached_results = get_cached_cclyzer_results(cache_signature, xj_cclyzer_results_cache_path):
+        if cached_results is not None:
+            print("Reusing cached cclyzer++ analysis results...")
+            json.dump(
+                cached_results, open(json_out_path, "w", encoding="utf-8"), indent=2
+            )
+            return
 
         print("Running cclyzer++ analysis, this can take a while for larger programs...")
         hermetic.run_command_with_progress(
