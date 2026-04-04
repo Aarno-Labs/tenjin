@@ -18,7 +18,7 @@ import hermetic
 import translation
 import cli_subcommands
 import covset
-from tenj_types import ResolvedPath
+from tenj_types import ResolvedPath, style_path, style_flag, UserFacingError
 
 
 def do_check_repo_file_sizes() -> bool:
@@ -133,8 +133,8 @@ def translate(
             else:
                 item.unlink()
     elif resultsdir.is_dir() and any(resultsdir.iterdir()):
-        sdir = click.style(resultsdir, fg="bright_white", bold=True)
-        flag = click.style("--reset-resultsdir", fg="bright_cyan", bold=True)
+        sdir = style_path(resultsdir)
+        flag = style_flag("--reset-resultsdir")
         click.echo(
             f"Results directory {sdir} already exists and is not empty. Pass {flag} to reset it.",
             err=True,
@@ -142,7 +142,10 @@ def translate(
         sys.exit(1)
 
     if guidance is None:
-        click.echo("Using empty guidance; pass `--guidance` to refine translation.", err=True)
+        click.echo(
+            f"Using empty guidance; pass {style_flag('--guidance')} to refine translation.",
+            err=True,
+        )
         guidance = "{}"
 
     def resolve_within_codebase(p: Path) -> ResolvedPath:
@@ -150,15 +153,19 @@ def translate(
             return p
         return Path(codebase) / p
 
-    translation.do_translate(
-        root,
-        Path(codebase),
-        resultsdir,
-        cratename,
-        guidance,
-        [resolve_within_codebase(p) for p in do_not_refactor],
-        buildcmd,
-    )
+    try:
+        translation.do_translate(
+            root,
+            Path(codebase),
+            resultsdir,
+            cratename,
+            guidance,
+            [resolve_within_codebase(p) for p in do_not_refactor],
+            buildcmd,
+        )
+    except UserFacingError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
 
 @cli.command()

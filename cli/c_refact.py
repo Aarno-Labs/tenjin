@@ -30,6 +30,7 @@ from cindex_helpers import render_declaration_sans_qualifiers, yield_matching_cu
 import c_refact_type_mod_replicator
 from constants import XJ_GUIDANCE_FILENAME
 import targets
+import tenj_types
 
 
 def create_xj_clang_index() -> Index:
@@ -285,28 +286,31 @@ def refold_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir_path: 
 
 @dataclass
 class NamedDeclInfo:
-    spelling: str
-    file_path: str | None
+    spelling: tenj_types.CIdentifier
+    file_path: tenj_types.FilePathStr | None
     decl_start_byte_offset: int
     decl_end_byte_offset: int
     start_line: int
     start_col: int
     end_line: int
     end_col: int
+    usr: tenj_types.ClangUSR
 
 
 @dataclass
 class TissueFunctionCursorInfo:
     cursor: Cursor
-    file: str
+    file: tenj_types.FilePathStr
     is_definition: bool
 
 
 @dataclass
 class TissueCallSiteInfo:
-    caller_func: str
-    callee_funcs: list[str]  # currently unused, kept for possible future use/debugging
-    i_file_path: str
+    caller_func: tenj_types.CIdentifier
+    callee_funcs: list[
+        tenj_types.CIdentifier
+    ]  # currently unused, kept for possible future use/debugging
+    i_file_path: tenj_types.FilePathStr
     line: int
     col: int
 
@@ -352,6 +356,7 @@ def mk_NamedDeclInfo(node: Cursor) -> NamedDeclInfo:
         start_col=start.column,
         end_line=end.line,
         end_col=end.column,
+        usr=node.get_usr(),
     )
 
 

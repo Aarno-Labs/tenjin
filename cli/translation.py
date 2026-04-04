@@ -23,7 +23,7 @@ import hermetic
 import vcs_helpers
 import cargo_workspace_helpers
 import static_measurements_rust
-from tenj_types import ResolvedPath
+from tenj_types import ResolvedPath, style_path, UserFacingError
 from c_refact_identify_mains import find_main_translation_units
 from translation_preparation import run_preparation_passes
 from translation_improvement import run_improvement_passes
@@ -208,6 +208,13 @@ def do_translate(
     translation will be in the `final` subdirectory. The `resultsdir` will also
     have files called `translation_metadata.json` and `translation_snapshot.json`.
     """
+
+    if not codebase.exists():
+        raise UserFacingError(f"Codebase path {style_path(codebase)} does not exist!")
+    if resultsdir.resolve().is_relative_to(codebase.resolve()):
+        raise UserFacingError(
+            f"Results directory {style_path(resultsdir)} cannot be inside the codebase {style_path(codebase)}",
+        )
 
     for rp in do_not_refactor_headers_within:
         assert rp == rp.resolve(), f"`do_not_refactor` path {rp} not resolved!"
