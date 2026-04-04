@@ -289,6 +289,21 @@ File: /PATH/TO/xj-cdr/final/src/xj_covset_demo_nolines.rs
 Total covered lines: 24 / 25 = 96.00%
 ```
 
+# Edge Cases
+
+Tenjin strives to support a large subset of C, but there are some
+limitations to its support:
+
+- Using macros to "hide" punctuator tokens (such as `;` or `,`)
+  from source-level analysis can produce incorrect results.
+
+- C files which include the same header multiple times without an include
+  guard, or which includes the same declarations in multiple headers that
+  make it into the same translation unit, may (in some cases) become
+  corrupted during our pre-refold consolidation step, which assumes a
+  one-to-one mapping between header-sourced declarations and the headers
+  they came from.
+
 # Error Cases
 
 * If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`

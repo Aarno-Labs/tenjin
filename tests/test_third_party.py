@@ -53,6 +53,13 @@ def test_sbase_cal(
     srcfiles = ["libutil/fshut.c", "libutil/eprintf.c", "libutil/strtonum.c", "cal.c"]
     srcs = [(tmp_codebase / src).read_text(encoding="utf-8") for src in srcfiles]
     combined = "\n".join(srcs).replace('#include "../util.h"', '#include "util.h"')
+    # Currently having one header multiple included (unguarded) interferes with
+    # macro refolding (or, rather, the pre-refold consolidation step).
+    combined = (
+        combined.replace('#include "util.h"', '#include "util.keep.h"', count=1)
+        .replace('#include "util.h"', "")
+        .replace('#include "util.keep.h"', '#include "util.h"')
+    )
     (tmp_codebase / "cal_combined.c").write_text(combined, encoding="utf-8")
     # Note: if we try compiling all C files via the driver we hit
     #           https://github.com/Aarno-Labs/tenjin/issues/213
