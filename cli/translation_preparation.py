@@ -31,6 +31,7 @@ from targets import BuildInfo, TargetType
 from caching_file_contents import CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
 from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr, ResolvedPath
+import tenj_types
 
 
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
@@ -890,13 +891,13 @@ def run_preparation_passes(
             assert g_s.file_path.startswith(current_codebase_dir)
 
         uniquifiers: dict[str, int] = {}
-        usr_names: dict[str, str] = {}
+        usr_names: dict[tenj_types.ClangUSR, tenj_types.CIdentifier] = {}
 
         pgs_in_deterministic_order = sorted(
             all_pgs, key=lambda g: (g.file_path or "", g.decl_start_byte_offset)
         )
 
-        def mk_unique_name(base: str) -> str:
+        def mk_unique_name(base: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
             while True:
                 n = uniquifiers.get(base, 0)
                 uniquifiers[base] = n + 1
@@ -911,8 +912,11 @@ def run_preparation_passes(
                 continue  # already renamed this entity via another declaration
             usr_names[g_s.usr] = mk_unique_name(g_s.spelling)
 
-        rewrites_per_file: dict[str, dict[int, tuple[int, str, str]]] = {}
-        seen_usrs_per_file: dict[str, set[str]] = {}
+        rewrites_per_file: dict[
+            tenj_types.FilePathStr,
+            dict[int, tuple[int, tenj_types.CIdentifier, tenj_types.CIdentifier]],
+        ] = {}
+        seen_usrs_per_file: dict[tenj_types.FilePathStr, set[tenj_types.ClangUSR]] = {}
         for g_s in pgs_in_deterministic_order:
             seen_usrs_in_this_file = seen_usrs_per_file.setdefault(g_s.file_path or "", set())
             if g_s.usr in seen_usrs_in_this_file:

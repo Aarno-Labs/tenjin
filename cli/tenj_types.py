@@ -9,6 +9,9 @@ type FileContentsStr = str
 type PreprocessorDefinition = tuple[str, str | None]
 type PerFilePreprocessorDefinitions = dict[str, list[PreprocessorDefinition]]
 
+type CIdentifier = str
+type ClangUSR = str
+
 
 def style_path(path: Path) -> str:
     return style(str(path), fg="bright_cyan", bold=True)
