@@ -482,7 +482,9 @@ def _CompileCommand_from_intercepted_command(
         else:
             link_type = "exe"
         link_info = {
-            "inputs": icmd.rest_inputs,  # FIXME: wrong order???
+            "inputs": [
+                compilation_database.legalize_output_name_for_rust(inp) for inp in icmd.rest_inputs
+            ],  # FIXME: wrong order???
             "c_files": [],
             "libs": icmd.libs,
             "lib_dirs": icmd.lib_dirs,
