@@ -487,12 +487,6 @@ def eval_tractor_ta3_corpus_lib(
     extras: list,
     case_dir: str,
 ):
-    # cando2 requires the candidate name (e.g. "collided_lib") end in `_lib`.
-    candidate_name = Path(case_dir).name
-    assert candidate_name.endswith("_lib"), (
-        f"Expected case_dir name to end in '_lib', got {candidate_name}"
-    )
-
     try:
         codebase = tractor_tests_git_clone_for(case_dir)
     except SubprocessError:
@@ -503,6 +497,12 @@ def eval_tractor_ta3_corpus_lib(
     # Copying the whole Test-Corpus repo results in huge numbers of temporary files,
     # resulting in noticeable delays both for test steps and for post-test cleanups.
     translation_preparation.copy_codebase(codebase / case_dir, tmp_codebase)
+
+    # cando2 requires the candidate name (e.g. "collided_lib") end in `_lib`.
+    candidate_name = Path(case_dir).name
+    assert candidate_name.endswith("_lib"), (
+        f"Expected case_dir name to end in '_lib', got {candidate_name}"
+    )
 
     # cando2 requires our runner exist in a candidate-named directory.
     candidate_resultsdir = tmp_resultsdir / candidate_name
