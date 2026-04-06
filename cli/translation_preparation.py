@@ -1484,10 +1484,11 @@ def run_preparation_passes(
                         print(
                             "xj-localize-errno will not run as errno analysis failed to prove safety"
                         )
-                        return
+                        return False
         except FileNotFoundError:
             print("xj-localize-errno will not run as errno analysis results are missing")
-            return
+            return False
+        return True
 
     def prep_localize_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         if not should_apply_errno_transformation(current_codebase):
