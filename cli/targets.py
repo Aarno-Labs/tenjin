@@ -457,7 +457,14 @@ def _CompileCommand_from_intercepted_command(
         elif len(icmd.c_inputs) == 0 and not icmd.compile_only and len(icmd.rest_inputs) == 1:
             filename = icmd.rest_inputs[0]
 
-    raw_arguments = list(icmd.entry["arguments"])  # make a mutable copy
+    # Never treat warnings as errors; some transformations we apply
+    # (such as macro blocking) can introduce warnings but should not
+    # cause the build to fail.
+    # We should eventually move this to `convert_intercepted_entry()`
+    # in `targets_from_intercept` but we don't yet use the parsed
+    # flags here, only the raw arguments.
+    raw_arguments = [arg for arg in icmd.entry["arguments"] if arg != "-Werror"]
+
     if extra_compile_or_link_flags:
         if not icmd.compile_only and raw_arguments[0].endswith("ld"):
             # We only use ld-specific flags when linking is being done directly by ld;
