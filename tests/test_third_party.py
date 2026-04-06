@@ -382,6 +382,15 @@ def translate_and_build_ta3_test(
     resultsdir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    if (orig_codebase / case_dir / "CMakePresets.json").is_file():
+        monkeypatch.setenv("XJ_CMAKE_PRESET", "test")  # without this, we'll compile the wrong code
+        assert not (orig_codebase / case_dir / "test_case" / "CMakePresets.json").is_file(), (
+            f"Found unexpected CMakePresets.json in the test_case directory {orig_codebase / case_dir / 'test_case'}."
+        )
+        shutil.copyfile(
+            orig_codebase / case_dir / "CMakePresets.json",
+            tmp_codebase / "test_case" / "CMakePresets.json",
+        )
     translation.do_translate(
         root,
         tmp_codebase / "test_case",
