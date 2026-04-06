@@ -1410,7 +1410,9 @@ def run_preparation_passes(
         #
         apply_tenjin_autoblocks = should_apply_errno_transformation(current_codebase)
         # Miscellaneous tasks over, onwards with preprocessor expansion!
-        c_refact.preprocess_build(store.build_info, all_build_targets[0], current_codebase, apply_tenjin_autoblocks)
+        c_refact.preprocess_build(
+            store.build_info, all_build_targets[0], current_codebase, apply_tenjin_autoblocks
+        )
         # build_info now marked to use preprocessed files, so re-generate compdb
         new_compdb: compilation_database.CompileCommands = (
             store.build_info.compdb_for_target_within(all_build_targets[0].key, current_codebase)
@@ -1492,7 +1494,9 @@ def run_preparation_passes(
 
     def prep_localize_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         if not should_apply_errno_transformation(current_codebase):
-            print("xj-localize-errno will not run, analysis results are missing or analysis failed to prove safety")
+            print(
+                "xj-localize-errno will not run, analysis results are missing or analysis failed to prove safety"
+            )
             return
 
         print("xj-localize-errno will run as errno analysis proved safety")

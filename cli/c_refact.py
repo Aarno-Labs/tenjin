@@ -154,7 +154,9 @@ def parse_project(
     return tus
 
 
-def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: Path, apply_autoblocks: bool) -> None:
+def preprocess_build(
+    b: targets.BuildInfo, t: targets.BuildTarget, target_dir: Path, apply_autoblocks: bool
+) -> None:
     """
     For each TU, run clang -E to preprocess it into target_dir.
     """
