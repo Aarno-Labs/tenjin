@@ -432,9 +432,11 @@ def eval_tractor_ta3_corpus_app(
         monkeypatch=monkeypatch,
     )
 
-    # The binary may be `main` or `main_nolines`
-    rs_bins = list((tmp_resultsdir / "final" / "target" / "debug").glob("main*"))
-    rs_bins = [p for p in rs_bins if p.is_file() and os.access(p, os.X_OK)]
+    rs_bins = [
+        p
+        for p in (tmp_resultsdir / "final" / "target" / "debug").iterdir()
+        if p.is_file() and os.access(p, os.X_OK)
+    ]
     assert len(rs_bins) == 1, (
         f"Expected exactly one binary in {tmp_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in rs_bins]}"
     )
