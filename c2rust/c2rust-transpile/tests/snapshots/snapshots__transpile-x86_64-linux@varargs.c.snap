@@ -38,7 +38,7 @@ pub struct vastruct<'a> {
 }
 #[no_mangle]
 pub unsafe extern "C" fn call_printf() {
-    println!("{:}, {:}", 10 as core::ffi::c_int, 1.5f64 as f64);
+    println!("{:}, {:.6}", 10 as core::ffi::c_int, 1.5f64 as f64);
 }
 #[no_mangle]
 pub unsafe extern "C" fn my_vprintf(
@@ -67,7 +67,7 @@ pub unsafe extern "C" fn my_printf(mut fmt: *const ::core::ffi::c_char, mut args
                             print!("{:}", ap.arg::<::core::ffi::c_int>() as core::ffi::c_int);
                         }
                         102 => {
-                            print!("{:}", ap.arg::<::core::ffi::c_double>() as f64);
+                            print!("{:.6}", ap.arg::<::core::ffi::c_double>() as f64);
                         }
                         115 => {
                             print!("{:>}", {

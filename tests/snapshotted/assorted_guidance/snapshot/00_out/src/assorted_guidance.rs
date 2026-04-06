@@ -106,7 +106,7 @@ pub unsafe fn recognize_call_exit() {
 pub unsafe fn recognize_int_float_bitcast() {
     let mut ui = 0x40490fdb as ::core::ffi::c_int as ::core::ffi::c_uint;
     let mut f = f32::from_bits(ui);
-    println!("float f = {:}", f as ::core::ffi::c_double as f64);
+    println!("float f = {:.6}", f as ::core::ffi::c_double as f64);
 }
 #[no_mangle]
 pub unsafe fn guided_static() {

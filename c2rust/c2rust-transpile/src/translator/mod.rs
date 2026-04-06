@@ -2213,6 +2213,10 @@ mod refactor_format {
                         buf.push_str(&format!("vv{}$", curr_idx));
                     }
                 }
+            } else if matches!(self.ty, ConvType::Float | ConvType::GFloat) {
+                // In C, the default precision for floats is 6. In Rust, it's infinite.
+                // To match C's behavior, we need to explicitly set the default precision to 6.
+                buf.push_str(".6");
             }
 
             match self.ty {
