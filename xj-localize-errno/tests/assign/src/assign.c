@@ -26,10 +26,16 @@ int does_use_errno(FILE *f)
   return 0;
 }
 
+
+static int bar_static() { return 1; }
+
 int main(int argc, char **argv)
 {
+    foo();
     errno = 0;
-    if (foo() == 0 && bar() == 1 && errno == EINVAL) {
+    if (errno == EINVAL) {
         printf("LOL: [%s]\n", strerror(errno));
+	bar();
     }
+    return 0;
 }
