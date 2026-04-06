@@ -31,6 +31,7 @@ from targets import BuildInfo, TargetType
 from caching_file_contents import CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
 from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr, ResolvedPath
+import tenj_types
 
 
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
@@ -871,16 +872,32 @@ def run_preparation_passes(
         all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
             compdb, statics_only=True
         )
+        # Sharing the same name/spelling is orthogonal to whether two cursors
+        # refer to the same entity. Two identically-named statics in different
+        # functions refer to distinct entities; two non-static global decls
+        # with the same name refer to the same entity. Clang provides a "USR"
+        # (Unified Symbol Resolution) string which corresponds to our notion
+        # of a distinct entity, even across translation units.
+        #
+        # `clang-rename` requires we rename each entity at most once.
+        #
+        # So we map USRs to unique names, and track which USRs we've seen,
+        # skipping any duplicates.
+
         all_pgs = [c_refact.mk_NamedDeclInfo(c) for c in all_pgs_cursors]
         current_codebase_dir = current_codebase.as_posix()
         for g_s in all_pgs:
             assert g_s.file_path is not None, f"Expected file_path for global/static: {g_s}"
             assert g_s.file_path.startswith(current_codebase_dir)
 
-        all_global_names = set(g_s.spelling for g_s in all_pgs)
         uniquifiers: dict[str, int] = {}
+        usr_names: dict[tenj_types.ClangUSR, tenj_types.CIdentifier] = {}
 
-        def mk_unique_name(base: str) -> str:
+        pgs_in_deterministic_order = sorted(
+            all_pgs, key=lambda g: (g.file_path or "", g.decl_start_byte_offset)
+        )
+
+        def mk_unique_name(base: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
             while True:
                 n = uniquifiers.get(base, 0)
                 uniquifiers[base] = n + 1
@@ -888,16 +905,39 @@ def run_preparation_passes(
                 if candidate not in all_global_names:
                     return candidate
 
-        rewrites_per_file: dict[str, dict[int, tuple[int, str, str]]] = {}
-        pgs_in_determinstic_order = sorted(
-            all_pgs, key=lambda g: (g.file_path or "", g.decl_start_byte_offset)
-        )
-        for g_s in pgs_in_determinstic_order:
+        all_global_names = set(g_s.spelling for g_s in all_pgs)
+
+        for g_s in pgs_in_deterministic_order:
+            if g_s.usr in usr_names:
+                continue  # already renamed this entity via another declaration
+            usr_names[g_s.usr] = mk_unique_name(g_s.spelling)
+
+        rewrites_per_file: dict[
+            tenj_types.FilePathStr,
+            dict[int, tuple[int, tenj_types.CIdentifier, tenj_types.CIdentifier]],
+        ] = {}
+        seen_usrs_per_file: dict[tenj_types.FilePathStr, set[tenj_types.ClangUSR]] = {}
+        for g_s in pgs_in_deterministic_order:
+            seen_usrs_in_this_file = seen_usrs_per_file.setdefault(g_s.file_path or "", set())
+            if g_s.usr in seen_usrs_in_this_file:
+                continue  # already renamed this entity in this file
+            seen_usrs_in_this_file.add(g_s.usr)
             rewrites_per_file.setdefault(g_s.file_path or "", {})[g_s.decl_start_byte_offset] = (
                 g_s.decl_end_byte_offset,
-                mk_unique_name(g_s.spelling),
+                usr_names[g_s.usr],
                 g_s.spelling,
             )
+
+        def is_c_identifier_continuation_byte(b: int) -> bool:
+            return (
+                chr(b).encode()
+                in b"_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            )
+
+        def is_c_identifier_continuation_byte_at(bs: bytes, idx: int) -> bool:
+            if idx < 0 or idx >= len(bs):
+                return False
+            return is_c_identifier_continuation_byte(bs[idx])
 
         for srcfile, editdict in rewrites_per_file.items():
             contents = Path(srcfile).read_bytes()
@@ -913,7 +953,11 @@ def run_preparation_passes(
                     idx = contents.find(
                         prefix_bytes + name_bytes, decl_start_byte_offset, decl_end_byte_offset
                     )
-                    if idx != -1:
+                    # We've found the variant we're looking for if we locate a non-identifer
+                    # prefix, then our name bytes, then a non-identifier byte (or end of file).
+                    if idx != -1 and not is_c_identifier_continuation_byte_at(
+                        contents, idx + len(prefix_bytes) + len(name_bytes)
+                    ):
                         return idx + len(prefix_bytes)
                     return -1
 
