@@ -110,7 +110,7 @@ def test_cmake_lone_exe(
     c_prog_output = hermetic.run(
         [str(build_dir / "tenjin_smoke_test_lone_exe")], check=True, capture_output=True
     )
-    assert c_prog_output.stdout == b"Hello, Tenjin!\n", f"Got: {c_prog_output.stdout!r}"
+    assert c_prog_output.stdout == b"Hello, Tenjin! 43\n", f"Got: {c_prog_output.stdout!r}"
 
     # Run translation
     translation.do_translate(
