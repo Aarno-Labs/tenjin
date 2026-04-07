@@ -1262,6 +1262,10 @@ def localize_mutable_globals(
             pass
 
         if type_obj_canonical.kind == TypeKind.POINTER:
+            while type_obj_noncanonical.kind == TypeKind.TYPEDEF:
+                type_obj_noncanonical = (
+                    type_obj_noncanonical.get_declaration().underlying_typedef_type
+                )
             assert type_obj_noncanonical.kind == TypeKind.POINTER
 
         # If it's a pointer, the pointee can be forward-declared
