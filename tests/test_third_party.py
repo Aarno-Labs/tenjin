@@ -303,10 +303,6 @@ def test_lua_5_4_0_immunant(
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
-# This test requires <openssl/conf.h> to compile and dynamically links against `libcrypto`.
-# On Mac, we should query `brew --prefix openssl`.
-# It also appears that setrlimit doesn't work properly on Mac, so anyone running this test
-# would need to set `ulimit -s 32000` before invoking pytest.
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_005(
     root: Path,
@@ -314,17 +310,29 @@ def test_tractor_ta3_corpus_p01_005(
     tmp_resultsdir: Path,
     request: pytest.FixtureRequest,
     extras: list,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    variant = "005_sphincs_PQCgenKAT_sign_blake_128f_simple"
+    test_tractor_ta3_corpus_p01(root, variant, tmp_codebase, tmp_resultsdir, request, extras, monkeypatch)  # fmt: skip
+
+
+# This test requires <openssl/conf.h> to compile and dynamically links against `libcrypto`.
+# On Mac, we should query `brew --prefix openssl`.
+# It also appears that setrlimit doesn't work properly on Mac, so anyone running this test
+# would need to set `ulimit -s 32000` before invoking pytest.
+def test_tractor_ta3_corpus_p01(
+    root: Path,
+    p01_variant: str,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    request: pytest.FixtureRequest,
+    extras: list,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     codebase = tractor_tests_git_clone_for("Public-Tests/P01_sphincs_plus")
 
-    translation_preparation.copy_codebase(
-        codebase
-        / "Public-Tests"
-        / "P01_sphincs_plus"
-        / "005_sphincs_PQCgenKAT_sign_blake_128f_simple",
-        tmp_codebase,
-    )
-    exe_name = "PQCgenKAT_sign"
+    case_dir = codebase / "Public-Tests" / "P01_sphincs_plus" / p01_variant
+    translation_preparation.copy_codebase(case_dir, tmp_codebase)
 
     # blake256.c has a very large function (~1600 statements) which causes c2rust to
     # blow the stack with the default 8MB limit.
@@ -336,21 +344,21 @@ def test_tractor_ta3_corpus_p01_005(
             "P01 requires a large stack which we can't set up on this platform; skipping test.",
         )
 
-    os.environ["XJ_CMAKE_PRESET"] = "test"  # without this, we'll compile the wrong code
-    translation.do_translate(
+    translate_and_build_ta3_test(
         root,
-        tmp_codebase,
-        tmp_resultsdir,
         cratename="tractor_ta3_corpus_p01",
-        guidance_path_or_literal="{}",
+        orig_codebase=codebase,
+        tmp_codebase=tmp_codebase,
+        case_dir=str(case_dir.relative_to(codebase)),
+        resultsdir=tmp_resultsdir,
+        monkeypatch=monkeypatch,
     )
 
-    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
-
-    # The P01 build may or may not have a `_nolines` suffix; currently it will not
-    # but let's not have this test break if that changes in the future.
-    rs_bins = list((tmp_resultsdir / "final" / "target" / "debug").glob(f"{exe_name}*"))
-    rs_bins = [p for p in rs_bins if p.is_file() and os.access(p, os.X_OK)]
+    rs_bins = [
+        p
+        for p in (tmp_resultsdir / "final" / "target" / "debug").iterdir()
+        if p.is_file() and os.access(p, os.X_OK) and p.stem == p.name
+    ]
     assert len(rs_bins) == 1, (
         f"Expected exactly one binary in {tmp_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in rs_bins]}"
     )
