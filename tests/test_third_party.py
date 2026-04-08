@@ -304,7 +304,7 @@ def test_lua_5_4_0_immunant(
 
 
 @pytest.mark.slow
-def test_tractor_ta3_corpus_p01_005(
+def test_tractor_ta3_corpus_p01_005_app(
     root: Path,
     tmp_codebase: Path,
     tmp_resultsdir: Path,
@@ -312,73 +312,74 @@ def test_tractor_ta3_corpus_p01_005(
     extras: list,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    variant = "005_sphincs_PQCgenKAT_sign_blake_128f_simple"
-    test_tractor_ta3_corpus_p01(root, variant, tmp_codebase, tmp_resultsdir, request, extras, monkeypatch)  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/005_sphincs_PQCgenKAT_sign_blake_128f_simple"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 
-# This test requires <openssl/conf.h> to compile and dynamically links against `libcrypto`.
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_010_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/010_sphincs_PQCgenKAT_sign_blake_192f_robust"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_016_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/016_sphincs_PQCgenKAT_sign_blake_256s_robust"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_019_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/019_sphincs_PQCgenKAT_sign_sha2_128s_simple"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_034_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/034_sphincs_PQCgenKAT_sign_shake_192f_robust"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_042_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/042_sphincs_PQCgenKAT_sign_haraka_128f_robust"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_053_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/053_blake_128f_s_initialize_hash_function_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_059_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/059_blake_128f_r_gen_message_random_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_066_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/066_blake_128s_r_prf_addr_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_088_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/088_blake_256f_s_hash_message_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_ta3_corpus_p01_132_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P01_sphincs_plus/132_sha2_192s_r_hash_message_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+# P01 requires <openssl/conf.h> to compile and dynamically links against `libcrypto`.
 # On Mac, we should query `brew --prefix openssl`.
 # It also appears that setrlimit doesn't work properly on Mac, so anyone running this test
 # would need to set `ulimit -s 32000` before invoking pytest.
-def test_tractor_ta3_corpus_p01(
-    root: Path,
-    p01_variant: str,
-    tmp_codebase: Path,
-    tmp_resultsdir: Path,
-    request: pytest.FixtureRequest,
-    extras: list,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    codebase = tractor_tests_git_clone_for("Public-Tests/P01_sphincs_plus")
-
-    case_dir = codebase / "Public-Tests" / "P01_sphincs_plus" / p01_variant
-    translation_preparation.copy_codebase(case_dir, tmp_codebase)
-
-    # blake256.c has a very large function (~1600 statements) which causes c2rust to
-    # blow the stack with the default 8MB limit.
-    try:
-        mb_32 = 32 * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_STACK, (mb_32, mb_32))
-    except ValueError:
-        return pytest.skip(
-            "P01 requires a large stack which we can't set up on this platform; skipping test.",
-        )
-
-    translate_and_build_ta3_test(
-        root,
-        cratename="tractor_ta3_corpus_p01",
-        orig_codebase=codebase,
-        tmp_codebase=tmp_codebase,
-        case_dir=str(case_dir.relative_to(codebase)),
-        resultsdir=tmp_resultsdir,
-        monkeypatch=monkeypatch,
-    )
-
-    rs_bins = [
-        p
-        for p in (tmp_resultsdir / "final" / "target" / "debug").iterdir()
-        if p.is_file() and os.access(p, os.X_OK) and p.stem == p.name
-    ]
-    assert len(rs_bins) == 1, (
-        f"Expected exactly one binary in {tmp_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in rs_bins]}"
-    )
-    rs_bin = rs_bins[0]
-
-    test_vector = tmp_codebase / "test_vectors" / "test.json"
-    spec = json.loads(test_vector.read_text(encoding="utf-8"))
-
-    os.environ["XJ_LD_SYSROOT"] = (
-        "1"  # Note: P01 dynamically links against libcrypto; this makes it available.
-    )
-
-    outcome_rs = run_tractor_test_vector(
-        rs_bin, test_vector.stem, spec, cwd=tmp_resultsdir / "final"
-    )
-    assert outcome_rs.ok, (
-        f"Test vector {test_vector.stem} failed on the Rust version: {outcome_rs.message}"
-    )
-
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
 def translate_and_build_ta3_test(
@@ -399,6 +400,7 @@ def translate_and_build_ta3_test(
             orig_codebase / case_dir / "CMakePresets.json",
             tmp_codebase / "test_case" / "CMakePresets.json",
         )
+
     translation.do_translate(
         root,
         tmp_codebase / "test_case",
@@ -406,7 +408,29 @@ def translate_and_build_ta3_test(
         cratename,
         guidance_path_or_literal="{}",
     )
-    run_cargo_on_final(resultsdir / "final", ["build"])
+
+    with monkeypatch.context() as m:
+        if "P01_sphincs_plus" in case_dir:
+            # TA3's cando2 runner requires lazy binding for shared libraries.
+            m.setenv(
+                "RUSTFLAGS_FOR_TRANSLATED_CODE",
+                "-C link-arg=-Wl,-z,lazy -Zplt=yes",
+            )
+        # run_cargo_on_final(resultsdir / "final", ["build", "-p", "libblake"])
+        # run_cargo_on_final(resultsdir / "final", ["build"])
+        run_cargo_on_final(resultsdir / "final", ["build", "--release"])
+
+
+def try_raise_stack_limit_if_needed(case_dir: str) -> bool:
+    if "P01_sphincs_plus" in str(case_dir):
+        # blake256.c has a very large function (~1600 statements) which causes c2rust to
+        # blow the stack with the default 8MB limit.
+        try:
+            mb_32 = 32 * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_STACK, (mb_32, mb_32))
+        except ValueError:
+            return False
+    return True
 
 
 def eval_tractor_ta3_corpus_app(
@@ -423,6 +447,11 @@ def eval_tractor_ta3_corpus_app(
     except SubprocessError:
         return pytest.skip(
             f"Could not clone repo for {case_dir}; likely requires authentication. Skipping test."
+        )
+
+    if not try_raise_stack_limit_if_needed(case_dir):
+        return pytest.skip(
+            "P01 requires a large stack which we can't set up on this platform; skipping test.",
         )
 
     # Copying the whole Test-Corpus repo results in huge numbers of temporary files,
@@ -456,6 +485,11 @@ def eval_tractor_ta3_corpus_app(
     freshdir.mkdir(exist_ok=False)
     rs_bin = freshdir / exe_name
     shutil.copy(rs_bins[0], rs_bin)
+
+    if "P01_sphincs_plus" in str(case_dir):
+        monkeypatch.setenv(
+            "XJ_LD_SYSROOT", "1"
+        )  # Note: P01 dynamically links against libcrypto; this makes it available.
 
     vectors_run = 0
     vectors_skipped = 0
@@ -504,6 +538,10 @@ def eval_tractor_ta3_corpus_lib(
             f"Could not clone repo for {case_dir}; likely requires authentication. Skipping test."
         )
 
+    if not try_raise_stack_limit_if_needed(case_dir):
+        return pytest.skip(
+            "P01 requires a large stack which we can't set up on this platform; skipping test.",
+        )
     # Copying the whole Test-Corpus repo results in huge numbers of temporary files,
     # resulting in noticeable delays both for test steps and for post-test cleanups.
     translation_preparation.copy_codebase(codebase / case_dir, tmp_codebase)
@@ -550,12 +588,17 @@ def eval_tractor_ta3_corpus_lib(
     build_ninja_dir.mkdir(exist_ok=False)
     built_dir = candidate_resultsdir / "final" / "target" / "debug"
     built_libs = list(built_dir.glob("lib*.so")) + list(built_dir.glob("lib*.dylib"))
-    assert len(built_libs) == 1, (
-        f"Expected exactly one built library in {candidate_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in built_libs]}"
-    )
-    built_lib = built_libs[0]
-    shutil.copyfile(built_lib, build_ninja_dir / f"lib{candidate_name}{built_lib.suffix}")
-    shutil.copyfile(built_lib, build_ninja_dir / f"libdriver{built_lib.suffix}")
+    for built_lib in built_libs:
+        shutil.copyfile(built_lib, build_ninja_dir / f"lib{candidate_name}{built_lib.suffix}")
+        shutil.copyfile(built_lib, build_ninja_dir / f"libdriver{built_lib.suffix}")
+        if built_lib.name.startswith("liblib"):
+            # Sometimes Rust produces 'liblibX.so' but cando2 needs 'libX.so'.
+            shutil.copyfile(built_lib, build_ninja_dir / built_lib.name[3:])
+
+    if "P01_sphincs_plus" in str(case_dir):
+        monkeypatch.setenv(
+            "XJ_LD_SYSROOT", "1"
+        )  # Note: P01 dynamically links against libcrypto; this makes it available.
 
     for test_vector in (tmp_codebase / "test_vectors").glob("*.json"):
         spec = json.loads(test_vector.read_text(encoding="utf-8"))
