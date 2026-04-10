@@ -388,6 +388,7 @@ def translate_and_build_ta3_test(
     orig_codebase: Path,
     tmp_codebase: Path,
     case_dir: str,
+    profile: str,
     resultsdir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -409,16 +410,10 @@ def translate_and_build_ta3_test(
         guidance_path_or_literal="{}",
     )
 
-    with monkeypatch.context() as m:
-        if "P01_sphincs_plus" in case_dir:
-            # TA3's cando2 runner requires lazy binding for shared libraries.
-            m.setenv(
-                "RUSTFLAGS_FOR_TRANSLATED_CODE",
-                "-C link-arg=-Wl,-z,lazy -Zplt=yes",
-            )
-        # run_cargo_on_final(resultsdir / "final", ["build", "-p", "libblake"])
-        # run_cargo_on_final(resultsdir / "final", ["build"])
-        run_cargo_on_final(resultsdir / "final", ["build", "--release"])
+    args = ["build"]
+    if profile == "release":
+        args.append("--release")
+    run_cargo_on_final(resultsdir / "final", args)
 
 
 def try_raise_stack_limit_if_needed(case_dir: str) -> bool:
@@ -459,23 +454,25 @@ def eval_tractor_ta3_corpus_app(
     translation_preparation.copy_codebase(codebase / case_dir, tmp_codebase)
 
     exe_name = "driver"  # Some test vectors require the binary to be named "driver".
+    profile = "release"
     translate_and_build_ta3_test(
         root,
         cratename="tractor_ta3_corpus_app",
         orig_codebase=codebase,
         tmp_codebase=tmp_codebase,
         case_dir=case_dir,
+        profile=profile,
         resultsdir=tmp_resultsdir,
         monkeypatch=monkeypatch,
     )
 
     rs_bins = [
         p
-        for p in (tmp_resultsdir / "final" / "target" / "debug").iterdir()
-        if p.is_file() and os.access(p, os.X_OK)
+        for p in (tmp_resultsdir / "final" / "target" / profile).iterdir()
+        if p.is_file() and os.access(p, os.X_OK) and p.name == p.stem
     ]
     assert len(rs_bins) == 1, (
-        f"Expected exactly one binary in {tmp_resultsdir / 'final' / 'target' / 'debug'}, but found: {[p.name for p in rs_bins]}"
+        f"Expected exactly one binary in {tmp_resultsdir / 'final' / 'target' / profile} but found: {[p.name for p in rs_bins]}"
     )
 
     # Some of TA3's tests require the binary be named `driver`, and in some build setups
@@ -578,12 +575,14 @@ def eval_tractor_ta3_corpus_lib(
 
     run_cargo_on_final(candidate_resultsdir / "runner", ["build"])
 
+    profile = "release"
     translate_and_build_ta3_test(
         root,
         cratename="tractor_ta3_corpus_lib",
         orig_codebase=codebase,
         tmp_codebase=tmp_codebase,
         case_dir=case_dir,
+        profile=profile,
         resultsdir=candidate_resultsdir,
         monkeypatch=monkeypatch,
     )
@@ -593,7 +592,7 @@ def eval_tractor_ta3_corpus_lib(
     # (B02_organic/encode_base64_lib is an example of the latter.)
     build_ninja_dir = Path(candidate_resultsdir / "build-ninja")
     build_ninja_dir.mkdir(exist_ok=False)
-    built_dir = candidate_resultsdir / "final" / "target" / "debug"
+    built_dir = candidate_resultsdir / "final" / "target" / profile
     built_libs = list(built_dir.glob("lib*.so")) + list(built_dir.glob("lib*.dylib"))
     for built_lib in built_libs:
         shutil.copyfile(built_lib, build_ninja_dir / f"lib{candidate_name}{built_lib.suffix}")

@@ -1,3 +1,4 @@
+import json
 import subprocess
 import shlex
 import shutil
@@ -308,7 +309,7 @@ def implicit_cargo_toolchain_arg(cwd: Path, args: Sequence[str]) -> list[str]:
     return [get_toolchain_for_directory(cwd)]
 
 
-def cargo_encoded_rustflags_env_ext(env_ext_rustflags_override: str | None) -> dict:
+def cargo_encoded_rustflags_env_ext(cwd: Path, env_ext_rustflags_override: str | None) -> dict:
     # We need this to get Cargo to build executables and tests (which, on
     # macOS, end up linking to libclang-cpp.dylib) with an embedded rpath
     # entry that allows the running binary to find our LLVM library.
@@ -331,6 +332,58 @@ def cargo_encoded_rustflags_env_ext(env_ext_rustflags_override: str | None) -> d
         rustflags = env_ext_rustflags_override  # awkward but more easily type-checkable
     rustflags_parts = rustflags.split()
     rustflags_parts.extend(["-C", f"link-args=-Wl,-rpath,{llvm_lib_dir}"])
+
+    # There may also be project-specific rustflags specified in .cargo/config.toml
+    # which will be overridden by our use of CARGO_ENCODED_RUSTFLAGS.
+    # The right way to do this is to query `rustc --print cfg` but for now
+    # we assume the only cfg values we care about are `unix` (always true)
+    # and `target_os="linux"` which we can determine in Python without invoking
+    # rustc.
+    if (cwd / ".cargo" / "config.toml").exists():
+        # XREF:XJ_CARGO_CONFIG_RUSTFLAGS
+        try:
+            ccfg_cp = subprocess.run(
+                ["cargo", "-Zunstable-options", "config", "get", "--format", "json"],
+                cwd=cwd,
+                check=False,
+                capture_output=True,
+            )
+            if not ccfg_cp.returncode == 0:
+                click.echo(
+                    f"WARNING: Failed to query rustc cfg for additional rustflags: {ccfg_cp.stderr.decode('utf-8')}",
+                    err=True,
+                )
+                click.echo(ccfg_cp.stderr.decode("utf-8"), err=True)
+                ccfg_cp.check_returncode()
+            # Example expected output:
+            # {
+            #   "target": {
+            #     "cfg(target_os = \"linux\")": {
+            #       "rustflags": [
+            #         "-Clink-arg=-Wl,-z,lazy",
+            #         "-Zplt=yes"
+            #       ]
+            #     },
+            #     "cfg(unix)": {
+            #       "rustflags": [
+            #         "-Clink-arg=--allow-multiple-definition"
+            #       ]
+            #     }
+            #   }
+            # }
+            ccfg_json = json.loads(ccfg_cp.stdout)
+            for cfg, cfg_info in ccfg_json.get("target", {}).items():
+                if cfg == "cfg(unix)":
+                    rustflags_parts.extend(cfg_info.get("rustflags", []))
+                elif cfg == 'cfg(target_os = "linux")' and platform.system() == "Linux":
+                    rustflags_parts.extend(cfg_info.get("rustflags", []))
+                elif cfg == 'cfg(target_os = "mac")' and platform.system() == "Darwin":
+                    rustflags_parts.extend(cfg_info.get("rustflags", []))
+        except Exception as e:
+            click.echo(
+                f"WARNING: Failed to query rustc cfg for additional rustflags: {e}", err=True
+            )
+
     return {
         "CARGO_ENCODED_RUSTFLAGS": b"\x1f".join(x.encode("utf-8") for x in rustflags_parts),
     }
@@ -375,7 +428,7 @@ def run_cargo_in(
         cwd=cwd,
         check=check,
         with_tenjin_deps=True,
-        env_ext={**env_ext, **cargo_encoded_rustflags_env_ext(env_ext.get("RUSTFLAGS"))},
+        env_ext={**env_ext, **cargo_encoded_rustflags_env_ext(cwd, env_ext.get("RUSTFLAGS"))},
         **kwargs,
     )
 
