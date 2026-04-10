@@ -60,6 +60,7 @@ impl GuidedType {
             ["&", _] => false,
             ["&", life, _] if life.starts_with("'") => false,
             ["&", life, "mut", _] if life.starts_with("'") => true,
+            ["&mut", _] => true,
             ["&", "mut", _] => true,
             ["&", "mut", _, _] => true,
             ["&", _, _, _] => false,
@@ -556,7 +557,57 @@ pub fn trim_unique_suffix(s: &str) -> &str {
         .unwrap_or_else(|| panic!("Empty name after trimming tenjin suffix: {}", s))
 }
 
+pub fn builtin_unconditional_variable_guidance(
+    _has_static_duration: &bool,
+    _has_thread_duration: &bool,
+    _is_externally_visible: &bool,
+    _is_defn: &bool,
+    _has_global_storage: &bool,
+    ident: &str,
+    _initializer: &Option<CExprId>,
+    _typ: &CQualTypeId,
+    _attrs: &IndexSet<Attribute>,
+) -> Option<GuidedType> {
+    match ident {
+        "_xj_local_errno" => Some(GuidedType::from_str("i32").expect("failed to parse 'i32'!?")),
+
+        "_xj_errno" => {
+            Some(GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?"))
+        }
+
+        _ => None,
+    }
+}
+
 impl Translation<'_> {
+    pub fn builtin_unconditional_guidance(&self, id: CDeclId) -> Option<GuidedType> {
+        self.ast_context.get_decl(&id).and_then(|d| match &d.kind {
+            CDeclKind::Variable {
+                has_static_duration,
+                has_thread_duration,
+                is_externally_visible,
+                is_defn,
+                has_global_storage,
+                ident,
+                initializer,
+                typ,
+                attrs,
+            } => builtin_unconditional_variable_guidance(
+                has_static_duration,
+                has_thread_duration,
+                is_externally_visible,
+                is_defn,
+                has_global_storage,
+                ident,
+                initializer,
+                typ,
+                attrs,
+            ),
+
+            _ => None,
+        })
+    }
+
     pub fn recognize_c_assignment_cases(
         &self,
         ctx: ExprContext,
@@ -1008,6 +1059,30 @@ impl Translation<'_> {
             }
             RecognizedCallForm::RetargetedCallee(func) => mk_call_with(func, args),
             RecognizedCallForm::OtherCall => mk_call_with(func, args),
+        }
+    }
+
+    #[allow(clippy::borrowed_box)]
+    pub fn preconvert_decl_ref(
+        &self,
+        e: &Box<Expr>,
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        match tenjin::expr_get_path(e) {
+            Some(p) if tenjin::is_path_exactly_1(p, "errno") => {
+                let call_last_os_error = mk().call_expr(
+                    mk().abs_path_expr(vec!["std", "io", "Error", "last_os_error"]),
+                    vec![],
+                );
+                let extract_i32 = mk().method_chain_expr(
+                    call_last_os_error,
+                    vec![
+                        (mk().path_segment("raw_os_error"), vec![]),
+                        (mk().path_segment("unwrap"), vec![]),
+                    ],
+                );
+                Ok(Some(WithStmts::new_val(extract_i32)))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1825,8 +1900,8 @@ impl Translation<'_> {
         Ok(None)
     }
 
-    /// Map NULL -> None, &x -> Some(&[mut] x), otherwise `x.as_ref()`.
-    fn c_coerce_pointer_to_option_ref(
+    /// Map NULL -> None, &x -> Some(&[mut] x), otherwise `x.as_mut()`.
+    fn c_coerce_pointer_to_option_mut(
         &self,
         ctx: ExprContext,
         cexpr: CExprId,
@@ -1840,7 +1915,7 @@ impl Translation<'_> {
             if let Expr::Reference(_) = &*e {
                 mk().call_expr(mk().path_expr("Some"), vec![e])
             } else {
-                mk().method_call_expr(e, "as_ref", vec![])
+                mk().method_call_expr(e, "as_mut", vec![])
             }
         }))
     }
@@ -1854,7 +1929,7 @@ impl Translation<'_> {
         if cargs.len() == 1 {
             self.use_crate(ExternCrate::XjCtime);
             return Ok(Some(
-                self.c_coerce_pointer_to_option_ref(ctx, cargs[0])?
+                self.c_coerce_pointer_to_option_mut(ctx, cargs[0])?
                     .map(|arg_expr| {
                         mk().call_expr(
                             mk().path_expr(vec!["xj_ctime", "compat", "time"]),

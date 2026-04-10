@@ -154,7 +154,9 @@ def parse_project(
     return tus
 
 
-def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: Path) -> None:
+def preprocess_build(
+    b: targets.BuildInfo, t: targets.BuildTarget, target_dir: Path, apply_autoblocks: bool
+) -> None:
     """
     For each TU, run clang -E to preprocess it into target_dir.
     """
@@ -199,10 +201,17 @@ def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: P
                 temp_args.append(arg)
         compiler_args = temp_args
 
+        # Insert autoincludes and block certain macros from expansion
+        autoblocks = []
+        if apply_autoblocks:
+            autoblocks.extend(compilation_database.autoinclude_tenjin_decl_args())
+            autoblocks.extend(compilation_database.autoexpand_macro_file_args())
+
         base_pp_command = [
             str(clang_path),
             "-E",
             str(abs_src_path),
+            *autoblocks,
             *compiler_args,
         ]
 
@@ -1186,6 +1195,13 @@ def localize_mutable_globals(
         print("No liftable mutated globals found; skipping further localization steps.")
         return
 
+    mutated_globals_cursors_by_name = {c.spelling: c for c in liftable_mutated_globals_and_statics}
+
+    assert len(mutated_globals_cursors_by_name) == len(liftable_mutated_globals_and_statics), (
+        "Expected all (liftable) mutated global names to be unique, "
+        + f"but got duplicates within: {mutated_globals_cursors_by_name.keys()}"
+    )
+
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
     print("STEP 2b: Finding struct/union dependencies")
@@ -1378,8 +1394,7 @@ def localize_mutable_globals(
 
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling in phase1results.mutd_global_names
-                    and child.spelling not in phase1results.all_function_names
+                    and child.spelling in mutated_globals_cursors_by_name
                 ):
                     # Get the extent of the variable reference
                     start_offset = child.extent.start.offset
@@ -1490,14 +1505,6 @@ def localize_mutable_globals(
         #                 break
 
         # Add the XjGlobals struct definition
-        mutated_globals_cursors_by_name = {
-            c.spelling: c for c in liftable_mutated_globals_and_statics
-        }
-        assert len(mutated_globals_cursors_by_name) == len(liftable_mutated_globals_and_statics), (
-            "Expected all (liftable) mutated global names to be unique, "
-            + f"but got duplicates within: {mutated_globals_cursors_by_name.keys()}"
-        )
-
         header_lines.append("struct XjGlobals {")
         for global_name in sorted(mutated_globals_cursors_by_name.keys()):
             var_cursor = mutated_globals_cursors_by_name[global_name]
