@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
 import shutil
-import pytest
 import os
 import resource
+import platform
 from subprocess import SubprocessError
+
+import pytest
 
 from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
@@ -428,6 +430,27 @@ def try_raise_stack_limit_if_needed(case_dir: str) -> bool:
     return True
 
 
+def ta3_corpus_linux_only(case_dir: str) -> bool:
+    # Several TA3 tests only build/link/run on Linux, not on Mac.
+    if case_dir.startswith("Public-Tests/P01_sphincs_plus"):
+        return True
+
+    # Most of these have test vector differences.
+    return case_dir in [
+        "Public-Tests/B01_organic/hsv_to_rgb_lib",
+        "Public-Tests/B01_organic/colourblind_lib",
+        "Public-Tests/B01_organic/to_barycentric_lib",
+        "Public-Tests/B01_organic/normalize_lib",
+        "Public-Tests/B01_organic/contrast_ratio_lib",
+        "Public-Tests/B01_organic/tfm_lib",
+        "Public-Tests/B01_organic/007_errno_pow_lib",
+        "Public-Tests/B01_organic/007_errno_pow",
+        "Public-Tests/B02_organic/qmath",  # missing define on non-Linux
+        "Public-Tests/B02_organic/spec_ray_lib",
+        "Public-Tests/B02_organic/gen_ray_lib",
+    ]
+
+
 def eval_tractor_ta3_corpus_app(
     root: Path,
     tmp_codebase: Path,
@@ -437,6 +460,11 @@ def eval_tractor_ta3_corpus_app(
     extras: list,
     case_dir: str,
 ):
+    if platform.system() != "Linux" and ta3_corpus_linux_only(case_dir):
+        return pytest.skip(
+            "P01 doesn't build on Mac, we don't yet translate it either.",
+        )
+
     try:
         codebase = tractor_tests_git_clone_for(case_dir)
     except SubprocessError:
