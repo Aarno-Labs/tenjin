@@ -495,8 +495,15 @@ def eval_tractor_ta3_corpus_app(
     vectors_skipped = 0
     for test_vector in (tmp_codebase / "test_vectors").glob("*.json"):
         spec = json.loads(test_vector.read_text(encoding="utf-8"))
+
+        # The various corpus tests are not consistent in where they
+        # leave the built executable.
+        exe_path = tmp_resultsdir / "_build_1" / "app" / exe_name
+        if not exe_path.is_file():
+            exe_path = tmp_resultsdir / "_build_1" / exe_name
+
         outcome_c = run_tractor_test_vector(
-            tmp_resultsdir / "_build_1" / exe_name,
+            exe_path,
             test_vector.stem,
             spec,
             cwd=tmp_resultsdir / "final",
