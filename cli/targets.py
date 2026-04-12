@@ -58,7 +58,7 @@ class TargetType(Enum):
 
 
 def compute_target_type(link_cmd: targets_from_intercept.InterceptedCommand) -> TargetType:
-    if any("-shared" in arg for arg in link_cmd.entry["arguments"]):
+    if any(targets_from_intercept.is_shared_lib_flag(arg) for arg in link_cmd.entry["arguments"]):
         return TargetType.SHARED
     if (link_cmd.output or "").endswith(".a"):
         return TargetType.STATIC
