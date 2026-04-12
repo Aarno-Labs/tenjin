@@ -250,7 +250,7 @@ impl<'c> Translation<'c> {
             return self.convert_expr(ctx.used(), arg, None);
         }
 
-        if let Some((dst_tykind, inner_exp)) =
+        if let Some((dst_tykind, inner_exp, inner_is_signed)) =
             tenjin::is_bitcast_to_int_or_float(self, arg_expr_kind)
         {
             return self
@@ -261,11 +261,19 @@ impl<'c> Translation<'c> {
                         CTypeKind::Float => Ok(mk().call_expr(
                             // emit e.g. f32::from_bits(val)
                             mk().path_expr(vec!["f32".to_string(), "from_bits".into()]),
-                            vec![val],
+                            vec![if inner_is_signed {
+                                mk().cast_expr(val, mk().path_ty(vec!["u32".to_string()]))
+                            } else {
+                                val
+                            }],
                         )),
                         CTypeKind::Double => Ok(mk().call_expr(
                             mk().path_expr(vec!["f64".to_string(), "from_bits".into()]),
-                            vec![val],
+                            vec![if inner_is_signed {
+                                mk().cast_expr(val, mk().path_ty(vec!["u64".to_string()]))
+                            } else {
+                                val
+                            }],
                         )),
                         // TENJIN-TODO(intsizes): be more robust about determining actual int sizes
                         CTypeKind::ULongLong => {

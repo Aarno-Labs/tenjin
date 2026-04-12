@@ -1262,6 +1262,10 @@ def localize_mutable_globals(
             pass
 
         if type_obj_canonical.kind == TypeKind.POINTER:
+            while type_obj_noncanonical.kind == TypeKind.TYPEDEF:
+                type_obj_noncanonical = (
+                    type_obj_noncanonical.get_declaration().underlying_typedef_type
+                )
             assert type_obj_noncanonical.kind == TypeKind.POINTER
 
         # If it's a pointer, the pointee can be forward-declared
@@ -1366,6 +1370,16 @@ def localize_mutable_globals(
         # TU -> offset of first fn using mutable globals
         lowest_mutable_accessing_fn_starts: dict[str, tuple[int, str]] = {}
 
+        def record_mutable_accessing_fn_start(tu_path: str, fn_start: tuple[int, str] | None):
+            if fn_start is None:
+                return
+            if tu_path not in lowest_mutable_accessing_fn_starts:
+                lowest_mutable_accessing_fn_starts[tu_path] = fn_start
+            else:
+                current_lowest = lowest_mutable_accessing_fn_starts[tu_path]
+                if fn_start[0] < current_lowest[0]:
+                    lowest_mutable_accessing_fn_starts[tu_path] = fn_start
+
         # Step 8: Replace uses of mutable globals with xjg->WHATEVER
         print("\n  --- Step 8: Replacing global variable accesses ---")
         for tu_path, tu in tus.items():
@@ -1415,13 +1429,7 @@ def localize_mutable_globals(
                     # print(f"    Replacing {var_name} with {replacement}")
 
                     rewriter.add_rewrite(tu_path, start_offset, length, replacement)
-                    assert current_fn_start is not None
-                    if tu_path not in lowest_mutable_accessing_fn_starts:
-                        lowest_mutable_accessing_fn_starts[tu_path] = current_fn_start
-                    else:
-                        lmafs = lowest_mutable_accessing_fn_starts[tu_path]
-                        if lmafs[0] > current_fn_start[0]:
-                            lowest_mutable_accessing_fn_starts[tu_path] = current_fn_start
+                    record_mutable_accessing_fn_start(tu_path, current_fn_start)
 
         # Step 3: Create xj_globals.h header file
         print("\n  --- Step 3: Creating xj_globals.h ---")
@@ -1564,6 +1572,10 @@ def localize_mutable_globals(
                     and cursor.is_definition()
                 ):
                     print(f"  Found main() at {tu_path}:{cursor.location.line}")
+
+                    # `main()` may not access mutable globals directly, but it needs to see the full
+                    # declaration of the XjGlobals struct because it needs to construct the singleton.
+                    record_mutable_accessing_fn_start(tu_path, (cursor.extent.start.offset, "main"))
 
                     globals_and_statics_by_name = {c.spelling: c for c in globals_and_statics}
 

@@ -347,11 +347,11 @@ pub fn cast_expr_guided(
 pub fn is_bitcast_to_int_or_float(
     t: &Translation,
     argkind: &CExprKind,
-) -> Option<(CTypeKind, CExprId)> {
+) -> Option<(CTypeKind, CExprId, bool)> {
     if let CExprKind::ExplicitCast(outer_cqt, exp, CastKind::BitCast, _opt_field_id, _lrvalue) =
         argkind
     {
-        if let CExprKind::Unary(_inner_cqt, c_ast::UnOp::AddressOf, inner_exp, _lrval) =
+        if let CExprKind::Unary(inner_cqt, c_ast::UnOp::AddressOf, inner_exp, _lrval) =
             t.ast_context[*exp].kind
         {
             // TENJIN-TODO(intsizes): be more robust about determining actual int sizes
@@ -369,7 +369,12 @@ pub fn is_bitcast_to_int_or_float(
                 outer_ty,
                 CTypeKind::Double | CTypeKind::Float | CTypeKind::LongLong | CTypeKind::ULongLong
             ) {
-                return Some((outer_ty.clone(), inner_exp));
+                let inner_is_signed = t
+                    .ast_context
+                    .resolve_type(t.c_type_pointee(inner_cqt.ctype).unwrap_or(inner_cqt.ctype))
+                    .kind
+                    .is_signed_integral_type();
+                return Some((outer_ty.clone(), inner_exp, inner_is_signed));
             }
         }
     }

@@ -765,7 +765,31 @@ def run_preparation_passes(
             )
             c_refact_arglifter.lift_subfield_args(compdb_for_target)
 
+    def should_use_cclyzer_cache():
+        # Don't use cached results during parallel tests.
+        return "PYTEST_XDIST_WORKER" not in os.environ
+
+    def get_cached_cclyzer_results(
+        cache_signature: list[str], xj_cclyzer_results_cache_path: Path
+    ) -> dict | None:
+        if xj_cclyzer_results_cache_path.exists():
+            cache_data = json.load(open(xj_cclyzer_results_cache_path, "r", encoding="utf-8"))
+            print("cached  signature:", cache_data["signature"])
+            print("current signature:", cache_signature)
+            if cache_data["signature"] == cache_signature:
+                return cache_data["contents"]
+            if cache_data["signature"][0] == cache_signature[0]:
+                print(
+                    "Bitcode matches cached cclyzer++ results, but flags differ; recomputing analysis..."
+                )
+            else:
+                print("Bitcode differs from cached cclyzer++ results; recomputing analysis...")
+        return None
+
     def run_cc2json_or_cached(bitcode_module_path: Path, current_codebase: Path) -> None:
+        """Postcondition: produces `xj-cclyzer.json` in `current_codebase`, containing
+        the results of cclyzer++ analysis on the bitcode module.
+        """
         assert bitcode_module_path.exists()
 
         cp = hermetic.run(
@@ -792,23 +816,14 @@ def run_preparation_passes(
         cache_signature = [bitcode_hash, WANT["10j-more-deps"], *cache_relevant_cc2json_flags]
 
         xj_cclyzer_results_cache_path = repo_root.localdir() / "xj-cclyzer-cache.json"
-        if xj_cclyzer_results_cache_path.exists():
-            cache_data = json.load(open(xj_cclyzer_results_cache_path, "r", encoding="utf-8"))
-            print("cached  signature:", cache_data["signature"])
-            print("current signature:", cache_signature)
-            if cache_data["signature"] == cache_signature:
+        if should_use_cclyzer_cache():
+            cached_results = get_cached_cclyzer_results(
+                cache_signature, xj_cclyzer_results_cache_path
+            )
+            if cached_results is not None:
                 print("Reusing cached cclyzer++ analysis results...")
-                json.dump(
-                    cache_data["contents"], open(json_out_path, "w", encoding="utf-8"), indent=2
-                )
-
+                json.dump(cached_results, open(json_out_path, "w", encoding="utf-8"), indent=2)
                 return
-            if cache_data["signature"][0] == cache_signature[0]:
-                print(
-                    "Bitcode matches cached cclyzer++ results, but flags differ; recomputing analysis..."
-                )
-            else:
-                print("Bitcode differs from cached cclyzer++ results; recomputing analysis...")
 
         print("Running cclyzer++ analysis, this can take a while for larger programs...")
         hermetic.run_command_with_progress(
@@ -824,12 +839,13 @@ def run_preparation_passes(
             env_ext={"XJ_USE_LLVM14": "1"},
         )
 
-        contents = json.load(open(json_out_path, "r", encoding="utf-8"))
-        json.dump(
-            {"signature": cache_signature, "contents": contents},
-            open(xj_cclyzer_results_cache_path, "w", encoding="utf-8"),
-            indent=2,
-        )
+        if should_use_cclyzer_cache():
+            contents = json.load(open(json_out_path, "r", encoding="utf-8"))
+            json.dump(
+                {"signature": cache_signature, "contents": contents},
+                open(xj_cclyzer_results_cache_path, "w", encoding="utf-8"),
+                indent=2,
+            )
 
     def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # For now, we restrict analysis to single-target projects,
@@ -939,6 +955,13 @@ def run_preparation_passes(
                 return False
             return is_c_identifier_continuation_byte(bs[idx])
 
+        def not_c_identifier_continuation_byte_at(bs: bytes, idx: int) -> bool:
+            if idx == len(bs):
+                # End of file counts as non-identifier byte,
+                # so that renames at the end of the file will work.
+                return True
+            return not is_c_identifier_continuation_byte_at(bs, idx)
+
         for srcfile, editdict in rewrites_per_file.items():
             contents = Path(srcfile).read_bytes()
             edits = []
@@ -950,16 +973,22 @@ def run_preparation_passes(
                 name_bytes = old_name.encode("utf-8")
 
                 def find_variant(name_bytes, prefix_bytes: bytes) -> int:
-                    idx = contents.find(
-                        prefix_bytes + name_bytes, decl_start_byte_offset, decl_end_byte_offset
-                    )
-                    # We've found the variant we're looking for if we locate a non-identifer
-                    # prefix, then our name bytes, then a non-identifier byte (or end of file).
-                    if idx != -1 and not is_c_identifier_continuation_byte_at(
-                        contents, idx + len(prefix_bytes) + len(name_bytes)
-                    ):
-                        return idx + len(prefix_bytes)
-                    return -1
+                    search_start = decl_start_byte_offset
+                    while True:
+                        idx = contents.find(
+                            prefix_bytes + name_bytes, search_start, decl_end_byte_offset
+                        )
+                        if idx == -1:
+                            return -1
+
+                        # We've found the variant we're looking for if we locate a non-identifer
+                        # prefix, then our name bytes, then a non-identifier byte (or end of file).
+                        if not_c_identifier_continuation_byte_at(
+                            contents, idx + len(prefix_bytes) + len(name_bytes)
+                        ):
+                            return idx + len(prefix_bytes)
+
+                        search_start = idx + 1
 
                 # The variable name might occur in the type name, so we search for it
                 # prefixed by something that would count as a token separator.
