@@ -403,6 +403,9 @@ pub fn transpile(tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&str]
         if cmds.len() > 1 {
             for cmd in &cmds[1..] {
                 let cmd_path = cmd.abs_file();
+                if cmd_path.starts_with("/c2rust/link") {
+                    continue;
+                }
                 ancestor_path = ancestor_path
                     .ancestors()
                     .find(|a| cmd_path.starts_with(a))
