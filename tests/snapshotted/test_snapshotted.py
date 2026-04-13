@@ -72,7 +72,9 @@ def diff_results_with_snapshot(root: Path, src_dir: Path, results_dir: Path):
         print(vcs_helpers.vcs_diff(snapshot_dir).decode("utf-8"), file=sys.stderr)
 
     if added or removed or changed:
-        assert False, f"saw unexpected change in snapshot of {src_dir.relative_to(root)}"
+        assert False, (
+            f"saw unexpected change in snapshot of {src_dir.relative_to(root)}: {added=}, {removed=}, {changed=}"
+        )
 
 
 def assert_translation_success(cp_ce: CompletedProcess, resultsdir: Path):
@@ -140,3 +142,40 @@ def test_errno_time(root: Path, test_dir: Path, tmp_resultsdir: Path):
         tmp_resultsdir,
     ]
     run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
+
+
+def replace_in_snapshotted_files(resultsdir, rel_paths: list[Path], old: str, new: str):
+    for thing in ("00_out", "final"):
+        for rel_path in rel_paths:
+            path = resultsdir / thing / rel_path
+            text = path.read_text(encoding="utf-8")
+            new_text = text.replace(old, new)
+            path.write_text(new_text, encoding="utf-8")
+
+
+def test_various_unguided(root: Path, test_dir: Path, tmp_resultsdir: Path):
+    src_dir = test_dir / "various_unguided"
+    cmd_args = [
+        (root / "cli" / "10j").as_posix(),
+        "translate",
+        "--codebase",
+        src_dir.as_posix(),
+        "--resultsdir",
+        tmp_resultsdir.as_posix(),
+        "--buildcmd",
+        "sh go.sh",
+    ]
+    cp_ce = hermetic.run(
+        cmd_args,
+        check=False,
+        capture_output=False,
+    )
+
+    assert_translation_success(cp_ce, tmp_resultsdir)
+    replace_in_snapshotted_files(
+        tmp_resultsdir,
+        [Path("src", "various_unguided.rs"), Path("src", "various_unguided_unsafe.rs")],
+        "fn isatty(__fd: ::core::ffi::c_int",
+        "fn isatty(_: ::core::ffi::c_int",
+    )  # normalize `isatty`'s function signature across Mac and Linux.
+    diff_results_with_snapshot(root, src_dir, tmp_resultsdir)
