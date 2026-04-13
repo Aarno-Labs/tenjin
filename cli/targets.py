@@ -399,6 +399,19 @@ def _CompileCommand_from_intercepted_command(
 
     cc_res = current_codebase.resolve()
 
+    def drop_lib_prefix(name: str | None) -> str | None:
+        if name is None:
+            return None
+
+        p = Path(name)
+        if (
+            p.name.startswith("lib")
+            and link_cmd_handling == LinkCommandHandling.ADAPT_FOR_C2RUST
+            and p.suffix != ".o"
+        ):
+            return p.with_name(p.name[3:]).as_posix()
+        return name
+
     def tweak_suffix(p: Path) -> str:
         if use_preprocessed_files:
             if p.suffix == ".c":
@@ -490,10 +503,11 @@ def _CompileCommand_from_intercepted_command(
             link_type = "exe"
         link_info = {
             "inputs": [
-                compilation_database.legalize_output_name_for_rust(inp) for inp in icmd.rest_inputs
+                drop_lib_prefix(compilation_database.legalize_output_name_for_rust(inp))
+                for inp in icmd.rest_inputs
             ],  # FIXME: wrong order???
             "c_files": [],
-            "libs": icmd.libs,
+            "libs": [drop_lib_prefix(lib) for lib in icmd.libs],
             "lib_dirs": icmd.lib_dirs,
             "type": link_type,
             # TODO: parse and add in other linker flags
@@ -517,5 +531,5 @@ def _CompileCommand_from_intercepted_command(
         directory=icmd.entry["directory"],
         file=update(filename),
         arguments=[update_arg(arg) for arg in raw_arguments],
-        output=icmd.output,
+        output=drop_lib_prefix(icmd.output),
     )

@@ -615,19 +615,19 @@ def eval_tractor_ta3_corpus_lib(
         monkeypatch=monkeypatch,
     )
 
-    # cando2 usually requires the built library exist in a `build-ninja` directory
-    # and be named `{candidate_name}.so`. Sometimes they hardcode the name `driver.so`.
+    # For single-library tests, cando2 usually requires the built library exist
+    # in a `build-ninja` directory and be named `{candidate_name}.so`.
+    # Sometimes they hardcode the name `driver.so`.
     # (B02_organic/encode_base64_lib is an example of the latter.)
+    # Tests with multiple libraries keep library names as-is.
     build_ninja_dir = Path(candidate_resultsdir / "build-ninja")
     build_ninja_dir.mkdir(exist_ok=False)
     built_dir = candidate_resultsdir / "final" / "target" / profile
     built_libs = list(built_dir.glob("lib*.so")) + list(built_dir.glob("lib*.dylib"))
     for built_lib in built_libs:
+        shutil.copyfile(built_lib, build_ninja_dir / f"{built_lib.name}")
         shutil.copyfile(built_lib, build_ninja_dir / f"lib{candidate_name}{built_lib.suffix}")
         shutil.copyfile(built_lib, build_ninja_dir / f"libdriver{built_lib.suffix}")
-        if built_lib.name.startswith("liblib"):
-            # Sometimes Rust produces 'liblibX.so' but cando2 needs 'libX.so'.
-            shutil.copyfile(built_lib, build_ninja_dir / built_lib.name[3:])
 
     if "P01_sphincs_plus" in str(case_dir):
         monkeypatch.setenv(
