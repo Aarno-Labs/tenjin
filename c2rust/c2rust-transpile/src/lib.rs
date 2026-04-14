@@ -247,7 +247,7 @@ impl ExternCrate {
             LibzRsSys => ExternCrateDetails::external("libz-rs-sys", "0.5.1", false),
             Bytemuck => ExternCrateDetails::external("bytemuck", "1.23.2", false)
                 .with_features(vec!["derive", "extern_crate_alloc"]),
-            GPoint => ExternCrateDetails::external("gpoint", "0.2.1", false),
+            GPoint => ExternCrateDetails::external("gpoint", "0.3.0", false),
         }
     }
 }
