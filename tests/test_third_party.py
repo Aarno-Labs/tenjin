@@ -305,6 +305,11 @@ def test_lua_5_4_0_immunant(
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
+def test_tractor_ta3_corpus_p0_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/P00_perlin_noise/001_perlin_noise"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
 @pytest.mark.slow
 def test_tractor_ta3_corpus_p01_005_app(
     root: Path,
@@ -448,6 +453,7 @@ def ta3_corpus_linux_only(case_dir: str) -> bool:
         "Public-Tests/B02_organic/qmath",  # missing define on non-Linux
         "Public-Tests/B02_organic/spec_ray_lib",
         "Public-Tests/B02_organic/gen_ray_lib",
+        "Public-Tests/P00_perlin_noise/001_perlin_noise",  # test 020 fails on mac
     ]
 
 
