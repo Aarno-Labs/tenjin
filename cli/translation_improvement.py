@@ -768,6 +768,11 @@ def run_improvement_passes(
                 ["clean", *cargo_workspace_helpers.flags_for_all_cargo_workspace_packages(newdir)],
                 cwd=newdir,
             )
+            # Ensure any plugin results are also removed, since they may prevent
+            # subsequent passes from running correctly.
+            for child in (newdir / "target").glob("plugin-*"):
+                if child.is_dir():
+                    shutil.rmtree(child)
             end_ns = time.perf_counter_ns()
 
             core_ms = round(elapsed_ms_of_ns(start_ns, mid_ns))
