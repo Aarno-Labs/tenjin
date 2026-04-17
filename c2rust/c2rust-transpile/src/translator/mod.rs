@@ -480,7 +480,7 @@ impl ParsedGuidance {
     }
 
     pub fn query_decl_type(&mut self, t: &Translation, id: CDeclId) -> Option<tenjin::GuidedType> {
-        if let Some(ty) = t.builtin_unconditional_guidance(id) {
+        if let Some(ty) = tenjin::builtin_decl_type(t, id) {
             return Some(ty);
         }
         if self.decls_without_type_guidance.contains(&id) {

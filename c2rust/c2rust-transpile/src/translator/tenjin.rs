@@ -584,34 +584,36 @@ pub fn builtin_unconditional_variable_guidance(
     }
 }
 
-impl Translation<'_> {
-    pub fn builtin_unconditional_guidance(&self, id: CDeclId) -> Option<GuidedType> {
-        self.ast_context.get_decl(&id).and_then(|d| match &d.kind {
-            CDeclKind::Variable {
-                has_static_duration,
-                has_thread_duration,
-                is_externally_visible,
-                is_defn,
-                has_global_storage,
-                ident,
-                initializer,
-                typ,
-                attrs,
-            } => builtin_unconditional_variable_guidance(
-                has_static_duration,
-                has_thread_duration,
-                is_externally_visible,
-                is_defn,
-                has_global_storage,
-                ident,
-                initializer,
-                typ,
-                attrs,
-            ),
 
-            _ => None,
-        })
-    }
+pub fn builtin_unconditional_guidance(translation: &Translation, id: CDeclId) -> Option<GuidedType> {
+    translation.ast_context.get_decl(&id).and_then(|d| match &d.kind {
+        CDeclKind::Variable {
+            has_static_duration,
+            has_thread_duration,
+            is_externally_visible,
+            is_defn,
+            has_global_storage,
+            ident,
+            initializer,
+            typ,
+            attrs,
+        } => builtin_unconditional_variable_guidance(
+            has_static_duration,
+            has_thread_duration,
+            is_externally_visible,
+            is_defn,
+            has_global_storage,
+            ident,
+            initializer,
+            typ,
+            attrs,
+        ),
+
+        _ => None,
+    })
+}
+
+impl Translation<'_> {
 
     pub fn recognize_c_assignment_cases(
         &self,
