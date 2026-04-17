@@ -29,3 +29,9 @@ def test_errno_global(root, test_dir, tmp_codebase, tmp_resultsdir, extras, requ
     single_file_check_translation(
         "errno_global", "main.c", root, test_dir, tmp_codebase, tmp_resultsdir, extras, request
     )
+
+
+def test_time_coercion(root, test_dir, tmp_codebase, tmp_resultsdir, extras, request):
+    single_file_check_translation(
+        "time_coercion", "main.c", root, test_dir, tmp_codebase, tmp_resultsdir, extras, request
+    )
