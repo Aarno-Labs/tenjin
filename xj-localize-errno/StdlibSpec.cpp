@@ -35,6 +35,12 @@ const std::set<std::string> ERRNO_UNMODIFIED = {
     "tolower",
     "toupper_l",
     "tolower_l",
+    // <errno.h>
+#if defined(__gnu_linux__)
+    "__errno_location",
+#elif defined(__APPLE__) && defined(__MACH__)
+    "__error",
+#endif
     // <stdio.h>
     // formatted output conversion
     "printf",

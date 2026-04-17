@@ -10,6 +10,9 @@ using namespace localize;
 
 const std::string LOCAL_ERRNO_NAME = "_xj_local_errno";
 
+const std::string READ_ERRNO_TEXT_LINUX = "(*__errno_location())";
+const std::string READ_ERRNO_TEXT_MACOS = "(*__error())";
+
 USRString DeclUSR(FunctionDecl *Decl)
 {
   USRString Buf;
@@ -17,6 +20,46 @@ USRString DeclUSR(FunctionDecl *Decl)
   assert(!shouldDiscard);
   return Buf;
 }
+
+
+bool DerefOfCallExtern(Expr *E, std::string Name)
+{
+  if (auto *Op = llvm::dyn_cast<UnaryOperator>(E))
+  {
+    if (Op->getOpcode() == UnaryOperatorKind::UO_Deref)
+    {
+      if (auto *Call = llvm::dyn_cast<CallExpr>(Op->getSubExpr()))
+      {
+        if (auto *CalleeDecl = Call->getDirectCallee())
+        {
+          return CalleeDecl->getFormalLinkage() == Linkage::External && CalleeDecl->getNameAsString() == Name;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+bool IsErrno_Linux(Expr *E)
+{
+  return DerefOfCallExtern(E, "__errno_location");
+}
+
+bool IsErrno_MacOS(Expr *E)
+{
+  return DerefOfCallExtern(E, "__error");
+}
+
+#if defined(__gnu_linux__)
+#define IsErrno IsErrno_Linux
+#define READ_ERRNO_TEXT READ_ERRNO_TEXT_LINUX
+#elif defined(__APPLE__) && defined(__MACH__)
+#define IsErrno IsErrno_MacOS
+#define READ_ERRNO_TEXT READ_ERRNO_TEXT_MACOS
+#else
+#error "Unknown OS errno spec"
+#endif
 
 bool FunctionTransaction::Empty()
 {
@@ -115,7 +158,7 @@ std::string WrapperString(FunctionDecl *Decl)
   {
     wrapperStr += retTypeStr + " ret = ";
   }
-  wrapperStr += funcName + "(" + callArgs + "); *_xj_errno = errno; ";
+  wrapperStr += funcName + "(" + callArgs + "); *_xj_errno = " + READ_ERRNO_TEXT + ";";
   if (!isVoid)
   {
     wrapperStr += "return ret; ";
@@ -150,12 +193,12 @@ void LocalizeErrnoASTVisitor::ReplaceErrnoUsage(Expr *E)
   CurrentFunctionTxn.Changes.push_back(ReplaceUsage);
 }
 
-bool LocalizeErrnoASTVisitor::VisitDeclRefExpr(clang::DeclRefExpr *Ref)
+bool LocalizeErrnoASTVisitor::VisitExpr(clang::Expr *Expr)
 {
-  if (Ref->getNameInfo().getAsString() == "errno")
+  if (IsErrno(Expr))
   {
     CurrentFunctionTxn.HasErrnoAccess = true;
-    ReplaceErrnoUsage(Ref);
+    ReplaceErrnoUsage(Expr);
   }
   return true;
 }

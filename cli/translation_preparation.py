@@ -1427,21 +1427,8 @@ def run_preparation_passes(
                 fn_def_handling=FnDefHandling.INCLUDE_BODY,
             )
         )
-        # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
-        # To make it easy to recognize errno in a platform-independent way,
-        # we just block errno's expansion since the transform should succeed if
-        # analysis succeeds. If the transformation will not run,
-        # then we should just proceed with the expansion.
-        #
-        # An alternative here would just be to bake in different platform errno
-        # definitions (e.g., (`*__errno_location()`), (`*__error()`)) in the
-        # transformation pass and call it a day
-        #
-        apply_tenjin_autoblocks = should_apply_errno_transformation(current_codebase)
         # Miscellaneous tasks over, onwards with preprocessor expansion!
-        c_refact.preprocess_build(
-            store.build_info, all_build_targets[0], current_codebase, apply_tenjin_autoblocks
-        )
+        c_refact.preprocess_build(store.build_info, all_build_targets[0], current_codebase)
         # build_info now marked to use preprocessed files, so re-generate compdb
         new_compdb: compilation_database.CompileCommands = (
             store.build_info.compdb_for_target_within(all_build_targets[0].key, current_codebase)
