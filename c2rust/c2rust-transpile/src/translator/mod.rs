@@ -3549,8 +3549,6 @@ impl<'c> Translation<'c> {
     ) -> TranslationResult<ConvertedDecl> {
         self.function_context.borrow_mut().enter_new(name);
 
-        let is_builtin_wrapper = name.starts_with("_xj_wrap");
-
         self.with_scope(|| {
             let mut args: Vec<FnArg> = vec![];
 
@@ -3676,6 +3674,8 @@ impl<'c> Translation<'c> {
                 // extern inlines, which become subject to their gnu89 visibility (private)
                 let is_extern_inline =
                     is_inline && is_extern && !attrs.contains(&c_ast::Attribute::GnuInline);
+
+                let is_builtin_wrapper = name.starts_with("_xj_wrap");
 
                 // Only add linkage attributes if the function is `extern`
                 let mut mk_ = if is_builtin_wrapper {
