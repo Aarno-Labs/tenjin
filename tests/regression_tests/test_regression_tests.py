@@ -1,4 +1,4 @@
-from tenjin_pytest_helpers import annotate_pytest_request_with_translation_notes
+from tenjin_pytest_helpers import annotate_pytest_request_with_translation_notes, run_cargo_on_final
 import translation
 import translation_preparation
 
@@ -20,6 +20,7 @@ def single_file_check_translation(
     )
 
     assert (tmp_resultsdir / "final" / "Cargo.toml").exists()
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
 
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
