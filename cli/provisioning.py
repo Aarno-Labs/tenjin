@@ -430,7 +430,7 @@ def rebuild_10j_upstream_c2rust(xj_upstream_c2rust: Path):
         stdout_file=stdout_path,
         stderr_file=stderr_path,
         cwd=xj_upstream_c2rust,
-        env_ext=hermetic.cargo_encoded_rustflags_env_ext(None),
+        env_ext=hermetic.cargo_encoded_rustflags_env_ext(xj_upstream_c2rust, None),
     )
     # Ensure a clean checkout for future updates
     stdout_path.unlink(missing_ok=True)

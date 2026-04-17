@@ -242,12 +242,12 @@ impl ExternCrate {
             Memoffset => ExternCrateDetails::external("memoffset", "0.5", true),
             Libc => ExternCrateDetails::external("libc", "0.2", false),
             Hexfloat2 => ExternCrateDetails::external("hexfloat2", "0.2.0", false),
-            XjScanf => ExternCrateDetails::external("xj_scanf", "0.2.1", false),
+            XjScanf => ExternCrateDetails::external("xj_scanf", "0.2.2", false),
             XjCtime => ExternCrateDetails::external("xj_ctime", "0.1.1", false),
             LibzRsSys => ExternCrateDetails::external("libz-rs-sys", "0.5.1", false),
             Bytemuck => ExternCrateDetails::external("bytemuck", "1.23.2", false)
                 .with_features(vec!["derive", "extern_crate_alloc"]),
-            GPoint => ExternCrateDetails::external("gpoint", "0.2.1", false),
+            GPoint => ExternCrateDetails::external("gpoint", "0.3.0", false),
         }
     }
 }
@@ -403,6 +403,9 @@ pub fn transpile(tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&str]
         if cmds.len() > 1 {
             for cmd in &cmds[1..] {
                 let cmd_path = cmd.abs_file();
+                if cmd_path.starts_with("/c2rust/link") {
+                    continue;
+                }
                 ancestor_path = ancestor_path
                     .ancestors()
                     .find(|a| cmd_path.starts_with(a))

@@ -69,6 +69,10 @@ def convert_json_entries(
     return entry_infos
 
 
+def is_shared_lib_flag(arg: str) -> bool:
+    return arg in ("-shared", "-dynamiclib")
+
+
 def is_ar_creation(args: list[str]) -> bool:
     def is_ar_creation_flags(arg: str) -> bool:
         if "q" in arg:
@@ -147,7 +151,7 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
         elif arg[:2] == "-L":
             ei.lib_dirs.append(arg[2:])
 
-        elif arg == "-shared":
+        elif is_shared_lib_flag(arg):
             ei.shared_lib = True
 
         elif arg == "-static":

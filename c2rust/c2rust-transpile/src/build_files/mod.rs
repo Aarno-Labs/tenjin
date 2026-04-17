@@ -294,6 +294,53 @@ fn emit_rust_toolchain(tcfg: &TranspilerConfig, build_dir: &Path) {
     let output_path = build_dir.join("rust-toolchain.toml");
     let output = include_str!("generated-rust-toolchain.toml").to_string();
     maybe_write_to_file(&output_path, output, tcfg.overwrite_existing);
+
+    let dot_cargo_dir_path = build_dir.join(".cargo");
+    let cargo_config_toml_path = dot_cargo_dir_path.join("config.toml");
+    std::fs::create_dir(&dot_cargo_dir_path).unwrap_or_else(|_| {
+        panic!(
+            "couldn't create .cargo directory for rust toolchain config: {}",
+            dot_cargo_dir_path.display()
+        )
+    });
+    // XREF:XJ_CARGO_CONFIG_RUSTFLAGS
+    let cargo_config_contents = r#"
+# # `--allow-multiple-definition`
+# Some C projects have duplicate symbols in different shared libraries
+# that are used by the same binary. In Rust, the corresponding crates
+# must be of type cdylib + rlib, the latter being needed for `use`
+# items to work. In release mode, static linking of rlibs with duplicate
+# symbols is not normally allowed by the linker.
+#
+# The definitions of duplicate symbols may or may not be identical.
+#  - If they are identical, it doesn't matter which gets used.
+#  - If they are different, the choice depends on the link order,
+#    which is difficult to guarantee in Rust.
+#
+# This setting allows multiple definitions, under the assumption that
+# the definitions of duplicate symbols are equivalent.
+#
+# Without --allow-multiple-definition, projects that have duplicate
+# symbols may build in debug mode (on Linux) but fail to link in
+# release mode.
+# This flag is unsupported on Mac, but the dynamic linker is also 
+# stricter, so we don't have to worry about it there.
+#
+# # `-z lazy` and `-Zplt=yes`
+# By default, Clang/GCC on Linux emit lazy PLT relocation entries for
+# calls to externally defined shared library functions, but Rust will
+# emit non-lazy GOT-based relocations. This difference is detectable by
+# code that uses `libdl` to dynamically query undefined symbols in 
+# shared libraries. This is what the TRACTOR evaluation team does,
+# so we have to support it.
+[target.'cfg(target_os = "linux")']
+rustflags = ["-Clink-arg=-Wl,-z,lazy", "-Zplt=yes", "-Clink-arg=-Wl,--allow-multiple-definition"]
+"#;
+    maybe_write_to_file(
+        &cargo_config_toml_path,
+        cargo_config_contents.to_string(),
+        tcfg.overwrite_existing,
+    );
 }
 
 fn emit_cargo_toml(

@@ -183,3 +183,22 @@ def test_triplicated_compilation(root, test_dir, tmp_codebase, tmp_resultsdir, r
     )
 
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
+def test_trivial_un_unsafe(root, test_dir, tmp_codebase, tmp_resultsdir, request, extras):
+    codebase = test_dir / "trivial_un_unsafe"
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    # Run translation
+    translation.do_translate(
+        root,
+        codebase,
+        tmp_resultsdir,
+        cratename="safe",
+        guidance_path_or_literal='{ "public_api" : [] }',
+    )
+
+    with open(tmp_resultsdir / "translation_metadata.json", "r", encoding="utf-8") as f:
+        translate_meta = json.load(f)
+        unsafe_count = translate_meta["results"]["tenjin_final"]["total_unsafe_fns_count"]
+        assert unsafe_count == 0, f"Expected no unsafe functions, got {unsafe_count}"
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
