@@ -584,26 +584,28 @@ pub fn builtin_unconditional_variable_guidance(
     }
 }
 
-
 pub fn builtin_decl_type(translation: &Translation, id: CDeclId) -> Option<GuidedType> {
-    translation.ast_context.get_decl(&id).and_then(|d| match &d.kind {
-        CDeclKind::Variable { ident, .. } => 
-            match ident.as_str() {
-                "_xj_local_errno" => 
-                    Some(GuidedType::from_str("i32").expect("failed to parse 'i32'!?")),
+    translation
+        .ast_context
+        .get_decl(&id)
+        .and_then(|d| match &d.kind {
+            CDeclKind::Variable { ident, .. } => match ident.as_str() {
+                "_xj_local_errno" => {
+                    Some(GuidedType::from_str("i32").expect("failed to parse 'i32'!?"))
+                }
 
-                "_xj_errno" =>
-                    Some(GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?")),
+                "_xj_errno" => {
+                    Some(GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?"))
+                }
 
-                _ => None
+                _ => None,
             },
 
-        _ => None,
-    })
+            _ => None,
+        })
 }
 
 impl Translation<'_> {
-
     pub fn recognize_c_assignment_cases(
         &self,
         ctx: ExprContext,
