@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(assign)
+set(CMAKE_BUILD_TYPE Debug)
+add_executable(assign src/assign.c src/bar.c)
+target_include_directories(assign PRIVATE include)

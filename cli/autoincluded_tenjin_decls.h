@@ -9,3 +9,4 @@
 // it should be treated as an integral type.
 */
 void assert(int);
+extern int errno;

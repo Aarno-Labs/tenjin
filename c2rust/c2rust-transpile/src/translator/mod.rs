@@ -480,6 +480,9 @@ impl ParsedGuidance {
     }
 
     pub fn query_decl_type(&mut self, t: &Translation, id: CDeclId) -> Option<tenjin::GuidedType> {
+        if let Some(ty) = tenjin::builtin_decl_type(t, id) {
+            return Some(ty);
+        }
         if self.decls_without_type_guidance.contains(&id) {
             return None;
         }
@@ -3672,8 +3675,12 @@ impl<'c> Translation<'c> {
                 let is_extern_inline =
                     is_inline && is_extern && !attrs.contains(&c_ast::Attribute::GnuInline);
 
+                let is_builtin_wrapper = name.starts_with("_xj_wrap");
+
                 // Only add linkage attributes if the function is `extern`
-                let mut mk_ = if is_main {
+                let mut mk_ = if is_builtin_wrapper {
+                    mk()
+                } else if is_main {
                     // Cross-check this function as if it was called `main`
                     // FIXME: pass in a vector of NestedMetaItem elements,
                     // but strings have to do for now
@@ -3694,7 +3701,7 @@ impl<'c> Translation<'c> {
                         api.contains(name)
                     } else {
                         // By default, all non-static functions might be externally visible.
-                        true
+                        !is_builtin_wrapper
                     };
 
                 if fn_needs_abi_preservation && !is_main {
