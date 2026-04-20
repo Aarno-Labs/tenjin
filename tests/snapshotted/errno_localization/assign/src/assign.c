@@ -34,7 +34,7 @@ int main(int argc, char **argv)
     foo();
     errno = 0;
     if (errno == EINVAL) {
-        printf("LOL: [%s]\n", strerror(errno));
+        printf("Error: [%s]\n", strerror(errno));
 	bar();
     }
     return 0;
