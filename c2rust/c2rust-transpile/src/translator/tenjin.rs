@@ -71,8 +71,10 @@ mod guided_type_tests {
         let t1 = GuidedType::from_str("&Vec<u8>").expect("Failed to parse '&Vec<u8>'?");
         let t2 = GuidedType::from_str("&'a Vec<u8>").expect("Failed to parse '&'a Vec<u8>'?");
         let t3 = GuidedType::from_str("&mut Vec<u8>").expect("Failed to parse '&mut Vec<u8>'?");
-        let t4 = GuidedType::from_str("&'a mut Vec<u8>").expect("Failed to parse '&'a mut Vec<u8>'?");
-        let t5 = GuidedType::from_str("&'b &'a mut Vec<u8>").expect("Failed to parse '&'b &'a mut Vec<u8>'?");
+        let t4 =
+            GuidedType::from_str("&'a mut Vec<u8>").expect("Failed to parse '&'a mut Vec<u8>'?");
+        let t5 = GuidedType::from_str("&'b &'a mut Vec<u8>")
+            .expect("Failed to parse '&'b &'a mut Vec<u8>'?");
         for t in [t1, t2, t3, t4, t5] {
             assert!(type_is_vec(t.strip_refs()));
             assert!(try_type_vec_of(t.strip_refs()).is_some());
@@ -230,7 +232,6 @@ pub fn type_is_vec_of_1_path(ty: &Type, a: &str) -> bool {
 pub fn type_is_vec(ty: &Type) -> bool {
     type_is_exactly_1_path(ty, "Vec")
 }
-
 
 pub fn type_is_ref(ty: &Type) -> bool {
     matches!(ty, Type::Reference(_))
