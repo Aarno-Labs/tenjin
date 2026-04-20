@@ -2,7 +2,7 @@ use super::*;
 use proc_macro2::Literal;
 use quote::ToTokens; // for to_token_stream()
 use std::str::FromStr;
-use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type, TypeReference};
+use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
 
 #[derive(Debug, Clone)]
 pub struct GuidedType {
@@ -215,7 +215,7 @@ pub fn try_type_vec_of(ty: &Type) -> Option<&Type> {
     if let Some(path) = type_get_bare_path(ty) {
         if is_path_exactly_1(path, "Vec") {
             return path_get_1_segment(path)
-                .and_then(&segment_get_1_bracket_argument)
+                .and_then(segment_get_1_bracket_argument)
                 .and_then(|ga| match ga {
                     GenericArgument::Type(arg) => Some(arg),
                     _ => None,
@@ -226,7 +226,7 @@ pub fn try_type_vec_of(ty: &Type) -> Option<&Type> {
 }
 
 pub fn type_is_vec_of_1_path(ty: &Type, a: &str) -> bool {
-    try_type_vec_of(ty).map_or(false, |arg| type_is_exactly_1_path(arg, a))
+    try_type_vec_of(ty).is_some_and(|arg| type_is_exactly_1_path(arg, a))
 }
 
 pub fn type_is_vec(ty: &Type) -> bool {
