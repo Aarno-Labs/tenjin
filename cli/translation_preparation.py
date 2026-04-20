@@ -14,6 +14,7 @@ from clang.cindex import Cursor, CursorKind  # type: ignore
 from cmake_file_api import CMakeProject
 import click
 
+from codehawk import CodehawkSummary
 import compilation_database
 import batching_rewriter
 import c_refact
@@ -1495,11 +1496,10 @@ def run_preparation_passes(
             with open(
                 codebase / "errno_analysis_summaryresults.json", encoding="utf-8"
             ) as errno_results:
-                results = json.load(errno_results)
-                ppos = results["tagresults"]["ppos"]
-                if "errno-must-written" in ppos:
-                    errno = ppos["errno-must-written"]
-                    if errno["violated"] > 0 or errno["open"] > 0:
+                results = CodehawkSummary.from_dict(json.load(errno_results))  # type:ignore
+                if "errno-must-written" in results.tagresults.ppos:
+                    errno = results.tagresults.ppos["errno-must-written"]
+                    if errno.violated > 0 or errno.open > 0:
                         print(
                             "xj-localize-errno will not run as errno analysis failed to prove safety"
                         )
