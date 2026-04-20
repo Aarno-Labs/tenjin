@@ -344,6 +344,11 @@ class BuildInfo:
         link_cmd_handling: LinkCommandHandling,
         extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None,
     ) -> compilation_database.CompileCommands:
+        exe_target_outputs = set(
+            c.output
+            for c in commands
+            if c.output and not c.compile_only and compute_target_type(c) == TargetType.EXECUTABLE
+        )
         cc_cmds = [
             _CompileCommand_from_intercepted_command(
                 c,
@@ -351,6 +356,7 @@ class BuildInfo:
                 self._use_preprocessed_files,
                 link_cmd_handling,
                 extra_compile_or_link_flags,
+                exe_target_outputs,
             )
             for c in commands
             if c.compile_only
@@ -391,7 +397,8 @@ def _CompileCommand_from_intercepted_command(
     current_codebase: Path,
     use_preprocessed_files: bool,
     link_cmd_handling: LinkCommandHandling,
-    extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None = None,
+    extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None,
+    exe_target_outputs: set[str],
 ) -> compilation_database.CompileCommand:
     """Convert an InterceptedCommand to a CompileCommand."""
 
@@ -409,7 +416,11 @@ def _CompileCommand_from_intercepted_command(
             and link_cmd_handling == LinkCommandHandling.ADAPT_FOR_C2RUST
             and p.suffix != ".o"
         ):
-            return p.with_name(p.name[3:]).as_posix()
+            candidate = p.with_name(p.name[3:])
+            if candidate.stem in exe_target_outputs:
+                # Rename the candidate to avoid conflicts with overlapping targets
+                return f"xjlib_{candidate.as_posix()}"
+            return candidate.as_posix()
         return name
 
     def tweak_suffix(p: Path) -> str:
