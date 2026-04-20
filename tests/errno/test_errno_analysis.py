@@ -1,8 +1,11 @@
+import sys
 from pathlib import Path
+import pytest
+
 from codehawk import CodehawkSummary
+import compilation_database
 import hermetic
 import translation_preparation
-import compilation_database
 
 
 def run_errno_analysis_on_file(test_dir, tmp_codebase, filename):
@@ -32,6 +35,8 @@ def run_errno_analysis_on_file(test_dir, tmp_codebase, filename):
     return errno
 
 
+# We skip on macOS because CIL (and hence codehawk) can't parse some mac headers
+@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
 def test_errno_basic(test_dir, tmp_codebase):
     errno = run_errno_analysis_on_file(test_dir / "basic", tmp_codebase, "basic.c")
     assert errno.local == 3, "Expected only safe POs"
