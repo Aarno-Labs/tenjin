@@ -217,7 +217,7 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
 
   USRString CalleeUSR = DeclUSR(Callee);
 
-  if (External.find(CalleeUSR) == External.end() || !NeedsWrapper(Callee))
+  if (External.find(CalleeUSR) == External.end() || ErrnoBehavior::MustNotSet == FunctionMaySetErrno(Callee))
   {
     // Nothing to do: either not external or our spec says it does not need to be wrapped
     return true;

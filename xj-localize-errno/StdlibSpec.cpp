@@ -81,7 +81,10 @@ const std::set<std::string> ERRNO_UNMODIFIED = {
     "strcspn",
 };
 
-bool NeedsWrapper(clang::FunctionDecl *Decl)
+ErrnoBehavior FunctionMaySetErrno(clang::FunctionDecl *Decl)
 {
-  return ERRNO_UNMODIFIED.find(Decl->getNameAsString()) == ERRNO_UNMODIFIED.end();
+  if (ERRNO_UNMODIFIED.find(Decl->getNameAsString()) != ERRNO_UNMODIFIED.end()) {
+    return ErrnoBehavior::MustNotSet;
+  }
+  return ErrnoBehavior::MaySet;
 }
