@@ -145,6 +145,10 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
        `unsafe_status` but are not yet using it.
     """
 
+    if os.environ.get("XJ_SKIP_UNUNSAFE", "0") == "1":
+        click.echo("TENJIN NOTE: skipping un-unsafe improvement as XJ_SKIP_UNUNSAFE=1")
+        return
+
     def hacky_rewrite_fn_range(path: Path, lo: int, hi: int, replacement: bytes):
         """Rewrite a range in a file to a replacement string."""
         with path.open("rb+") as f:
