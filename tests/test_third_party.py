@@ -1345,6 +1345,12 @@ def test_tractor_b2_synthetic_gotomach_lib(root: Path, tmp_codebase: Path, tmp_r
 
 
 @pytest.mark.slow
+def test_tractor_b2_synthetic_hatch_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/hatch_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
 def test_tractor_b2_synthetic_inreftree_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B02_synthetic/inreftree_lib"
     eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
@@ -1353,6 +1359,12 @@ def test_tractor_b2_synthetic_inreftree_lib(root: Path, tmp_codebase: Path, tmp_
 @pytest.mark.slow
 def test_tractor_b2_synthetic_jumpnode_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B02_synthetic/jumpnode_lib"
+    eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_mathop_lib(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/mathop_lib"
     eval_tractor_ta3_corpus_lib(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
 
 

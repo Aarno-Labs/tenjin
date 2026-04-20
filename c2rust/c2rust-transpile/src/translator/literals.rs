@@ -95,7 +95,9 @@ impl Translation<'_> {
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         match *lit {
             CLiteral::Integer(val, _)
-                if guided_type.as_ref().is_some_and(|g| g.pretty == "char") =>
+                if guided_type
+                    .as_ref()
+                    .is_some_and(|g| tenjin::type_is_char(&g.parsed)) =>
             {
                 // XREF:guided_int_as_char
                 self.convert_literal(ctx, ty, &CLiteral::Character(val), guided_type)
@@ -105,7 +107,10 @@ impl Translation<'_> {
                 let val = val as u32;
                 let expr = match char::from_u32(val) {
                     Some(c) => {
-                        if guided_type.as_ref().is_some_and(|g| g.pretty == "char") {
+                        if guided_type
+                            .as_ref()
+                            .is_some_and(|g| tenjin::type_is_char(&g.parsed))
+                        {
                             // If the guided type is `char`, we can return a char literal directly
                             mk().lit_expr(c)
                         } else {
@@ -176,7 +181,10 @@ impl Translation<'_> {
         element_size: u8,
         guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
+        if guided_type
+            .as_ref()
+            .is_some_and(|g| tenjin::type_is_string(&g.parsed))
+        {
             // XREF:guided_string_sans_cast
             return Ok(WithStmts::new_val(
                 self.convert_literal_to_rust_string(bytes, element_size),

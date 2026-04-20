@@ -37,39 +37,87 @@ impl GuidedType {
         }
     }
 
-    pub fn pretty_sans_refs(&self) -> &str {
-        let parts: Vec<&str> = self.pretty.splitn(4, " ").collect();
-        match *parts.as_slice() {
-            ["&", rest] => rest,
-            ["&", life, rest] if life.starts_with("'") => rest,
-            ["&", life, "mut", rest] if life.starts_with("'") => rest,
-            ["&", "mut", rest] => rest,
-            ["&", "mut", _, _] => self.pretty[6..].as_ref(),
-            ["&", _, _, _] => self.pretty[2..].as_ref(),
-            _ => self.pretty.as_ref(),
-        }
+    pub fn strip_refs(&self) -> &Type {
+        type_strip_refs(&self.parsed)
     }
 
     pub fn is_borrow(&self) -> bool {
-        self.pretty.starts_with('&')
+        type_is_ref(&self.parsed)
     }
 
     pub fn is_exclusive_borrow(&self) -> bool {
-        let parts: Vec<&str> = self.pretty.splitn(4, " ").collect();
-        match *parts.as_slice() {
-            ["&", _] => false,
-            ["&", life, _] if life.starts_with("'") => false,
-            ["&", life, "mut", _] if life.starts_with("'") => true,
-            ["&mut", _] => true,
-            ["&", "mut", _] => true,
-            ["&", "mut", _, _] => true,
-            ["&", _, _, _] => false,
-            _ => false,
-        }
+        type_is_mut_ref(&self.parsed)
     }
 
     pub fn is_shared_borrow(&self) -> bool {
         self.is_borrow() && !self.is_exclusive_borrow()
+    }
+}
+
+#[cfg(test)]
+mod guided_type_tests {
+    use super::*;
+
+    #[test]
+    fn parse_vec() {
+        let t = GuidedType::from_str("Vec<u8>").expect("Failed to parse 'Vec<u8>'?");
+        assert!(type_is_vec(&t.parsed));
+        assert!(try_type_vec_of(&t.parsed).is_some());
+        assert!(type_is_vec_of_1_path(&t.parsed, "u8"));
+    }
+
+    #[test]
+    fn parse_ref_vec() {
+        let t1 = GuidedType::from_str("&Vec<u8>").expect("Failed to parse '&Vec<u8>'?");
+        let t2 = GuidedType::from_str("&'a Vec<u8>").expect("Failed to parse '&'a Vec<u8>'?");
+        let t3 = GuidedType::from_str("&mut Vec<u8>").expect("Failed to parse '&mut Vec<u8>'?");
+        let t4 =
+            GuidedType::from_str("&'a mut Vec<u8>").expect("Failed to parse '&'a mut Vec<u8>'?");
+        let t5 = GuidedType::from_str("&'b &'a mut Vec<u8>")
+            .expect("Failed to parse '&'b &'a mut Vec<u8>'?");
+        for t in [t1, t2, t3, t4, t5] {
+            assert!(type_is_vec(t.strip_refs()));
+            assert!(try_type_vec_of(t.strip_refs()).is_some());
+            assert!(type_is_vec_of_1_path(t.strip_refs(), "u8"));
+        }
+    }
+
+    #[test]
+    fn parse_char() {
+        let t = GuidedType::from_str("char").expect("Failed to parse 'char'?");
+        assert!(type_is_char(&t.parsed));
+    }
+
+    #[test]
+    fn parse_string() {
+        let t = GuidedType::from_str("String").expect("Failed to parse 'String'?");
+        assert!(type_is_string(&t.parsed))
+    }
+
+    #[test]
+    fn parse_exclusive_borrow() {
+        let t1 = GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?");
+        assert!(t1.is_borrow());
+        assert!(!t1.is_shared_borrow());
+        assert!(t1.is_exclusive_borrow());
+
+        let t2 = GuidedType::from_str("&'a mut i32").expect("failed to parse '&'a mut i32'!?");
+        assert!(t2.is_borrow());
+        assert!(!t2.is_shared_borrow());
+        assert!(t2.is_exclusive_borrow());
+    }
+
+    #[test]
+    fn parse_borrow() {
+        let t1 = GuidedType::from_str("&i32").expect("failed to parse '&i32'!?");
+        assert!(t1.is_borrow());
+        assert!(t1.is_shared_borrow());
+        assert!(!t1.is_exclusive_borrow());
+
+        let t2 = GuidedType::from_str("&'a i32").expect("failed to parse '&'a i32'!?");
+        assert!(t2.is_borrow());
+        assert!(t2.is_shared_borrow());
+        assert!(!t2.is_exclusive_borrow());
     }
 }
 
@@ -148,11 +196,45 @@ pub fn type_get_bare_path(ty: &Type) -> Option<&Path> {
     None
 }
 
-pub fn type_is_vec(ty: &Type) -> bool {
+pub fn type_is_exactly_1_path(ty: &Type, s: &str) -> bool {
     if let Some(path) = type_get_bare_path(ty) {
-        return is_path_exactly_1(path, "Vec");
+        return is_path_exactly_1(path, s);
     }
     false
+}
+
+pub fn type_is_char(ty: &Type) -> bool {
+    type_is_exactly_1_path(ty, "char")
+}
+
+pub fn type_is_string(ty: &Type) -> bool {
+    type_is_exactly_1_path(ty, "String")
+}
+
+pub fn try_type_vec_of(ty: &Type) -> Option<&Type> {
+    if let Some(path) = type_get_bare_path(ty) {
+        if is_path_exactly_1(path, "Vec") {
+            return path_get_1_segment(path)
+                .and_then(segment_get_1_bracket_argument)
+                .and_then(|ga| match ga {
+                    GenericArgument::Type(arg) => Some(arg),
+                    _ => None,
+                });
+        }
+    }
+    None
+}
+
+pub fn type_is_vec_of_1_path(ty: &Type, a: &str) -> bool {
+    try_type_vec_of(ty).is_some_and(|arg| type_is_exactly_1_path(arg, a))
+}
+
+pub fn type_is_vec(ty: &Type) -> bool {
+    type_is_exactly_1_path(ty, "Vec")
+}
+
+pub fn type_is_ref(ty: &Type) -> bool {
+    matches!(ty, Type::Reference(_))
 }
 
 pub fn type_is_mut_ref(ty: &Type) -> bool {
@@ -174,6 +256,13 @@ fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
         Type::Slice(slice) => Some(&slice.elem),
         Type::Array(arr) => Some(&arr.elem),
         _ => None,
+    }
+}
+
+pub fn type_strip_refs(t: &Type) -> &Type {
+    match t {
+        Type::Reference(refty) => type_strip_refs(&refty.elem),
+        _ => t,
     }
 }
 
@@ -327,7 +416,7 @@ pub fn cast_expr_guided(
     guided_type: &Option<tenjin::GuidedType>,
 ) -> Box<Expr> {
     if let Some(guided_type) = guided_type {
-        if guided_type.pretty == "char" {
+        if type_is_char(&guided_type.parsed) {
             // If we want a char and have a character literal, we don't need a cast.
             if tenjin::expr_is_lit_char(&e) {
                 return e;
@@ -769,7 +858,7 @@ impl Translation<'_> {
                         .query_decl_type(self, base_decl_id);
 
                     // XREF:guided_c_assignment_string_pop
-                    if guided_type.is_none_or(|g| g.pretty != "String") {
+                    if guided_type.is_none_or(|g| !type_is_string(&g.parsed)) {
                         log::trace!("target variable not guided to be of type String");
                         return Ok(None);
                     }
@@ -849,7 +938,7 @@ impl Translation<'_> {
                 .parsed_guidance
                 .borrow_mut()
                 .query_expr_type(self, cargs[0])
-                .is_some_and(|g| g.pretty_sans_refs() == "Vec < u8 >")
+                .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
         {
             // XREF:sprint_into_mutref_vec_u8
             return RecognizedCallForm::PrintfS {
@@ -866,7 +955,7 @@ impl Translation<'_> {
                 .parsed_guidance
                 .borrow_mut()
                 .query_expr_type(self, cargs[0])
-                .is_some_and(|g| g.pretty_sans_refs() == "Vec < u8 >")
+                .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
         {
             // XREF:sprint_into_mutref_vec_u8
             return RecognizedCallForm::PrintfS {
@@ -1430,7 +1519,7 @@ impl Translation<'_> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id)
-                    .is_some_and(|g| g.pretty == "String")
+                    .is_some_and(|g| type_is_string(&g.parsed))
                 {
                     let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
                     let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
@@ -1539,7 +1628,7 @@ impl Translation<'_> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id)
-                    .is_some_and(|g| g.pretty == "String")
+                    .is_some_and(|g| type_is_string(&g.parsed))
                 {
                     let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
                     let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
@@ -1573,12 +1662,12 @@ impl Translation<'_> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id_foo)
-                    .is_some_and(|g| g.pretty == "String")
+                    .is_some_and(|g| type_is_string(&g.parsed))
                     && self
                         .parsed_guidance
                         .borrow_mut()
                         .query_decl_type(self, var_cdecl_id_bar)
-                        .is_some_and(|g| g.pretty == "String")
+                        .is_some_and(|g| type_is_string(&g.parsed))
                 {
                     self.with_cur_file_item_store(|item_store| {
                         item_store.add_item_str_once("fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
@@ -1617,7 +1706,7 @@ impl Translation<'_> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id_foo)
-                    .is_some_and(|g| g.pretty == "char")
+                    .is_some_and(|g| type_is_char(&g.parsed))
                 {
                     let rust_helper_name = format!("{}_char_i", c_fn_name);
                     self.with_cur_file_item_store(|item_store| {
@@ -1701,7 +1790,7 @@ impl Translation<'_> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id_foo)
-                    .is_some_and(|g| g.pretty == "char")
+                    .is_some_and(|g| type_is_char(&g.parsed))
                 {
                     self.with_cur_file_item_store(|item_store| {
                         // For now we return an integer code rather than a bool,
@@ -1751,7 +1840,7 @@ impl Translation<'_> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id_foo)
-                    .is_some_and(|g| g.pretty == "char")
+                    .is_some_and(|g| type_is_char(&g.parsed))
                 {
                     self.with_cur_file_item_store(|item_store| {
                         // For now we return an integer code rather than a bool,
@@ -1801,7 +1890,7 @@ impl Translation<'_> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id_foo)
-                    .is_some_and(|g| g.pretty == "char")
+                    .is_some_and(|g| type_is_char(&g.parsed))
                 {
                     self.with_cur_file_item_store(|item_store| {
                         item_store.add_item_str_once(
@@ -1957,7 +2046,7 @@ impl Translation<'_> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, var_cdecl_id)
-                    .is_some_and(|g| g.pretty == "String")
+                    .is_some_and(|g| type_is_string(&g.parsed))
                 {
                     self.with_cur_file_item_store(|item_store| {
                         item_store.add_use(true, vec!["std".into(), "io".into()], "Read");
@@ -2020,7 +2109,7 @@ impl Translation<'_> {
                 .borrow_mut()
                 .query_expr_type(self, arg0_sans_casts);
             if let Some(dst_guided_type) = mb_dst_guided_type {
-                if !dst_guided_type.pretty_sans_refs().starts_with("Vec <") {
+                if !type_is_vec(dst_guided_type.strip_refs()) {
                     return Ok(None);
                 }
 

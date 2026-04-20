@@ -1968,13 +1968,13 @@ mod refactor_format {
                     }
 
                     if let Some(g) = x.parsed_guidance.borrow_mut().query_expr_type(x, cexpr) {
-                        if g.pretty == "String" {
+                        if tenjin::type_is_string(&g.parsed) {
                             // For a variable that's already type String, we can leave it as is.
                             // XREF:guided_cast_str_of_owned_string
                             return e;
                         }
 
-                        if g.pretty_sans_refs() == "Vec < u8 >" {
+                        if tenjin::type_is_vec_of_1_path(g.strip_refs(), "u8") {
                             // For a variable that's type Vec<u8>, we can convert it to String directly.
                             // XREF:guided_cast_str_of_shared_vec_u8
                             return mk().call_expr(
@@ -5555,7 +5555,7 @@ impl<'c> Translation<'c> {
                 let arr = self.convert_init_list(ctx, ty, ids, opt_union_field_id);
                 if guided_type
                     .as_ref()
-                    .is_some_and(|gt| gt.pretty_sans_refs().starts_with("Vec <"))
+                    .is_some_and(|gt| tenjin::type_is_vec(gt.strip_refs()))
                 {
                     arr.map(|arr| {
                         arr.map(|arr| match *arr {
@@ -6439,7 +6439,7 @@ impl<'c> Translation<'c> {
         let implicit_default = self.implicit_default_expr(ty_id, is_static)?;
 
         if let Some(guided_type) = guided_type {
-            if guided_type.pretty_sans_refs().starts_with("Vec <") {
+            if tenjin::type_is_vec(guided_type.strip_refs()) {
                 // If the type is a Vec, we'll convert it from the default expr,
                 // which might be a sized array.
                 return Ok(implicit_default.map(|implicit_default| {
