@@ -1427,6 +1427,7 @@ def run_preparation_passes(
                 fn_def_handling=FnDefHandling.INCLUDE_BODY,
             )
         )
+
         # Miscellaneous tasks over, onwards with preprocessor expansion!
         c_refact.preprocess_build(store.build_info, all_build_targets[0], current_codebase)
         # build_info now marked to use preprocessed files, so re-generate compdb
