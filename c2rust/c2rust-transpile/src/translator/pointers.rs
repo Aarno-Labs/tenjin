@@ -134,7 +134,7 @@ impl<'c> Translation<'c> {
                 .parsed_guidance
                 .borrow_mut()
                 .query_decl_type(self, *decl_id)
-                .is_some_and(|g| g.pretty == "String" || g.pretty_sans_refs().starts_with("Vec <"))
+                .is_some_and(|g| tenjin::type_is_string(&g.parsed) || tenjin::type_is_vec(g.strip_refs()))
             {
                 // XREF:guided_array_decay
                 return Ok(val);
@@ -149,7 +149,7 @@ impl<'c> Translation<'c> {
             false,
         ) = (arg_expr_kind, arg_is_macro)
         {
-            if guided_type.as_ref().is_some_and(|g| g.pretty == "String") {
+            if guided_type.as_ref().is_some_and(|g| tenjin::type_is_string(&g.parsed)) {
                 // XREF:guided_string_implicit_cast
                 return Ok(WithStmts::new_val(
                     self.convert_literal_to_rust_string(bytes, element_size),
