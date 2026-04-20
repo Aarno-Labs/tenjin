@@ -139,7 +139,7 @@ def test_exe_dylibs(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, 
     translation_preparation.copy_codebase(codebase, c_build_dir)
     hermetic.run(["make", "-C", str(c_build_dir)], check=True)
     c_prog_output = hermetic.run(["./foo"], check=True, capture_output=True, cwd=c_build_dir)
-    assert c_prog_output.stdout == b"Hello, Tenjin! 42\n", f"Got: {c_prog_output.stdout!r}"
+    assert c_prog_output.stdout == b"Hello, Tenjin! 42 99\n", f"Got: {c_prog_output.stdout!r}"
 
     # Run translation
     translation.do_translate(

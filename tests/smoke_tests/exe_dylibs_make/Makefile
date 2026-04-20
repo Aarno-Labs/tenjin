@@ -3,8 +3,8 @@ CFLAGS = -Wall -Wextra
 
 all: foo
 
-foo: main.o libdistinct.so
-	$(CC) main.o libdistinct.so -o foo -L. -Wl,-rpath,.
+foo: main.o libdistinct.so libfoo.so
+	$(CC) main.o libdistinct.so libfoo.so -o foo -L. -Wl,-rpath,.
 
 main.o: main.c
 	$(CC) $(CFLAGS) -c main.c -o main.o
@@ -12,7 +12,10 @@ main.o: main.c
 libdistinct.so: lib.c
 	$(CC) $(CFLAGS) -shared -fPIC -o libdistinct.so lib.c
 
+libfoo.so: libfoo.c
+	$(CC) $(CFLAGS) -shared -fPIC -o libfoo.so libfoo.c
+
 clean:
-	rm -f main.o libdistinct.so foo
+	rm -f main.o libdistinct.so libfoo.so foo
 
 .PHONY: all clean
