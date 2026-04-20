@@ -1920,8 +1920,8 @@ impl Translation<'_> {
         Ok(None)
     }
 
-    /// Map NULL -> None, &x -> Some(&[mut] x), otherwise `x.as_ref()`.
-    fn c_coerce_pointer_to_option_ref(
+    /// Map NULL -> None, &x -> Some(&[mut] x), otherwise `x.as_mut()`.
+    fn c_coerce_pointer_to_option_mut(
         &self,
         ctx: ExprContext,
         cexpr: CExprId,
@@ -1935,7 +1935,7 @@ impl Translation<'_> {
             if let Expr::Reference(_) = &*e {
                 mk().call_expr(mk().path_expr("Some"), vec![e])
             } else {
-                mk().method_call_expr(e, "as_ref", vec![])
+                mk().method_call_expr(e, "as_mut", vec![])
             }
         }))
     }
@@ -1949,7 +1949,7 @@ impl Translation<'_> {
         if cargs.len() == 1 {
             self.use_crate(ExternCrate::XjCtime);
             return Ok(Some(
-                self.c_coerce_pointer_to_option_ref(ctx, cargs[0])?
+                self.c_coerce_pointer_to_option_mut(ctx, cargs[0])?
                     .map(|arg_expr| {
                         mk().call_expr(
                             mk().path_expr(vec!["xj_ctime", "compat", "time"]),

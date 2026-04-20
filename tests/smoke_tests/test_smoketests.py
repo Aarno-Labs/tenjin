@@ -1,4 +1,5 @@
 import json
+import platform
 
 from tenjin_pytest_helpers import annotate_pytest_request_with_translation_notes, run_cargo_on_final
 import covset
@@ -110,7 +111,7 @@ def test_cmake_lone_exe(
     c_prog_output = hermetic.run(
         [str(build_dir / "tenjin_smoke_test_lone_exe")], check=True, capture_output=True
     )
-    assert c_prog_output.stdout == b"Hello, Tenjin!\n", f"Got: {c_prog_output.stdout!r}"
+    assert c_prog_output.stdout == b"Hello, Tenjin! 43\n", f"Got: {c_prog_output.stdout!r}"
 
     # Run translation
     translation.do_translate(
@@ -124,6 +125,42 @@ def test_cmake_lone_exe(
     rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
 
     assert rs_prog_output.stdout == c_prog_output.stdout
+
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
+def test_exe_dylibs(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, request, extras):
+    codebase = test_dir / "exe_dylibs_make"
+    c_build_dir = test_tmp_dir / "build"
+
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # Ensure it compiles and runs as expected
+    translation_preparation.copy_codebase(codebase, c_build_dir)
+    hermetic.run(["make", "-C", str(c_build_dir)], check=True)
+    c_prog_output = hermetic.run(["./foo"], check=True, capture_output=True, cwd=c_build_dir)
+    assert c_prog_output.stdout == b"Hello, Tenjin! 42 99\n", f"Got: {c_prog_output.stdout!r}"
+
+    # Run translation
+    translation.do_translate(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename=codebase.name,
+        buildcmd="make",
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
+
+    assert rs_prog_output.stdout == c_prog_output.stdout
+
+    libname = "distinct"
+
+    r_build_dir = tmp_resultsdir / "final" / "target" / "debug"
+    so_suffix = ".dylib" if platform.system() == "Darwin" else ".so"
+    assert (c_build_dir / f"lib{libname}.so").exists()
+    assert (r_build_dir / f"lib{libname}{so_suffix}").exists()
 
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 

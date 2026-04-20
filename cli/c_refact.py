@@ -603,9 +603,8 @@ def localize_mutable_globals_phase1(
                 # Find the position after the opening parenthesis
                 content = rewriter.get_content(func_info.file)
 
-                # Find the opening parenthesis
-                range_start = func_info.cursor.extent.start.offset
-                paren_pos = content.find(b"(", range_start)
+                # Find the opening parenthesis of the argument list
+                paren_pos = find_fn_opening_paren(func_info.cursor, content)
                 if paren_pos == -1:
                     continue
 
@@ -2048,6 +2047,15 @@ code we'd be generating would almost certainly have type mismatches.
                 print("  or non-global-accessing functions: " + ", ".join(ctfn_nontissue))
 
     return call_sites
+
+
+def find_fn_opening_paren(fn_cursor: Cursor, content: bytes) -> int:
+    """Like .find(), returns -1 if not found."""
+    fn_name_start = fn_cursor.location.offset
+
+    # Find the first '(' character after the fn name;
+    # this skips attributes
+    return content.find(b"(", fn_name_start)
 
 
 """

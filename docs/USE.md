@@ -304,6 +304,15 @@ limitations to its support:
   one-to-one mapping between header-sourced declarations and the headers
   they came from.
 
+- C toolchains permit linking against a shared library via filename or
+  via the `-l` flag; the two ways have subtly different semantics but
+  are mostly interchangeable. When translating a C codebase, Tenjin
+  currently imposes its own semantic interpretation: the `-l` flag is
+  for linking system libraries, and filename-based linking is for
+  "local" shared objects. The former induce cargo link flag directives
+  in `build.rs` and the latter give rise to inter-crate dependencies
+  in `Cargo.toml`.
+
 # Error Cases
 
 * If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`
