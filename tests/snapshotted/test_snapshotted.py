@@ -128,6 +128,8 @@ def test_basic_errno(root: Path, test_dir: Path, tmp_resultsdir: Path):
     diff_results_with_snapshot(root, src_dir, tmp_resultsdir)
 
 
+# We skip on macOS because CIL (and hence codehawk) can't parse some mac headers
+@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
 def test_errno_time(root: Path, test_dir: Path, tmp_resultsdir: Path):
     src_dir = test_dir / "errno_localization" / "time"
     cp_ce = hermetic.run(

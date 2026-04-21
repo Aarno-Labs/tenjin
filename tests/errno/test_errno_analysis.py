@@ -32,7 +32,7 @@ def run_errno_analysis_on_file(test_dir, tmp_codebase, filename):
     results = results.read()
     report = CodehawkSummary.from_json(results)
     assert "errno-must-written" in report.tagresults.ppos, (
-            f"Missing errno results in: {results},{report}"
+        f"Missing errno results in: {results},{report}"
     )
     errno = report.tagresults.ppos["errno-must-written"]
     return errno
@@ -47,6 +47,8 @@ def test_errno_basic(test_dir, tmp_codebase):
     assert errno.open == 0, "Found open POs"
 
 
+# We skip on macOS because the codehawk analysis currently does not support macos
+@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
 def test_errno_pointers_pos(test_dir, tmp_codebase):
     errno = run_errno_analysis_on_file(test_dir / "fpointers", tmp_codebase, "pos.c")
     assert errno.violated == 0, "Found a violated PO"
@@ -54,6 +56,8 @@ def test_errno_pointers_pos(test_dir, tmp_codebase):
     assert errno.local == 3, "Expected a safe PO"
 
 
+# We skip on macOS because the codehawk analysis currently does not support macos
+@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
 def test_errno_pointers_neg(test_dir, tmp_codebase):
     errno = run_errno_analysis_on_file(test_dir / "fpointers", tmp_codebase, "neg.c")
     assert errno.open == 3, "Expected an open PO"
