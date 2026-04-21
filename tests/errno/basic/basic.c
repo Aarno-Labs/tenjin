@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <string.h>
 #include <limits.h>
+#include <stdio.h>
 
 int foo(void)
 {
