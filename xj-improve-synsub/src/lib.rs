@@ -16,7 +16,7 @@
 pub mod rewrites;
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -139,6 +139,61 @@ pub type ExprRewrite = fn(&Rewriter, &SymbolTable, &syn::Expr) -> Option<(syn::E
 /// Same contract as [`ExprRewrite`] but for statements.
 pub type StmtRewrite = fn(&Rewriter, &SymbolTable, &syn::Stmt) -> Option<(syn::Stmt, Depth)>;
 
+#[derive(Debug, Default)]
+struct UseItems(BTreeMap<(bool, Vec<String>), BTreeSet<String>>);
+
+impl UseItems {
+    fn add_use(&mut self, is_absolute: bool, path: Vec<String>, ident: &str) {
+        self.0
+            .entry((is_absolute, path))
+            .or_default()
+            .insert(ident.to_string());
+    }
+
+    fn into_items(self) -> Result<Vec<syn::Item>> {
+        let mut items = Vec::with_capacity(self.0.len());
+        for ((is_absolute, path), idents) in self.0 {
+            if idents.is_empty() {
+                continue;
+            }
+
+            let prefix = if is_absolute { "::" } else { "" };
+            let path_str = path.join("::");
+            let item_src = if idents.len() == 1 {
+                let ident = idents.into_iter().next().expect("singleton import missing");
+                format!("use {prefix}{path_str}::{ident};")
+            } else {
+                let leaves = idents.into_iter().collect::<Vec<_>>().join(", ");
+                format!("use {prefix}{path_str}::{{{leaves}}};")
+            };
+            items.push(
+                syn::parse_str(&item_src)
+                    .with_context(|| format!("parsing generated use item `{item_src}`"))?,
+            );
+        }
+        Ok(items)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ItemStore {
+    uses: UseItems,
+}
+
+impl ItemStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_use(&mut self, is_absolute: bool, path: Vec<String>, ident: &str) {
+        self.uses.add_use(is_absolute, path, ident);
+    }
+
+    fn into_items(self) -> Result<Vec<syn::Item>> {
+        self.uses.into_items()
+    }
+}
+
 // ── Rewriter ─────────────────────────────────────────────────────────
 
 /// The core rewriting engine.
@@ -163,6 +218,9 @@ pub struct Rewriter {
     deps: RefCell<BTreeSet<String>>,
     expr_rewrites: Vec<ExprRewrite>,
     stmt_rewrites: Vec<StmtRewrite>,
+    item_stores: RefCell<HashMap<PathBuf, ItemStore>>,
+    root_file: RefCell<Option<PathBuf>>,
+    cur_file: RefCell<Option<PathBuf>>,
 }
 
 impl Rewriter {
@@ -172,6 +230,9 @@ impl Rewriter {
             deps: RefCell::new(BTreeSet::new()),
             expr_rewrites: Vec::new(),
             stmt_rewrites: Vec::new(),
+            item_stores: RefCell::new(HashMap::new()),
+            root_file: RefCell::new(None),
+            cur_file: RefCell::new(None),
         }
     }
 
@@ -211,14 +272,21 @@ impl Rewriter {
     /// to the table as the visitor descends into each scope.
     pub fn rewrite_crate(&self, files: &mut [(PathBuf, syn::File)], depth: Depth) {
         let globals = SymbolTable::from_files(files);
-        for (_, file) in files.iter_mut() {
+        let root_path = files.first().map(|(path, _)| path.clone());
+        *self.root_file.borrow_mut() = root_path;
+        for (path, file) in files.iter_mut() {
+            *self.cur_file.borrow_mut() = Some(path.clone());
             let mut visitor = RewriteVisitor {
                 rewriter: self,
                 depth,
                 symbols: globals.clone(),
             };
             visitor.visit_file_mut(file);
+            self.finalize_current_file_items(file)
+                .expect("failed to insert generated items into rewritten file");
         }
+        self.cur_file.borrow_mut().take();
+        self.root_file.borrow_mut().take();
     }
 
     /// Apply all registered rewrites to a single [`syn::File`].
@@ -226,12 +294,50 @@ impl Rewriter {
     /// Globals are collected from this file only.
     pub fn rewrite_file(&self, file: &mut syn::File, depth: Depth) {
         let globals = SymbolTable::from_file(file);
+        self.root_file.borrow_mut().take();
+        self.cur_file.borrow_mut().take();
         let mut visitor = RewriteVisitor {
             rewriter: self,
             depth,
             symbols: globals,
         };
         visitor.visit_file_mut(file);
+        self.finalize_current_file_items(file)
+            .expect("failed to insert generated items into rewritten file");
+    }
+
+    fn cur_file_path(&self) -> PathBuf {
+        self.cur_file
+            .borrow()
+            .clone()
+            .or_else(|| self.root_file.borrow().clone())
+            .unwrap_or_default()
+    }
+
+    fn with_cur_file_item_store<F, T>(&self, f: F) -> T
+    where
+        F: FnOnce(&mut ItemStore) -> T,
+    {
+        let cur_file = self.cur_file_path();
+        let mut item_stores = self.item_stores.borrow_mut();
+        let item_store = item_stores.entry(cur_file).or_default();
+        f(item_store)
+    }
+
+    fn finalize_current_file_items(&self, file: &mut syn::File) -> Result<()> {
+        let cur_file = self.cur_file_path();
+        let Some(item_store) = self.item_stores.borrow_mut().remove(&cur_file) else {
+            return Ok(());
+        };
+
+        let mut generated_items = item_store.into_items()?;
+        if generated_items.is_empty() {
+            return Ok(());
+        }
+
+        generated_items.append(&mut file.items);
+        file.items = generated_items;
+        Ok(())
     }
 
     fn try_rewrite_expr(
@@ -627,4 +733,53 @@ pub fn collect_workspace_files(
         result.push((root, files));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrite_crate_inserts_use_only_in_current_file() {
+        let mut rw = Rewriter::new();
+        rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
+
+        let mut files = vec![
+            (
+                PathBuf::from("src/uses_trait.rs"),
+                syn::parse_file(
+                    "fn demo(buf: &[u16]) { let _ = strlen(buf.as_mut_ptr()); let _ = strlen(buf.as_mut_ptr()); }",
+                )
+                .unwrap(),
+            ),
+            (
+                PathBuf::from("src/untouched.rs"),
+                syn::parse_file("fn untouched(buf: &[u16]) { let _ = buf.len(); }").unwrap(),
+            ),
+        ];
+
+        rw.rewrite_crate(&mut files, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&files[0].1);
+        assert_eq!(rewritten.matches("use ::xj_cstr::ByteSlice;").count(), 1);
+        assert!(rewritten.contains(".as_u8_slice()"));
+
+        let untouched = prettyplease::unparse(&files[1].1);
+        assert!(!untouched.contains("ByteSlice"));
+    }
+
+    #[test]
+    fn rewrite_file_inserts_use_without_explicit_file_path() {
+        let mut rw = Rewriter::new();
+        rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
+
+        let mut file =
+            syn::parse_file("fn demo(buf: &[u16]) { let _ = strlen(buf.as_mut_ptr()); }").unwrap();
+
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&file);
+        assert!(rewritten.contains("use ::xj_cstr::ByteSlice;"));
+        assert!(rewritten.contains(".as_u8_slice()"));
+    }
 }
