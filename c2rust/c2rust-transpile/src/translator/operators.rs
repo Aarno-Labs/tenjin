@@ -297,23 +297,6 @@ impl Translation<'_> {
             .get_qual_type()
             .ok_or_else(|| format_err!("bad assignment rhs type"))?;
 
-        if let Some(tres) = self.recognize_c_assignment_cases(
-            ctx,
-            op,
-            expr_type_id,
-            lhs,
-            rhs,
-            compute_lhs_type_id,
-            compute_res_type_id,
-        )? {
-            if ctx.is_unused() && tres.is_pure() {
-                return Ok(WithStmts::new(
-                    vec![mk().semi_stmt(tres.to_expr())],
-                    mk().tuple_expr(vec![]),
-                ));
-            }
-        }
-
         let lhs_guidance = self.parsed_guidance.borrow_mut().query_expr_type(self, lhs);
         let lhs_kind = &self.ast_context.index(lhs).kind;
         let lhs_type_id = lhs_kind

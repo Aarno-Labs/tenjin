@@ -92,6 +92,51 @@ impl Rewriter {
         ))
     }
 
+    /// Rewrite `*s1.offset(s1.len().wrapping_sub(1 as size_t) as isize) =
+    /// '\0' as ::core::ffi::c_char;` into `s1.pop();` when `s1` is an
+    /// identifier typed as `String`.
+    pub fn rewrite_string_pop_trailing_nul(
+        &self,
+        symbols: &SymbolTable,
+        stmt: &Stmt,
+    ) -> Option<(Stmt, Depth)> {
+        let Stmt::Expr(Expr::Assign(assign), Some(_)) = stmt else {
+            return None;
+        };
+        if !is_nul_char_expr(&assign.right) {
+            return None;
+        }
+
+        let Expr::Unary(unary) = expr_strip_parens(&assign.left) else {
+            return None;
+        };
+        if !matches!(unary.op, syn::UnOp::Deref(_)) {
+            return None;
+        }
+
+        let Expr::MethodCall(call) = expr_strip_parens(&unary.expr) else {
+            return None;
+        };
+        if call.method != "offset" || call.args.len() != 1 {
+            return None;
+        }
+
+        if !is_string_expr(&call.receiver, symbols) {
+            return None;
+        }
+
+        let base_ident = expr_ident_name(&call.receiver)?;
+        if !is_len_wrapping_sub_one_as_isize_expr(&call.args[0], base_ident) {
+            return None;
+        }
+
+        let receiver = &call.receiver;
+        let replacement: Stmt = syn::parse_quote! {
+            #receiver.pop();
+        };
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite `strlen(e1.as_mut_ptr())` into:
     ///   * `(e1.len() - 1) as size_t` when `e1` is a `u8` slice (with the trailing NUL kept)
     ///     and we've determined that e1 will never have its length changed by having
@@ -267,6 +312,18 @@ fn is_str_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
     matches!(expr_ident_type(expr, symbols), Some(ty) if is_ref_str_type(ty))
 }
 
+/// Returns `true` when `expr` is an identifier typed as `String`.
+fn is_string_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
+    matches!(expr_ident_type(expr, symbols), Some(ty) if is_string_type(ty))
+}
+
+fn expr_ident_name(expr: &Expr) -> Option<&syn::Ident> {
+    let Expr::Path(ref ep) = *expr_strip_parens(expr) else {
+        return None;
+    };
+    ep.path.get_ident()
+}
+
 fn expr_ident_type<'a>(expr: &Expr, symbols: &'a SymbolTable) -> Option<&'a syn::Type> {
     let Expr::Path(ref ep) = *expr else {
         return None;
@@ -296,6 +353,10 @@ fn is_ref_str_type(ty: &syn::Type) -> bool {
         return false;
     };
     matches!(&*reference.elem, syn::Type::Path(path) if path.path.is_ident("str"))
+}
+
+fn is_string_type(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "String"))
 }
 
 fn type_of_slice_ref(ty: &Type) -> Option<&Type> {
@@ -345,6 +406,36 @@ fn expr_strip_parens(expr: &Expr) -> &Expr {
             _ => break ep,
         }
     }
+}
+
+fn is_nul_char_expr(expr: &Expr) -> bool {
+    matches!(expr_strip_parens(expr_strip_casts(expr)), Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Char(ch) if ch.value() == '\0'))
+}
+
+fn is_one_expr(expr: &Expr) -> bool {
+    matches!(expr_strip_parens(expr_strip_casts(expr)), Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Int(int) if int.base10_digits() == "1"))
+}
+
+fn is_len_wrapping_sub_one_as_isize_expr(expr: &Expr, expected_ident: &syn::Ident) -> bool {
+    let Expr::MethodCall(wrapping_sub) = expr_strip_parens(expr_strip_casts(expr)) else {
+        return false;
+    };
+    if wrapping_sub.method != "wrapping_sub" || wrapping_sub.args.len() != 1 {
+        return false;
+    }
+    if !is_one_expr(&wrapping_sub.args[0]) {
+        return false;
+    }
+
+    let Expr::MethodCall(len_call) = expr_strip_casts(expr_strip_parens(&wrapping_sub.receiver))
+    else {
+        return false;
+    };
+    if len_call.method != "len" || !len_call.args.is_empty() {
+        return false;
+    }
+
+    matches!(expr_ident_name(&len_call.receiver), Some(ident) if ident == expected_ident)
 }
 
 pub fn is_path_exactly_1(path: &Path, a: &str) -> bool {

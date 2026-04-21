@@ -756,6 +756,40 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_file_rewrites_trailing_string_nul_assignment() {
+        let mut rw = Rewriter::new();
+        rw.add_stmt_rewrite(Rewriter::rewrite_string_pop_trailing_nul);
+
+        let mut file = syn::parse_file(
+            "fn demo(s1: String) { *s1.offset(s1.len().wrapping_sub(1 as size_t) as isize) = '\\0' as ::core::ffi::c_char; }",
+        )
+        .unwrap();
+
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&file);
+        assert!(rewritten.contains("s1.pop();"));
+        assert!(!rewritten.contains("offset"));
+    }
+
+    #[test]
+    fn rewrite_file_keeps_trailing_nul_assignment_for_non_strings() {
+        let mut rw = Rewriter::new();
+        rw.add_stmt_rewrite(Rewriter::rewrite_string_pop_trailing_nul);
+
+        let mut file = syn::parse_file(
+            "fn demo(s1: &[u8]) { *s1.offset(s1.len().wrapping_sub(1 as size_t) as isize) = '\\0' as ::core::ffi::c_char; }",
+        )
+        .unwrap();
+
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&file);
+        assert!(rewritten.contains("offset"));
+        assert!(!rewritten.contains("s1.pop();"));
+    }
+
+    #[test]
     fn rewrite_crate_inserts_use_only_in_current_file() {
         let mut rw = Rewriter::new();
         rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);

@@ -37,6 +37,7 @@ fn main() -> Result<()> {
 
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
     rw.add_stmt_rewrite(Rewriter::rewrite_local);
+    rw.add_stmt_rewrite(Rewriter::rewrite_string_pop_trailing_nul);
 
     let depth = match args.depth {
         Some(n) => Depth::Limited(n),

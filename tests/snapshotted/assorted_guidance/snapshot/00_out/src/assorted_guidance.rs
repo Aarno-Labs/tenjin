@@ -137,7 +137,8 @@ pub unsafe fn guided_condition_string_null_check_neq(mut ostr: String) -> ::core
 }
 #[no_mangle]
 pub unsafe fn guided_c_assignment_string_pop(mut ostr: String) {
-    ostr.pop();
+    *ostr.offset((ostr.len() as size_t).wrapping_sub(1 as size_t) as isize) =
+        '\0' as ::core::ffi::c_char;
 }
 #[no_mangle]
 pub unsafe fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
