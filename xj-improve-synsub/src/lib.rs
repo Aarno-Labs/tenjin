@@ -740,6 +740,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rewrite_file_strips_redundant_outer_statement_parens() {
+        let mut rw = Rewriter::new();
+        rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
+
+        let mut file = syn::parse_file("fn demo() -> i32 { ((foo())); (((value))) }").unwrap();
+
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&file);
+        assert!(rewritten.contains("foo();"));
+        assert!(rewritten.contains("value"));
+        assert!(!rewritten.contains("((foo()));"));
+        assert!(!rewritten.contains("(((value)))"));
+    }
+
+    #[test]
     fn rewrite_crate_inserts_use_only_in_current_file() {
         let mut rw = Rewriter::new();
         rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);

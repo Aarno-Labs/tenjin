@@ -71,6 +71,27 @@ impl Rewriter {
         }
     }
 
+    /// Rewrite statement expressions like `((expr));` into `expr;`.
+    pub fn rewrite_stmt_outer_parens(
+        &self,
+        _symbols: &SymbolTable,
+        stmt: &Stmt,
+    ) -> Option<(Stmt, Depth)> {
+        let Stmt::Expr(expr, semi) = stmt else {
+            return None;
+        };
+
+        let stripped = expr_strip_parens(expr);
+        if std::ptr::eq(stripped, expr) {
+            return None;
+        }
+
+        Some((
+            Stmt::Expr(stripped.clone(), semi.clone()),
+            Depth::Limited(0),
+        ))
+    }
+
     /// Rewrite `strlen(e1.as_mut_ptr())` into:
     ///   * `(e1.len() - 1) as size_t` when `e1` is a `u8` slice (with the trailing NUL kept)
     ///     and we've determined that e1 will never have its length changed by having
@@ -99,7 +120,7 @@ impl Rewriter {
         if let Some(decayed) = Self::peek_array_decay_coercion(&arg) {
             if is_u8_slice_expr(decayed, _symbols) {
                 let replacement: Expr = syn::parse_quote! {
-                    (::std::ffi::CStr::from_bytes_until_nul(#decayed).unwrap().count_bytes()) as ::core::ffi::c_ulong
+                    (::std::ffi::CStr::from_bytes_until_nul(#decayed).unwrap().count_bytes()) as size_t
                 };
                 Some((replacement, Depth::Limited(0)))
             } else {
@@ -108,7 +129,7 @@ impl Rewriter {
                     item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
                 });
                 let replacement: Expr = syn::parse_quote! {
-                    (::std::ffi::CStr::from_bytes_until_nul(#decayed.as_u8_slice()).unwrap().count_bytes()) as ::core::ffi::c_ulong
+                    (::std::ffi::CStr::from_bytes_until_nul(#decayed.as_u8_slice()).unwrap().count_bytes()) as size_t
                 };
                 Some((replacement, Depth::Limited(0)))
             }
@@ -311,6 +332,16 @@ fn expr_strip_casts(expr: &Expr) -> &Expr {
     loop {
         match ep {
             Expr::Cast(ExprCast { expr, .. }) => ep = expr,
+            _ => break ep,
+        }
+    }
+}
+
+fn expr_strip_parens(expr: &Expr) -> &Expr {
+    let mut ep = expr;
+    loop {
+        match ep {
+            Expr::Paren(paren) => ep = &paren.expr,
             _ => break ep,
         }
     }

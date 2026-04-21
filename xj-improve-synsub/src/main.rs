@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
-use toml_edit::{value, DocumentMut, Item, Table};
+use toml_edit::{DocumentMut, Item, Table, value};
 
-use xj_improve_synsub::{collect_workspace_files, Depth, Rewriter};
+use xj_improve_synsub::{Depth, Rewriter, collect_workspace_files};
 
 #[derive(Parser)]
 #[command(
@@ -35,6 +35,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
 
+    rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
     rw.add_stmt_rewrite(Rewriter::rewrite_local);
 
     let depth = match args.depth {
