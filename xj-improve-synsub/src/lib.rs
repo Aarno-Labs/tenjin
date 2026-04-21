@@ -200,6 +200,10 @@ impl Rewriter {
         self.deps.borrow().clone()
     }
 
+    pub fn take_deps(&self) -> BTreeSet<String> {
+        self.deps.replace(BTreeSet::new())
+    }
+
     /// Apply all registered rewrites to every file.
     ///
     /// A symbol table of globals is collected from all files before

@@ -41,13 +41,14 @@ fn main() -> Result<()> {
         None => Depth::Unlimited,
     };
 
-    for (_crate_root, files) in crates.iter_mut() {
+    for (crate_root, files) in crates.iter_mut() {
         rw.rewrite_crate(files, depth);
-    }
-
-    let deps = rw.deps();
-    if !deps.is_empty() {
-        add_deps_to_manifest(&args.workspace_root, &deps)?;
+        let deps = rw.take_deps();
+        if deps.is_empty() {
+            continue;
+        }
+        let manifest_path = find_manifest_path(&crate_root.src_path)?;
+        add_deps_to_manifest(&manifest_path, &deps)?;
     }
 
     for (_crate_root, files) in crates {
@@ -67,10 +68,9 @@ fn main() -> Result<()> {
 }
 
 fn add_deps_to_manifest(
-    crate_root: &Path,
+    manifest_path: &Path,
     deps: &std::collections::BTreeSet<String>,
 ) -> Result<()> {
-    let manifest_path = find_manifest_path(crate_root)?;
     let mut manifest: DocumentMut = fs::read_to_string(&manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?
         .parse()
