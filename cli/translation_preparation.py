@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import shutil
 import time
@@ -1450,6 +1451,10 @@ def run_preparation_passes(
 
     def prep_analyze_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         all_build_targets = store.build_info.get_all_targets()
+        # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
+        if sys.platform() != "Linux":
+            print("TENJIN: NOTE: Skipping errno analysis for non-Linux platform")
+            return
         # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
         if len(all_build_targets) != 1:
             # The transformation pass depends on macro expansion
