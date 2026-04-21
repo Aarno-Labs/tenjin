@@ -651,28 +651,6 @@ pub fn trim_unique_suffix(s: &str) -> &str {
         .unwrap_or_else(|| panic!("Empty name after trimming tenjin suffix: {}", s))
 }
 
-pub fn builtin_unconditional_variable_guidance(
-    _has_static_duration: &bool,
-    _has_thread_duration: &bool,
-    _is_externally_visible: &bool,
-    _is_defn: &bool,
-    _has_global_storage: &bool,
-    ident: &str,
-    _initializer: &Option<CExprId>,
-    _typ: &CQualTypeId,
-    _attrs: &IndexSet<Attribute>,
-) -> Option<GuidedType> {
-    match ident {
-        "_xj_local_errno" => Some(GuidedType::from_str("i32").expect("failed to parse 'i32'!?")),
-
-        "_xj_errno" => {
-            Some(GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?"))
-        }
-
-        _ => None,
-    }
-}
-
 pub fn builtin_decl_type(translation: &Translation, id: CDeclId) -> Option<GuidedType> {
     translation
         .ast_context
