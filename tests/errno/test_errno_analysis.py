@@ -29,8 +29,11 @@ def run_errno_analysis_on_file(test_dir, tmp_codebase, filename):
     )
     assert results is not None, "Analysis did not generate a report"
 
-    report = CodehawkSummary.from_json(results.read())
-    assert "errno-must-written" in report.tagresults.ppos
+    results = results.read()
+    report = CodehawkSummary.from_json(results)
+    assert "errno-must-written" in report.tagresults.ppos, (
+            f"Missing errno results in: {results},{report}"
+    )
     errno = report.tagresults.ppos["errno-must-written"]
     return errno
 
