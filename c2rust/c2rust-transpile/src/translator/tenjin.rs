@@ -1701,7 +1701,7 @@ impl Translation<'_> {
             // strlen(FOO)
             //    when FOO is a simple variable with type String
             // should be translated to
-            // FOO.len()
+            // FOO.len() as size_t
             if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
                 // XREF:guided_c_strlen
                 if self
@@ -1712,7 +1712,8 @@ impl Translation<'_> {
                 {
                     let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
                     let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
-                    return Ok(Some(WithStmts::new_val(len_call)));
+                    let len_call_as_size_t = mk().cast_expr(len_call, mk().path_ty(vec!["size_t"]));
+                    return Ok(Some(WithStmts::new_val(len_call_as_size_t)));
                 }
             }
         }

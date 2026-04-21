@@ -1,10 +1,11 @@
 extern "C" {
 
-    fn strlen(s: *const ::core::ffi::c_char) -> ::core::ffi::c_long;
+    fn strlen(s: *const ::core::ffi::c_char) -> size_t;
 
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
+pub type size_t = ::core::ffi::c_ulong;
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct StructWithMembersA {
@@ -104,7 +105,7 @@ pub fn guided_c_assignment_string_pop(mut ostr: String) {
 }
 #[no_mangle]
 pub fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
-    ostr.len() as ::core::ffi::c_ulong
+    ostr.len() as size_t
 }
 #[no_mangle]
 pub fn guided_isalnum() -> ::core::ffi::c_int {

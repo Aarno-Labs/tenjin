@@ -3,7 +3,8 @@
 int printf(const char *fmt, ...);
 int snprintf(char* buf, unsigned long, const char *fmt, ...);
 int sprintf(char* buf, const char *fmt, ...);
-long strlen(const char *s);
+typedef unsigned long size_t;
+size_t strlen(const char *s);
 void *memset(void *s, int c, long n);
 unsigned long strcspn(const char *, const char *);
 // These are macros in <ctype.h> but Tenjin can translate the un-expanded form.
