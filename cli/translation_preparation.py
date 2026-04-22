@@ -1451,7 +1451,6 @@ def run_preparation_passes(
 
     def prep_analyze_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         all_build_targets = store.build_info.get_all_targets()
-        # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
         if platform.system() != "Linux":
             print("TENJIN: NOTE: Skipping errno analysis for non-Linux platform")
             return

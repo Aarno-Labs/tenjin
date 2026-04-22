@@ -2,12 +2,11 @@
 #define _STDLIB_SPEC
 #include "clang/Tooling/Tooling.h"
 
-enum class ErrnoBehavior {
-  MaySet,
-  MustNotSet,
+enum class ErrnoBehavior
+{
+  MaySet,     // May set errno
+  MustNotSet, // Function documentation indicates errno is not set
 };
 
-// Returns false if Decl is a function that
-// MUST NOT set errno
-ErrnoBehavior FunctionMaySetErrno(clang::FunctionDecl *Decl); 
+ErrnoBehavior FunctionMaySetErrno(clang::FunctionDecl *Decl);
 #endif
