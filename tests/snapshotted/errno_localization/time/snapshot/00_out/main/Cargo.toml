@@ -1,0 +1,20 @@
+
+[package]
+name = "main"
+authors = ["C2Rust"]
+version = "0.0.0"
+publish = false
+edition = "2021"
+autobins = false
+
+[lib]
+name = "main"
+path = "lib.rs"
+crate-type = ["rlib"]
+[[bin]]
+path = "src/main_nolines.rs"
+name = "main_nolines"
+[dependencies]
+xj_ctime = { version = "0.1.1" }
+
+

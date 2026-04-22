@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 import shutil
+from subprocess import CompletedProcess
+import pytest
 import sys
 
 import vcs_helpers
@@ -39,40 +41,15 @@ def contents_of_non_ignored_files(dir: Path) -> dict[Path, str]:
     return result
 
 
-def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
-    src_dir = test_dir / "assorted_guidance"
-    cp_ce = hermetic.run(
-        [
-            (root / "cli" / "10j").as_posix(),
-            "translate",
-            "--codebase",
-            (src_dir / "assorted_guidance.c").as_posix(),
-            "--resultsdir",
-            tmp_resultsdir,
-            "--guidance",
-            (src_dir / "guidance.json").as_posix(),
-        ],
-        check=False,
-        capture_output=False,
-    )
-
+def diff_results_with_snapshot(root: Path, src_dir: Path, results_dir: Path):
     snapshot_dir = src_dir / "snapshot"
     if not snapshot_dir.exists():
         snapshot_dir.mkdir()
 
     before = contents_of_non_ignored_files(snapshot_dir / "final")
-    shutil.copytree(dst=snapshot_dir / "00_out", src=tmp_resultsdir / "00_out", dirs_exist_ok=True)
-    shutil.copytree(dst=snapshot_dir / "final", src=tmp_resultsdir / "final", dirs_exist_ok=True)
+    shutil.copytree(dst=snapshot_dir / "00_out", src=results_dir / "00_out", dirs_exist_ok=True)
+    shutil.copytree(dst=snapshot_dir / "final", src=results_dir / "final", dirs_exist_ok=True)
     after = contents_of_non_ignored_files(snapshot_dir / "final")
-
-    assert cp_ce.returncode == 0, "translation did not succeed"
-
-    translation_metadata_path = tmp_resultsdir / "translation_metadata.json"
-    assert translation_metadata_path.is_file(), "translation_metadata.json was not generated"
-    tmj = json.loads(translation_metadata_path.read_text(encoding="utf-8"))
-    assert tmj["results"]["tenjin_final"]["rustc_errors"] == 0, (
-        "unexpected rustc errors in final translation results"
-    )
 
     added = [p for p in after if p not in before]
     removed = [p for p in before if p not in after]
@@ -94,3 +71,80 @@ def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
 
     if added or removed or changed:
         assert False, f"saw unexpected change in snapshot of {src_dir.relative_to(root)}"
+
+
+def assert_translation_success(cp_ce: CompletedProcess, resultsdir: Path):
+    assert cp_ce.returncode == 0, "translation did not succeed"
+
+    translation_metadata_path = resultsdir / "translation_metadata.json"
+    assert translation_metadata_path.is_file(), "translation_metadata.json was not generated"
+    tmj = json.loads(translation_metadata_path.read_text(encoding="utf-8"))
+    assert tmj["results"]["tenjin_final"]["rustc_errors"] == 0, (
+        "unexpected rustc errors in final translation results"
+    )
+
+
+def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
+    src_dir = test_dir / "assorted_guidance"
+    cp_ce = hermetic.run(
+        [
+            (root / "cli" / "10j").as_posix(),
+            "translate",
+            "--codebase",
+            (src_dir / "assorted_guidance.c").as_posix(),
+            "--resultsdir",
+            tmp_resultsdir,
+            "--guidance",
+            (src_dir / "guidance.json").as_posix(),
+        ],
+        check=False,
+        capture_output=False,
+    )
+
+    assert_translation_success(cp_ce, tmp_resultsdir)
+
+    diff_results_with_snapshot(root, src_dir, tmp_resultsdir)
+
+
+# We skip on macOS because CIL (and hence codehawk) can't parse some mac headers
+@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
+def test_basic_errno(root: Path, test_dir: Path, tmp_resultsdir: Path):
+    src_dir = test_dir / "errno_localization" / "assign"
+    cp_ce = hermetic.run(
+        [
+            (root / "cli" / "10j").as_posix(),
+            "translate",
+            "--codebase",
+            src_dir.as_posix(),
+            "--resultsdir",
+            tmp_resultsdir,
+        ],
+        check=False,
+        capture_output=False,
+    )
+
+    assert_translation_success(cp_ce, tmp_resultsdir)
+
+    diff_results_with_snapshot(root, src_dir, tmp_resultsdir)
+
+
+# We skip on macOS because CIL (and hence codehawk) can't parse some mac headers
+@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
+def test_errno_time(root: Path, test_dir: Path, tmp_resultsdir: Path):
+    src_dir = test_dir / "errno_localization" / "time"
+    cp_ce = hermetic.run(
+        [
+            (root / "cli" / "10j").as_posix(),
+            "translate",
+            "--codebase",
+            (src_dir / "main.c").as_posix(),
+            "--resultsdir",
+            tmp_resultsdir,
+        ],
+        check=False,
+        capture_output=False,
+    )
+
+    assert_translation_success(cp_ce, tmp_resultsdir)
+
+    diff_results_with_snapshot(root, src_dir, tmp_resultsdir)
