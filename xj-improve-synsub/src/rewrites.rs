@@ -3,7 +3,7 @@ use syn::{Expr, ExprCast, Pat, Path, Stmt, Type};
 use crate::{Depth, Rewriter, SymbolTable};
 
 impl Rewriter {
-    /// Rewrite `strstr(e1, e2)` into `xj_cstr::strstr_ptr(e1, e2)` when
+    /// Rewrite `strstr(e1, e2)` into `xj_cstr::strstr_mut_ptr(e1, e2)` when
     /// both arguments can be coerced to byte slices.
     pub fn rewrite_strstr(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else {
@@ -19,13 +19,13 @@ impl Rewriter {
             return None;
         }
 
-        let e1 = coerce_u8s(&call.args[0], symbols, false)?;
+        let e1 = coerce_u8s(&call.args[0], symbols, true)?;
         let e2 = coerce_u8s(&call.args[1], symbols, false)?;
 
         self.add_dep("xj_cstr");
 
         let replacement: Expr = syn::parse_quote! {
-            xj_cstr::strstr_ptr(#e1, #e2)
+            xj_cstr::strstr_mut_ptr(#e1, #e2)
         };
 
         Some((replacement, Depth::Limited(0)))
