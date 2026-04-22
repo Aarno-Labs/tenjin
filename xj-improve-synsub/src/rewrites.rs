@@ -238,7 +238,7 @@ fn coerce_u8s(mut expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option
     }
 
     let coerced: Expr = syn::parse_quote! {
-        CStr::from_ptr(#expr).to_bytes()
+        ::core::ffi::CStr::from_ptr(#expr).to_bytes()
     };
     Some(Box::new(coerced))
 }
