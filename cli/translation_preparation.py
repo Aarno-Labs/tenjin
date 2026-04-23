@@ -1,5 +1,6 @@
 import os
 import platform
+import re
 import json
 import shutil
 import time
@@ -1085,6 +1086,11 @@ def run_preparation_passes(
             run_cc2json_or_cached(bitcode_module_path, current_codebase)
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        """The purpose of this pass is to rename static globals to have unique names,
+        so that subsequent analysis and refactorings can rely on the property that different
+        declarations have different names (that is: a name refers to at most one declaration,
+        across the whole project).
+        """
         # For now, we restrict analysis to single-target projects,
         # although this is not a fundamental limitation.
         all_build_targets = store.build_info.get_all_targets()
@@ -1216,6 +1222,107 @@ def run_preparation_passes(
                 cwd=current_codebase,
                 check=True,
             )
+
+    def prep_un_uniquify_static_inline_fns(
+        prev: Path, current_codebase: Path, store: PrepPassResultStore
+    ):
+        """Once analysis and general rewriting is done, we can (and should) remove the
+        uniquification suffixes from static inline functions, both to restore readability
+        and to avoid interfering with subsequent refolding.
+        """
+        # For now, we restrict analysis to single-target projects,
+        # although this is not a fundamental limitation.
+        all_build_targets = store.build_info.get_all_targets()
+        if len(all_build_targets) != 1:
+            print("TENJIN: NOTE: Skipping static-un-uniquification for multi-target codebase.")
+            return
+
+        compdb = store.build_info.compdb_for_target_within(
+            all_build_targets[0].key, current_codebase
+        )
+
+        all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
+            compdb, statics_only=True
+        )
+
+        def is_unique_name(name: tenj_types.CIdentifier) -> bool:
+            return "_xjtr_" in name and name[-1].isdigit()
+
+        def is_static_inline_function(cursor: Cursor) -> bool:
+            """Note that all cursors returned by `compute_globals_and_statics_for_project`
+            are either static or global, so we don't need to check for static-ness separately."""
+            if cursor.kind != CursorKind.FUNCTION_DECL:
+                return False
+            for token in cursor.get_tokens():
+                if token.spelling == cursor.spelling:
+                    break  # didn't see `inline` before the function name.
+                if token.spelling in (
+                    "inline",
+                    "__inline",
+                    "__inline__",
+                    "__always_inline__",
+                    "always_inline",
+                ):
+                    return True
+            return False
+
+        all_pgs_static_inline_funcs = [
+            c_refact.mk_NamedDeclInfo(c) for c in all_pgs_cursors if is_static_inline_function(c)
+        ]
+
+        for g_s in all_pgs_static_inline_funcs:
+            assert is_unique_name(g_s.spelling), (
+                f"Expected unique name for static inline function: {g_s.spelling}"
+            )
+
+        # We can safely strip the suffix as far as C is concerned; that's how the code
+        # was originally. And we already apply guidance by ignoring uniquification suffixes.
+        #
+        # Note the difference between regular static variables and static inline functions:
+        # two static variables can have the same name but refer to different entities,
+        # which the uniquification suffixes disambiguate. But two static inline functions
+        # with the same name are conceptually not distinct entities at all, so we don't
+        # lose any disambguating power by stripping the suffixes from static inline fns.
+        #
+        # If no modifications were made, stripping the suffix will avoid an unnecessary
+        # barrier to refolding. By assumption, all instantiations of a given static inline
+        # function should be modified in the same way, since there is conceptually a single
+        # definition.
+        #
+        # There are four modification cases to consider:
+        #   (A) no modifications
+        #   (B) all copies modified identically
+        #   (C) a subset of copies modified, but all modified identically
+        #   (D) some copies modified in different ways
+        #
+        # In case A, we should strip the suffix to enable refolding.
+        # In case B, we should consolidate the definition back into the header
+        # (which will strip the suffix and the modifications from the .i file).
+        #
+        # In cases C and D, the modifications will prevent refolding, but it's
+        # still fine to strip the suffix.
+
+        # sif = "suffixed inline function"
+        sif_names_per_file: dict[tenj_types.FilePathStr, set[tenj_types.CIdentifier]] = {}
+        for g_s in all_pgs_static_inline_funcs:
+            assert g_s.file_path is not None, (
+                f"Expected file_path for static inline function: {g_s}"
+            )
+            sif_names_per_file.setdefault(g_s.file_path, set()).add(g_s.spelling)
+        # Organized by file to enable subsequent per-file rewriting.
+
+        for srcfile, sif_names in sif_names_per_file.items():
+            contents = Path(srcfile).read_text(encoding="utf-8")
+            # NOTE: Simple textual replacement like this could theoretically produce
+            # incorrect output if a string literal contained a suffix like `_xjtr_1`,
+            # but we'll grow that complexity as needed.
+            #
+            # Sort by length descending to avoid replacing a shorter name that is a
+            # prefix of a longer one (e.g. `foo_xjtr_1` before `foo_xjtr_10`).
+            for unique_name in sorted(sif_names, key=len, reverse=True):
+                base_name = re.sub(r"_xjtr_\d+$", "", unique_name)
+                contents = contents.replace(unique_name, base_name)
+            Path(srcfile).write_text(contents, encoding="utf-8")
 
     def prep_split_joined_decls(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         j = c_refact.run_xj_locate_joined_decls(current_codebase, store.build_info)
@@ -1917,6 +2024,10 @@ def run_preparation_passes(
             ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
             ("localize_mutable_globals", prep_localize_mutable_globals),
         ])
+
+    preparation_passes.append(
+        ("prep_un_uniquify_static_inline_fns", prep_un_uniquify_static_inline_fns),
+    )
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") == "1":
         preparation_passes.extend([
