@@ -5,7 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.14.0"
 dependencies = [
     "bencode-py==4.0.0",
-    "clang==18.1.8",
+    "clang==21.1.7",
     "click==8.1.8",
     "cmake-file-api==0.0.8.3",
     "dataclasses-json>=0.6.7",
