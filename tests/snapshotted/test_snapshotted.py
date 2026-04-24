@@ -86,67 +86,57 @@ def assert_translation_success(cp_ce: CompletedProcess, resultsdir: Path):
     )
 
 
-def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
-    src_dir = test_dir / "assorted_guidance"
+def run_snapshotted(root: Path, src_dir: Path, cmd_args: list[str], tmp_resultsdir: Path):
     cp_ce = hermetic.run(
-        [
-            (root / "cli" / "10j").as_posix(),
-            "translate",
-            "--codebase",
-            (src_dir / "assorted_guidance.c").as_posix(),
-            "--resultsdir",
-            tmp_resultsdir,
-            "--guidance",
-            (src_dir / "guidance.json").as_posix(),
-        ],
+        cmd_args,
         check=False,
         capture_output=False,
     )
 
     assert_translation_success(cp_ce, tmp_resultsdir)
-
     diff_results_with_snapshot(root, src_dir, tmp_resultsdir)
+
+
+def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
+    src_dir = test_dir / "assorted_guidance"
+    cmd_args = [
+        (root / "cli" / "10j").as_posix(),
+        "translate",
+        "--codebase",
+        (src_dir / "assorted_guidance.c").as_posix(),
+        "--resultsdir",
+        tmp_resultsdir.as_posix(),
+        "--guidance",
+        (src_dir / "guidance.json").as_posix(),
+    ]
+    run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
 
 
 # We skip on macOS because CIL (and hence codehawk) can't parse some mac headers
 @pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
 def test_basic_errno(root: Path, test_dir: Path, tmp_resultsdir: Path):
     src_dir = test_dir / "errno_localization" / "assign"
-    cp_ce = hermetic.run(
-        [
-            (root / "cli" / "10j").as_posix(),
-            "translate",
-            "--codebase",
-            src_dir.as_posix(),
-            "--resultsdir",
-            tmp_resultsdir,
-        ],
-        check=False,
-        capture_output=False,
-    )
-
-    assert_translation_success(cp_ce, tmp_resultsdir)
-
-    diff_results_with_snapshot(root, src_dir, tmp_resultsdir)
+    cmd_args = [
+        (root / "cli" / "10j").as_posix(),
+        "translate",
+        "--codebase",
+        src_dir.as_posix(),
+        "--resultsdir",
+        tmp_resultsdir,
+    ]
+    run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
 
 
 # We skip on macOS because CIL (and hence codehawk) can't parse some mac headers
 @pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
 def test_errno_time(root: Path, test_dir: Path, tmp_resultsdir: Path):
     src_dir = test_dir / "errno_localization" / "time"
-    cp_ce = hermetic.run(
-        [
-            (root / "cli" / "10j").as_posix(),
-            "translate",
-            "--codebase",
-            (src_dir / "main.c").as_posix(),
-            "--resultsdir",
-            tmp_resultsdir,
-        ],
-        check=False,
-        capture_output=False,
-    )
-
-    assert_translation_success(cp_ce, tmp_resultsdir)
-
-    diff_results_with_snapshot(root, src_dir, tmp_resultsdir)
+    cmd_args = [
+        (root / "cli" / "10j").as_posix(),
+        "translate",
+        "--codebase",
+        (src_dir / "main.c").as_posix(),
+        "--resultsdir",
+        tmp_resultsdir,
+    ]
+    run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
