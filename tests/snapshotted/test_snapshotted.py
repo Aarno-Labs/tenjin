@@ -36,6 +36,8 @@ def contents_of_non_ignored_files(dir: Path) -> dict[Path, str]:
             continue
         assert not path.is_absolute()
         path = root / path
+        if path.name == "Cargo.lock":
+            continue  # We don't care about changes to Cargo.lock
         if path.is_file():
             result[path.relative_to(dir)] = path.read_text(encoding="utf-8")
     return result
