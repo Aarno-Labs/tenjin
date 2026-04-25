@@ -52,6 +52,20 @@ impl GuidedType {
     pub fn is_shared_borrow(&self) -> bool {
         self.is_borrow() && !self.is_exclusive_borrow()
     }
+
+    pub fn is_slice_ref(&self) -> bool {
+        match self.parsed {
+            Type::Reference(ref tref) => matches!(*tref.elem, Type::Slice(_)),
+            _ => false,
+        }
+    }
+
+    pub fn is_array_ref(&self) -> bool {
+        match self.parsed {
+            Type::Reference(ref tref) => matches!(*tref.elem, Type::Array(_)),
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +189,16 @@ fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
     }
 }
 
+fn is_path_exactly_3(path: &Path, a: &str, b: &str, c: &str) -> bool {
+    if path.segments.len() == 3 {
+        path.segments[0].ident.to_string().as_str() == a
+            && path.segments[1].ident.to_string().as_str() == b
+            && path.segments[2].ident.to_string().as_str() == c
+    } else {
+        false
+    }
+}
+
 fn is_known_size_1_path(path: &Path) -> bool {
     // TODO-TENJIN: expand this list
     match path.segments.len() {
@@ -229,12 +253,28 @@ pub fn type_is_vec_of_1_path(ty: &Type, a: &str) -> bool {
     try_type_vec_of(ty).is_some_and(|arg| type_is_exactly_1_path(arg, a))
 }
 
+pub fn type_is_c_char(ty: &Type) -> bool {
+    if let Some(path) = type_get_bare_path(ty) {
+        return is_path_exactly_3(path, "core", "ffi", "c_char")
+            || is_path_exactly_2(path, "libc", "c_char");
+    }
+    false
+}
+
 pub fn type_is_vec(ty: &Type) -> bool {
     type_is_exactly_1_path(ty, "Vec")
 }
 
 pub fn type_is_ref(ty: &Type) -> bool {
     matches!(ty, Type::Reference(_))
+}
+
+pub fn type_of_ref(ty: &Type) -> Option<&Type> {
+    if let Type::Reference(ref tref) = *ty {
+        Some(&tref.elem)
+    } else {
+        None
+    }
 }
 
 pub fn type_is_mut_ref(ty: &Type) -> bool {
@@ -244,7 +284,34 @@ pub fn type_is_mut_ref(ty: &Type) -> bool {
     false
 }
 
-fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
+pub fn type_is_shared_borrow(ty: &Type) -> bool {
+    if let Type::Reference(ref tref) = *ty {
+        return tref.mutability.is_none();
+    }
+    false
+}
+
+pub fn type_of_slice_ref(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Reference(ref tref) => match *tref.elem {
+            Type::Slice(ref slice) => Some(&slice.elem),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub fn type_of_array_ref(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Reference(ref tref) => match *tref.elem {
+            Type::Array(ref arr) => Some(&arr.elem),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
     match t {
         Type::Path(p) => path_get_1_segment(&p.path)
             .and_then(|s| segment_get_1_bracket_argument(s))
@@ -328,11 +395,46 @@ pub fn expr_is_lit_str_only(expr: &Expr) -> bool {
     false
 }
 
+pub fn expr_is_borrow(expr: &Expr) -> bool {
+    matches!(expr, Expr::Reference(_))
+}
+
 pub fn expr_strip_casts(expr: &Expr) -> &Expr {
     let mut ep = expr;
     loop {
         match ep {
             Expr::Cast(ExprCast { expr, .. }) => ep = expr,
+            _ => break ep,
+        }
+    }
+}
+
+pub fn expr_is_transmute(expr: &Expr) -> bool {
+    if let Expr::Path(ref path) = *expr {
+        if is_path_exactly_1(&path.path, "transmute") {
+            return true;
+        }
+        if is_path_exactly_3(&path.path, "core", "mem", "transmute") {
+            return true;
+        }
+        if is_path_exactly_3(&path.path, "core", "intrinsics", "transmute") {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn expr_strip_transmute(expr: &Expr) -> &Expr {
+    let mut ep = expr;
+    loop {
+        match ep {
+            Expr::Call(syn::ExprCall { func, args, .. }) => {
+                if tenjin::expr_is_transmute(func) && args.len() == 1 {
+                    ep = &args[0];
+                } else {
+                    break ep;
+                }
+            }
             _ => break ep,
         }
     }
@@ -673,27 +775,14 @@ pub fn builtin_decl_type(translation: &Translation, id: CDeclId) -> Option<Guide
 }
 
 impl Translation<'_> {
-    pub fn recognize_c_assignment_cases(
-        &self,
-        ctx: ExprContext,
-        op: c_ast::BinOp,
-        qtype: CQualTypeId,
-        lhs: CExprId,
-        rhs: CExprId,
-        compute_type: Option<CQualTypeId>,
-        result_type: Option<CQualTypeId>,
-    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
-        self.recognize_c_assignment_string_pop(ctx, op, qtype, lhs, rhs, compute_type, result_type)
-    }
-
-    fn strip_integral_cast(&self, expr: CExprId) -> CExprId {
-        let kind = &self.ast_context.index(expr).kind;
-        if let CExprKind::ImplicitCast(_, inner, CastKind::IntegralCast, _, _) = kind {
-            *inner
-        } else {
-            expr
-        }
-    }
+    // fn strip_integral_cast(&self, expr: CExprId) -> CExprId {
+    //     let kind = &self.ast_context.index(expr).kind;
+    //     if let CExprKind::ImplicitCast(_, inner, CastKind::IntegralCast, _, _) = kind {
+    //         *inner
+    //     } else {
+    //         expr
+    //     }
+    // }
 
     pub fn strip_implicit_array_to_pointer_cast(&self, expr: CExprId) -> CExprId {
         let kind = &self.ast_context.index(expr).kind;
@@ -784,110 +873,6 @@ impl Translation<'_> {
         }
 
         SizeofArgSituation::Unrecognized
-    }
-
-    fn recognize_c_assignment_string_pop(
-        &self,
-        ctx: ExprContext,
-        op: c_ast::BinOp,
-        _qtype: CQualTypeId,
-        lhs: CExprId,
-        rhs: CExprId,
-        _compute_type: Option<CQualTypeId>,
-        _result_type: Option<CQualTypeId>,
-    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
-        // Code matching
-        //     s1[strlen(s1)-1] = '\0';
-        //         when s1 is guided to be a String
-        // can be translated to
-        //     s1.pop();
-        // (assuming the assignment expr is in a statement position)
-        log::trace!("Recognizing C assignment string pop?...");
-        if op != c_ast::BinOp::Assign {
-            log::trace!("Not an assignment operator");
-            return Ok(None);
-        }
-
-        if !self.is_integral_lit(self.strip_integral_cast(rhs), 0) {
-            log::trace!("Not assigned an integral literal 0");
-            return Ok(None);
-        }
-
-        let lhs_kind = &self.ast_context.index(lhs).kind;
-        if let CExprKind::ArraySubscript(_, raw_base, index, _lrvalue) = lhs_kind {
-            if let CExprKind::Binary(
-                _sub_cq,
-                c_ast::BinOp::Subtract,
-                sub_lhs,
-                sub_rhs,
-                _opt_cq_lhs,
-                _opt_cq_rhs,
-            ) = self.ast_context.index(*index).kind
-            {
-                if !self.is_integral_lit(self.strip_integral_cast(sub_rhs), 1) {
-                    log::trace!("Not subtracting 1 from the index");
-                    return Ok(None);
-                }
-
-                if let Some(base_decl_id) = self.c_expr_decl_id(*raw_base) {
-                    let guided_type = self
-                        .parsed_guidance
-                        .borrow_mut()
-                        .query_decl_type(self, base_decl_id);
-
-                    // XREF:guided_c_assignment_string_pop
-                    if guided_type.is_none_or(|g| !type_is_string(&g.parsed)) {
-                        log::trace!("target variable not guided to be of type String");
-                        return Ok(None);
-                    }
-                } else {
-                    return Ok(None);
-                };
-
-                if let CExprKind::Call(_, callee_raw, args) = &self.ast_context.index(sub_lhs).kind
-                {
-                    let callee = self.c_strip_implicit_casts(*callee_raw);
-                    if let CExprKind::DeclRef(_, callee_decl_id, _opt_cq) =
-                        self.ast_context.index(callee).kind
-                    {
-                        if let CDeclKind::Function { name, .. } =
-                            &self.ast_context[callee_decl_id].kind
-                        {
-                            if name != "strlen" {
-                                return Ok(None);
-                            }
-
-                            if args.len() == 1
-                                && self.c_expr_decl_id(args[0]) == self.c_expr_decl_id(*raw_base)
-                            {
-                                let tgt_expr = self.convert_expr(
-                                    ctx,
-                                    self.c_strip_implicit_casts(*raw_base),
-                                    None,
-                                )?;
-                                let pop_call = mk().method_call_expr(
-                                    tgt_expr.to_expr(),
-                                    mk().path_segment("pop"),
-                                    vec![],
-                                );
-                                log::trace!("Recognized assignment, returning pop call");
-                                return Ok(Some(WithStmts::new_val(pop_call)));
-                            } else {
-                                log::trace!("Call to strlen does not match the expected argument");
-                            }
-                        }
-                        log::trace!("Not a call to strlen");
-                    } else {
-                        log::trace!(
-                            "Callee is not a decl ref: {:?}",
-                            self.ast_context.index(callee).kind
-                        );
-                    }
-                }
-            }
-        }
-        log::trace!("LHS not an array subscript");
-        Ok(None)
     }
 
     #[allow(clippy::vec_box)]
@@ -1599,7 +1584,7 @@ impl Translation<'_> {
             // strlen(FOO)
             //    when FOO is a simple variable with type String
             // should be translated to
-            // FOO.len()
+            // FOO.len() as size_t
             if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
                 // XREF:guided_c_strlen
                 if self
@@ -1610,7 +1595,8 @@ impl Translation<'_> {
                 {
                     let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
                     let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
-                    return Ok(Some(WithStmts::new_val(len_call)));
+                    let len_call_as_size_t = mk().cast_expr(len_call, mk().path_ty(vec!["size_t"]));
+                    return Ok(Some(WithStmts::new_val(len_call_as_size_t)));
                 }
             }
         }
@@ -2352,9 +2338,13 @@ impl Translation<'_> {
                 if target_guided_type.is_exclusive_borrow() && !expr_guided_type.is_borrow() {
                     return mk().mutbl().borrow_expr(expr);
                 }
+            } else if tenjin::expr_is_borrow(&expr) {
+                // Expr is already a borrow, but we have guidance that the target is a borrow,
+                // so we assume it's the right kind of borrow and do nothing.
             } else {
                 // Have target guided type, but no expr guided type.
                 // If target is a borrow, we assume expr was a pointer.
+
                 if target_guided_type.is_shared_borrow() {
                     // XREF:unguided_arg_coerce_asref
                     // Coerce to `.as_ref().unwrap()`
@@ -2432,5 +2422,23 @@ impl Translation<'_> {
             .as_ref()
             .and_then(|ty| type_try_arraylike_element(ty))
             .is_some()
+    }
+
+    pub fn wrapped_with_array_decay(&self, mut cexpr: CExprId) -> bool {
+        while let Some(parent_id) = self.parent_expr_map.get(&cexpr) {
+            match self.ast_context[*parent_id].kind {
+                CExprKind::ImplicitCast(_, _, CastKind::ArrayToPointerDecay, _, _)
+                | CExprKind::ExplicitCast(_, _, CastKind::ArrayToPointerDecay, _, _) => {
+                    return true
+                }
+                CExprKind::ImplicitCast(_, _, _, _, _)
+                | CExprKind::Paren(_, _)
+                | CExprKind::ExplicitCast(_, _, _, _, _) => {
+                    cexpr = *parent_id;
+                }
+                _ => return false,
+            }
+        }
+        false
     }
 }

@@ -87,6 +87,15 @@ def assert_translation_success(cp_ce: CompletedProcess, resultsdir: Path):
         "unexpected rustc errors in final translation results"
     )
 
+    if not (resultsdir / "final").is_dir():
+        txs = tmj["results"]["transformations"]
+        tx = next((tx for tx in txs if tx["name"] == "xj-c2rust"), None)
+        if tx is not None:
+            print("=============================================", file=sys.stderr)
+            print("              xj-c2rust stderr:", file=sys.stderr)
+            print("---------------------------------------------", file=sys.stderr)
+            print("\n".join(tx["stderr_lines"] or []), file=sys.stderr)
+
 
 def run_snapshotted(root: Path, src_dir: Path, cmd_args: list[str], tmp_resultsdir: Path):
     cp_ce = hermetic.run(

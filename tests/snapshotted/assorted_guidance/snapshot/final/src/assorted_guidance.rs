@@ -3,6 +3,7 @@ extern "C" {
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
+pub type size_t = ::core::ffi::c_ulong;
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct StructWithMembersA {
@@ -63,6 +64,20 @@ pub fn guided_array_vec() {
     print_owned_vec_u8(ovu8);
 }
 #[no_mangle]
+pub fn guided_immutable_u8_array_slice_decay_to_ptr() {
+    let rsu8: &[u8] = b"";
+    (::std::ffi::CStr::from_bytes_until_nul(rsu8)
+        .unwrap()
+        .count_bytes());
+}
+#[no_mangle]
+pub fn guided_immutable_u8_pointer() {
+    let mut rsu8: &[u8] = b"";
+    (::std::ffi::CStr::from_bytes_until_nul(rsu8)
+        .unwrap()
+        .count_bytes());
+}
+#[no_mangle]
 pub fn recognize_call_exit() {
     ::std::process::exit(1);
 }
@@ -92,7 +107,7 @@ pub fn guided_c_assignment_string_pop(mut ostr: String) {
 }
 #[no_mangle]
 pub fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
-    ostr.len() as ::core::ffi::c_ulong
+    ostr.len() as size_t
 }
 #[no_mangle]
 pub fn guided_isalnum() -> ::core::ffi::c_int {

@@ -65,35 +65,6 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
         serde_json::json!({
             "no_math_errno": true,
         })
-    } else if c_path.ends_with("tenjin_guided.c") {
-        serde_json::json!({
-            "vars_of_type": {
-                "String" : ["*:ostr", "guided_strcspn:delimiters"],
-                "&str" : "*:rstr",
-                "char": "*:oc",
-                "&[::core::ffi::c_int]" : ["guided_1d_slice:x", "guided_1d_slice:x2"],
-                "Vec<::core::ffi::c_int>" : ["guided_1d_vec:x"],
-                "&[&[::core::ffi::c_int]]" : ["guided_2d_slice:x2d"],
-                "Vec<Vec<::core::ffi::c_int>>" : ["guided_2d_vec:x2d"],
-                "&mut str" : ["*:xstr", "*:xstr2"],
-                "Vec<u8>" : "*:ovu8",
-                "&Vec<u8>" : "*:rvu8",
-                "&mut Vec<u8>" : "*:xvu8",
-                "u8": "guided_static:u8",
-                "&mut StructWithMembersA": "*:gm_ptr",
-                "&u8": "*:ru8"
-            },
-
-            "vars_mut" : {
-                "guided_str_init_lit:ostr": false,
-                "extern_int_nonmutbl": false,
-                "static_int_nonmutbl": false,
-                "*:static_local_nonmutbl": false
-            },
-            "fn_return_type": {
-                "guided_ret_ostr": "String"
-            }
-        })
     } else if c_path.ends_with("tenjin_globals.c") {
         serde_json::json!({
             "vars_of_type": {

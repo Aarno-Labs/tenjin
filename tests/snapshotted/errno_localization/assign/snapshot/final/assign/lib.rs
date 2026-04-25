@@ -4,4 +4,4 @@
 
 pub mod src {
     pub mod bar_nolines;
-} // mod src
+}

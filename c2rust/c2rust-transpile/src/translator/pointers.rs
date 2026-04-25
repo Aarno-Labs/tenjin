@@ -130,16 +130,43 @@ impl<'c> Translation<'c> {
         };
 
         if let Some(CExprKind::DeclRef(_cqti, decl_id, _lrval)) = arg_expr_kind {
-            if self
+            let expr_guidance = self
                 .parsed_guidance
                 .borrow_mut()
-                .query_decl_type(self, *decl_id)
-                .is_some_and(|g| {
-                    tenjin::type_is_string(&g.parsed) || tenjin::type_is_vec(g.strip_refs())
-                })
-            {
-                // XREF:guided_array_decay
-                return Ok(val);
+                .query_decl_type(self, *decl_id);
+
+            if let Some(eg) = expr_guidance {
+                if tenjin::type_is_string(&eg.parsed) || tenjin::type_is_vec(eg.strip_refs()) {
+                    // XREF:guided_array_decay
+                    return Ok(val);
+                }
+
+                if let Some(cg) = guided_type {
+                    if cg.is_slice_ref() && tenjin::type_try_arraylike_element(&eg.parsed).is_some()
+                    {
+                        // If the destination is guided to a slice type and the source is
+                        // array-like with the same element type, then we can skip the decay.
+                        //
+                        // If the element types are different but compatible via bytemucking,
+                        // we can insert an appropriate cast. (TODO)
+                        //
+                        // If the element types are different and not compatible, we should let
+                        // the Rust compiler catch the mismatch.
+                        return Ok(val);
+                    }
+                }
+                // If the value is a slice but the context still wants a pointer,
+                // we'll fall through to the normal decay logic.
+            } else if is_array_decay {
+                if let Some(cg) = guided_type {
+                    if cg.is_slice_ref() {
+                        // No explicit guidance on the source, but the source is an array and
+                        // the destination is guided to a slice, which requires either:
+                        //  * a (non-raw) borrow, or
+                        //  * .as_mut() / .as_ref()
+                        return Ok(val.map(|val| mk().set_mutbl(mutbl).borrow_expr(val)));
+                    }
+                }
             }
         }
 
@@ -190,6 +217,7 @@ impl<'c> Translation<'c> {
                     Mutability::Mutable => "as_mut_ptr",
                     Mutability::Immutable => "as_ptr",
                 };
+                // XREF:array_decay
                 val = val.map(|val| mk().method_call_expr(val, method, vec![]));
 
                 // If the target pointee type is different from the source element type,
@@ -221,6 +249,7 @@ impl<'c> Translation<'c> {
                     Mutability::Immutable => "as_ptr",
                 };
                 needs_cast = false;
+                // XREF:array_decay
                 val = val.map(|val| mk().method_call_expr(val, method, vec![]));
             } else {
                 val = val.map(|val| mk().set_mutbl(mutbl).raw_borrow_expr(val));

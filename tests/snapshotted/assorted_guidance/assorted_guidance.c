@@ -3,7 +3,8 @@
 int printf(const char *fmt, ...);
 int snprintf(char* buf, unsigned long, const char *fmt, ...);
 int sprintf(char* buf, const char *fmt, ...);
-long strlen(const char *s);
+typedef unsigned long size_t;
+size_t strlen(const char *s);
 void *memset(void *s, int c, long n);
 unsigned long strcspn(const char *, const char *);
 // These are macros in <ctype.h> but Tenjin can translate the un-expanded form.
@@ -76,6 +77,19 @@ void guided_array_vec()
     unsigned char ovu8[4] = { 1, 2, 3, 4 };
     // XREF:guided_array_decay
     print_owned_vec_u8(ovu8);
+}
+
+void guided_immutable_u8_array_slice_decay_to_ptr()
+{
+    const unsigned char rsu8[] = "";
+    strlen((const char*)rsu8);
+}
+
+
+void guided_immutable_u8_pointer()
+{
+    const unsigned char* rsu8 = "";
+    strlen((const char*)rsu8);
 }
 
 void recognize_call_exit() { exit(1); }

@@ -53,6 +53,7 @@ mod literals;
 mod main_function;
 mod named_references;
 mod operators;
+pub mod parent_expr;
 pub mod parent_fn;
 mod pointers;
 mod simd;
@@ -572,6 +573,7 @@ pub struct Translation<'c> {
 
     // Translation state and utilities
     parent_fn_map: HashMap<CDeclId, CDeclId>,
+    parent_expr_map: HashMap<CExprId, CExprId>,
     type_converter: RefCell<TypeConverter>,
     renamer: RefCell<Renamer<CDeclId>>,
     zero_inits: RefCell<IndexMap<CDeclId, ZeroInitsExprAndImports>>,
@@ -860,8 +862,9 @@ pub fn translate(
     tcfg: &TranspilerConfig,
     main_file: &Path,
     parent_fn_map: HashMap<CDeclId, CDeclId>,
+    parent_expr_map: HashMap<CExprId, CExprId>,
 ) -> (String, Option<DeclMap>, PragmaVec, CrateSet) {
-    let mut t = Translation::new(ast_context, tcfg, main_file, parent_fn_map);
+    let mut t = Translation::new(ast_context, tcfg, main_file, parent_fn_map, parent_expr_map);
     let ctx = ExprContext {
         used: true,
         is_static: false,
@@ -2446,6 +2449,7 @@ impl<'c> Translation<'c> {
         tcfg: &'c TranspilerConfig,
         main_file: &Path,
         parent_fn_map: HashMap<CDeclId, CDeclId>,
+        parent_expr_map: HashMap<CExprId, CExprId>,
     ) -> Self {
         let comment_context = CommentContext::new(&mut ast_context);
         let mut type_converter = TypeConverter::new();
@@ -2492,6 +2496,7 @@ impl<'c> Translation<'c> {
             extern_crates: RefCell::new(IndexSet::new()),
             cur_file: Default::default(),
             parent_fn_map,
+            parent_expr_map,
         }
     }
 
@@ -4831,7 +4836,7 @@ impl<'c> Translation<'c> {
         mut ctx: ExprContext,
         expr_id: CExprId,
         override_ty: Option<CQualTypeId>,
-        guided_type: &Option<tenjin::GuidedType>,
+        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let Located {
             loc: src_loc,
@@ -5025,7 +5030,30 @@ impl<'c> Translation<'c> {
                 if let CTypeKind::VariableArray(..) =
                     self.ast_context.resolve_type(qual_ty.ctype).kind
                 {
+                    // XREF:array_decay
                     val = mk().method_call_expr(val, "as_mut_ptr", vec![]);
+                } else if let Some(var_guided_type) = self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, decl_id)
+                {
+                    if (var_guided_type.is_slice_ref() || var_guided_type.is_array_ref())
+                        && !self.wrapped_with_array_decay(expr_id)
+                    {
+                        let method = if var_guided_type.is_exclusive_borrow() {
+                            "as_mut_ptr"
+                        } else {
+                            "as_ptr"
+                        };
+                        // Apply compatible coercions for behavioral equivalence,
+                        // unless we'd end up adding a redundant/conflicting cast.
+                        // XREF:array_decay
+                        val = mk().method_call_expr(val, method, vec![]);
+                    }
+                    // For types which do not have known compatible coercions, we leave the
+                    // variable reference as-is, and rely on the Rust compiler to notify the
+                    // user of any cases in which subsequent rewrites were unable to produce
+                    // a type-correct program.
                 }
 
                 // if the context wants a different type, add a cast
@@ -5107,7 +5135,7 @@ impl<'c> Translation<'c> {
             },
 
             Literal(ty, ref kind) => {
-                self.convert_literal(ctx, override_ty.unwrap_or(ty), kind, guided_type)
+                self.convert_literal(ctx, override_ty.unwrap_or(ty), kind, ctx_guided_type)
             }
 
             ImplicitCast(ty, expr, kind, opt_field_id, _)
@@ -5169,7 +5197,12 @@ impl<'c> Translation<'c> {
                         (override_ty, &self.ast_context[expr].kind)
                     {
                         if self.literal_matches_ty(lit, ty) {
-                            return self.convert_expr_guided(ctx, expr, override_ty, guided_type);
+                            return self.convert_expr_guided(
+                                ctx,
+                                expr,
+                                override_ty,
+                                ctx_guided_type,
+                            );
                         }
                     }
                     // LValueToRValue casts don't actually change the type, so it still makes sense
@@ -5178,9 +5211,9 @@ impl<'c> Translation<'c> {
                     if kind == CastKind::LValueToRValue
                         && Some(source_ty.ctype) != override_ty.map(|x| x.ctype)
                     {
-                        self.convert_expr_guided(ctx, expr, override_ty, guided_type)?
+                        self.convert_expr_guided(ctx, expr, override_ty, ctx_guided_type)?
                     } else {
-                        self.convert_expr_guided(ctx, expr, None, guided_type)?
+                        self.convert_expr_guided(ctx, expr, None, ctx_guided_type)?
                     }
                 };
                 // Shuffle Vector "function" builtins will add a cast to the output of the
@@ -5199,7 +5232,7 @@ impl<'c> Translation<'c> {
                     Some(expr),
                     Some(kind),
                     opt_field_id,
-                    guided_type,
+                    ctx_guided_type,
                     is_explicit,
                 )
             }
@@ -5553,7 +5586,7 @@ impl<'c> Translation<'c> {
 
             InitList(ty, ref ids, opt_union_field_id, _) => {
                 let arr = self.convert_init_list(ctx, ty, ids, opt_union_field_id);
-                if guided_type
+                if ctx_guided_type
                     .as_ref()
                     .is_some_and(|gt| tenjin::type_is_vec(gt.strip_refs()))
                 {
@@ -5586,7 +5619,7 @@ impl<'c> Translation<'c> {
             }
 
             ImplicitValueInit(ty) => {
-                self.implicit_default_expr_guided(guided_type, ty.ctype, ctx.is_static)
+                self.implicit_default_expr_guided(ctx_guided_type, ty.ctype, ctx.is_static)
             }
 
             Predefined(_, val_id) => self.convert_expr(ctx, val_id, override_ty),
