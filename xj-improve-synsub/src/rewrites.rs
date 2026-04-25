@@ -92,9 +92,12 @@ impl Rewriter {
         ))
     }
 
-    /// Rewrite `*s1.offset(s1.len().wrapping_sub(1 as size_t) as isize) =
-    /// '\0' as ::core::ffi::c_char;` into `s1.pop();` when `s1` is an
-    /// identifier typed as `String`.
+    /// Rewrite
+    ///     `*s1.offset(s1.len().wrapping_sub(1 as size_t) as isize) = '\0' as ::core::ffi::c_char;`
+    ///  or `*s1.offset((s1.len() as ___ - 1 as ___) as isize) = '\0' as ::core::ffi::c_char;`
+    /// into
+    ///      `s1.pop();`
+    /// when `s1` is an identifier typed as `String`.
     pub fn rewrite_string_pop_trailing_nul(
         &self,
         symbols: &SymbolTable,
@@ -125,8 +128,8 @@ impl Rewriter {
             return None;
         }
 
-        let base_ident = expr_ident_name(&call.receiver)?;
-        if !is_len_wrapping_sub_one_as_isize_expr(&call.args[0], base_ident) {
+        let base_ident: &syn::Ident = expr_ident_name(&call.receiver)?;
+        if !is_len_sub_one_as_isize_expr(&call.args[0], base_ident) {
             return None;
         }
 
@@ -416,19 +419,30 @@ fn is_one_expr(expr: &Expr) -> bool {
     matches!(expr_strip_parens(expr_strip_casts(expr)), Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Int(int) if int.base10_digits() == "1"))
 }
 
-fn is_len_wrapping_sub_one_as_isize_expr(expr: &Expr, expected_ident: &syn::Ident) -> bool {
-    let Expr::MethodCall(wrapping_sub) = expr_strip_parens(expr_strip_casts(expr)) else {
+fn split_binary_or_wrapping_sub(expr: &Expr) -> Option<(&Expr, &Expr)> {
+    let expr = expr_strip_parens(expr_strip_casts(expr));
+    if let Expr::Binary(bin) = expr {
+        if matches!(bin.op, syn::BinOp::Sub(_)) {
+            return Some((&bin.left, &bin.right));
+        }
+    } else if let Expr::MethodCall(method_call) = expr {
+        if method_call.method == "wrapping_sub" && method_call.args.len() == 1 {
+            return Some((&method_call.receiver, &method_call.args[0]));
+        }
+    }
+    None
+}
+
+fn is_len_sub_one_as_isize_expr(expr: &Expr, expected_ident: &syn::Ident) -> bool {
+    let Some((left, right)) = split_binary_or_wrapping_sub(expr) else {
         return false;
     };
-    if wrapping_sub.method != "wrapping_sub" || wrapping_sub.args.len() != 1 {
-        return false;
-    }
-    if !is_one_expr(&wrapping_sub.args[0]) {
+
+    if !is_one_expr(&right) {
         return false;
     }
 
-    let Expr::MethodCall(len_call) = expr_strip_casts(expr_strip_parens(&wrapping_sub.receiver))
-    else {
+    let Expr::MethodCall(len_call) = expr_strip_casts(expr_strip_parens(&left)) else {
         return false;
     };
     if len_call.method != "len" || !len_call.args.is_empty() {
