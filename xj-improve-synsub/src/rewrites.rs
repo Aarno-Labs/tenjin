@@ -1,3 +1,5 @@
+use syn::punctuated::Punctuated;
+use syn::token::Comma;
 use syn::{Expr, ExprCast, LitByteStr, Pat, Path, Stmt, Type};
 
 use crate::{Depth, Rewriter, SymbolTable};
@@ -69,6 +71,86 @@ impl Rewriter {
         } else {
             None
         }
+    }
+
+    /// Rewrite `scanf(...)` and `fscanf(stdin, ...)` into `xj_scanf::scanf!(...)`.
+    pub fn rewrite_scanf_and_fscanf(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(ref func) = *call.func else {
+            return None;
+        };
+        if !(func.path.is_ident("scanf") || func.path.is_ident("fscanf")) {
+            return None;
+        }
+
+        if func.path.is_ident("fscanf") {
+            if call.args.len() < 2 {
+                return None;
+            }
+            let first_arg = &call.args[0];
+            if !matches!(first_arg, Expr::Path(fp) if fp.path.is_ident("stdin")) {
+                return None;
+            }
+        }
+
+        let fmt_arg_zero_terminated = if func.path.is_ident("scanf") {
+            call.args
+                .get(0)
+                .expect("scanf should have at least 1 argument")
+        } else {
+            call.args
+                .get(1)
+                .expect("fscanf should have at least 2 arguments")
+        };
+
+        let Some(fmt_arg) = coerce_str_of_cast_byte_str(fmt_arg_zero_terminated) else {
+            eprintln!(
+                "synsub: rewrite_scanf_and_fscanf: unsupported format string argument {fmt_arg_zero_terminated:?}"
+            );
+            return None;
+        };
+
+        // eprintln!(
+        //     "synsub: rewrite_scanf_and_fscanf: format string argument coerced from  {} to {}"
+        // );
+
+        let value_args = if func.path.is_ident("scanf") {
+            // skip fmt string
+            &call.args.iter().skip(1).collect::<Vec<_>>()
+        } else {
+            // skip first FILE* arg and fmt string
+            &call.args.iter().skip(2).collect::<Vec<_>>()
+        };
+
+        let mut scanf_compatible_args = vec![];
+        for arg in value_args {
+            if let Some(coerced) = coerce_scanf_arg(arg, _symbols) {
+                scanf_compatible_args.push(*coerced);
+            } else {
+                eprintln!("synsub: rewrite_scanf_and_fscanf: unsupported target argument {arg:?}");
+                return None;
+            }
+        }
+
+        self.add_dep("xj_scanf");
+        self.with_cur_file_item_store(|item_store| {
+            item_store.add_use(false, vec!["xj_scanf".into()], "scanf");
+        });
+
+        let comma_punctuated_args: Punctuated<Expr, Comma> =
+            Punctuated::from_iter(scanf_compatible_args);
+
+        let scanf_call: Expr = syn::parse_quote! {
+            xj_scanf::scanf!(#fmt_arg, #comma_punctuated_args)
+        };
+
+        Some((scanf_call, Depth::Limited(0)))
     }
 
     /// Rewrite statement expressions like `((expr));` into `expr;`.
@@ -210,6 +292,28 @@ impl Rewriter {
     }
 }
 
+enum ScanfArgCategory {
+    Borrow(Box<Expr>),
+    Other,
+}
+
+fn categorize_scanf_arg(expr: &Expr, _symbols: &SymbolTable) -> ScanfArgCategory {
+    if let Expr::Reference(reference) = expr {
+        return ScanfArgCategory::Borrow(reference.expr.clone());
+    }
+    if let Expr::RawAddr(reference) = expr {
+        return ScanfArgCategory::Borrow(reference.expr.clone());
+    }
+    ScanfArgCategory::Other
+}
+
+fn coerce_scanf_arg(expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> {
+    match categorize_scanf_arg(expr, symbols) {
+        ScanfArgCategory::Borrow(e) => Some(Box::new(syn::parse_quote! { &mut #e })),
+        ScanfArgCategory::Other => None,
+    }
+}
+
 /// Coerce supported string-like inputs into `u8` slice expressions.
 ///
 /// Handles:
@@ -272,6 +376,16 @@ fn coerce_cast_byte_str(expr: &Expr) -> Option<Box<Expr>> {
     let byte_str: LitByteStr = get_litbytestr(expr)?;
     let bytes_sans_zero = bytes_strip_trailing_zero(byte_str.value());
     let trimmed = syn::LitByteStr::new(&bytes_sans_zero, byte_str.span());
+    Some(Box::new(syn::parse_quote! { #trimmed }))
+}
+
+/// If `expr` is a casted `b"...\0"` literal, strip the trailing NUL.
+/// Returns `None` if `expr` is not a casted byte string literal with an optional trailing NUL.
+fn coerce_str_of_cast_byte_str(expr: &Expr) -> Option<Box<Expr>> {
+    let byte_str: LitByteStr = get_litbytestr(expr)?;
+    let bytes_sans_zero = bytes_strip_trailing_zero(byte_str.value());
+    let str_val = std::str::from_utf8(&bytes_sans_zero).ok()?;
+    let trimmed = syn::LitStr::new(str_val, byte_str.span());
     Some(Box::new(syn::parse_quote! { #trimmed }))
 }
 

@@ -1704,7 +1704,6 @@ enum RecognizedCallForm {
     },
     RetargetedCallee(Box<Expr>),
     OtherCall,
-    ScanfAddrTaken(CExprId, Vec<CExprId>),
 }
 
 enum LitStrOrByteStr<'a> {
@@ -4705,15 +4704,6 @@ impl<'c> Translation<'c> {
             }
         }
         current
-    }
-
-    fn c_expr_get_str_lit_bytes(&self, expr: CExprId) -> Option<Vec<u8>> {
-        if let CExprKind::Literal(_, CLiteral::String(ref s, _)) =
-            self.ast_context[self.c_strip_implicit_casts(expr)].kind
-        {
-            return Some(s.clone());
-        }
-        None
     }
 
     fn c_expr_get_var_decl_id(&self, expr: CExprId) -> Option<CDeclId> {
