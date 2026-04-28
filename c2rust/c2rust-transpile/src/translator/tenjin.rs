@@ -68,73 +68,6 @@ impl GuidedType {
     }
 }
 
-#[cfg(test)]
-mod guided_type_tests {
-    use super::*;
-
-    #[test]
-    fn parse_vec() {
-        let t = GuidedType::from_str("Vec<u8>").expect("Failed to parse 'Vec<u8>'?");
-        assert!(type_is_vec(&t.parsed));
-        assert!(try_type_vec_of(&t.parsed).is_some());
-        assert!(type_is_vec_of_1_path(&t.parsed, "u8"));
-    }
-
-    #[test]
-    fn parse_ref_vec() {
-        let t1 = GuidedType::from_str("&Vec<u8>").expect("Failed to parse '&Vec<u8>'?");
-        let t2 = GuidedType::from_str("&'a Vec<u8>").expect("Failed to parse '&'a Vec<u8>'?");
-        let t3 = GuidedType::from_str("&mut Vec<u8>").expect("Failed to parse '&mut Vec<u8>'?");
-        let t4 =
-            GuidedType::from_str("&'a mut Vec<u8>").expect("Failed to parse '&'a mut Vec<u8>'?");
-        let t5 = GuidedType::from_str("&'b &'a mut Vec<u8>")
-            .expect("Failed to parse '&'b &'a mut Vec<u8>'?");
-        for t in [t1, t2, t3, t4, t5] {
-            assert!(type_is_vec(t.strip_refs()));
-            assert!(try_type_vec_of(t.strip_refs()).is_some());
-            assert!(type_is_vec_of_1_path(t.strip_refs(), "u8"));
-        }
-    }
-
-    #[test]
-    fn parse_char() {
-        let t = GuidedType::from_str("char").expect("Failed to parse 'char'?");
-        assert!(type_is_char(&t.parsed));
-    }
-
-    #[test]
-    fn parse_string() {
-        let t = GuidedType::from_str("String").expect("Failed to parse 'String'?");
-        assert!(type_is_string(&t.parsed))
-    }
-
-    #[test]
-    fn parse_exclusive_borrow() {
-        let t1 = GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?");
-        assert!(t1.is_borrow());
-        assert!(!t1.is_shared_borrow());
-        assert!(t1.is_exclusive_borrow());
-
-        let t2 = GuidedType::from_str("&'a mut i32").expect("failed to parse '&'a mut i32'!?");
-        assert!(t2.is_borrow());
-        assert!(!t2.is_shared_borrow());
-        assert!(t2.is_exclusive_borrow());
-    }
-
-    #[test]
-    fn parse_borrow() {
-        let t1 = GuidedType::from_str("&i32").expect("failed to parse '&i32'!?");
-        assert!(t1.is_borrow());
-        assert!(t1.is_shared_borrow());
-        assert!(!t1.is_exclusive_borrow());
-
-        let t2 = GuidedType::from_str("&'a i32").expect("failed to parse '&'a i32'!?");
-        assert!(t2.is_borrow());
-        assert!(t2.is_shared_borrow());
-        assert!(!t2.is_exclusive_borrow());
-    }
-}
-
 pub fn is_known_size_1_type(ty: &Type) -> bool {
     match ty {
         Type::Path(path) => path.qself.is_none() && is_known_size_1_path(&path.path),
@@ -2440,5 +2373,72 @@ impl Translation<'_> {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod guided_type_tests {
+    use super::*;
+
+    #[test]
+    fn parse_vec() {
+        let t = GuidedType::from_str("Vec<u8>").expect("Failed to parse 'Vec<u8>'?");
+        assert!(type_is_vec(&t.parsed));
+        assert!(try_type_vec_of(&t.parsed).is_some());
+        assert!(type_is_vec_of_1_path(&t.parsed, "u8"));
+    }
+
+    #[test]
+    fn parse_ref_vec() {
+        let t1 = GuidedType::from_str("&Vec<u8>").expect("Failed to parse '&Vec<u8>'?");
+        let t2 = GuidedType::from_str("&'a Vec<u8>").expect("Failed to parse '&'a Vec<u8>'?");
+        let t3 = GuidedType::from_str("&mut Vec<u8>").expect("Failed to parse '&mut Vec<u8>'?");
+        let t4 =
+            GuidedType::from_str("&'a mut Vec<u8>").expect("Failed to parse '&'a mut Vec<u8>'?");
+        let t5 = GuidedType::from_str("&'b &'a mut Vec<u8>")
+            .expect("Failed to parse '&'b &'a mut Vec<u8>'?");
+        for t in [t1, t2, t3, t4, t5] {
+            assert!(type_is_vec(t.strip_refs()));
+            assert!(try_type_vec_of(t.strip_refs()).is_some());
+            assert!(type_is_vec_of_1_path(t.strip_refs(), "u8"));
+        }
+    }
+
+    #[test]
+    fn parse_char() {
+        let t = GuidedType::from_str("char").expect("Failed to parse 'char'?");
+        assert!(type_is_char(&t.parsed));
+    }
+
+    #[test]
+    fn parse_string() {
+        let t = GuidedType::from_str("String").expect("Failed to parse 'String'?");
+        assert!(type_is_string(&t.parsed))
+    }
+
+    #[test]
+    fn parse_exclusive_borrow() {
+        let t1 = GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?");
+        assert!(t1.is_borrow());
+        assert!(!t1.is_shared_borrow());
+        assert!(t1.is_exclusive_borrow());
+
+        let t2 = GuidedType::from_str("&'a mut i32").expect("failed to parse '&'a mut i32'!?");
+        assert!(t2.is_borrow());
+        assert!(!t2.is_shared_borrow());
+        assert!(t2.is_exclusive_borrow());
+    }
+
+    #[test]
+    fn parse_borrow() {
+        let t1 = GuidedType::from_str("&i32").expect("failed to parse '&i32'!?");
+        assert!(t1.is_borrow());
+        assert!(t1.is_shared_borrow());
+        assert!(!t1.is_exclusive_borrow());
+
+        let t2 = GuidedType::from_str("&'a i32").expect("failed to parse '&'a i32'!?");
+        assert!(t2.is_borrow());
+        assert!(t2.is_shared_borrow());
+        assert!(!t2.is_exclusive_borrow());
     }
 }

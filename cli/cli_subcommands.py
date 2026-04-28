@@ -27,12 +27,14 @@ def do_fmt_rs():
     root = repo_root.find_repo_root_dir_Path()
     hermetic.run_cargo_in(["fmt"], cwd=root / "c2rust", check=True)
     hermetic.run_cargo_in(["fmt"], cwd=root / "xj-improve-multitool", check=True)
+    hermetic.run_cargo_in(["fmt"], cwd=root / "xj-improve-synsub", check=True)
 
 
 def do_check_rs_fmt():
     root = repo_root.find_repo_root_dir_Path()
     hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "c2rust", check=True)
     hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "xj-improve-multitool", check=True)
+    hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "xj-improve-synsub", check=True)
 
 
 def do_check_rs():
@@ -46,6 +48,11 @@ def do_check_rs():
     hermetic.run_cargo_in(
         "clippy --locked --workspace".split(),
         cwd=root / "xj-improve-multitool",
+        check=True,
+    )
+    hermetic.run_cargo_in(
+        "clippy --locked --workspace".split(),
+        cwd=root / "xj-improve-synsub",
         check=True,
     )
     do_check_rs_fmt()
@@ -63,6 +70,11 @@ def do_fix_rs():
     hermetic.run_cargo_in(
         "clippy --locked --fix --allow-no-vcs --workspace".split(),
         cwd=root / "xj-improve-multitool",
+        check=True,
+    )
+    hermetic.run_cargo_in(
+        "clippy --locked --fix --allow-no-vcs --workspace".split(),
+        cwd=root / "xj-improve-synsub",
         check=True,
     )
     do_fmt_rs()

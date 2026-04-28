@@ -223,6 +223,12 @@ pub struct Rewriter {
     cur_file: RefCell<Option<PathBuf>>,
 }
 
+impl Default for Rewriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Rewriter {
     /// Create a new rewriter with no registered rewrites.
     pub fn new() -> Self {
@@ -720,12 +726,12 @@ pub fn discover_crate_roots(manifest_dir: &Path) -> Result<Vec<CrateRoot>> {
     Ok(roots)
 }
 
+type CrateFiles = Vec<(PathBuf, syn::File)>;
+
 /// Convenience wrapper: discover every crate root in the workspace and
 /// then [`collect_crate_files`] for each one, returning all files keyed
 /// by [`CrateRoot`].
-pub fn collect_workspace_files(
-    manifest_dir: &Path,
-) -> Result<Vec<(CrateRoot, Vec<(PathBuf, syn::File)>)>> {
+pub fn collect_workspace_files(manifest_dir: &Path) -> Result<Vec<(CrateRoot, CrateFiles)>> {
     let roots = discover_crate_roots(manifest_dir)?;
     let mut result = Vec::with_capacity(roots.len());
     for root in roots {

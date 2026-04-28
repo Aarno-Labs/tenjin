@@ -86,10 +86,7 @@ impl Rewriter {
             return None;
         }
 
-        Some((
-            Stmt::Expr(stripped.clone(), semi.clone()),
-            Depth::Limited(0),
-        ))
+        Some((Stmt::Expr(stripped.clone(), *semi), Depth::Limited(0)))
     }
 
     /// Rewrite
@@ -165,7 +162,7 @@ impl Rewriter {
         }
 
         let arg = &call.args[0];
-        if let Some(decayed) = Self::peek_array_decay_coercion(&arg) {
+        if let Some(decayed) = Self::peek_array_decay_coercion(arg) {
             if is_u8_slice_expr(decayed, _symbols) {
                 let replacement: Expr = syn::parse_quote! {
                     (::std::ffi::CStr::from_bytes_until_nul(#decayed).unwrap().count_bytes()) as size_t
@@ -331,9 +328,7 @@ fn expr_ident_type<'a>(expr: &Expr, symbols: &'a SymbolTable) -> Option<&'a syn:
     let Expr::Path(ref ep) = *expr else {
         return None;
     };
-    let Some(ident) = ep.path.get_ident() else {
-        return None;
-    };
+    let ident = ep.path.get_ident()?;
     symbols.get(&ident.to_string())
 }
 
@@ -438,11 +433,11 @@ fn is_len_sub_one_as_isize_expr(expr: &Expr, expected_ident: &syn::Ident) -> boo
         return false;
     };
 
-    if !is_one_expr(&right) {
+    if !is_one_expr(right) {
         return false;
     }
 
-    let Expr::MethodCall(len_call) = expr_strip_casts(expr_strip_parens(&left)) else {
+    let Expr::MethodCall(len_call) = expr_strip_casts(expr_strip_parens(left)) else {
         return false;
     };
     if len_call.method != "len" || !len_call.args.is_empty() {
