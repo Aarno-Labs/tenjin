@@ -1,4 +1,4 @@
-use syn::{Expr, ExprCast, Pat, Path, Stmt, Type};
+use syn::{Expr, ExprCast, LitByteStr, Pat, Path, Stmt, Type};
 
 use crate::{Depth, Rewriter, SymbolTable};
 
@@ -243,8 +243,7 @@ fn coerce_u8s(mut expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option
     Some(Box::new(coerced))
 }
 
-/// If `expr` is a casted `b"...\0"` literal, strip the trailing NUL.
-fn coerce_cast_byte_str(expr: &Expr) -> Option<Box<Expr>> {
+fn get_litbytestr(expr: &Expr) -> Option<LitByteStr> {
     let mut inner = expr;
     while let Expr::Cast(cast) = inner {
         inner = &cast.expr;
@@ -257,15 +256,23 @@ fn coerce_cast_byte_str(expr: &Expr) -> Option<Box<Expr>> {
         return None;
     };
 
-    let mut bytes = byte_str.value();
-    if bytes.last().copied() != Some(0) {
-        return None;
-    }
-    bytes.pop();
+    Some(byte_str.clone())
+}
 
-    let trimmed = syn::LitByteStr::new(&bytes, byte_str.span());
-    let coerced: Expr = syn::parse_quote! { #trimmed };
-    Some(Box::new(coerced))
+fn bytes_strip_trailing_zero(mut bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.last().copied() == Some(0) {
+        bytes.pop();
+    }
+    bytes
+}
+
+/// If `expr` is a casted `b"...\0"` literal, strip the trailing NUL.
+/// Returns `None` if `expr` is not a casted byte string literal with an optional trailing NUL.
+fn coerce_cast_byte_str(expr: &Expr) -> Option<Box<Expr>> {
+    let byte_str: LitByteStr = get_litbytestr(expr)?;
+    let bytes_sans_zero = bytes_strip_trailing_zero(byte_str.value());
+    let trimmed = syn::LitByteStr::new(&bytes_sans_zero, byte_str.span());
+    Some(Box::new(syn::parse_quote! { #trimmed }))
 }
 
 /// Convert string literals and `&str` identifiers to `x.as_bytes()`.
