@@ -130,7 +130,7 @@ impl Rewriter {
 
         let mut scanf_compatible_args = vec![];
         for arg in value_args {
-            if let Some(coerced) = coerce_scanf_arg(arg, _symbols) {
+            if let Some(coerced) = coerce_scanf_arg(arg, self) {
                 scanf_compatible_args.push(*coerced);
             } else {
                 eprintln!("synsub: rewrite_scanf_and_fscanf: unsupported target argument {arg:?}");
@@ -294,22 +294,37 @@ impl Rewriter {
 
 enum ScanfArgCategory {
     Borrow(Box<Expr>),
+    AsMutPtr(Box<Expr>),
     Other,
 }
 
-fn categorize_scanf_arg(expr: &Expr, _symbols: &SymbolTable) -> ScanfArgCategory {
+fn categorize_scanf_arg(expr: &Expr) -> ScanfArgCategory {
     if let Expr::Reference(reference) = expr {
         return ScanfArgCategory::Borrow(reference.expr.clone());
     }
     if let Expr::RawAddr(reference) = expr {
         return ScanfArgCategory::Borrow(reference.expr.clone());
     }
+
+    if let Expr::MethodCall(method_call) = expr {
+        if method_call.method == "as_mut_ptr" {
+            return ScanfArgCategory::AsMutPtr(method_call.receiver.clone());
+        }
+    }
+
     ScanfArgCategory::Other
 }
 
-fn coerce_scanf_arg(expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> {
-    match categorize_scanf_arg(expr, symbols) {
+fn coerce_scanf_arg(expr: &Expr, rewriter: &Rewriter) -> Option<Box<Expr>> {
+    match categorize_scanf_arg(expr) {
         ScanfArgCategory::Borrow(e) => Some(Box::new(syn::parse_quote! { &mut #e })),
+        ScanfArgCategory::AsMutPtr(e) => {
+            rewriter.add_dep("xj_cstr");
+            rewriter.with_cur_file_item_store(|item_store| {
+                item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
+            });
+            Some(Box::new(syn::parse_quote! { &mut #e.as_mut_u8_slice() }))
+        }
         ScanfArgCategory::Other => None,
     }
 }
