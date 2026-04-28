@@ -73,6 +73,46 @@ impl Rewriter {
         }
     }
 
+    /// Rewrite `printf(x.offset(e))` into `io::stdout().write_all(x[e..].as_u8_slice())`
+    pub fn rewrite_printf_with_lone_offset_fmt(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(ref func) = *call.func else {
+            return None;
+        };
+        if !func.path.is_ident("printf") {
+            return None;
+        }
+        if call.args.len() != 1 {
+            return None;
+        }
+
+        let arg = &call.args[0];
+        let Expr::MethodCall(method_call) = expr_strip_parens(arg) else {
+            return None;
+        };
+        if method_call.method != "offset" || method_call.args.len() != 1 {
+            return None;
+        }
+
+        let base = coerce_u8s(&method_call.receiver, symbols, false)?;
+        let offset = as_usize(&method_call.args[0]);
+
+        self.with_cur_file_item_store(|item_store| {
+            item_store.add_use(false, vec!["std".into(), "io".into()], "Write");
+        });
+
+        let replacement: Expr = syn::parse_quote! {
+            ::std::io::stdout().write_all(& #base[#offset..])
+        };
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite `scanf(...)` and `fscanf(stdin, ...)` into `xj_scanf::scanf!(...)`.
     pub fn rewrite_scanf_and_fscanf(
         &self,
@@ -329,6 +369,10 @@ fn coerce_scanf_arg(expr: &Expr, rewriter: &Rewriter) -> Option<Box<Expr>> {
     }
 }
 
+fn as_usize(expr: &Expr) -> Box<Expr> {
+    Box::new(syn::parse_quote! { #expr as usize })
+}
+
 /// Coerce supported string-like inputs into `u8` slice expressions.
 ///
 /// Handles:
@@ -338,7 +382,7 @@ fn coerce_scanf_arg(expr: &Expr, rewriter: &Rewriter) -> Option<Box<Expr>> {
 /// - pointer expressions (`CStr::from_ptr(x).to_bytes()`) when
 ///   `exclusive == false`.
 fn coerce_u8s(mut expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option<Box<Expr>> {
-    expr = expr_strip_transmute_deref(expr_strip_casts(expr));
+    expr = expr_strip_transmute_deref(expr_strip_casts(expr_strip_parens(expr)));
 
     if let Some(coerced) = coerce_cast_byte_str(expr) {
         return Some(coerced);
