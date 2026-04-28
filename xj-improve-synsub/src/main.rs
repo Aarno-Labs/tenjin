@@ -110,7 +110,7 @@ fn add_deps_to_manifest(
 fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
         "xj_cstr" => "0.1.4",
-        "xj_scanf" => "0.2.2",
+        "xj_scanf" => "0.2.4",
         _ => "*",
     }
 }
