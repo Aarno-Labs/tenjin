@@ -74,7 +74,7 @@ fn add_deps_to_manifest(
     manifest_path: &Path,
     deps: &std::collections::BTreeSet<String>,
 ) -> Result<()> {
-    let mut manifest: DocumentMut = fs::read_to_string(&manifest_path)
+    let mut manifest: DocumentMut = fs::read_to_string(manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?
         .parse()
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
@@ -98,7 +98,7 @@ fn add_deps_to_manifest(
     }
 
     if changed {
-        fs::write(&manifest_path, manifest.to_string())
+        fs::write(manifest_path, manifest.to_string())
             .with_context(|| format!("writing {}", manifest_path.display()))?;
         eprintln!("updated {}", manifest_path.display());
     }
