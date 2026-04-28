@@ -176,7 +176,6 @@ pub enum ExternCrate {
     Memoffset,
     Libc,
     Hexfloat2,
-    XjScanf,
     XjCtime,
     LibzRsSys,
     Bytemuck,
@@ -242,7 +241,6 @@ impl ExternCrate {
             Memoffset => ExternCrateDetails::external("memoffset", "0.5", true),
             Libc => ExternCrateDetails::external("libc", "0.2", false),
             Hexfloat2 => ExternCrateDetails::external("hexfloat2", "0.2.0", false),
-            XjScanf => ExternCrateDetails::external("xj_scanf", "0.2.2", false),
             XjCtime => ExternCrateDetails::external("xj_ctime", "0.1.1", false),
             LibzRsSys => ExternCrateDetails::external("libz-rs-sys", "0.5.1", false),
             Bytemuck => ExternCrateDetails::external("bytemuck", "1.23.2", false)

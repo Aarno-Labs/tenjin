@@ -34,6 +34,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_strstr);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
+    rw.add_expr_rewrite(Rewriter::rewrite_scanf_and_fscanf);
 
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
     rw.add_stmt_rewrite(Rewriter::rewrite_local);
@@ -59,7 +60,7 @@ fn main() -> Result<()> {
             let code = prettyplease::unparse(&file);
             if args.modify_in_place {
                 fs::write(&path, &code)?;
-                eprintln!("wrote {}", path.display());
+                eprintln!("synsub overwrote {}", path.display());
             } else {
                 println!("// {}", path.display());
                 println!("{code}");
@@ -109,7 +110,7 @@ fn add_deps_to_manifest(
 fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
         "xj_cstr" => "0.1.4",
-        "xj_scanf" => "0.2.1",
+        "xj_scanf" => "0.2.4",
         _ => "*",
     }
 }

@@ -540,14 +540,14 @@ def eval_tractor_ta3_corpus_app(
         vectors_run += 1
 
         assert outcome_c.ok, (
-            f"Test vector {test_vector.stem} failed on the C version: {outcome_c.message}"
+            f"Test vector {test_vector.stem} failed on the C version: {outcome_c.message}\n{test_vector}"
         )
 
         outcome_rs = run_tractor_test_vector(
             rs_bin, test_vector.stem, spec, cwd=tmp_resultsdir / "final"
         )
         assert outcome_rs.ok, (
-            f"Test vector {test_vector.stem} failed on the Rust version: {outcome_rs.message}"
+            f"Test vector {test_vector.stem} failed on the Rust version: {outcome_rs.message}\n{test_vector}"
         )
 
     print(f"Ran {vectors_run} test vectors, skipped {vectors_skipped}.")
@@ -1679,4 +1679,10 @@ def test_tractor_b2_synthetic_strcpy_app(root: Path, tmp_codebase: Path, tmp_res
 @pytest.mark.slow
 def test_tractor_b2_organic_qmath_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B02_organic/qmath"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_underhanded_c_luggage_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_organic/underhanded_c_luggage"
     eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip

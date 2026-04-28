@@ -1,5 +1,4 @@
 use super::*;
-use proc_macro2::Literal;
 use quote::ToTokens; // for to_token_stream()
 use std::str::FromStr;
 use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
@@ -615,47 +614,6 @@ fn libz_rs_sys_call_form_cases(t: &Translation, func: &Expr) -> Option<Recognize
     None
 }
 
-#[allow(clippy::borrowed_box)]
-fn recognize_scanf_and_fscanf_of_stdin(
-    t: &Translation,
-    func: &Expr,
-    args: &[Box<Expr>],
-    cargs: &[CExprId],
-) -> Option<RecognizedCallForm> {
-    // TENJIN-TODO: extract helper method for mostly-duplicated code below
-    if tenjin::expr_is_ident(func, "scanf") && args.len() > 1 {
-        let cargs_after_fmt = cargs[1..].to_vec();
-        if cargs_after_fmt
-            .iter()
-            .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
-        {
-            // If all arguments are address-taken, we can use the scanf macro.
-            return Some(RecognizedCallForm::ScanfAddrTaken(
-                cargs[0],
-                cargs_after_fmt,
-            ));
-        }
-    }
-
-    // TENJIN-SHORTCOMINGS:
-    // - fscanf of non-stdin streams
-    // - arguments that are not address-of expressions
-    if tenjin::expr_is_ident(func, "fscanf") && args.len() > 2 && tenjin::expr_is_stdin(&args[0]) {
-        let cargs_after_fmt = cargs[2..].to_vec();
-        if cargs_after_fmt
-            .iter()
-            .all(|&carg| t.c_expr_get_addr_of(carg).is_some())
-        {
-            // If all arguments are address-taken, we can use the scanf macro.
-            return Some(RecognizedCallForm::ScanfAddrTaken(
-                cargs[1],
-                cargs_after_fmt,
-            ));
-        }
-    }
-    None
-}
-
 #[allow(clippy::vec_box)]
 fn mac_call_exprs_tt(args: Vec<Box<Expr>>) -> TokenStream {
     let mut tokens = TokenStream::new();
@@ -880,10 +838,6 @@ impl Translation<'_> {
             );
         }
 
-        if let Some(call_form) = recognize_scanf_and_fscanf_of_stdin(self, func, args, cargs) {
-            return call_form;
-        }
-
         if let Some(call_form) = libz_rs_sys_call_form_cases(self, func) {
             return call_form;
         }
@@ -996,49 +950,6 @@ impl Translation<'_> {
                     mk().path_expr(vec!["xj_sprintf_Vec_u8"]),
                     vec![mk().mutbl().borrow_expr(dest), size_expr, formatted_string],
                 ))
-            }
-            RecognizedCallForm::ScanfAddrTaken(fmt_arg, cargs) => {
-                let mut args_tts = Vec::new();
-
-                let mut need_direct_fmt_expr = true;
-                // TODO: Simplify this when we can use let chains.
-                if let Some(fmt_lit) = self.c_expr_get_str_lit_bytes(fmt_arg) {
-                    if let Ok(fmt_str) = std::str::from_utf8(&fmt_lit) {
-                        args_tts.push(TokenTree::Literal(Literal::string(fmt_str)));
-                        need_direct_fmt_expr = false;
-                    }
-                }
-
-                if need_direct_fmt_expr {
-                    let fmt: WithStmts<Box<Expr>> = self.convert_expr(ctx, fmt_arg, None)?;
-                    args_tts.push(TokenTree::Group(proc_macro2::Group::new(
-                        proc_macro2::Delimiter::None,
-                        fmt.into_value().to_token_stream(),
-                    )));
-                }
-
-                for carg in cargs {
-                    let un_addr = self.c_expr_get_addr_of(carg).unwrap();
-                    let arg = self.convert_expr(ctx.used(), un_addr, None)?;
-                    let addr_mut_arg = arg.map(|arg| mk().mutbl().borrow_expr(arg));
-                    args_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
-                    args_tts.push(TokenTree::Group(proc_macro2::Group::new(
-                        proc_macro2::Delimiter::None,
-                        addr_mut_arg.into_value().to_token_stream(),
-                    )));
-                }
-
-                self.use_crate(ExternCrate::XjScanf);
-                self.with_cur_file_item_store(|item_store| {
-                    item_store.add_use(false, vec!["xj_scanf".into()], "scanf");
-                });
-
-                let scanf_call = mk().mac_expr(mk().mac(
-                    mk().path("scanf"),
-                    args_tts,
-                    MacroDelimiter::Paren(Default::default()),
-                ));
-                Ok(scanf_call)
             }
             RecognizedCallForm::RetargetedCallee(func) => mk_call_with(func, args),
             RecognizedCallForm::OtherCall => mk_call_with(func, args),
