@@ -305,6 +305,61 @@ def test_lua_5_4_0_immunant(
     annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
 
 
+# g0 = empty guidance
+@pytest.mark.slow  # expected runtime: 60 seconds
+def test_ronomon_pure_cli_g0(
+    root: Path,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    request: pytest.FixtureRequest,
+    extras: list,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/brk/ronomon-pure.git", "242bb30df50610d73907de26495c5d1344888abe"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    with monkeypatch.context() as _m:
+        # m.setenv("XJ_EXTRA_PREPARATION_PASSES", "1")
+        translation.do_translate(
+            root,
+            tmp_codebase,
+            tmp_resultsdir,
+            cratename="tenjinized",
+            buildcmd="make -f Makefile.pure_cli",
+            guidance_path_or_literal="{}",
+        )
+
+    shutil.copytree(tmp_codebase / "tests", tmp_resultsdir / "final" / "tests")
+
+    n_tests_passed = 0
+    for zip_file_path in (tmp_resultsdir / "final" / "tests").glob("*.zip"):
+        cp_c = hermetic.run(
+            [str(tmp_resultsdir / "_build_1" / "pure_cli"), zip_file_path],
+            check=False,
+            capture_output=True,
+            cwd=tmp_resultsdir / "final",
+        )
+        cp_rs = hermetic.run_cargo_on_translated_code(
+            ["run", str(zip_file_path)],
+            cwd=tmp_resultsdir / "final",
+            capture_output=True,
+            check=False,
+        )
+        assert cp_c.returncode == cp_rs.returncode, (
+            f"Test vector {zip_file_path.stem} had different exit codes for C and Rust: {cp_c.returncode} vs {cp_rs.returncode}\nC stderr: {cp_c.stderr!r}\nRust stderr: {cp_rs.stderr!r}\n{zip_file_path}"
+        )
+        assert cp_rs.stdout == cp_c.stdout, (
+            f"Rust and C output differed for {zip_file_path}; Rust output was: {cp_rs.stdout!r}"
+        )
+        n_tests_passed += 1
+
+    print(f"ronomon_pure_cli passed {n_tests_passed} test vectors.")
+
+    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+
+
 def test_tractor_ta3_corpus_p0_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/P00_perlin_noise/001_perlin_noise"
     eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
