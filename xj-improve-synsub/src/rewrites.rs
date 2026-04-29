@@ -1,6 +1,7 @@
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::{Expr, ExprCast, LitByteStr, Pat, Path, Stmt, Type};
+use syn::{Expr, ExprCast, ExprLit, LitByteStr, LitInt, Pat, Path, Stmt, Type};
 
 use crate::{Depth, Rewriter, SymbolTable};
 
@@ -353,6 +354,34 @@ impl Rewriter {
 
         None
     }
+
+    pub fn strip_as_c_float_of_int_literals(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Cast(ExprCast {
+            expr: inner_expr,
+            ty,
+            ..
+        }) = expr
+        else {
+            return None;
+        };
+        if !is_c_float_type(ty) {
+            return None;
+        }
+        let int_lit = expr_get_int_literal(inner_expr)?;
+
+        let int_lit_digits = format!("{}.", int_lit.base10_digits());
+        let lit_float = syn::LitFloat::new(&int_lit_digits, expr.span());
+        let lit_float_expr = Expr::Lit(ExprLit {
+            attrs: Vec::new(),
+            lit: syn::Lit::Float(lit_float),
+        });
+
+        Some((lit_float_expr, Depth::Limited(0)))
+    }
 }
 
 enum ScanfArgCategory {
@@ -524,6 +553,17 @@ fn is_string_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
     matches!(expr_ident_type(expr, symbols), Some(ty) if is_string_type(ty))
 }
 
+fn expr_get_int_literal(expr: &Expr) -> Option<LitInt> {
+    let Expr::Lit(ExprLit {
+        lit: syn::Lit::Int(lit_int),
+        ..
+    }) = expr
+    else {
+        return None;
+    };
+    Some(lit_int.clone())
+}
+
 fn expr_ident_name(expr: &Expr) -> Option<&syn::Ident> {
     let Expr::Path(ref ep) = *expr_strip_parens(expr) else {
         return None;
@@ -562,6 +602,10 @@ fn is_ref_str_type(ty: &syn::Type) -> bool {
 
 fn is_string_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "String"))
+}
+
+fn is_c_float_type(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "c_float"))
 }
 
 fn type_of_slice_ref(ty: &Type) -> Option<&Type> {
