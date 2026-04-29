@@ -36,6 +36,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
     rw.add_expr_rewrite(Rewriter::rewrite_scanf_and_fscanf);
     rw.add_expr_rewrite(Rewriter::rewrite_printf_with_lone_offset_fmt);
+    rw.add_expr_rewrite(Rewriter::rewrite_usleep);
 
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
     rw.add_stmt_rewrite(Rewriter::rewrite_local);

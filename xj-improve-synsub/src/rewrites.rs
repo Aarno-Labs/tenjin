@@ -113,6 +113,29 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite `usleep(n)` into `std::thread::sleep(std::time::Duration::from_micros(n))`.
+    pub fn rewrite_usleep(&self, _symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(ref func) = *call.func else {
+            return None;
+        };
+        if !func.path.is_ident("usleep") {
+            return None;
+        }
+        if call.args.len() != 1 {
+            return None;
+        }
+
+        let arg = as_u64(&call.args[0]);
+
+        let replacement: Expr = syn::parse_quote! {
+            std::thread::sleep(std::time::Duration::from_micros(#arg))
+        };
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite `scanf(...)` and `fscanf(stdin, ...)` into `xj_scanf::scanf!(...)`.
     pub fn rewrite_scanf_and_fscanf(
         &self,
@@ -371,6 +394,10 @@ fn coerce_scanf_arg(expr: &Expr, rewriter: &Rewriter) -> Option<Box<Expr>> {
 
 fn as_usize(expr: &Expr) -> Box<Expr> {
     Box::new(syn::parse_quote! { #expr as usize })
+}
+
+fn as_u64(expr: &Expr) -> Box<Expr> {
+    Box::new(syn::parse_quote! { #expr as u64 })
 }
 
 /// Coerce supported string-like inputs into `u8` slice expressions.
