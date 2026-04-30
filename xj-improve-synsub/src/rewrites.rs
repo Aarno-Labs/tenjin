@@ -493,7 +493,7 @@ fn coerce_u8s(mut expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option
     if let Some(coerced) = coerce_str_as_bytes(expr, symbols) {
         return Some(coerced);
     }
-    if let Some(coerced) = coerce_slice_ptr_call(expr, symbols) {
+    if let Some(coerced) = coerce_slice_ptr_call(expr, symbols, exclusive) {
         return Some(coerced);
     }
     if exclusive || !is_pointer_expr(expr, symbols) {
@@ -560,21 +560,30 @@ fn coerce_str_as_bytes(expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> 
     Some(Box::new(coerced))
 }
 
-/// Convert `x.as_mut_ptr()` on a `u8` slice expression into `x.as_u8_slice()`.
-fn coerce_slice_ptr_call(expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> {
+fn extract_slice_ptr_base(expr: &Expr) -> Option<&Expr> {
     let Expr::MethodCall(call) = expr else {
         return None;
     };
     if call.method != "as_mut_ptr" || !call.args.is_empty() {
         return None;
     }
-    if !is_u8_slice_expr(&call.receiver, symbols) {
+    Some(&call.receiver)
+}
+
+/// Convert `x.as_mut_ptr()` on a `u8` slice expression into `x.as_u8_slice()`.
+fn coerce_slice_ptr_call(expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option<Box<Expr>> {
+    let receiver = extract_slice_ptr_base(expr)?;
+    if !is_u8_or_i8_slice_expr(receiver, symbols) {
         return None;
     }
 
-    let receiver = &call.receiver;
+    let method = if exclusive {
+        "as_mut_u8_slice"
+    } else {
+        "as_u8_slice"
+    };
     let coerced: Expr = syn::parse_quote! {
-        #receiver.as_u8_slice()
+        #receiver.#method()
     };
     Some(Box::new(coerced))
 }
@@ -582,6 +591,11 @@ fn coerce_slice_ptr_call(expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>
 /// Returns `true` when `expr` is an identifier typed as a `u8` slice.
 fn is_u8_slice_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
     matches!(expr_ident_type(expr, symbols), Some(ty) if is_u8_slice_type(ty))
+}
+
+/// Returns `true` when `expr` is an identifier typed as a `u8` slice.
+fn is_u8_or_i8_slice_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
+    matches!(expr_ident_type(expr, symbols), Some(ty) if is_u8_or_i8_slice_type(ty))
 }
 
 /// Returns `true` when `expr` is a string literal or an `&str` identifier.
@@ -624,13 +638,33 @@ fn expr_ident_type<'a>(expr: &Expr, symbols: &'a SymbolTable) -> Option<&'a syn:
 }
 
 fn is_u8_slice_type(ty: &syn::Type) -> bool {
+    slice_type_elt_is(ty, is_u8_type)
+}
+
+fn is_u8_or_i8_slice_type(ty: &syn::Type) -> bool {
+    slice_type_elt_is(ty, is_u8_or_i8_type)
+}
+
+fn slice_type_elt_is(ty: &syn::Type, pred: fn(&syn::Type) -> bool) -> bool {
     match ty {
-        syn::Type::Slice(slice) => is_u8_type(&slice.elem),
+        syn::Type::Slice(slice) => pred(&slice.elem),
         syn::Type::Reference(reference) => {
-            matches!(&*reference.elem, syn::Type::Slice(slice) if is_u8_type(&slice.elem))
+            matches!(&*reference.elem, syn::Type::Slice(slice) if pred(&slice.elem))
         }
         _ => false,
     }
+}
+
+fn is_u8_or_i8_path(p: &syn::Path) -> bool {
+    p.is_ident("u8")
+        || p.is_ident("i8")
+        || p.segments.last().is_some_and(|segment| {
+            segment.ident == "c_char" || segment.ident == "c_schar" || segment.ident == "c_uchar"
+        })
+}
+
+fn is_u8_or_i8_type(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(path) if is_u8_or_i8_path(&path.path))
 }
 
 fn is_u8_type(ty: &syn::Type) -> bool {
