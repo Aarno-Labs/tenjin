@@ -1726,6 +1726,12 @@ def test_tractor_b2_synthetic_mutable_duplication_dag_app(root: Path, tmp_codeba
 
 
 @pytest.mark.slow
+def test_tractor_b2_synthetic_pointer_comparison_ascii_art_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
+    case_dir = "Public-Tests/B02_synthetic/pointer_comparison_ascii_art"
+    eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
+
+
+@pytest.mark.slow
 def test_tractor_b2_synthetic_strcmp_app(root: Path, tmp_codebase: Path, tmp_resultsdir: Path, request: pytest.FixtureRequest, extras: list, monkeypatch: pytest.MonkeyPatch):  # fmt: skip
     case_dir = "Public-Tests/B02_synthetic/strcmp"
     eval_tractor_ta3_corpus_app(root, tmp_codebase, tmp_resultsdir, request, monkeypatch, extras, case_dir)  # fmt: skip
