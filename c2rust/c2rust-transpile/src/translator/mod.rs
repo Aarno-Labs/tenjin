@@ -1903,6 +1903,7 @@ mod refactor_format {
         Float,
         HexFloat,
         GFloat,
+        Pointer,
         None(char),
     }
 
@@ -1988,6 +1989,7 @@ mod refactor_format {
 
                     Self::cast_str(x, e)
                 }
+                CastType::Pointer => e,
                 CastType::None(c) => {
                     log::warn!(
                         "unrecognized format specifier '{}' within format string @ {:?}",
@@ -2077,6 +2079,7 @@ mod refactor_format {
         Float,
         HexFloat,
         GFloat,
+        Pointer,
         Unknown(char),
     }
 
@@ -2155,6 +2158,7 @@ mod refactor_format {
                 ConvType::Float => CastType::Float,
                 ConvType::HexFloat => CastType::HexFloat,
                 ConvType::GFloat => CastType::GFloat,
+                ConvType::Pointer => CastType::Pointer,
                 ConvType::Unknown(c) => CastType::None(c),
             };
 
@@ -2227,6 +2231,7 @@ mod refactor_format {
             match self.ty {
                 ConvType::Hex(_, false) => buf.push('x'),
                 ConvType::Hex(_, true) => buf.push('X'),
+                ConvType::Pointer => buf.push('?'),
                 _ => {}
             }
 
@@ -2400,6 +2405,7 @@ mod refactor_format {
                 'f' => ConvType::Float,
                 'a' => ConvType::HexFloat,
                 'g' => ConvType::GFloat,
+                'p' => ConvType::Pointer,
                 _ => ConvType::Unknown(c),
             }
         }

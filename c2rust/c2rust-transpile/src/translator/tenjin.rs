@@ -139,6 +139,7 @@ fn is_known_size_1_path(path: &Path) -> bool {
             "u8" | "i8" | "bool" | "char"
         ),
         2 => is_path_exactly_2(path, "libc", "c_char"),
+        3 => is_path_exactly_3(path, "core", "ffi", "c_char"),
         _ => false,
     }
 }

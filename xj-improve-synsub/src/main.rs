@@ -31,6 +31,7 @@ fn main() -> Result<()> {
     let mut crates = collect_workspace_files(&args.workspace_root)?;
     let mut rw = Rewriter::new();
 
+    rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
     rw.add_expr_rewrite(Rewriter::rewrite_strstr);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
@@ -38,6 +39,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_printf_with_lone_offset_fmt);
     rw.add_expr_rewrite(Rewriter::rewrite_usleep);
     rw.add_expr_rewrite(Rewriter::strip_as_c_float_of_int_literals);
+    rw.add_expr_rewrite(Rewriter::rewrite_fgets_stdin_is_null);
 
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
     rw.add_stmt_rewrite(Rewriter::rewrite_local);
