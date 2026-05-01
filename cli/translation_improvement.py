@@ -28,7 +28,7 @@ import cargo_workspace_helpers
 import static_measurements_rust
 
 
-def run_ast_grep_improvements(_root: Path, dir: Path) -> CompletedProcess:
+def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
     def run_ast_grep_rewrite(pattern: str, rewrite: str) -> CompletedProcess:
         cp = hermetic.run(
             [
@@ -81,15 +81,8 @@ def run_ast_grep_improvements(_root: Path, dir: Path) -> CompletedProcess:
         "($BASE[$IDX as usize])",
     )
 
-    return run_ast_grep_rewrite(
-        "xj_astgrep_println($$$ARGS)",
-        "println!($$$ARGS)",
-    )
-
-
-def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
     target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
-    return hermetic.run(
+    synsub_cp = hermetic.run(
         ["xj-improve-synsub", *args, dir],
         cwd=dir,
         env_ext={
@@ -99,6 +92,13 @@ def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProce
             ]),
         },
     )
+
+    run_ast_grep_rewrite(
+        "xj_astgrep_println($$$ARGS)",
+        "println!($$$ARGS)",
+    )
+
+    return synsub_cp
 
 
 def quiet_cargo(args: list[str], cwd: Path, env_ext=None) -> CompletedProcess:
@@ -742,7 +742,6 @@ def run_improvement_passes(
             "synsub",
             lambda root, dir: run_improve_synsub(root, ["--modify-in-place"], dir),
         ),
-        ("ast-greps", run_ast_grep_improvements),
         ("fmt", run_cargo_fmt),
         ("fix", run_cargo_fix),
         (

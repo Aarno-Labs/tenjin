@@ -18,16 +18,12 @@ pub unsafe extern "C" fn isatty_stdin() -> ::core::ffi::c_int {
     isatty(STDIN_FILENO)
 }
 #[no_mangle]
-pub unsafe extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
+pub extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
     println!("{:>}", {
-        std::ffi::CStr::from_ptr(
-            (if cond != 0 {
-                b"true\0" as *const u8 as *const ::core::ffi::c_char
-            } else {
-                b"false\0" as *const u8 as *const ::core::ffi::c_char
-            }) as *const core::ffi::c_char,
-        )
-        .to_str()
-        .unwrap()
+        if cond != 0 {
+            "true"
+        } else {
+            "false"
+        }
     });
 }

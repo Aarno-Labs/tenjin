@@ -303,10 +303,6 @@ impl Rewriter {
             return None;
         };
 
-        // eprintln!(
-        //     "synsub: rewrite_scanf_and_fscanf: format string argument coerced from  {} to {}"
-        // );
-
         let value_args = if func.path.is_ident("scanf") {
             // skip fmt string
             &call.args.iter().skip(1).collect::<Vec<_>>()
@@ -338,6 +334,93 @@ impl Rewriter {
         };
 
         Some((scanf_call, Depth::Limited(0)))
+    }
+
+    /// Rewrite code like
+    ///   ```
+    ///     std::ffi::CStr::from_ptr((if COND { THN } else { ELS })
+    ///          as *const core::ffi::c_char)
+    ///             .to_str()
+    ///             .unwrap()
+    /// ```
+    /// to distribute the from_ptr() over the if, so long as at least one of
+    /// THN and ELS is a byte string literal with valid UTF-8 text.
+    pub fn rewrite_cstr_ctor_over_if(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::MethodCall(method_call) = expr else {
+            return None;
+        };
+        if method_call.method != "unwrap" || !method_call.args.is_empty() {
+            return None;
+        }
+
+        let Expr::MethodCall(to_str_call) = &*method_call.receiver else {
+            return None;
+        };
+        if to_str_call.method != "to_str" || !to_str_call.args.is_empty() {
+            return None;
+        }
+        let Expr::Call(from_ptr_call) = &*to_str_call.receiver else {
+            return None;
+        };
+        let Expr::Path(ref func) = *from_ptr_call.func else {
+            return None;
+        };
+        if func
+            .path
+            .segments
+            .last()
+            .is_none_or(|seg| seg.ident != "from_ptr")
+            || from_ptr_call.args.len() != 1
+        {
+            return None;
+        }
+
+        let arg = &from_ptr_call.args[0];
+        let Expr::Cast(cast) = expr_strip_parens(arg) else {
+            return None;
+        };
+        if !matches!(*cast.ty, Type::Ptr(_)) {
+            return None;
+        }
+
+        let Expr::If(if_expr) = expr_strip_parens(&cast.expr) else {
+            return None;
+        };
+        let (_, else_box) = if_expr.else_branch.as_ref()?;
+
+        let then_expr_full = get_block_lone_expr(&if_expr.then_branch)?;
+        let else_expr_full = get_expr_block_lone_expr(else_box.as_ref())?;
+
+        let mb_then_lit = coerce_str_of_cast_byte_str(then_expr_full);
+        let mb_else_lit = coerce_str_of_cast_byte_str(else_expr_full);
+
+        if mb_then_lit.is_none() && mb_else_lit.is_none() {
+            return None;
+        }
+
+        let then_expr = if let Some(lit) = mb_then_lit {
+            *lit
+        } else {
+            syn::parse_quote! { std::ffi::CStr::from_ptr( #then_expr_full as *const core::ffi::c_char ).to_str().unwrap() }
+        };
+
+        let else_expr = if let Some(lit) = mb_else_lit {
+            *lit
+        } else {
+            syn::parse_quote! { std::ffi::CStr::from_ptr( #else_expr_full as *const core::ffi::c_char ).to_str().unwrap() }
+        };
+
+        let cond = &if_expr.cond;
+
+        let replacement: Expr = syn::parse_quote! {
+            if #cond { #then_expr } else { #else_expr }
+        };
+
+        Some((replacement, Depth::Limited(0)))
     }
 
     /// Rewrite statement expressions like `((expr));` into `expr;`.
@@ -818,6 +901,22 @@ fn is_cast_byte_str(expr: &Expr) -> bool {
         Expr::Cast(cast) => is_cast_byte_str(&cast.expr),
         _ => false,
     }
+}
+
+fn get_block_lone_expr(block: &syn::Block) -> Option<&Expr> {
+    if block.stmts.len() == 1 {
+        if let Stmt::Expr(expr, None) = &block.stmts[0] {
+            return Some(expr);
+        }
+    }
+    None
+}
+
+fn get_expr_block_lone_expr(expr: &Expr) -> Option<&Expr> {
+    if let Expr::Block(expr_block) = expr {
+        return get_block_lone_expr(&expr_block.block);
+    }
+    None
 }
 
 fn expr_strip_casts(expr: &Expr) -> &Expr {

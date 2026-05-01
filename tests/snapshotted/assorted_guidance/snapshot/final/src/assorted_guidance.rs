@@ -32,7 +32,7 @@ pub unsafe fn print_unguided_ptr(mut ptr: *const ::core::ffi::c_char) {
         std::ffi::CStr::from_ptr(ptr as *const core::ffi::c_char)
             .to_str()
             .unwrap()
-    });
+    },);
 }
 #[no_mangle]
 pub fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
