@@ -1,11 +1,55 @@
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::{Expr, ExprCast, ExprLit, LitByteStr, LitInt, Pat, Path, Stmt, Type};
+use syn::{Expr, ExprCast, ExprLit, ExprPath, LitByteStr, LitInt, Pat, Path, Stmt, Type};
 
 use crate::{Depth, Rewriter, SymbolTable};
 
 impl Rewriter {
+    /// Rewrite `getchar()` and `fgetc(stdin)`
+    pub fn rewrite_getchar_variants(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(ref func) = *call.func else {
+            return None;
+        };
+        fn is_getchar(func: &ExprPath, call: &syn::ExprCall) -> bool {
+            func.path.is_ident("getchar") && call.args.is_empty()
+        }
+        fn is_fgetc_stdin(func: &ExprPath, call: &syn::ExprCall) -> bool {
+            if !func.path.is_ident("fgetc") || call.args.len() != 1 {
+                return false;
+            }
+            matches!(call.args.first(), Some(Expr::Path(fp)) if fp.path.is_ident("stdin"))
+        }
+        if !is_getchar(func, call) && !is_fgetc_stdin(func, call) {
+            return None;
+        }
+
+        self.with_cur_file_item_store(|item_store| {
+            item_store.add_use(true, vec!["std".into(), "io".into()], "Read");
+            item_store.add_item_str_once(
+                "fn xj_getchar_i() -> ::core::ffi::c_int {
+    std::io::stdin()
+        .bytes()
+        .next()
+        .map_or(-1, |b| b.map_or(-1, |byte| byte as i32))
+}",
+            );
+        });
+
+        let replacement: Expr = syn::parse_quote! {
+            xj_getchar_i()
+        };
+
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite `strstr(e1, e2)` into `xj_cstr::strstr_mut_ptr(e1, e2)` when
     /// both arguments can be coerced to byte slices.
     pub fn rewrite_strstr(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {

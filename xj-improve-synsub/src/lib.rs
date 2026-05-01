@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use indexmap::IndexMap;
 use serde::Deserialize;
+use syn::Item;
 use syn::visit_mut::{self, VisitMut};
 
 // ── Depth ────────────────────────────────────────────────────────────
@@ -178,6 +180,7 @@ impl UseItems {
 #[derive(Debug, Default)]
 pub struct ItemStore {
     uses: UseItems,
+    singleton_items: IndexMap<String, Item>,
 }
 
 impl ItemStore {
@@ -189,8 +192,19 @@ impl ItemStore {
         self.uses.add_use(is_absolute, path, ident);
     }
 
+    pub fn add_item_str_once(&mut self, srctext: &str) {
+        if !self.singleton_items.contains_key(srctext) {
+            let item: Item = syn::parse_str(srctext)
+                .unwrap_or_else(|_| panic!("Failed to parse item: {srctext}"));
+            self.singleton_items.insert(srctext.to_string(), item);
+        }
+    }
+
     fn into_items(self) -> Result<Vec<syn::Item>> {
-        self.uses.into_items()
+        let mut items = self.uses.into_items()?;
+        let mut singleton_items = self.singleton_items.values().cloned().collect::<Vec<_>>();
+        items.append(&mut singleton_items);
+        Ok(items)
     }
 }
 
