@@ -79,7 +79,7 @@ impl Rewriter {
     }
 
     /// Rewrite `fgets(e1.as_mut_ptr(), e2, e3).is_null()`
-    /// into `! fgets_stdin_u8_bool(e1.as_mut_u8_slice(), e2, e3)`
+    /// into `fgets_stdin_u8_count(e1.as_mut_u8_slice(), e2, e3).is_none()`
     pub fn rewrite_fgets_stdin_is_null(
         &self,
         symbols: &SymbolTable,
@@ -121,33 +121,33 @@ impl Rewriter {
                     item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
                     item_store.add_use(true, vec!["std".into(), "io".into()], "BufRead");
                     item_store.add_item_str_once(
-                        "fn fgets_stdin_u8_bool(buf: &mut [u8], limit: u64) -> bool {
+                        "fn fgets_stdin_u8_count(buf: &mut [u8], limit: usize) -> Option<usize> {
     let f = std::io::stdin();
     let mut handle = f.lock();
 
     let Ok(src) = handle.fill_buf() else {
-        return false; // error
+        return None; // error
     };
     if src.is_empty() {
-        return false; // EOF
+        return None; // EOF
     }
 
     let n = src.iter()
         .position(|&b| b == b'\\n')
         .map(|i| i + 1)          // include the '\\n'
         .unwrap_or(src.len())
-        .min(limit as usize - 1); // leave room for the trailing NUL
+        .min(limit - 1); // leave room for the trailing NUL
 
     buf[..n].copy_from_slice(&src[..n]);
     buf[n] = 0; // NUL-terminate
     handle.consume(n);
-    n > 0
+    Some(n)
 }",
                     );
                 });
                 let limit = &call.args[1];
                 let replacement: Expr = syn::parse_quote! {
-                    ! fgets_stdin_u8_bool(#decayed.as_mut_u8_slice(), #limit as u64)
+                    fgets_stdin_u8_count(#decayed.as_mut_u8_slice(), #limit as usize).is_none()
                 };
                 return Some((replacement, Depth::Limited(0)));
             }
