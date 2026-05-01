@@ -608,7 +608,8 @@ fn bytes_strip_trailing_zero(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
-/// If `expr` is a casted `b"...\0"` literal, strip the trailing NUL.
+/// If `expr` is a casted `b"...\0"` literal, strip the trailing NUL
+/// and return a byte string literal.
 /// Returns `None` if `expr` is not a casted byte string literal with an optional trailing NUL.
 fn coerce_cast_byte_str(expr: &Expr) -> Option<Box<Expr>> {
     let byte_str: LitByteStr = get_litbytestr(expr)?;
@@ -617,7 +618,8 @@ fn coerce_cast_byte_str(expr: &Expr) -> Option<Box<Expr>> {
     Some(Box::new(syn::parse_quote! { #trimmed }))
 }
 
-/// If `expr` is a casted `b"...\0"` literal, strip the trailing NUL.
+/// If `expr` is a casted `b"...\0"` literal, strip the trailing NUL
+/// and return a plain (non-byte) string literal, if the byte string is valid UTF-8.
 /// Returns `None` if `expr` is not a casted byte string literal with an optional trailing NUL.
 fn coerce_str_of_cast_byte_str(expr: &Expr) -> Option<Box<Expr>> {
     let byte_str: LitByteStr = get_litbytestr(expr)?;
