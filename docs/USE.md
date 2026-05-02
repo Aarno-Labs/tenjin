@@ -350,6 +350,8 @@ limitations to its support:
   in `build.rs` and the latter give rise to inter-crate dependencies
   in `Cargo.toml`.
 
+- Tenjin [doesn't yet handle calls to printf/puts which need to return a count](https://github.com/Aarno-Labs/tenjin/issues/264)
+
 # Error Cases
 
 * If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`

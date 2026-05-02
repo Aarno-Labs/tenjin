@@ -107,7 +107,7 @@ unsafe fn main_0(
             ) as *const core::ffi::c_char)
             .to_str()
             .unwrap()
-        });
+        },);
         bar();
     }
     0
