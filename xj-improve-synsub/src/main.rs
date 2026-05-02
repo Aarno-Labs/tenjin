@@ -41,6 +41,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::strip_as_c_float_of_int_literals);
     rw.add_expr_rewrite(Rewriter::rewrite_fgets_stdin_is_null);
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_ctor_over_if);
+    rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
 
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
     rw.add_stmt_rewrite(Rewriter::rewrite_local);
@@ -117,6 +118,7 @@ fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
         "xj_cstr" => "0.1.4",
         "xj_scanf" => "0.2.4",
+        "bytemuck" => "1.25.0",
         _ => "*",
     }
 }

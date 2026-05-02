@@ -260,6 +260,61 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite `memset(arr.as_mut_ptr(), val, len)`
+    /// into `arr.as_u8_mut_slice()[..len].fill(val)`
+    ///     when `arr` can be coerced to a u8 slice, or
+    /// into `cast_slice_mut(arr)[..len].fill(val)`
+    ///     when `arr` is a non-byte-sized slice or array.
+    ///
+    pub fn rewrite_memset_on_slice_or_array(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(ref func) = *call.func else {
+            return None;
+        };
+        if !func.path.is_ident("memset") {
+            return None;
+        }
+        if call.args.len() != 3 {
+            return None;
+        }
+
+        let arr_arg = expr_strip_casts(&call.args[0]);
+        let val_arg = &call.args[1];
+        let len_arg = &call.args[2];
+
+        let val_arg_as_u8: Expr = syn::parse_quote! {
+            #val_arg.try_into().unwrap()
+        };
+
+        if let Some(coerced_arr) = coerce_u8s(arr_arg, symbols, false) {
+            self.add_dep("xj_cstr");
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
+            });
+            let replacement: Expr = syn::parse_quote! {
+                #coerced_arr.as_mut_u8_slice()[..#len_arg].fill(#val_arg_as_u8)
+            };
+            return Some((replacement, Depth::Limited(0)));
+        }
+        if let Some(receiver) = extract_slice_ptr_base(arr_arg) {
+            self.add_dep("bytemuck");
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_use(true, vec!["bytemuck".into()], "cast_slice_mut");
+            });
+            let replacement: Expr = syn::parse_quote! {
+                cast_slice_mut(&mut #receiver)[..#len_arg as usize].fill(#val_arg_as_u8)
+            };
+            return Some((replacement, Depth::Limited(0)));
+        }
+        None
+    }
+
     /// Rewrite `scanf(...)` and `fscanf(stdin, ...)` into `xj_scanf::scanf!(...)`.
     pub fn rewrite_scanf_and_fscanf(
         &self,
@@ -658,13 +713,37 @@ fn coerce_u8s(mut expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option
     if let Some(coerced) = coerce_slice_ptr_call(expr, symbols, exclusive) {
         return Some(coerced);
     }
-    if exclusive || !is_pointer_expr(expr, symbols) {
+    if exclusive {
         return None;
     }
 
-    let coerced: Expr = syn::parse_quote! {
-        ::core::ffi::CStr::from_ptr(#expr).to_bytes()
+    // We can't call CStr::from_ptr(x) on x: *mut T, we need to cast to *const T first.
+    let casted_type = match expr_ident_type(expr, symbols) {
+        Some(syn::Type::Ptr(pointee)) if is_u8_or_i8_type(pointee.elem.as_ref()) => {
+            if pointee.mutability.is_some() {
+                Some(syn::TypePtr {
+                    star_token: pointee.star_token,
+                    const_token: Default::default(),
+                    mutability: None,
+                    elem: pointee.elem.clone(),
+                })
+            } else {
+                None
+            }
+        }
+        _ => return None,
     };
+
+    let coerced: Expr = if casted_type.is_some() {
+        syn::parse_quote! {
+            ::core::ffi::CStr::from_ptr(#expr as *const i8).to_bytes()
+        }
+    } else {
+        syn::parse_quote! {
+            ::core::ffi::CStr::from_ptr(#expr).to_bytes()
+        }
+    };
+
     Some(Box::new(coerced))
 }
 
@@ -882,16 +961,6 @@ fn type_of_slice_ref(ty: &Type) -> Option<&Type> {
         },
         _ => None,
     }
-}
-
-fn is_pointer_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
-    if let Expr::Cast(cast) = expr {
-        if matches!(&*cast.ty, syn::Type::Ptr(_)) {
-            return true;
-        }
-    }
-
-    matches!(expr_ident_type(expr, symbols), Some(syn::Type::Ptr(_)))
 }
 
 /// Returns `true` for a byte-string literal wrapped in zero or more casts.
