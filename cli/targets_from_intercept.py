@@ -76,6 +76,14 @@ def is_shared_lib_flag(arg: str) -> bool:
 def is_ar_creation(args: list[str]) -> bool:
     def is_ar_creation_flags(arg: str) -> bool:
         if "q" in arg:
+            dot_a_args = [a for a in args if a.endswith(".a")]
+            if len(dot_a_args) == 1:
+                out = Path(dot_a_args[0])
+                if not out.is_file():
+                    # We don't currently support the full generality of quick-append semantics,
+                    # but if the output file doesn't exist,
+                    # then it's effectively the same as creating a new archive.
+                    return True
             raise ValueError("ar command with 'q' flag is not supported: " + " ".join(args))
         if "r" not in arg:
             return False
