@@ -942,7 +942,7 @@ def run_preparation_passes(
 
         rewrites_per_file: dict[
             tenj_types.FilePathStr,
-            dict[int, tuple[int, tenj_types.CIdentifier, tenj_types.CIdentifier]],
+            dict[int, tuple[int, tenj_types.CIdentifier, tenj_types.CIdentifier, int]],
         ] = {}
         seen_usrs_per_file: dict[tenj_types.FilePathStr, set[tenj_types.ClangUSR]] = {}
         for g_s in pgs_in_deterministic_order:
@@ -954,6 +954,7 @@ def run_preparation_passes(
                 g_s.decl_end_byte_offset,
                 usr_names[g_s.usr],
                 g_s.spelling,
+                g_s.decl_location_byte_offset,
             )
 
         def is_c_identifier_continuation_byte(b: int) -> bool:
@@ -981,45 +982,27 @@ def run_preparation_passes(
                 decl_end_byte_offset,
                 new_name,
                 old_name,
+                location_byte_offset,
             ) in editdict.items():
                 name_bytes = old_name.encode("utf-8")
-
-                def find_variant(name_bytes, prefix_bytes: bytes) -> int:
-                    search_start = decl_start_byte_offset
-                    while True:
-                        idx = contents.find(
-                            prefix_bytes + name_bytes, search_start, decl_end_byte_offset
-                        )
-                        if idx == -1:
-                            return -1
-
-                        # We've found the variant we're looking for if we locate a non-identifer
-                        # prefix, then our name bytes, then a non-identifier byte (or end of file).
-                        if not_c_identifier_continuation_byte_at(
-                            contents, idx + len(prefix_bytes) + len(name_bytes)
-                        ):
-                            return idx + len(prefix_bytes)
-
-                        search_start = idx + 1
-
-                # The variable name might occur in the type name, so we search for it
-                # prefixed by something that would count as a token separator.
-                separators = [b" ", b"*", b"&", b"\n", b"\t", b"(", b")", b"[", b"]", b","]
-                name_byte_offset = -1
-                for sep in separators:
-                    name_byte_offset = find_variant(name_bytes, sep)
-                    if name_byte_offset != -1:
-                        break
-                if name_byte_offset == -1:
-                    # Possibly it's at the start of the range, with a separator after it.
-                    if contents.startswith(name_bytes, decl_start_byte_offset):
-                        nextbyte = contents[decl_start_byte_offset + len(name_bytes)]
-                        if chr(nextbyte).encode() in separators:
-                            name_byte_offset = decl_start_byte_offset
-                assert name_byte_offset != -1, (
-                    f"Could not find bytes for '{old_name}' in source file range: {contents[decl_start_byte_offset:decl_end_byte_offset]!r}"
-                )
-                edits.extend(["--offset", str(name_byte_offset), "--new-name", new_name])
+                if (
+                    contents.find(name_bytes, location_byte_offset, decl_end_byte_offset)
+                    == location_byte_offset
+                ):
+                    # Fast path for the common case of the name being exactly at the declaration location.
+                    if not_c_identifier_continuation_byte_at(
+                        contents, location_byte_offset + len(name_bytes)
+                    ):
+                        edits.extend([
+                            "--offset",
+                            str(location_byte_offset),
+                            "--new-name",
+                            new_name,
+                        ])
+                else:
+                    assert False, (
+                        f"Expected to find name bytes at declaration location for {srcfile}:{location_byte_offset}, but did not.\nContents around location:\n{contents[location_byte_offset - 20 : location_byte_offset + 20]!r}"
+                    )
 
             # `clang-rename` will complain it cannot find a compilation database and is
             # running without flags, but that should not matter since we are running

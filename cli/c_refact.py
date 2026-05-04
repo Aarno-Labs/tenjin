@@ -291,6 +291,7 @@ class NamedDeclInfo:
     file_path: tenj_types.FilePathStr | None
     decl_start_byte_offset: int
     decl_end_byte_offset: int
+    decl_location_byte_offset: int
     start_line: int
     start_col: int
     end_line: int
@@ -346,6 +347,7 @@ def mk_NamedDeclInfo(node: Cursor) -> NamedDeclInfo:
     extent = node.extent
     start = extent.start
     end = extent.end
+    location = node.location
 
     file_path = start.file.name if start.file else None
     return NamedDeclInfo(
@@ -353,6 +355,7 @@ def mk_NamedDeclInfo(node: Cursor) -> NamedDeclInfo:
         file_path=file_path,
         decl_start_byte_offset=start.offset,
         decl_end_byte_offset=end.offset,
+        decl_location_byte_offset=location.offset,
         start_line=start.line,
         start_col=start.column,
         end_line=end.line,
