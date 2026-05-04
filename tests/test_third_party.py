@@ -7,6 +7,7 @@ import pytest
 from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
     cached_git_clone_at_commit,
+    clean_up_resultsdir,
     run_cargo_on_final,
     TenjinFixtures,
 )
@@ -122,6 +123,7 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
+    clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
@@ -160,6 +162,7 @@ def test_Old_Man_Programmer__tree_2_3_2(tenjin_fixtures: TenjinFixtures):
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
+    clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
@@ -222,6 +225,7 @@ def test_url_h_aka_urlparser(
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
+    clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
@@ -268,6 +272,7 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
+    clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
@@ -317,4 +322,5 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
 
     print(f"ronomon_pure_cli passed {n_tests_passed} test vectors.")
 
+    clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)

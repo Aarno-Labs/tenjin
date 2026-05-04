@@ -23,6 +23,18 @@ class TenjinFixtures:
     monkeypatch: pytest.MonkeyPatch
 
 
+def clean_up_resultsdir(resultsdir: Path):
+    """Remove all files in the results directory, to save disk space."""
+    # This can add up to dozens of gigabytes across all tests if left in place.
+    for subdir in resultsdir.iterdir():
+        if (subdir / "target").is_dir():
+            run_cargo_on_final(subdir, ["clean", "-q"])
+
+    for item in resultsdir.rglob("*.refoldmap.json"):
+        if "expand_preprocessor" not in item.as_posix():
+            item.unlink()
+
+
 def annotate_pytest_request_with_translation_notes(fixtures: TenjinFixtures):
     tmp_resultsdir = fixtures.tmp_resultsdir
     if (tmp_resultsdir / "translation_metadata.json").exists():

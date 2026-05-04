@@ -11,6 +11,7 @@ import pytest
 from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
     cached_git_clone_at_commit,
+    clean_up_resultsdir,
     run_cargo_on_final,
     run_tractor_test_vector,
     TenjinFixtures,
@@ -273,6 +274,9 @@ def eval_tractor_ta3_corpus_app(
             f"Test vector {test_vector.stem} failed on the Rust version: {outcome_rs.message}\n{test_vector}"
         )
 
+    # Clean up built artifacts for the runner to save disk space;
+    clean_up_resultsdir(tmp_resultsdir)
+
     print(f"Ran {vectors_run} test vectors, skipped {vectors_skipped}.")
     annotate_pytest_request_with_translation_notes(fixtures)
 
@@ -366,6 +370,9 @@ def eval_tractor_ta3_corpus_lib(
             capture_output=False,
         )
         cp.check_returncode()
+
+    # Clean up built artifacts for the runner to save disk space;
+    clean_up_resultsdir(candidate_resultsdir)
 
     annotate_pytest_request_with_translation_notes(fixtures)
 

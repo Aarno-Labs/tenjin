@@ -1,6 +1,7 @@
 from tenjin_pytest_helpers import (
     TenjinFixtures,
     annotate_pytest_request_with_translation_notes,
+    clean_up_resultsdir,
     run_cargo_on_final,
 )
 import translation
@@ -21,6 +22,7 @@ def single_file_check_translation(dir, filename, test_dir, tenjin_fixtures: Tenj
     assert (tmp_resultsdir / "final" / "Cargo.toml").exists()
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
 
+    clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
