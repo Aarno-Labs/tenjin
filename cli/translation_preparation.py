@@ -100,6 +100,16 @@ def compute_build_info_in(
         )
         tracker.update_sub(cp)
 
+        # Redirect llvm-ar in link.txt files to use our ar interceptor;
+        # CMake doesn't have a built-in way to specify an `ar` launcher
+        # like it does for `cc` and `ld`.
+        llvm_ar_path = str(hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "llvm-ar")
+        ar_interceptor = str(cc_ld_intercept_dir / "ar")
+        for link_txt in (builddir / "CMakeFiles").rglob("link.txt"):
+            content = link_txt.read_text(encoding="utf-8")
+            if llvm_ar_path in content:
+                link_txt.write_text(content.replace(llvm_ar_path, ar_interceptor), encoding="utf-8")
+
         # Build the project to ensure all compile and link commands are intercepted.
         cp2 = hermetic.run(
             [
