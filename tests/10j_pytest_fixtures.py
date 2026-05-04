@@ -18,6 +18,7 @@ import pytest
 
 import cli_subcommands
 import repo_root
+from tenjin_pytest_helpers import TenjinFixtures
 
 
 @pytest.fixture
@@ -53,3 +54,22 @@ def tmp_resultsdir(test_tmp_dir) -> Path:
     resultsdir = test_tmp_dir / "resultsdir"
     resultsdir.mkdir()
     return resultsdir
+
+
+@pytest.fixture
+def tenjin_fixtures(
+    root: Path,
+    request: pytest.FixtureRequest,
+    tmp_codebase: Path,
+    tmp_resultsdir: Path,
+    extras: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> TenjinFixtures:
+    return TenjinFixtures(
+        root=root,
+        request=request,
+        tmp_codebase=tmp_codebase,
+        tmp_resultsdir=tmp_resultsdir,
+        extras=extras,
+        monkeypatch=monkeypatch,
+    )
