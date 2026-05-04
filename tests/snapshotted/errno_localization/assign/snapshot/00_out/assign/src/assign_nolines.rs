@@ -78,7 +78,7 @@ unsafe fn _xj_wrap_fclose_xjtr_0(
 #[no_mangle]
 pub unsafe extern "C" fn does_use_errno(mut f: *mut FILE) -> ::core::ffi::c_int {
     let mut _xj_local_errno: i32 = 0;
-    let mut r = _xj_wrap_fclose_xjtr_0((&raw mut _xj_local_errno).as_mut().unwrap(), f);
+    let mut r = _xj_wrap_fclose_xjtr_0(&mut _xj_local_errno, f);
     if r < 0 as ::core::ffi::c_int {
         return _xj_local_errno;
     }
@@ -101,10 +101,10 @@ unsafe fn main_0(
     _xj_local_errno = 0 as ::core::ffi::c_int;
     if _xj_local_errno == 22 as ::core::ffi::c_int {
         println!("Error: [{:>}]", {
-            std::ffi::CStr::from_ptr(_xj_wrap_strerror_xjtr_0(
-                (&raw mut _xj_local_errno).as_mut().unwrap(),
-                _xj_local_errno,
-            ) as *const core::ffi::c_char)
+            std::ffi::CStr::from_ptr(
+                _xj_wrap_strerror_xjtr_0(&mut _xj_local_errno, _xj_local_errno)
+                    as *const core::ffi::c_char,
+            )
             .to_str()
             .unwrap()
         });

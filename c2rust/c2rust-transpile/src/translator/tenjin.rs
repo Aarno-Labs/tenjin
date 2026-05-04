@@ -2232,10 +2232,25 @@ impl Translation<'_> {
             } else if tenjin::expr_is_borrow(&expr) {
                 // Expr is already a borrow, but we have guidance that the target is a borrow,
                 // so we assume it's the right kind of borrow and do nothing.
+            } else if let syn::Expr::RawAddr(syn::ExprRawAddr {
+                attrs: _,
+                and_token: _,
+                raw: _,
+                mutability: _,
+                expr: inner,
+            }) = *expr
+            {
+                // Expr is a raw borrow, but we have guidance that the target is a (non-raw) borrow,
+                // so we coerce the raw pointer to a non-raw borrow.
+                let borrow_expr = if target_guided_type.is_shared_borrow() {
+                    mk().borrow_expr(inner)
+                } else {
+                    mk().mutbl().borrow_expr(inner)
+                };
+                return borrow_expr;
             } else {
                 // Have target guided type, but no expr guided type.
                 // If target is a borrow, we assume expr was a pointer.
-
                 if target_guided_type.is_shared_borrow() {
                     // XREF:unguided_arg_coerce_asref
                     // Coerce to `.as_ref().unwrap()`
