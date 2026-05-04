@@ -8,7 +8,8 @@ import translation
 import translation_preparation
 
 
-def test_single_c_file(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, extras, request):
+def test_single_c_file(test_dir, test_tmp_dir, tenjin_fixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = test_dir / "single_c_file" / "main.c"
 
     translation_preparation.copy_codebase(codebase, tmp_codebase)
@@ -20,9 +21,8 @@ def test_single_c_file(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdi
     c_prog_output = hermetic.run([str(test_tmp_dir / "main")], check=True, capture_output=True)
     assert c_prog_output.stdout == b"Hello, Tenjin!\n"
 
-    # Run translation
     translation.do_translate(
-        root,
+        tenjin_fixtures.root,
         tmp_codebase,
         tmp_resultsdir,
         cratename="single_c_file",
@@ -50,7 +50,7 @@ def test_single_c_file(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdi
 
     cp_ce = hermetic.run(
         [
-            (root / "cli" / "10j").as_posix(),
+            (tenjin_fixtures.root / "cli" / "10j").as_posix(),
             "covset-eval",
             "-o",
             "/dev/null",
@@ -84,7 +84,7 @@ Total covered lines: 6 / 8 = 75.00%
 """  # noqa: W293
     )
 
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
 def test_chkc_trivial(test_dir, tmp_codebase):
@@ -97,9 +97,9 @@ def test_chkc_trivial(test_dir, tmp_codebase):
     hermetic.run_chkc(["c-file", "report", str(target)], check=True)
 
 
-def test_cmake_lone_exe(
-    root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, request, extras
-):
+def test_cmake_lone_exe(test_dir, test_tmp_dir, tenjin_fixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+
     codebase = test_dir / "cmake_lone_exe"
     build_dir = test_tmp_dir / "build"
 
@@ -115,7 +115,7 @@ def test_cmake_lone_exe(
 
     # Run translation
     translation.do_translate(
-        root,
+        tenjin_fixtures.root,
         tmp_codebase,
         tmp_resultsdir,
         cratename=codebase.name,
@@ -126,10 +126,12 @@ def test_cmake_lone_exe(
 
     assert rs_prog_output.stdout == c_prog_output.stdout
 
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-def test_exe_dylibs(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, request, extras):
+def test_exe_dylibs(test_dir, test_tmp_dir, tenjin_fixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+
     codebase = test_dir / "exe_dylibs_make"
     c_build_dir = test_tmp_dir / "build"
 
@@ -143,7 +145,7 @@ def test_exe_dylibs(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, 
 
     # Run translation
     translation.do_translate(
-        root,
+        tenjin_fixtures.root,
         tmp_codebase,
         tmp_resultsdir,
         cratename=codebase.name,
@@ -162,14 +164,15 @@ def test_exe_dylibs(root, test_dir, test_tmp_dir, tmp_codebase, tmp_resultsdir, 
     assert (c_build_dir / f"lib{libname}.so").exists()
     assert (r_build_dir / f"lib{libname}{so_suffix}").exists()
 
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-def test_triplicated_compilation(root, test_dir, tmp_codebase, tmp_resultsdir, request, extras):
+def test_triplicated_compilation(test_dir, tenjin_fixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = test_dir / "triplicated_exeonly"
     # Run translation
     translation.do_translate(
-        root,
+        tenjin_fixtures.root,
         codebase,
         tmp_resultsdir,
         cratename="triplicated_exeonly",
@@ -219,15 +222,17 @@ def test_triplicated_compilation(root, test_dir, tmp_codebase, tmp_resultsdir, r
         f"Expected Rust return code 40, got {rs_prog_result.returncode}"
     )
 
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-def test_trivial_un_unsafe(root, test_dir, tmp_codebase, tmp_resultsdir, request, extras):
+def test_trivial_un_unsafe(test_dir, tenjin_fixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+
     codebase = test_dir / "trivial_un_unsafe"
     translation_preparation.copy_codebase(codebase, tmp_codebase)
     # Run translation
     translation.do_translate(
-        root,
+        tenjin_fixtures.root,
         codebase,
         tmp_resultsdir,
         cratename="safe",
@@ -238,4 +243,4 @@ def test_trivial_un_unsafe(root, test_dir, tmp_codebase, tmp_resultsdir, request
         translate_meta = json.load(f)
         unsafe_count = translate_meta["results"]["tenjin_final"]["total_unsafe_fns_count"]
         assert unsafe_count == 0, f"Expected no unsafe functions, got {unsafe_count}"
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)

@@ -7,12 +7,24 @@ from difflib import unified_diff
 from dataclasses import dataclass
 
 import filelock
+import pytest
 import pytest_html.extras
 
 import hermetic
 
 
-def annotate_pytest_request_with_translation_notes(request, tmp_resultsdir: Path, extras):
+@dataclass
+class TenjinFixtures:
+    root: Path
+    request: pytest.FixtureRequest
+    tmp_codebase: Path
+    tmp_resultsdir: Path
+    extras: list
+    monkeypatch: pytest.MonkeyPatch
+
+
+def annotate_pytest_request_with_translation_notes(fixtures: TenjinFixtures):
+    tmp_resultsdir = fixtures.tmp_resultsdir
     if (tmp_resultsdir / "translation_metadata.json").exists():
         metadata_text = (tmp_resultsdir / "translation_metadata.json").read_text(encoding="utf-8")
         metadata_json = json.loads(metadata_text)
@@ -22,7 +34,7 @@ def annotate_pytest_request_with_translation_notes(request, tmp_resultsdir: Path
 
         # This puts the metadata text directly in the report, preceding the
         # test's captured CLI output.
-        extras.append(pytest_html.extras.html("<pre>" + metadata_text + "</pre>"))
+        fixtures.extras.append(pytest_html.extras.html("<pre>" + metadata_text + "</pre>"))
 
         before = (
             metadata_json.get("results", {})
@@ -32,7 +44,7 @@ def annotate_pytest_request_with_translation_notes(request, tmp_resultsdir: Path
         after = (
             metadata_json.get("results", {}).get("tenjin_final", {}).get("total_unsafe_fns_count")
         )
-        request.node.summary_html = f"unsafe: {before}->{after}"
+        fixtures.request.node.summary_html = f"unsafe: {before}->{after}"
 
 
 def run_cargo_on_final(cwd: Path, args: list[str], capture_output: bool = False, input=None):

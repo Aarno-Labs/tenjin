@@ -8,6 +8,7 @@ from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
     cached_git_clone_at_commit,
     run_cargo_on_final,
+    TenjinFixtures,
 )
 import translation_preparation
 import translation
@@ -30,12 +31,9 @@ def lua_5_4_0_immunant_git_clone() -> Path:
 
 @pytest.mark.slow
 def test_sbase_cal(
-    root: Path,
-    tmp_codebase: Path,
-    tmp_resultsdir: Path,
-    request: pytest.FixtureRequest,
-    extras: list,
+    tenjin_fixtures: TenjinFixtures,
 ):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = suckless_sbase_git_clone()
 
     translation_preparation.copy_codebase(codebase, tmp_codebase)
@@ -108,7 +106,7 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
 
     # Run translation
     translation.do_translate(
-        root,
+        tenjin_fixtures.root,
         tmp_codebase,
         tmp_resultsdir,
         cratename="sbase_cal",
@@ -124,17 +122,12 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
 @pytest.mark.slow  # expected runtime: 540 seconds (~9 minutes)
-def test_Old_Man_Programmer__tree_2_3_2(
-    root: Path,
-    tmp_codebase: Path,
-    tmp_resultsdir: Path,
-    request: pytest.FixtureRequest,
-    extras: list,
-):
+def test_Old_Man_Programmer__tree_2_3_2(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
         "https://github.com/brk/Old-Man-Programmer__tree.git",
         "3f3077dbd87fc89396c8dc74fcf7920ec8b0c7d5",
@@ -142,7 +135,7 @@ def test_Old_Man_Programmer__tree_2_3_2(
     translation_preparation.copy_codebase(codebase, tmp_codebase)
     buildcmd_args = ["make"]
     translation.do_translate(
-        root,
+        tenjin_fixtures.root,
         tmp_codebase,
         tmp_resultsdir,
         cratename="tenjinized",
@@ -167,17 +160,14 @@ def test_Old_Man_Programmer__tree_2_3_2(
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
 # Expected runtime: 10 s
 def test_url_h_aka_urlparser(
-    root: Path,
-    tmp_codebase: Path,
-    tmp_resultsdir: Path,
-    request: pytest.FixtureRequest,
-    extras: list,
+    tenjin_fixtures: TenjinFixtures,
 ):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
         "https://github.com/jwerle/url.h.git", "752635e46be6b13ad045f7216a28417fdf533950"
     )
@@ -186,7 +176,7 @@ def test_url_h_aka_urlparser(
     buildcmd_args = ["make", "url-test"]
 
     translation.do_translate(
-        root,
+        tenjin_fixtures.root,
         tmp_codebase,
         tmp_resultsdir,
         cratename="tenjinized",
@@ -232,17 +222,12 @@ def test_url_h_aka_urlparser(
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
 @pytest.mark.slow  # expected runtime: 470 seconds (~8 minutes)
-def test_lua_5_4_0_immunant(
-    root: Path,
-    tmp_codebase: Path,
-    tmp_resultsdir: Path,
-    request: pytest.FixtureRequest,
-    extras: list,
-):
+def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = lua_5_4_0_immunant_git_clone()
 
     translation_preparation.copy_codebase(codebase, tmp_codebase)
@@ -258,7 +243,7 @@ def test_lua_5_4_0_immunant(
     # cclyzer takes 7+ hours to analyze Lua, ain't nobody got time for that.
     os.environ["XJ_SKIP_CCLYZERPP"] = "1"
     translation.do_translate(
-        root,
+        tenjin_fixtures.root,
         tmp_codebase,
         tmp_resultsdir,
         cratename="tenjinized",
@@ -283,28 +268,22 @@ def test_lua_5_4_0_immunant(
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
 # g0 = empty guidance
 @pytest.mark.slow  # expected runtime: 60 seconds
-def test_ronomon_pure_cli_g0(
-    root: Path,
-    tmp_codebase: Path,
-    tmp_resultsdir: Path,
-    request: pytest.FixtureRequest,
-    extras: list,
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
         "https://github.com/brk/ronomon-pure.git", "242bb30df50610d73907de26495c5d1344888abe"
     )
     translation_preparation.copy_codebase(codebase, tmp_codebase)
 
-    with monkeypatch.context() as _m:
+    with tenjin_fixtures.monkeypatch.context() as _m:
         # m.setenv("XJ_EXTRA_PREPARATION_PASSES", "1")
         translation.do_translate(
-            root,
+            tenjin_fixtures.root,
             tmp_codebase,
             tmp_resultsdir,
             cratename="tenjinized",
@@ -338,4 +317,4 @@ def test_ronomon_pure_cli_g0(
 
     print(f"ronomon_pure_cli passed {n_tests_passed} test vectors.")
 
-    annotate_pytest_request_with_translation_notes(request, tmp_resultsdir, extras)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
