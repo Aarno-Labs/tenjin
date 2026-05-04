@@ -1,13 +1,23 @@
 """C refactoring tool to lift struct-pointer member accesses
+and aliased-variable occurrences
 from call arguments into local variables.
 
-This module implements a refactoring that finds patterns where:
-1. A function call has an argument that is a struct pointer (X)
-2. Another argument is a member access on that pointer (X->F)
+This module implements a refactoring that finds patterns like:
 
-The refactoring extracts the member access into a local variable:
+- A function call has an argument that is a struct pointer (X)
+- Another argument is a member access on that pointer (X->F)
+
+OR
+
+- A function call has an argument that is variable (X)
+- Another argument passes the address of X (e.g., &X)
+
+In the former the "aliased thing" is the expression X->F, in the latter
+the aliased thing is X itself.
+
+The refactoring extracts the aliased thing into a local variable, e.g.:
     TYP newvar = X->F;
-inserted before the call, and replaces X->F with newvar in the call.
+inserted before the call, and replaces the aliased thing with newvar in the call.
 """
 
 from dataclasses import dataclass
@@ -30,13 +40,12 @@ from cindex_helpers import (
 
 
 @dataclass
-class MemberAccessInfo:
-    """Information about a member access expression in a call argument."""
+class LiftedArgInfo:
+    """Information about a call argument expression to be lifted into a local."""
 
     cursor: Cursor
-    base_expr: Cursor  # The expression being dereferenced (e.g., ptr in ptr->field)
-    field_name: str
-    field_type: str  # Rendered type declaration
+    name_hint: str  # Used to build the lifted variable's name
+    lifted_type: str  # Rendered type declaration of the lifted expression
     start_offset: int
     end_offset: int
     arg_index: int  # Position in the argument list
@@ -49,8 +58,7 @@ class CallSiteRewrite:
     call_cursor: Cursor
     file_path: str
     statement_start_offset: int  # Where to insert declarations
-    member_accesses: list[MemberAccessInfo]  # Member accesses to lift
-    base_expr_text: str  # The text of the base expression (e.g., "ptr")
+    lifted_args: list[LiftedArgInfo]  # Argument expressions to lift
 
 
 def get_source_text(cursor: Cursor, content: bytes) -> str:
@@ -120,9 +128,9 @@ def analyze_call_arguments(call_cursor: Cursor) -> list[tuple[Cursor, int]]:
 
 
 def strip_unexposed(cursor: Cursor) -> Cursor:
-    """Strip unexposed nodes to get to the underlying expression.
+    """Strip unexposed and parenthesized wrappers to get to the underlying expression.
     May return an unexposed cursor if no exposed child is found."""
-    while cursor.kind.is_unexposed():
+    while cursor.kind.is_unexposed() or cursor.kind == CursorKind.PAREN_EXPR:
         n = next(cursor.get_children(), None)
         if n is None:
             break
@@ -164,6 +172,12 @@ def cursors_match(c1: Cursor, c2: Cursor, content: bytes) -> bool:
     return text1 == text2
 
 
+def get_aliasable_text(cursor: Cursor, content: bytes) -> str:
+    """Get the source text of an expression, stripped of surrounding parentheses
+    and whitespace, for textual comparison between alias-related arguments."""
+    return get_source_text(strip_unexposed(cursor), content).strip()
+
+
 def find_matching_base_pointer(
     member_access: Cursor, all_args: list[tuple[Cursor, int]], content: bytes
 ) -> tuple[Cursor, int] | None:
@@ -175,7 +189,7 @@ def find_matching_base_pointer(
     if not base:
         return None
 
-    base_text = get_source_text(base, content)
+    base_text = get_aliasable_text(base, content)
 
     # Look for an argument whose text matches the base expression
     for arg_cursor, arg_idx in all_args:
@@ -183,9 +197,51 @@ def find_matching_base_pointer(
         if arg_cursor == member_access:
             continue
 
-        arg_text = get_source_text(arg_cursor, content)
-        if arg_text == base_text:
+        if get_aliasable_text(arg_cursor, content) == base_text:
             # Found a matching argument
+            return (arg_cursor, arg_idx)
+
+    return None
+
+
+def get_addressof_operand(cursor: Cursor, content: bytes) -> Cursor | None:
+    """If cursor is an address-of expression of a variable (&X), return the operand X."""
+    c = strip_unexposed(cursor)
+    if c.kind != CursorKind.UNARY_OPERATOR:
+        return None
+
+    # UNARY_OPERATOR covers many operators; we only want address-of. Tokens aren't
+    # always reliable post-preprocessing, so check the source text starts with '&'.
+    text = get_source_text(c, content).lstrip()
+    if not text.startswith("&"):
+        return None
+
+    children = list(c.get_children())
+    if len(children) != 1:
+        return None
+
+    operand = strip_unexposed(children[0])
+    if operand.kind != CursorKind.DECL_REF_EXPR:
+        return None
+    return operand
+
+
+def find_matching_addressof(
+    var_arg: Cursor, all_args: list[tuple[Cursor, int]], content: bytes
+) -> tuple[Cursor, int] | None:
+    """Find an argument that takes the address of this variable arg (i.e., &var_arg).
+
+    Returns (matching_arg_cursor, arg_index) or None.
+    """
+    var_text = get_aliasable_text(var_arg, content)
+
+    for arg_cursor, arg_idx in all_args:
+        if arg_cursor == var_arg:
+            continue
+        operand = get_addressof_operand(arg_cursor, content)
+        if operand is None:
+            continue
+        if get_aliasable_text(operand, content) == var_text:
             return (arg_cursor, arg_idx)
 
     return None
@@ -194,55 +250,62 @@ def find_matching_base_pointer(
 def analyze_call_site(
     call_cursor: Cursor, content: bytes, file_path: str, ancestors: AncestorChain
 ) -> CallSiteRewrite | None:
-    """Analyze a call site to find member accesses that can be lifted.
+    """Analyze a call site to find argument expressions that can be lifted.
 
-    Returns CallSiteRewrite if the pattern is found, None otherwise.
+    Detects two aliasing patterns:
+      1. arg X->F alongside arg X (lift X->F)
+      2. arg X (a variable) alongside arg &X (lift X)
+
+    Returns CallSiteRewrite if any pattern is found, None otherwise.
     """
     args = analyze_call_arguments(call_cursor)
     if len(args) < 2:
         # Need at least 2 arguments for the pattern
         return None
 
-    member_accesses_to_lift: list[MemberAccessInfo] = []
-    base_expr_text_set: set[str] = set()
+    args_to_lift: list[LiftedArgInfo] = []
+    lifted_indices: set[int] = set()
 
     for arg_cursor, arg_idx in args:
-        # Check if this argument is a member access using ->
+        # Pattern 1: this argument is a member access using -> and the base pointer
+        # appears as another argument.
         if get_member_access_expr(arg_cursor) and is_pointer_dereference(arg_cursor):
-            # Check if the base pointer appears as another argument
-            match = find_matching_base_pointer(arg_cursor, args, content)
-            if match:
-                base_cursor, _ = match
-                base_text = get_source_text(base_cursor, content)
-
-                # Get field information
-                field_name = arg_cursor.spelling
-                base = get_member_access_base(arg_cursor)
-                assert base is not None
-
-                # Get the field type
-                # The type of the member access expression is the field type
-                field_type_obj = arg_cursor.type
-                field_type_str = render_declaration_sans_qualifiers(field_type_obj, "")
-
-                member_accesses_to_lift.append(
-                    MemberAccessInfo(
+            if find_matching_base_pointer(arg_cursor, args, content):
+                field_type_str = render_declaration_sans_qualifiers(arg_cursor.type, "")
+                args_to_lift.append(
+                    LiftedArgInfo(
                         cursor=arg_cursor,
-                        base_expr=base,
-                        field_name=field_name,
-                        field_type=field_type_str,
+                        name_hint=arg_cursor.spelling,
+                        lifted_type=field_type_str,
                         start_offset=arg_cursor.extent.start.offset,
                         end_offset=arg_cursor.extent.end.offset,
                         arg_index=arg_idx,
                     )
                 )
-                base_expr_text_set.add(base_text)
+                lifted_indices.add(arg_idx)
+                continue
 
-    if not member_accesses_to_lift:
+        # Pattern 2: this argument is a variable X and another argument is &X.
+        stripped = strip_unexposed(arg_cursor)
+        if stripped.kind == CursorKind.DECL_REF_EXPR:
+            if find_matching_addressof(arg_cursor, args, content):
+                if arg_idx in lifted_indices:
+                    continue
+                var_type_str = render_declaration_sans_qualifiers(arg_cursor.type, "")
+                args_to_lift.append(
+                    LiftedArgInfo(
+                        cursor=arg_cursor,
+                        name_hint=stripped.spelling or "var",
+                        lifted_type=var_type_str,
+                        start_offset=arg_cursor.extent.start.offset,
+                        end_offset=arg_cursor.extent.end.offset,
+                        arg_index=arg_idx,
+                    )
+                )
+                lifted_indices.add(arg_idx)
+
+    if not args_to_lift:
         return None
-
-    # Use the first base expression text (they should all be the same in our pattern)
-    base_expr_text = next(iter(base_expr_text_set)) if base_expr_text_set else ""
 
     statement_start = find_statement_start(call_cursor, content, ancestors)
 
@@ -250,8 +313,7 @@ def analyze_call_site(
         call_cursor=call_cursor,
         file_path=file_path,
         statement_start_offset=statement_start,
-        member_accesses=member_accesses_to_lift,
-        base_expr_text=base_expr_text,
+        lifted_args=args_to_lift,
     )
 
 
@@ -273,25 +335,23 @@ def get_indentation(content: bytes, offset: int) -> str:
 def lift_subfield_args(
     compdb: compilation_database.CompileCommands,
 ):
-    """Lift struct member accesses from function call arguments into local variables.
+    """Lift aliased argument expressions out of function calls into local variables.
 
-    This refactoring finds call sites where:
-    1. One argument is a struct pointer X
-    2. Another argument is a member access X->F
+    This refactoring finds call sites where one argument aliases another and lifts
+    the aliased expression into a local before the call. Two patterns are handled:
 
-    It creates a local variable before the call:
-        TYP newvar = X->F;
+    1. One argument is a struct pointer X, another is a member access X->F.
+       Lift X->F:
+           TYP newvar = X->F;
+       and replace X->F in the call with newvar.
 
-    And replaces X->F in the call with newvar.
-
-    Args:
-        json_path: Path to JSON file (reserved for future analysis data)
-        compdb: Compilation database for the project
-        prev: Path to previous codebase (unused, for interface compatibility)
-        current_codebase: Path to current codebase directory
+    2. One argument is a variable X, another is its address &X.
+       Lift X:
+           TYP newvar = X;
+       and replace X (not &X) in the call with newvar.
     """
     print("\n" + "=" * 80)
-    print("LIFTING STRUCT MEMBER ACCESSES FROM CALL ARGUMENTS")
+    print("LIFTING ALIASED CALL ARGUMENTS INTO LOCAL VARIABLES")
     print("=" * 80)
 
     # Parse the project
@@ -333,30 +393,25 @@ def lift_subfield_args(
                 # Get indentation for the statement
                 indent = get_indentation(content, rewrite.statement_start_offset)
 
-                # Generate declarations for each member access
+                # Generate declarations for each lifted argument
                 declarations = []
                 replacements = []
 
-                for member_access in rewrite.member_accesses:
-                    var_name = generate_lifted_var_name(member_access.field_name, var_counter)
+                for lifted in rewrite.lifted_args:
+                    var_name = generate_lifted_var_name(lifted.name_hint, var_counter)
                     var_counter += 1
 
-                    # Construct the declaration
-                    # field_type already includes the type, we just need to add the variable name
-                    field_type_clean = member_access.field_type.strip()
+                    type_clean = lifted.lifted_type.strip()
 
-                    # Get the member access text (e.g., "ptr->field")
-                    member_text = content[
-                        member_access.start_offset : member_access.end_offset
-                    ].decode("utf-8")
+                    # Get the original arg expression text (e.g., "ptr->field" or "x")
+                    expr_text = content[lifted.start_offset : lifted.end_offset].decode("utf-8")
 
-                    decl = f"{indent}{field_type_clean} {var_name} = {member_text};\n"
+                    decl = f"{indent}{type_clean} {var_name} = {expr_text};\n"
                     declarations.append(decl)
 
-                    # Record the replacement (member access -> var_name)
                     replacements.append((
-                        member_access.start_offset,
-                        member_access.end_offset - member_access.start_offset,
+                        lifted.start_offset,
+                        lifted.end_offset - lifted.start_offset,
                         var_name,
                     ))
 
@@ -369,13 +424,10 @@ def lift_subfield_args(
                     combined_decls,
                 )
 
-                # Replace member accesses in the call arguments
+                # Replace the lifted expressions in the call arguments
                 for start_offset, length, new_text in replacements:
                     rewriter.add_rewrite(file_path, start_offset, length, new_text)
 
-                # print(f"  Rewriting call at {file_path}:{rewrite.call_cursor.location.line}")
-                # print(f"    Lifting {len(rewrite.member_accesses)} member access(es)")
-
     print("\n" + "=" * 80)
-    print("STRUCT MEMBER LIFTING COMPLETE")
+    print("CALL ARGUMENT LIFTING COMPLETE")
     print("=" * 80)

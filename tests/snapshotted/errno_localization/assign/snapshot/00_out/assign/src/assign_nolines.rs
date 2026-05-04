@@ -100,10 +100,11 @@ unsafe fn main_0(
     foo();
     _xj_local_errno = 0 as ::core::ffi::c_int;
     if _xj_local_errno == 22 as ::core::ffi::c_int {
+        let mut _xj_lifted__xj_local_errno_0 = _xj_local_errno;
         println!("Error: [{:>}]", {
             std::ffi::CStr::from_ptr(_xj_wrap_strerror_xjtr_0(
                 (&raw mut _xj_local_errno).as_mut().unwrap(),
-                _xj_local_errno,
+                _xj_lifted__xj_local_errno_0,
             ) as *const core::ffi::c_char)
             .to_str()
             .unwrap()
