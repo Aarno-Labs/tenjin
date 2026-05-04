@@ -1,13 +1,23 @@
 """C refactoring tool to lift struct-pointer member accesses
+and aliased-variable occurrences
 from call arguments into local variables.
 
-This module implements a refactoring that finds patterns where:
-1. A function call has an argument that is a struct pointer (X)
-2. Another argument is a member access on that pointer (X->F)
+This module implements a refactoring that finds patterns like:
 
-The refactoring extracts the member access into a local variable:
+- A function call has an argument that is a struct pointer (X)
+- Another argument is a member access on that pointer (X->F)
+
+OR
+
+- A function call has an argument that is variable (X)
+- Another argument passes the address of X (e.g., &X)
+
+In the former the "aliased thing" is the expression X->F, in the latter
+the aliased thing is X itself.
+
+The refactoring extracts the aliased thing into a local variable, e.g.:
     TYP newvar = X->F;
-inserted before the call, and replaces X->F with newvar in the call.
+inserted before the call, and replaces the aliased thing with newvar in the call.
 """
 
 from dataclasses import dataclass
