@@ -9,7 +9,6 @@ import graphlib
 from pathlib import Path
 from typing import Callable, Sequence
 from subprocess import CompletedProcess
-from dataclasses import dataclass
 
 import repo_root
 from tenj_types import ResolvedPath
@@ -189,21 +188,14 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             return FunctionUnsafeNecessity.UNKNOWN
         return FunctionUnsafeNecessity.SAFE
 
-    @dataclass(eq=True, frozen=True)
-    class SingletonSCC:
-        elt_not_node: int
-
     def process_function_scc(
         cacg: CondensedSpanGraph,
-        node: int | SingletonSCC,
+        node: int,
         unsafe_spans: list[ExplicitSpan | None],
         unsafe_status: list[FunctionUnsafeNecessity],
     ):
-        if isinstance(node, SingletonSCC):
-            fnids = [node.elt_not_node]
-        else:
-            fnids = cacg.nodes[node]
         unknown_status_spans = []
+        fnids = cacg.nodes[node]
         for fnid in fnids:
             if unsafe_status[fnid] == FunctionUnsafeNecessity.UNKNOWN:
                 unknown_status_spans.append(unsafe_spans[fnid])
@@ -258,7 +250,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
 
     def process_function_sccs(
         cacg: CondensedSpanGraph,
-        ready_nodes: Sequence[int | SingletonSCC],
+        ready_nodes: Sequence[int],
         unsafe_spans: list[ExplicitSpan | None],
         unsafe_status: list[FunctionUnsafeNecessity],
     ):
@@ -327,6 +319,11 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         # print("unsafe spans:", unsafe_spans)
         # print("unsafe status:", unsafe_status)
 
+        node_for_elt: dict[int, int] = {}
+        for nodeidx, elts in enumerate(cacg.nodes):
+            for elt in elts:
+                node_for_elt[elt] = nodeidx
+
         called_elts: set[int] = set()
 
         # Use graphlib to collect ready nodes in topological order
@@ -346,7 +343,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         for scc in cacg.nodes:
             for e in scc:
                 if e not in called_elts:
-                    g.add(-1, SingletonSCC(elt_not_node=e))
+                    g.add(-1, node_for_elt[e])
 
         g.prepare()
         while g.is_active():

@@ -1,7 +1,11 @@
 import json
 import platform
 
-from tenjin_pytest_helpers import annotate_pytest_request_with_translation_notes, run_cargo_on_final
+from tenjin_pytest_helpers import (
+    annotate_pytest_request_with_translation_notes,
+    assert_final_had_no_unsafe_fns,
+    run_cargo_on_final,
+)
 import covset
 import hermetic
 import translation
@@ -230,7 +234,6 @@ def test_trivial_un_unsafe(test_dir, tenjin_fixtures):
 
     codebase = test_dir / "trivial_un_unsafe"
     translation_preparation.copy_codebase(codebase, tmp_codebase)
-    # Run translation
     translation.do_translate(
         tenjin_fixtures.root,
         codebase,
@@ -239,8 +242,5 @@ def test_trivial_un_unsafe(test_dir, tenjin_fixtures):
         guidance_path_or_literal='{ "public_api" : [] }',
     )
 
-    with open(tmp_resultsdir / "translation_metadata.json", "r", encoding="utf-8") as f:
-        translate_meta = json.load(f)
-        unsafe_count = translate_meta["results"]["tenjin_final"]["total_unsafe_fns_count"]
-        assert unsafe_count == 0, f"Expected no unsafe functions, got {unsafe_count}"
+    assert_final_had_no_unsafe_fns(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)

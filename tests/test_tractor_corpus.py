@@ -10,6 +10,7 @@ import pytest
 
 from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
+    assert_final_had_no_unsafe_fns,
     cached_git_clone_at_commit,
     clean_up_resultsdir,
     run_cargo_on_final,
@@ -114,6 +115,7 @@ def test_tractor_ta3_corpus_p01_132_lib(tenjin_fixtures: TenjinFixtures):
 def translate_and_build_ta3_test(
     fixtures: TenjinFixtures,
     cratename: str,
+    guidance: str,
     orig_codebase: Path,
     resultsdir: Path,
     case_dir: str,
@@ -136,7 +138,7 @@ def translate_and_build_ta3_test(
         fixtures.tmp_codebase / "test_case",
         resultsdir,
         cratename,
-        guidance_path_or_literal="{}",
+        guidance_path_or_literal=guidance,
     )
 
     args = ["build"]
@@ -182,6 +184,7 @@ def ta3_corpus_linux_only(case_dir: str) -> bool:
 def eval_tractor_ta3_corpus_app(
     fixtures: TenjinFixtures,
     case_dir: str,
+    guidance: str = "{}",
 ):
     if platform.system() != "Linux" and ta3_corpus_linux_only(case_dir):
         return pytest.skip(
@@ -212,6 +215,7 @@ def eval_tractor_ta3_corpus_app(
     translate_and_build_ta3_test(
         fixtures,
         cratename="tractor_ta3_corpus_app",
+        guidance=guidance,
         orig_codebase=codebase,
         resultsdir=tmp_resultsdir,
         case_dir=case_dir,
@@ -284,6 +288,7 @@ def eval_tractor_ta3_corpus_app(
 def eval_tractor_ta3_corpus_lib(
     fixtures: TenjinFixtures,
     case_dir: str,
+    guidance: str = "{}",
 ):
     try:
         codebase = tractor_tests_git_clone_for(case_dir)
@@ -333,6 +338,7 @@ def eval_tractor_ta3_corpus_lib(
     translate_and_build_ta3_test(
         fixtures,
         cratename="tractor_ta3_corpus_lib",
+        guidance=guidance,
         orig_codebase=codebase,
         resultsdir=candidate_resultsdir,
         case_dir=case_dir,
@@ -389,29 +395,40 @@ def eval_tractor_ta3_corpus_lib(
 def test_tractor_b1_organic_collided_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/collided_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # needs void pointer cast handling
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_bin2hex_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/bin2hex_lib"
+    # guidance = """{
+    #     "vars_of_type":{
+    #         "Vec<uint8_t>":["bin2hex:bin"],
+    #         "Vec<core::ffi::c_char>":["bin2hex:hex"]},
+    #     "fn_return_type":{"bin2hex":"Vec<core::ffi::c_char>"},
+    #     "vars_mut":{"bin2hex:*":true}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_bitwriter_add_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/bitwriter_add_lib"
+    # guidance = """{"vars_of_type":{"&mut tflac_bitwriter":["bitwriter_add:bw"]}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_colourblind_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/colourblind_lib"
+    # guidance = """{"vars_of_type":{ "&mut f32":
+    #     ["colourblind:R", "colourblind:G", "colourblind:B", "*:Red", "*:Green", "*:Blue" ]}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_contrast_ratio_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/contrast_ratio_lib"
+    # guidance = """{"no_math_errno":true}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
@@ -419,53 +436,65 @@ def test_tractor_b1_organic_contrast_ratio_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_organic_crc16_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/crc16_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # needs subscript refactoring
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_dequantize_granule_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/dequantize_granule_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # needs subscript refactoring
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_div_euclid_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/div_euclid_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "div_euclid_lib")
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_encode_quant_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/encode_quant_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "encode_quant_lib")
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_flac_validate_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/flac_validate_lib"
+    # guidance = """{"vars_of_type":{"&mut tflac":["flac_validate:t"]}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_flip_horizontal_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/flip_horizontal_lib"
+    # guidance = """{"vars_of_type":{"&mut cp_image_t":["flip_horizontal:img"], "&mut Vec<cp_pixel_t>":["*:pix"]}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # needs subscript refactoring
 
 
 def test_tractor_b1_organic_float2half_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/float2half_lib"
-    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    guidance = """{"vars_mut":{"m__shift":false,"m__base": false}}"""
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, guidance)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "float2half_lib")
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_gaussian_kernel_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/gaussian_kernel_lib"
+    # guidance = """'{"vars_of_type":{"&mut Vec<f32>":["gaussian_kernel:dest"]}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_half2float_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/half2float_lib"
-    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    guidance = """{"vars_mut":{"m__mantissa":false,"m__offset": false,"m__exponent": false}}"""
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, guidance)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "half2float_lib")
 
 
 @pytest.mark.slow
@@ -477,6 +506,8 @@ def test_tractor_b1_organic_hdr_bitrate_lib(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow
 def test_tractor_b1_organic_hdr_compare_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/hdr_compare_lib"
+    # This is an interesting case; it doesn't compile with owned Vec
+    # guidance = """{"vars_of_type":{"&Vec<u8>":["hdr_valid:h","hdr_compare:*"]}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
@@ -484,36 +515,45 @@ def test_tractor_b1_organic_hdr_compare_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_organic_hex2bin_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/hex2bin_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # needs output parameter transformation
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_hsl_to_rgb_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/hsl_to_rgb_lib"
+    # guidance = """{"vars_of_type":{
+    #     "&mut Vec<f32>":["hsl_to_rgb:dest", "hsl_to_rgb:src"]}, "no_math_errno":true}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # NB. clippy identifies bug in the C code! (h < 120.0f && h < 180.0f)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_hsv_to_rgb_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/hsv_to_rgb_lib"
+    # guidance = """{"vars_of_type":{"&mut Vec<f32>":["hsv_to_rgb:dest", "hsv_to_rgb:src"]}, "no_math_errno":true}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_ima_parse_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/ima_parse_lib"
+    # guidance = """{"vars_of_type":{"&mut ima_info":["ima_parse:info"]} }"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_ldexp_q2_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/ldexp_q2_lib"
-    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    guidance = """{"vars_mut":{"ldexp_q2:g_expfrac":false}}"""
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, guidance)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "ldexp_q2_lib")
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_max_size_frame_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/max_size_frame_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "max_size_frame_lib")
 
 
 @pytest.mark.slow
@@ -526,11 +566,13 @@ def test_tractor_b1_organic_md5_digest_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_organic_merge_sort_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/merge_sort_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # This one puns between pointer-to-element and pointer-to-array -- &p[i] == p + i
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_next_double_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/next_double_lib"
+    # guidance = """{"vars_of_type":{"&mut cn_rnd_t":["*:rnd"]}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
@@ -543,7 +585,9 @@ def test_tractor_b1_organic_normalize_lib(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow
 def test_tractor_b1_organic_pow43_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/pow43_lib"
-    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    guidance = """{"vars_mut":{"g_pow43":false}}"""
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, guidance)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "pow43_lib")
 
 
 @pytest.mark.slow
@@ -562,6 +606,7 @@ def test_tractor_b1_organic_read_side_info_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_organic_rev16_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/rev16_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "rev16_lib")
 
 
 @pytest.mark.slow
@@ -573,43 +618,57 @@ def test_tractor_b1_organic_rgb_to_hsv_lib(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow
 def test_tractor_b1_organic_synth_pair_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/synth_pair_lib"
+    # guidance = """{"vars_of_type":{"&mut Vec<mp3d_sample_t>":"*:pcm", "&Vec<f32>":"*:z"}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # needs subscript refactoring
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_tfm_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/tfm_lib"
+    # guidance = """{"vars_of_type":{"&mut Vec<f32>":"*:dest", "&Vec<f32>":"*:src"}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # needs subscript refactoring
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_to_barycentric_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/to_barycentric_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "to_barycentric_lib")
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_tritanopia_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/tritanopia_lib"
+    # guidance = """{"vars_of_type":{"&mut f32":["Tritanopia:Red","Tritanopia:Green","Tritanopia:Blue"]},"no_math_errno":true}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_update_frame_header_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/update_frame_header_lib"
+    # guidance = """{"vars_of_type":{"&mut tflac":["update_frame_header:t"]}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_update_md5_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/update_md5_lib"
+    # guidance = """{"vars_of_type":{
+    #     "&mut tflac":"update_md5:t",
+    #     "& Vec<tflac_s32>":"update_md5:samples",
+    #     "&mut Vec<u8>":"tflac_pack_u64le",
+    #     "&mut tflac_md5":["tflac_md5_addsample:m"]} }"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # needs subscript refactoring
 
 
 @pytest.mark.slow
 def test_tractor_b1_organic_wcscat_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/wcscat_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    # needs subscript refactoring
 
 
 @pytest.mark.slow

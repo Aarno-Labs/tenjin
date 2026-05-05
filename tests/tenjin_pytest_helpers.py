@@ -35,6 +35,13 @@ def clean_up_resultsdir(resultsdir: Path):
             item.unlink()
 
 
+def assert_final_had_no_unsafe_fns(resultsdir: Path):
+    with open(resultsdir / "translation_metadata.json", "r", encoding="utf-8") as f:
+        translate_meta = json.load(f)
+        unsafe_count = translate_meta["results"]["tenjin_final"]["total_unsafe_fns_count"]
+        assert unsafe_count == 0, f"Expected no unsafe functions, got {unsafe_count}"
+
+
 def annotate_pytest_request_with_translation_notes(fixtures: TenjinFixtures):
     tmp_resultsdir = fixtures.tmp_resultsdir
     if (tmp_resultsdir / "translation_metadata.json").exists():
