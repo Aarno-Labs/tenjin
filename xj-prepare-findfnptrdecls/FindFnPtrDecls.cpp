@@ -109,6 +109,13 @@ public:
       return;
     }
 
+    if (auto *arg_dre = Result.Nodes.getNodeAs<DeclRefExpr>("call_arg")) {
+      if (arg_dre->getBeginLoc().isValid()) {
+        handle_call_arg_to_fn_ptr_param(arg_dre, Result);
+        return;
+      }
+    }
+
     if (auto *CE = Result.Nodes.getNodeAs<CallExpr>("called_fn_ptr_expr")) {
         if (auto* CFE = Result.Nodes.getNodeAs<Expr>("called_fn_expr")) {
           if (auto *CED = CFE->getReferencedDeclOfCallee()) {
@@ -252,6 +259,47 @@ public:
           llvm::errs() << "unable to find fn ptr TSI for InitListExpr" << "\n";
         }
       }
+    }
+  }
+
+  // Handles a function name being passed as an argument to a function-pointer
+  // parameter. The parameter declaration is the targeted decl, mirroring how
+  // member/declref assignment LHSes are treated.
+  void handle_call_arg_to_fn_ptr_param(const DeclRefExpr *arg_dre,
+                                       const MatchFinder::MatchResult &Result) {
+    std::string arg_name = arg_dre->getNameInfo().getName().getAsString();
+    bool was_mod_fn = is_modified_fn_name(arg_name);
+    bool was_unmod_fn = is_unmodified_fn_name(arg_name);
+    if (!was_mod_fn && !was_unmod_fn) {
+      return;
+    }
+
+    auto *param = Result.Nodes.getNodeAs<ParmVarDecl>("call_param");
+    if (!param || !param->getType()->isFunctionPointerType()) {
+      return;
+    }
+
+    TypeSourceInfo *TSI = param->getTypeSourceInfo();
+    if (!TSI) {
+      return;
+    }
+
+    PointerTypeLoc PTL = TSI->getTypeLoc().getAs<PointerTypeLoc>();
+    if (!PTL) {
+      return;
+    }
+
+    TypeLoc FuncTL = PTL.getPointeeLoc();
+    FunctionTypeLoc FTL;
+    if (!try_find_fn_ptr_TL(FuncTL, FTL)) {
+      return;
+    }
+
+    if (was_mod_fn) {
+      FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
+      ModifyingDeclIDs.insert(param);
+    } else {
+      UnmodFnOccurrences.push_back(std::make_pair(arg_dre, param));
     }
   }
 
@@ -731,6 +779,21 @@ int main(int argc, const char **argv) {
                                       )))
                                   ).bind("called_fn_expr"))
               ).bind("called_fn_ptr_expr"),
+      &Callback
+  );
+
+  // Function-name arguments passed to function-pointer parameters: the
+  // parameter declaration acts like the LHS of an assignment.
+  Finder.addMatcher(
+      callExpr(forEachArgumentWithParam(
+          ignoringParenImpCasts(declRefExpr().bind("call_arg")),
+          parmVarDecl(hasType(hasCanonicalType(
+                                  pointerType(
+                                      pointee(
+                                          functionType()
+                                      )
+                                  ))))
+              .bind("call_param"))),
       &Callback
   );
 
