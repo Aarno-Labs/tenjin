@@ -50,6 +50,66 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite `xj_isinf(e as f64) != 0` into `!e.is_infinite()`, and similarly for `isnan`.
+    /// Rewrite `xj_isinf(e as f64) == 0` into `e.is_infinite()`, and similarly for `isnan`.
+    pub fn rewrite_isinf_isnan_comparisons(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(bin) = expr else {
+            return None;
+        };
+        let (func_path, arg_expr, is_equality) = if let Expr::Call(call) = &*bin.left {
+            let Expr::Path(ref func) = *call.func else {
+                return None;
+            };
+            if func.path.is_ident("xj_isinf") || func.path.is_ident("xj_isnan") {
+                if call.args.len() != 1 {
+                    return None;
+                }
+                (
+                    &func.path,
+                    &call.args[0],
+                    matches!(bin.op, syn::BinOp::Eq(_)),
+                )
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
+
+        let method_ident = syn::Ident::new(
+            if func_path.is_ident("xj_isinf") {
+                "is_infinite"
+            } else {
+                "is_nan"
+            },
+            func_path.span(),
+        );
+
+        // Per the docstring, `xj_isinf(e as f64)` rewrites to `e.is_infinite()` —
+        // i.e. the `as f64` cast is stripped.  Without stripping, the generated
+        // tokens `(e as f64).is_infinite()` would re-parse as a cast followed by
+        // a method call, which Rust rejects ("casts cannot be followed by a
+        // field access").
+        let receiver = match arg_expr {
+            Expr::Cast(cast) if matches!(&*cast.ty, Type::Path(tp) if tp.path.is_ident("f64")) => {
+                (*cast.expr).clone()
+            }
+            other => other.clone(),
+        };
+
+        let replacement: Expr = if is_equality {
+            syn::parse_quote! { #receiver.#method_ident() }
+        } else {
+            syn::parse_quote! { !#receiver.#method_ident() }
+        };
+
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite `strstr(e1, e2)` into `xj_cstr::strstr_mut_ptr(e1, e2)` when
     /// both arguments can be coerced to byte slices.
     pub fn rewrite_strstr(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
@@ -392,7 +452,7 @@ impl Rewriter {
     }
 
     /// Rewrite code like
-    ///   ```
+    ///   ```ignore
     ///     std::ffi::CStr::from_ptr((if COND { THN } else { ELS })
     ///          as *const core::ffi::c_char)
     ///             .to_str()

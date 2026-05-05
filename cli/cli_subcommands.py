@@ -106,6 +106,12 @@ def do_build_rs(root: Path, capture_output: bool = False):
 def do_test_unit_rs():
     root = repo_root.find_repo_root_dir_Path()
 
+    hermetic.run_cargo_in(
+        "test --locked".split(),
+        cwd=root / "xj-improve-synsub",
+        check=True,
+    )
+
     env_ext = {}
     if "INSTA_UPDATE" not in os.environ and not hermetic.running_in_ci():
         # INSTA_UPDATE=always has `insta` write updated snapshots directly,

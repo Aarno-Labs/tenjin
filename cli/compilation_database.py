@@ -297,13 +297,25 @@ def _is_cc_command(args: list[str]) -> bool:
     return False
 
 
+def with_parent(parent: Path | None, child: str) -> Path:
+    if parent:
+        return parent / child
+    else:
+        return Path(child)
+
+
 def legalize_output_name_for_rust(output: str) -> str:
     p = Path(output)
+    # Versioned shared libraries can have filenames like "libfoo.so.1.2.3";
+    # we'll convert names of this form to "libfoo_1_2_3.so"
+    if ".so." in p.name:
+        base, version = p.name.split(".so.", 1)
+        version_underscored = version.replace(".", "_")
+        new_name = f"{base}_{version_underscored}.so"
+        return with_parent(p.parent, new_name).as_posix()
+
     if "-" in p.name:
-        if p.parent:
-            return str(p.parent / p.name.replace("-", "_"))
-        else:
-            return p.name.replace("-", "_")
+        return with_parent(p.parent, p.name.replace("-", "_")).as_posix()
     else:
         return output
 

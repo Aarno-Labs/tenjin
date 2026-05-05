@@ -43,19 +43,6 @@ class TargetType(Enum):
     STATIC = "static-library"
     OBJECT = "object-file"
 
-    def extension(self) -> str:
-        match self:
-            case TargetType.SHARED:
-                return ".so"
-            case TargetType.EXECUTABLE:
-                return ""
-            case TargetType.STATIC:
-                return ".a"
-            case TargetType.OBJECT:
-                return ".o"
-            case _:
-                raise ValueError(f"Unknown TargetType: {self}")
-
 
 def compute_target_type(link_cmd: targets_from_intercept.InterceptedCommand) -> TargetType:
     if any(targets_from_intercept.is_shared_lib_flag(arg) for arg in link_cmd.entry["arguments"]):
@@ -65,6 +52,15 @@ def compute_target_type(link_cmd: targets_from_intercept.InterceptedCommand) -> 
     if (link_cmd.output or "").endswith(".o"):
         return TargetType.OBJECT
     return TargetType.EXECUTABLE
+
+
+def compute_target_stem(p: Path) -> str:
+    # For versioned shared libraries like "libfoo.so.1.2.3", we want the stem to be "libfoo".
+    # This will break if we try to translate a codebase that builds multiple distinct versions
+    # of the same library at the same time. But that's a corner case we can accept, for now.
+    if ".so." in p.name:
+        return p.name.split(".so.")[0]
+    return p.stem
 
 
 class LinkCommandHandling(Enum):
@@ -285,7 +281,7 @@ class BuildInfo:
             target_output = link_cmd.output
             assert target_output, f"Link command missing target output: {link_cmd}"
             target_type = compute_target_type(link_cmd)
-            target_stem = Path(target_output).stem
+            target_stem = compute_target_stem(Path(target_output))
             target = BuildTarget(key=target_output, type=target_type, stem_not_unique=target_stem)
             targets[target_output] = (target, link_cmd)
 

@@ -1046,6 +1046,12 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "toascii") => {
                     self.recognize_preconversion_call_toascii_guided(ctx, func, cargs)
                 }
+                _ if (tenjin::is_path_exactly_1(path, "isinf")) => {
+                    self.recognize_preconversion_call_isinf(ctx, cargs)
+                }
+                _ if (tenjin::is_path_exactly_1(path, "isnan")) => {
+                    self.recognize_preconversion_call_isnan(ctx, cargs)
+                }
                 _ if (tenjin::is_path_exactly_1(path, "fmin")
                     || tenjin::is_path_exactly_1(path, "fminf")
                     || tenjin::is_path_exactly_1(path, "fminl")) =>
@@ -1731,6 +1737,46 @@ impl Translation<'_> {
             return Ok(Some(WithStmts::new_val(toascii_call)));
         }
 
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_isinf(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 1 {
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_item_str_once(
+                    "fn xj_isinf(f: f64) -> core::ffi::c_int { if f.is_infinite() { 1 } else { 0 } }",
+                );
+            });
+            let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let cast = mk().cast_expr(e1.to_expr(), mk().path_ty(vec!["f64"]));
+            let call = mk().call_expr(mk().path_expr(vec!["xj_isinf"]), vec![cast]);
+            return Ok(Some(WithStmts::new_val(call)));
+        }
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_isnan(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 1 {
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_item_str_once(
+                    "fn xj_isnan(f: f64) -> core::ffi::c_int { if f.is_nan() { 1 } else { 0 } }",
+                );
+            });
+            let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
+            let cast = mk().cast_expr(e1.to_expr(), mk().path_ty(vec!["f64"]));
+            let call = mk().call_expr(mk().path_expr(vec!["xj_isnan"]), vec![cast]);
+            return Ok(Some(WithStmts::new_val(call)));
+        }
         Ok(None)
     }
 
