@@ -109,6 +109,36 @@ fn getchar_variants_add_use_and_helper_fn() {
 }
 
 #[test]
+fn isinf_isnan_strips_f64_cast() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
+    check(
+        &rw,
+        "fn demo(x: f64) -> bool { xj_isinf(x as f64) != 0 && xj_isnan(x as f64) == 0 }",
+        expect![[r#"
+            fn demo(x: f64) -> bool {
+                !x.is_infinite() && x.is_nan()
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn isinf_isnan_without_cast() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
+    check(
+        &rw,
+        "fn demo(x: f64) -> bool { xj_isinf(x) != 0 && xj_isnan(x) == 0 }",
+        expect![[r#"
+            fn demo(x: f64) -> bool {
+                !x.is_infinite() && x.is_nan()
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn usleep_to_thread_sleep() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_usleep);

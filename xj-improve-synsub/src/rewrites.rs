@@ -80,16 +80,31 @@ impl Rewriter {
             return None;
         };
 
-        let method_name = if func_path.is_ident("xj_isinf") {
-            "is_infinite"
-        } else {
-            "is_nan"
+        let method_ident = syn::Ident::new(
+            if func_path.is_ident("xj_isinf") {
+                "is_infinite"
+            } else {
+                "is_nan"
+            },
+            func_path.span(),
+        );
+
+        // Per the docstring, `xj_isinf(e as f64)` rewrites to `e.is_infinite()` —
+        // i.e. the `as f64` cast is stripped.  Without stripping, the generated
+        // tokens `(e as f64).is_infinite()` would re-parse as a cast followed by
+        // a method call, which Rust rejects ("casts cannot be followed by a
+        // field access").
+        let receiver = match arg_expr {
+            Expr::Cast(cast) if matches!(&*cast.ty, Type::Path(tp) if tp.path.is_ident("f64")) => {
+                (*cast.expr).clone()
+            }
+            other => other.clone(),
         };
 
         let replacement: Expr = if is_equality {
-            syn::parse_quote! { #arg_expr.#method_name() }
+            syn::parse_quote! { #receiver.#method_ident() }
         } else {
-            syn::parse_quote! { !#arg_expr.#method_name() }
+            syn::parse_quote! { !#receiver.#method_ident() }
         };
 
         Some((replacement, Depth::Limited(0)))
