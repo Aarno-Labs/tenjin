@@ -50,6 +50,51 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite `xj_isinf(e as f64) != 0` into `!e.is_infinite()`, and similarly for `isnan`.
+    /// Rewrite `xj_isinf(e as f64) == 0` into `e.is_infinite()`, and similarly for `isnan`.
+    pub fn rewrite_isinf_isnan_comparisons(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(bin) = expr else {
+            return None;
+        };
+        let (func_path, arg_expr, is_equality) = if let Expr::Call(call) = &*bin.left {
+            let Expr::Path(ref func) = *call.func else {
+                return None;
+            };
+            if func.path.is_ident("xj_isinf") || func.path.is_ident("xj_isnan") {
+                if call.args.len() != 1 {
+                    return None;
+                }
+                (
+                    &func.path,
+                    &call.args[0],
+                    matches!(bin.op, syn::BinOp::Eq(_)),
+                )
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
+
+        let method_name = if func_path.is_ident("xj_isinf") {
+            "is_infinite"
+        } else {
+            "is_nan"
+        };
+
+        let replacement: Expr = if is_equality {
+            syn::parse_quote! { #arg_expr.#method_name() }
+        } else {
+            syn::parse_quote! { !#arg_expr.#method_name() }
+        };
+
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite `strstr(e1, e2)` into `xj_cstr::strstr_mut_ptr(e1, e2)` when
     /// both arguments can be coerced to byte slices.
     pub fn rewrite_strstr(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
