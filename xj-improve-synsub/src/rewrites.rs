@@ -437,7 +437,7 @@ impl Rewriter {
     }
 
     /// Rewrite code like
-    ///   ```
+    ///   ```ignore
     ///     std::ffi::CStr::from_ptr((if COND { THN } else { ELS })
     ///          as *const core::ffi::c_char)
     ///             .to_str()
