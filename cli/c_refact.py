@@ -395,7 +395,8 @@ def compute_globals_and_statics_for_translation_unit(
             is_def_ish = sc != StorageClass.EXTERN and node.linkage != 0
             if is_def_ish:
                 top_level_var_decl = node.kind == CursorKind.VAR_DECL and (
-                    node.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+                    node.semantic_parent is not None
+                    and node.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
                 )
                 # Include top-level declarations or entities with 'static' storage
                 if (top_level_var_decl and not statics_only) or sc == StorageClass.STATIC:
@@ -403,7 +404,7 @@ def compute_globals_and_statics_for_translation_unit(
         for child in node.get_children():
             visit(child)
 
-    visit(translation_unit.cursor)
+    visit(translation_unit.cursor)  # type:ignore[attr-defined]
     return results
 
 
@@ -419,7 +420,7 @@ def collect_cursors_by_loc(
     """Group cursors by the (line, col, file) they are located in."""
     by_loc: dict[tuple[int, int, str], list[Cursor]] = {}
     for tu in tus.values():
-        for c in tu.cursor.walk_preorder():
+        for c in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
             # When looking for CALL_EXPR nodes in github.com/Old-Man-Programmer/tree
             # the filter reduces time taken from 1.2s to 0.3s
             if cursor_kind_filter and c.kind not in cursor_kind_filter:
@@ -700,7 +701,7 @@ def localize_mutable_globals_phase1(
             # Find the file containing main() and its main function cursor
             main_file = None
             for abs_path, tu in tus.items():
-                for cursor in tu.cursor.walk_preorder():
+                for cursor in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
                     if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "main":
                         main_file = abs_path
                         break
@@ -1394,7 +1395,7 @@ def localize_mutable_globals(
         print("\n  --- Step 8: Replacing global variable accesses ---")
         for tu_path, tu in tus.items():
             current_fn_start = None
-            for child in tu.cursor.walk_preorder():
+            for child in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
                 if child.kind == CursorKind.FUNCTION_DECL:
                     if child.is_definition():
                         q = c_refact_type_mod_replicator.quss(child, None)
@@ -1566,7 +1567,7 @@ def localize_mutable_globals(
 
         # Find main() function and insert initialization at the beginning
         for tu_path, tu in tus.items():
-            for cursor in tu.cursor.walk_preorder():
+            for cursor in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
                 if (
                     cursor.kind == CursorKind.FUNCTION_DECL
                     and cursor.spelling == "main"
@@ -1630,7 +1631,7 @@ def localize_mutable_globals(
                                             init_start = child_node.extent.start.offset
                                             init_end = child_node.extent.end.offset
                                             content = rewriter.get_content(
-                                                var_cursor.location.file.name
+                                                var_cursor.location.file.name  # type:ignore[attr-defined]
                                             )
                                             initializer = (
                                                 content[init_start:init_end].decode("utf-8").strip()
@@ -1647,7 +1648,7 @@ def localize_mutable_globals(
                             field_inits = []
                             for global_name in sorted(mutated_globals_cursors_by_name.keys()):
                                 var_cursor = mutated_globals_cursors_by_name[global_name]
-                                content = rewriter.get_content(var_cursor.location.file.name)
+                                content = rewriter.get_content(var_cursor.location.file.name)  # type:ignore[attr-defined]
                                 if global_name.startswith("pathsize_"):
                                     print(f"   Special handling for {global_name}")
                                     for child_node in var_cursor.get_children():
@@ -1702,7 +1703,7 @@ def localize_mutable_globals(
             types_in_scope = set()  # Set of type names (struct/union/typedef)
 
             # Find all struct/union/typedef declarations
-            for cursor in tu.cursor.walk_preorder():
+            for cursor in tu.cursor.walk_preorder():  # type:ignore[attr-defined]
                 if cursor.kind == CursorKind.STRUCT_DECL and cursor.spelling:
                     types_in_scope.add(cursor.spelling)
                     # print(f"    Found struct in scope: {cursor.spelling}")
@@ -1752,7 +1753,7 @@ def localize_mutable_globals(
                     start_offset = decl_cursor.extent.start.offset
                     end_offset = decl_cursor.extent.end.offset
                     for local_tu_path, _ in tus.items():
-                        if str(local_tu_path) == decl_cursor.location.file.name:
+                        if str(local_tu_path) == decl_cursor.location.file.name:  # type:ignore[attr-defined]
                             content = rewriter.get_content(local_tu_path)
                             typedef_text = content[start_offset:end_offset].decode("utf-8")
                             type_defs_lines.append(typedef_text + ";")
@@ -1764,7 +1765,7 @@ def localize_mutable_globals(
                     start_offset = decl_cursor.extent.start.offset
                     end_offset = decl_cursor.extent.end.offset
                     for local_tu_path, _ in tus.items():
-                        if str(local_tu_path) == decl_cursor.location.file.name:
+                        if str(local_tu_path) == decl_cursor.location.file.name:  # type:ignore[attr-defined]
                             content = rewriter.get_content(local_tu_path)
                             struct_text = content[start_offset:end_offset].decode("utf-8")
                             type_defs_lines.append(struct_text + ";")
@@ -1803,6 +1804,7 @@ def update_vars_of_type_guidance_for_xjg(
 ):
     higher_order_tissue_functions = set()
     for _tu_path, tu in tus.items():
+        assert tu.cursor is not None, f"Translation unit {tu.spelling} has no cursor!"
         for v, ancestors in yield_matching_cursors(tu.cursor, [CursorKind.DECL_REF_EXPR]):
             if v.spelling in phase1results.nonmain_tissue_functions:
                 # Found a use of a tissue function; was it in a call position?
