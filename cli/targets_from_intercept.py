@@ -178,13 +178,20 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
         elif arg[-2:] == ".a" and ei.output != arg:
             ei.rest_inputs.append(arg)
 
-        elif arg[-3:] == ".so" and not arg.startswith("-Wl,"):
+        elif is_likely_shared_object_path(arg) and not arg.startswith("-Wl,"):
             ei.rest_inputs.append(arg)
 
         else:
             ei.args.shared.append(arg)
 
     return ei
+
+
+def is_likely_shared_object_path(path: str) -> bool:
+    # Versioned shared libraries can have filenames like "libfoo.so.1.2.3"
+    return (
+        path.endswith(".so") or ".so." in path or path.endswith(".dylib") or path.endswith(".dll")
+    )
 
 
 def extract_MD_format_dependencies(depfile_path: Path) -> list[str]:

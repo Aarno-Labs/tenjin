@@ -54,6 +54,15 @@ def compute_target_type(link_cmd: targets_from_intercept.InterceptedCommand) -> 
     return TargetType.EXECUTABLE
 
 
+def compute_target_stem(p: Path) -> str:
+    # For versioned shared libraries like "libfoo.so.1.2.3", we want the stem to be "libfoo".
+    # This will break if we try to translate a codebase that builds multiple distinct versions
+    # of the same library at the same time. But that's a corner case we can accept, for now.
+    if ".so." in p.name:
+        return p.name.split(".so.")[0]
+    return p.stem
+
+
 class LinkCommandHandling(Enum):
     INCLUDE = "include"
     EXCLUDE = "exclude"
@@ -272,7 +281,7 @@ class BuildInfo:
             target_output = link_cmd.output
             assert target_output, f"Link command missing target output: {link_cmd}"
             target_type = compute_target_type(link_cmd)
-            target_stem = Path(target_output).stem
+            target_stem = compute_target_stem(Path(target_output))
             target = BuildTarget(key=target_output, type=target_type, stem_not_unique=target_stem)
             targets[target_output] = (target, link_cmd)
 

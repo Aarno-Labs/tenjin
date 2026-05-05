@@ -607,9 +607,7 @@ def run_preparation_passes(
         # Then, all shared libraries
         for cmd in profile_compdb.commands:
             if cmd.output is not None and (
-                cmd.output.endswith(".so")
-                or cmd.output.endswith(".dylib")
-                or cmd.output.endswith(".dll")
+                targets_from_intercept.is_likely_shared_object_path(cmd.output)
             ):
                 runcmd(cmd)
 
