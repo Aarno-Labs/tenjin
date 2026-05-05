@@ -635,6 +635,7 @@ def test_tractor_b1_organic_tfm_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_organic_to_barycentric_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/to_barycentric_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+    assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir / "to_barycentric_lib")
 
 
 @pytest.mark.slow
