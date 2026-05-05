@@ -1377,6 +1377,12 @@ def test_tractor_b2_organic_siphash_lib(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
+def test_tractor_b2_organic_spec_ray_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/spec_ray_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_organic_underhanded_c_nuke_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/underhanded_c_nuke_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
