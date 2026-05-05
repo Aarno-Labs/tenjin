@@ -1046,6 +1046,12 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "toascii") => {
                     self.recognize_preconversion_call_toascii_guided(ctx, func, cargs)
                 }
+                _ if (tenjin::is_path_exactly_1(path, "isinf")) => {
+                    self.recognize_preconversion_call_method_1_guided(ctx, "is_infinite", cargs)
+                }
+                _ if (tenjin::is_path_exactly_1(path, "isnan")) => {
+                    self.recognize_preconversion_call_method_1_guided(ctx, "is_nan", cargs)
+                }
                 _ if (tenjin::is_path_exactly_1(path, "fmin")
                     || tenjin::is_path_exactly_1(path, "fminf")
                     || tenjin::is_path_exactly_1(path, "fminl")) =>
