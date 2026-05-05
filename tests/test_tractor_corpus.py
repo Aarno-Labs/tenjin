@@ -1257,6 +1257,12 @@ def test_tractor_b2_organic_convert_pix_lib(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
+def test_tractor_b2_organic_cJSON_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/cJSON_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_organic_decode_base64_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/decode_base64_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
