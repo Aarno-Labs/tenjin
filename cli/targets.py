@@ -43,19 +43,6 @@ class TargetType(Enum):
     STATIC = "static-library"
     OBJECT = "object-file"
 
-    def extension(self) -> str:
-        match self:
-            case TargetType.SHARED:
-                return ".so"
-            case TargetType.EXECUTABLE:
-                return ""
-            case TargetType.STATIC:
-                return ".a"
-            case TargetType.OBJECT:
-                return ".o"
-            case _:
-                raise ValueError(f"Unknown TargetType: {self}")
-
 
 def compute_target_type(link_cmd: targets_from_intercept.InterceptedCommand) -> TargetType:
     if any(targets_from_intercept.is_shared_lib_flag(arg) for arg in link_cmd.entry["arguments"]):
