@@ -389,8 +389,9 @@ impl Rewriter {
         None
     }
 
-    /// Rewrite `scanf(...)` and `fscanf(stdin, ...)` into `xj_scanf::scanf!(...)`.
-    pub fn rewrite_scanf_and_fscanf(
+    /// Rewrite `scanf(...)` and `fscanf(stdin, ...)` into `xj_scanf::scanf!(...)`
+    /// and likewise for `sscanf(...)`.
+    pub fn rewrite_scanf_variants(
         &self,
         _symbols: &SymbolTable,
         expr: &Expr,
@@ -401,7 +402,10 @@ impl Rewriter {
         let Expr::Path(ref func) = *call.func else {
             return None;
         };
-        if !(func.path.is_ident("scanf") || func.path.is_ident("fscanf")) {
+        if !(func.path.is_ident("scanf")
+            || func.path.is_ident("fscanf")
+            || func.path.is_ident("sscanf"))
+        {
             return None;
         }
 
@@ -413,6 +417,8 @@ impl Rewriter {
             if !matches!(first_arg, Expr::Path(fp) if fp.path.is_ident("stdin")) {
                 return None;
             }
+        } else if func.path.is_ident("sscanf") && call.args.len() < 2 {
+            return None;
         }
 
         let fmt_arg_zero_terminated = if func.path.is_ident("scanf") {
@@ -422,12 +428,12 @@ impl Rewriter {
         } else {
             call.args
                 .get(1)
-                .expect("fscanf should have at least 2 arguments")
+                .expect("s/fscanf should have at least 2 arguments")
         };
 
         let Some(fmt_arg) = coerce_str_of_cast_byte_str(fmt_arg_zero_terminated) else {
             eprintln!(
-                "synsub: rewrite_scanf_and_fscanf: unsupported format string argument {fmt_arg_zero_terminated:?}"
+                "synsub: rewrite_scanf_and_fscanf_and_sscanf: unsupported format string argument {fmt_arg_zero_terminated:?}"
             );
             return None;
         };
@@ -436,7 +442,7 @@ impl Rewriter {
             // skip fmt string
             &call.args.iter().skip(1).collect::<Vec<_>>()
         } else {
-            // skip first FILE* arg and fmt string
+            // skip input (FILE*/char*) arg and fmt string
             &call.args.iter().skip(2).collect::<Vec<_>>()
         };
 
@@ -445,21 +451,34 @@ impl Rewriter {
             if let Some(coerced) = coerce_scanf_arg(arg, self) {
                 scanf_compatible_args.push(*coerced);
             } else {
-                eprintln!("synsub: rewrite_scanf_and_fscanf: unsupported target argument {arg:?}");
+                eprintln!(
+                    "synsub: rewrite_scanf_and_fscanf_and_sscanf: unsupported target argument {arg:?}"
+                );
                 return None;
             }
         }
 
-        self.add_dep("xj_scanf");
-        self.with_cur_file_item_store(|item_store| {
-            item_store.add_use(false, vec!["xj_scanf".into()], "scanf");
-        });
-
         let comma_punctuated_args: Punctuated<Expr, Comma> =
             Punctuated::from_iter(scanf_compatible_args);
 
-        let scanf_call: Expr = syn::parse_quote! {
-            xj_scanf::scanf!(#fmt_arg, #comma_punctuated_args)
+        let scanf_call: Expr = if func.path.is_ident("scanf") || func.path.is_ident("fscanf") {
+            self.add_dep("xj_scanf");
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_use(false, vec!["xj_scanf".into()], "scanf");
+            });
+            syn::parse_quote! {
+                xj_scanf::scanf!(#fmt_arg, #comma_punctuated_args)
+            }
+        } else if let Some(input_u8s) = coerce_u8s(&call.args[0], _symbols, false) {
+            self.add_dep("xj_scanf");
+            // self.with_cur_file_item_store(|item_store| {
+            //     item_store.add_use(false, vec!["xj_scanf".into()], "bscanf");
+            // });
+            syn::parse_quote! {
+                xj_scanf::bscanf!(#input_u8s, #fmt_arg, #comma_punctuated_args)
+            }
+        } else {
+            return None;
         };
 
         Some((scanf_call, Depth::Limited(0)))

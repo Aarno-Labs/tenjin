@@ -35,7 +35,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_strstr);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
-    rw.add_expr_rewrite(Rewriter::rewrite_scanf_and_fscanf);
+    rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
     rw.add_expr_rewrite(Rewriter::rewrite_printf_with_lone_offset_fmt);
     rw.add_expr_rewrite(Rewriter::rewrite_usleep);
     rw.add_expr_rewrite(Rewriter::strip_as_c_float_of_int_literals);
@@ -118,7 +118,7 @@ fn add_deps_to_manifest(
 fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
         "xj_cstr" => "0.1.4",
-        "xj_scanf" => "0.2.4",
+        "xj_scanf" => "0.2.6",
         "bytemuck" => "1.25.0",
         _ => "*",
     }
