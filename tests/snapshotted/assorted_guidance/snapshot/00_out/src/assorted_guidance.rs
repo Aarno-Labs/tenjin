@@ -1,3 +1,5 @@
+use ::bytemuck;
+use ::bytemuck::{Pod, Zeroable};
 extern "C" {
     fn memcpy(
         dest: *mut ::core::ffi::c_void,
@@ -52,7 +54,7 @@ pub struct PodNotGuided {
     pub a: ::core::ffi::c_int,
     pub b: ::core::ffi::c_int,
 }
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
 pub struct PodGuided {
     pub a: ::core::ffi::c_int,

@@ -1,3 +1,4 @@
+use ::bytemuck::{Pod, Zeroable};
 extern "C" {
 
     static mut extern_int_unguided: ::core::ffi::c_int;
@@ -22,7 +23,7 @@ pub struct PodNotGuided {
     pub a: ::core::ffi::c_int,
     pub b: ::core::ffi::c_int,
 }
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
 pub struct PodGuided {
     pub a: ::core::ffi::c_int,

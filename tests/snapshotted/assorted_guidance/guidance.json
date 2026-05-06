@@ -25,5 +25,6 @@
     "public_api": [],
     "fn_return_type": {
         "guided_ret_ostr": "String"
-    }
+    },
+    "pod_types": ["PodGuided"]
 }
