@@ -5,6 +5,14 @@ use syn::{Expr, ExprCast, ExprLit, ExprPath, LitByteStr, LitInt, Pat, Path, Stmt
 
 use crate::{Depth, Rewriter, SymbolTable};
 
+fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
+    if let Expr::Cast(_) = expr {
+        syn::parse_quote! { (#expr) }
+    } else {
+        syn::parse_quote! { #expr }
+    }
+}
+
 impl Rewriter {
     /// Rewrite `getchar()` and `fgetc(stdin)`
     pub fn rewrite_getchar_variants(
@@ -345,7 +353,7 @@ impl Rewriter {
         }
 
         let arr_arg = expr_strip_casts(&call.args[0]);
-        let val_arg = &call.args[1];
+        let val_arg = paren_if_cast(&call.args[1]);
         let len_arg = &call.args[2];
 
         let val_arg_as_u8: Expr = syn::parse_quote! {

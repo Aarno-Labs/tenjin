@@ -166,7 +166,7 @@ fn memset_on_cast() {
             fn demo(buf: &mut [u8]) {
                 buf.as_u8_slice()
                     .as_mut_u8_slice()[..buf.len() as somelongtype]
-                    .fill(0.try_into().unwrap());
+                    .fill((0 as foo).try_into().unwrap());
             }
         "#]],
     );
