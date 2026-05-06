@@ -5,6 +5,8 @@
 #![allow(unused_assignments)]
 #![allow(unused_mut)]
 
+extern crate bytemuck;
+
 pub mod src {
     pub mod assorted_guidance;
 } // mod src

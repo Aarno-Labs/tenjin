@@ -12,5 +12,6 @@ name = "tenjinized"
 path = "lib.rs"
 crate-type = ["staticlib", "rlib"]
 [dependencies]
+bytemuck = { version = "1.23.2", features = ["derive", "extern_crate_alloc"] }
 
 
