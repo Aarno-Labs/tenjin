@@ -160,7 +160,7 @@ fn memset_on_cast() {
     check(
         &rw,
         "fn demo(buf: &mut [u8]) { memset(buf.as_mut_ptr() as quux,
-                                                 0, buf.len() as somelongtype); }",
+                                                 0 as foo, buf.len() as somelongtype); }",
         expect![[r#"
             use ::xj_cstr::ByteSlice;
             fn demo(buf: &mut [u8]) {
