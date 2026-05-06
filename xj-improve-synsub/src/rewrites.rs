@@ -134,8 +134,8 @@ impl Rewriter {
             return None;
         }
 
-        let e1 = coerce_u8s(&call.args[0], symbols, true)?;
-        let e2 = coerce_u8s(&call.args[1], symbols, false)?;
+        let e1 = self.coerce_u8s(&call.args[0], symbols, true)?;
+        let e2 = self.coerce_u8s(&call.args[1], symbols, false)?;
 
         self.add_dep("xj_cstr");
 
@@ -292,7 +292,7 @@ impl Rewriter {
             return None;
         }
 
-        let base = coerce_u8s(&method_call.receiver, symbols, false)?;
+        let base = self.coerce_u8s(&method_call.receiver, symbols, false)?;
         let offset = as_usize(&method_call.args[0]);
 
         self.with_cur_file_item_store(|item_store| {
@@ -360,7 +360,7 @@ impl Rewriter {
             #val_arg.try_into().unwrap()
         };
 
-        if let Some(coerced_arr) = coerce_u8s(arr_arg, symbols, false) {
+        if let Some(coerced_arr) = self.coerce_u8s(arr_arg, symbols, false) {
             self.add_dep("xj_cstr");
             self.with_cur_file_item_store(|item_store| {
                 item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
@@ -448,7 +448,7 @@ impl Rewriter {
 
         let mut scanf_compatible_args = vec![];
         for arg in value_args {
-            if let Some(coerced) = coerce_scanf_arg(arg, self) {
+            if let Some(coerced) = self.coerce_scanf_arg(arg) {
                 scanf_compatible_args.push(*coerced);
             } else {
                 eprintln!(
@@ -469,7 +469,7 @@ impl Rewriter {
             syn::parse_quote! {
                 xj_scanf::scanf!(#fmt_arg, #comma_punctuated_args)
             }
-        } else if let Some(input_u8s) = coerce_u8s(&call.args[0], _symbols, false) {
+        } else if let Some(input_u8s) = self.coerce_u8s(&call.args[0], _symbols, false) {
             self.add_dep("xj_scanf");
             // self.with_cur_file_item_store(|item_store| {
             //     item_store.add_use(false, vec!["xj_scanf".into()], "bscanf");
@@ -698,7 +698,7 @@ impl Rewriter {
         if let Some(elt_ty) = type_of_slice_ref(&pat_type.ty) {
             if is_u8_type(elt_ty) {
                 let init_expr = &localinit.expr;
-                let coerced = coerce_u8s(init_expr, symbols, true)?;
+                let coerced = self.coerce_u8s(init_expr, symbols, true)?;
                 let replacement: Stmt = syn::parse_quote! {
                     let #pat_type = #coerced;
                 };
@@ -736,6 +736,108 @@ impl Rewriter {
 
         Some((lit_float_expr, Depth::Limited(0)))
     }
+
+    /// Coerce supported string-like inputs into `u8` slice expressions.
+    ///
+    /// Handles:
+    /// - casted byte-string literals (trimming trailing `\0` when present),
+    /// - string literals and `&str` identifiers (`x.as_bytes()`),
+    /// - `x.as_mut_ptr()` on `u8` slices (`x.as_u8_slice()`),
+    /// - pointer expressions (`CStr::from_ptr(x).to_bytes()`) when
+    ///   `exclusive == false`.
+    fn coerce_u8s(
+        &self,
+        mut expr: &Expr,
+        symbols: &SymbolTable,
+        exclusive: bool,
+    ) -> Option<Box<Expr>> {
+        expr = expr_strip_transmute_deref(expr_strip_casts(expr_strip_parens(expr)));
+
+        if let Some(coerced) = coerce_cast_byte_str(expr) {
+            return Some(coerced);
+        }
+        if is_cast_byte_str(expr) || is_u8_sliceable_expr(expr, symbols) {
+            return Some(Box::new(expr.clone()));
+        }
+        if let Some(coerced) = coerce_str_as_bytes(expr, symbols) {
+            return Some(coerced);
+        }
+        if let Some(coerced) = self.coerce_slice_ptr_call(expr, symbols, exclusive) {
+            return Some(coerced);
+        }
+        if exclusive {
+            return None;
+        }
+
+        // We can't call CStr::from_ptr(x) on x: *mut T, we need to cast to *const T first.
+        let casted_type = match expr_ident_type(expr, symbols) {
+            Some(syn::Type::Ptr(pointee)) if is_u8_or_i8_type(pointee.elem.as_ref()) => {
+                if pointee.mutability.is_some() {
+                    Some(syn::TypePtr {
+                        star_token: pointee.star_token,
+                        const_token: Default::default(),
+                        mutability: None,
+                        elem: pointee.elem.clone(),
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => return None,
+        };
+
+        let coerced: Expr = if casted_type.is_some() {
+            syn::parse_quote! {
+                ::core::ffi::CStr::from_ptr(#expr as *const i8).to_bytes()
+            }
+        } else {
+            syn::parse_quote! {
+                ::core::ffi::CStr::from_ptr(#expr).to_bytes()
+            }
+        };
+
+        Some(Box::new(coerced))
+    }
+
+    /// Convert `x.as_mut_ptr()` on a `u8` slice expression into `x.as_u8_slice()`.
+    fn coerce_slice_ptr_call(
+        &self,
+        expr: &Expr,
+        symbols: &SymbolTable,
+        exclusive: bool,
+    ) -> Option<Box<Expr>> {
+        let receiver = extract_slice_ptr_base(expr)?;
+        if !is_u8_or_i8_sliceable_expr(receiver, symbols) {
+            return None;
+        }
+
+        let method = syn::Ident::new(
+            if exclusive {
+                "as_mut_u8_slice"
+            } else {
+                "as_u8_slice"
+            },
+            proc_macro2::Span::call_site(),
+        );
+        let coerced: Expr = syn::parse_quote! {
+            #receiver.#method()
+        };
+        Some(Box::new(coerced))
+    }
+
+    fn coerce_scanf_arg(&self, expr: &Expr) -> Option<Box<Expr>> {
+        match categorize_scanf_arg(expr) {
+            ScanfArgCategory::Borrow(e) => Some(Box::new(syn::parse_quote! { &mut #e })),
+            ScanfArgCategory::AsMutPtr(e) => {
+                self.add_dep("xj_cstr");
+                self.with_cur_file_item_store(|item_store| {
+                    item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
+                });
+                Some(Box::new(syn::parse_quote! { &mut #e.as_mut_u8_slice() }))
+            }
+            ScanfArgCategory::Other => None,
+        }
+    }
 }
 
 enum ScanfArgCategory {
@@ -761,83 +863,12 @@ fn categorize_scanf_arg(expr: &Expr) -> ScanfArgCategory {
     ScanfArgCategory::Other
 }
 
-fn coerce_scanf_arg(expr: &Expr, rewriter: &Rewriter) -> Option<Box<Expr>> {
-    match categorize_scanf_arg(expr) {
-        ScanfArgCategory::Borrow(e) => Some(Box::new(syn::parse_quote! { &mut #e })),
-        ScanfArgCategory::AsMutPtr(e) => {
-            rewriter.add_dep("xj_cstr");
-            rewriter.with_cur_file_item_store(|item_store| {
-                item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
-            });
-            Some(Box::new(syn::parse_quote! { &mut #e.as_mut_u8_slice() }))
-        }
-        ScanfArgCategory::Other => None,
-    }
-}
-
 fn as_usize(expr: &Expr) -> Box<Expr> {
     Box::new(syn::parse_quote! { #expr as usize })
 }
 
 fn as_u64(expr: &Expr) -> Box<Expr> {
     Box::new(syn::parse_quote! { #expr as u64 })
-}
-
-/// Coerce supported string-like inputs into `u8` slice expressions.
-///
-/// Handles:
-/// - casted byte-string literals (trimming trailing `\0` when present),
-/// - string literals and `&str` identifiers (`x.as_bytes()`),
-/// - `x.as_mut_ptr()` on `u8` slices (`x.as_u8_slice()`),
-/// - pointer expressions (`CStr::from_ptr(x).to_bytes()`) when
-///   `exclusive == false`.
-fn coerce_u8s(mut expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option<Box<Expr>> {
-    expr = expr_strip_transmute_deref(expr_strip_casts(expr_strip_parens(expr)));
-
-    if let Some(coerced) = coerce_cast_byte_str(expr) {
-        return Some(coerced);
-    }
-    if is_cast_byte_str(expr) || is_u8_sliceable_expr(expr, symbols) {
-        return Some(Box::new(expr.clone()));
-    }
-    if let Some(coerced) = coerce_str_as_bytes(expr, symbols) {
-        return Some(coerced);
-    }
-    if let Some(coerced) = coerce_slice_ptr_call(expr, symbols, exclusive) {
-        return Some(coerced);
-    }
-    if exclusive {
-        return None;
-    }
-
-    // We can't call CStr::from_ptr(x) on x: *mut T, we need to cast to *const T first.
-    let casted_type = match expr_ident_type(expr, symbols) {
-        Some(syn::Type::Ptr(pointee)) if is_u8_or_i8_type(pointee.elem.as_ref()) => {
-            if pointee.mutability.is_some() {
-                Some(syn::TypePtr {
-                    star_token: pointee.star_token,
-                    const_token: Default::default(),
-                    mutability: None,
-                    elem: pointee.elem.clone(),
-                })
-            } else {
-                None
-            }
-        }
-        _ => return None,
-    };
-
-    let coerced: Expr = if casted_type.is_some() {
-        syn::parse_quote! {
-            ::core::ffi::CStr::from_ptr(#expr as *const i8).to_bytes()
-        }
-    } else {
-        syn::parse_quote! {
-            ::core::ffi::CStr::from_ptr(#expr).to_bytes()
-        }
-    };
-
-    Some(Box::new(coerced))
 }
 
 fn get_litbytestr(expr: &Expr) -> Option<LitByteStr> {
@@ -904,27 +935,6 @@ fn extract_slice_ptr_base(expr: &Expr) -> Option<&Expr> {
         return None;
     }
     Some(&call.receiver)
-}
-
-/// Convert `x.as_mut_ptr()` on a `u8` slice expression into `x.as_u8_slice()`.
-fn coerce_slice_ptr_call(expr: &Expr, symbols: &SymbolTable, exclusive: bool) -> Option<Box<Expr>> {
-    let receiver = extract_slice_ptr_base(expr)?;
-    if !is_u8_or_i8_sliceable_expr(receiver, symbols) {
-        return None;
-    }
-
-    let method = syn::Ident::new(
-        if exclusive {
-            "as_mut_u8_slice"
-        } else {
-            "as_u8_slice"
-        },
-        proc_macro2::Span::call_site(),
-    );
-    let coerced: Expr = syn::parse_quote! {
-        #receiver.#method()
-    };
-    Some(Box::new(coerced))
 }
 
 /// Returns `true` when `expr` is an identifier typed as a `u8` slice.
