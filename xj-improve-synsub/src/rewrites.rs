@@ -880,11 +880,14 @@ fn coerce_slice_ptr_call(expr: &Expr, symbols: &SymbolTable, exclusive: bool) ->
         return None;
     }
 
-    let method = if exclusive {
-        "as_mut_u8_slice"
-    } else {
-        "as_u8_slice"
-    };
+    let method = syn::Ident::new(
+        if exclusive {
+            "as_mut_u8_slice"
+        } else {
+            "as_u8_slice"
+        },
+        proc_macro2::Span::call_site(),
+    );
     let coerced: Expr = syn::parse_quote! {
         #receiver.#method()
     };

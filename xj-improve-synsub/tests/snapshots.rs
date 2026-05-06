@@ -152,3 +152,22 @@ fn usleep_to_thread_sleep() {
         "#]],
     );
 }
+
+#[test]
+fn memset_on_cast() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
+    check(
+        &rw,
+        "fn demo(buf: &mut [u8]) { memset(buf.as_mut_ptr() as quux,
+                                                 0, buf.len() as somelongtype); }",
+        expect![[r#"
+            use ::xj_cstr::ByteSlice;
+            fn demo(buf: &mut [u8]) {
+                buf.as_u8_slice()
+                    .as_mut_u8_slice()[..buf.len() as somelongtype]
+                    .fill(0.try_into().unwrap());
+            }
+        "#]],
+    );
+}
