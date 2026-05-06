@@ -360,7 +360,7 @@ impl Rewriter {
             #val_arg.try_into().unwrap()
         };
 
-        if let Some(coerced_arr) = self.coerce_u8s(arr_arg, symbols, false) {
+        if let Some(coerced_arr) = self.coerce_u8s(arr_arg, symbols, true) {
             self.add_dep("xj_cstr");
             self.with_cur_file_item_store(|item_store| {
                 item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
