@@ -811,6 +811,10 @@ impl Rewriter {
             return None;
         }
 
+        self.add_dep("xj_cstr");
+        self.with_cur_file_item_store(|item_store| {
+            item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
+        });
         let method = syn::Ident::new(
             if exclusive {
                 "as_mut_u8_slice"
