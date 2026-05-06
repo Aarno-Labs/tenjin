@@ -370,7 +370,13 @@ impl Rewriter {
             };
             return Some((replacement, Depth::Limited(0)));
         }
+
         if let Some(receiver) = extract_slice_ptr_base(arr_arg) {
+            // If the type is not pod-compatible, we cannot use `bytemuck`.
+            if !is_pod_compatible_expr(receiver, symbols) {
+                return None;
+            }
+
             self.add_dep("bytemuck");
             self.with_cur_file_item_store(|item_store| {
                 item_store.add_use(true, vec!["bytemuck".into()], "cast_slice_mut");
@@ -928,6 +934,41 @@ fn is_string_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
 /// Returns `true` when `expr` is an owned or exclusively borrowed type
 fn is_effectively_mutable_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
     matches!(expr_ident_type(expr, symbols), Some(ty) if is_effectively_mutable_type(ty))
+}
+
+fn is_pod_compatible_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
+    matches!(expr_ident_type(expr, symbols), Some(ty) if is_pod_compatible_type(ty))
+}
+
+fn is_pod_compatible_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(path) => {
+            // TODO: consume guidance to refine this check.
+            // TODO: track type environment?
+            let Some(type_name) = path.path.segments.last().map(|seg| seg.ident.to_string()) else {
+                return false;
+            };
+
+            matches!(
+                type_name.as_str(),
+                "u8" | "i8"
+                    | "u16"
+                    | "i16"
+                    | "u32"
+                    | "i32"
+                    | "u64"
+                    | "i64"
+                    | "u128"
+                    | "i128"
+                    | "f32"
+                    | "f64"
+            )
+        }
+        syn::Type::Reference(r) => is_pod_compatible_type(&r.elem),
+        syn::Type::Array(array) => is_pod_compatible_type(&array.elem),
+        syn::Type::Slice(slice) => is_pod_compatible_type(&slice.elem),
+        _ => false,
+    }
 }
 
 fn expr_get_int_literal(expr: &Expr) -> Option<LitInt> {
