@@ -81,6 +81,7 @@ impl<'a> Translation<'a> {
             self.use_crate(ExternCrate::C2RustBitfields);
         }
 
+        // XREF:pod_guided
         if self.parsed_guidance.borrow().pod_types.contains(&name) {
             derives.push("Pod");
             derives.push("Zeroable");

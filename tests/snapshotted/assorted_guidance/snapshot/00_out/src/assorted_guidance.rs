@@ -46,6 +46,18 @@ pub union UsedForFloatIntBitcast {
     pub ui: ::core::ffi::c_uint,
     pub f: ::core::ffi::c_float,
 }
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct PodNotGuided {
+    pub a: ::core::ffi::c_int,
+    pub b: ::core::ffi::c_int,
+}
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct PodGuided {
+    pub a: ::core::ffi::c_int,
+    pub b: ::core::ffi::c_int,
+}
 static static_int_nonmutbl: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 #[no_mangle]
 pub unsafe fn use_global_ints() {
@@ -280,6 +292,10 @@ pub unsafe fn guided_int_putchar(mut oc: char) {
 #[no_mangle]
 pub unsafe fn unguided_char_putchar(mut c: ::core::ffi::c_char) {
     print!("{:}", c as ::core::ffi::c_int as u8 as char);
+}
+#[no_mangle]
+pub unsafe fn use_pod_structs(mut png: PodNotGuided, mut pg: PodGuided) -> ::core::ffi::c_int {
+    return png.a + pg.a + png.b + pg.b;
 }
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
     if lim == Some(0) {

@@ -296,3 +296,19 @@ float guided_union_int_float_bitcast(unsigned int ui) {
 void unguided_int_putchar(int c) { putchar(c); }
 void guided_int_putchar(int oc) { putchar(oc); }
 void unguided_char_putchar(char c) { putchar(c); }
+
+struct PodNotGuided {
+    int a;
+    int b;
+};
+
+// XREF:pod_guided
+struct PodGuided {
+    int a;
+    int b;
+};
+
+int use_pod_structs(struct PodNotGuided png, struct PodGuided pg)
+{
+    return png.a + pg.a + png.b + pg.b;
+}
