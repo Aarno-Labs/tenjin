@@ -5,6 +5,14 @@ use syn::{Expr, ExprCast, ExprLit, ExprPath, LitByteStr, LitInt, Pat, Path, Stmt
 
 use crate::{Depth, Rewriter, SymbolTable};
 
+fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
+    if let Expr::Cast(_) = expr {
+        syn::parse_quote! { (#expr) }
+    } else {
+        syn::parse_quote! { #expr }
+    }
+}
+
 impl Rewriter {
     /// Rewrite `getchar()` and `fgetc(stdin)`
     pub fn rewrite_getchar_variants(
@@ -345,7 +353,7 @@ impl Rewriter {
         }
 
         let arr_arg = expr_strip_casts(&call.args[0]);
-        let val_arg = &call.args[1];
+        let val_arg = paren_if_cast(&call.args[1]);
         let len_arg = &call.args[2];
 
         let val_arg_as_u8: Expr = syn::parse_quote! {
@@ -362,7 +370,13 @@ impl Rewriter {
             };
             return Some((replacement, Depth::Limited(0)));
         }
+
         if let Some(receiver) = extract_slice_ptr_base(arr_arg) {
+            // If the type is not pod-compatible, we cannot use `bytemuck`.
+            if !is_pod_compatible_expr(receiver, symbols) {
+                return None;
+            }
+
             self.add_dep("bytemuck");
             self.with_cur_file_item_store(|item_store| {
                 item_store.add_use(true, vec!["bytemuck".into()], "cast_slice_mut");
@@ -880,11 +894,14 @@ fn coerce_slice_ptr_call(expr: &Expr, symbols: &SymbolTable, exclusive: bool) ->
         return None;
     }
 
-    let method = if exclusive {
-        "as_mut_u8_slice"
-    } else {
-        "as_u8_slice"
-    };
+    let method = syn::Ident::new(
+        if exclusive {
+            "as_mut_u8_slice"
+        } else {
+            "as_u8_slice"
+        },
+        proc_macro2::Span::call_site(),
+    );
     let coerced: Expr = syn::parse_quote! {
         #receiver.#method()
     };
@@ -917,6 +934,41 @@ fn is_string_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
 /// Returns `true` when `expr` is an owned or exclusively borrowed type
 fn is_effectively_mutable_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
     matches!(expr_ident_type(expr, symbols), Some(ty) if is_effectively_mutable_type(ty))
+}
+
+fn is_pod_compatible_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
+    matches!(expr_ident_type(expr, symbols), Some(ty) if is_pod_compatible_type(ty))
+}
+
+fn is_pod_compatible_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(path) => {
+            // TODO: consume guidance to refine this check.
+            // TODO: track type environment?
+            let Some(type_name) = path.path.segments.last().map(|seg| seg.ident.to_string()) else {
+                return false;
+            };
+
+            matches!(
+                type_name.as_str(),
+                "u8" | "i8"
+                    | "u16"
+                    | "i16"
+                    | "u32"
+                    | "i32"
+                    | "u64"
+                    | "i64"
+                    | "u128"
+                    | "i128"
+                    | "f32"
+                    | "f64"
+            )
+        }
+        syn::Type::Reference(r) => is_pod_compatible_type(&r.elem),
+        syn::Type::Array(array) => is_pod_compatible_type(&array.elem),
+        syn::Type::Slice(slice) => is_pod_compatible_type(&slice.elem),
+        _ => false,
+    }
 }
 
 fn expr_get_int_literal(expr: &Expr) -> Option<LitInt> {
