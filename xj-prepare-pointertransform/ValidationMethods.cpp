@@ -201,6 +201,122 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         }
     }
 
+    // Reject pointers whose base expression is mutated within the
+    // function (e.g. `char *dst = s->out; ... s->out += length;`).
+    //
+    // The original C code captures the base's *value* at the
+    // pointer's declaration. The rewriter, by contrast, substitutes
+    // the base's *text* at every access site, so it re-evaluates the
+    // base each time. If the base is then mutated between the
+    // pointer's declaration and its uses, the rewritten accesses go
+    // to the mutated location instead of the captured one.
+    //
+    // Conservative fix: walk the enclosing function body for any
+    // assignment or inc/dec, take the LHS source text, and check if
+    // that text appears as a sub-expression of the base text. If it
+    // does, the base depends on a mutated lvalue — reject. The
+    // sub-expression check uses word boundaries so `arr` doesn't
+    // accidentally match `arr_local`.
+    //
+    // Globals (no enclosing function) are handled separately and
+    // typically have stable bases like `static_arr`; skip this check
+    // for them.
+    if (!candidate.base_array_text.empty()) {
+        const FunctionDecl *EnclosingFD = nullptr;
+        for (const DeclContext *DC = PtrVar->getDeclContext();
+             DC; DC = DC->getParent()) {
+            if (const auto *FD = dyn_cast<FunctionDecl>(DC)) {
+                EnclosingFD = FD;
+                break;
+            }
+        }
+
+        if (EnclosingFD && EnclosingFD->hasBody()) {
+            const SourceManager &SM = Ctx.getSourceManager();
+            const LangOptions &LO = Ctx.getLangOpts();
+            const std::string &base_text = candidate.base_array_text;
+
+            auto baseContains = [&](const std::string &lhs) -> bool {
+                if (lhs.empty()) return false;
+                size_t pos = 0;
+                while ((pos = base_text.find(lhs, pos)) != std::string::npos) {
+                    bool before_ok = pos == 0 ||
+                        (!isalnum((unsigned char)base_text[pos - 1]) &&
+                         base_text[pos - 1] != '_');
+                    bool after_ok = pos + lhs.size() >= base_text.size() ||
+                        (!isalnum((unsigned char)base_text[pos + lhs.size()]) &&
+                         base_text[pos + lhs.size()] != '_');
+                    if (before_ok && after_ok) return true;
+                    pos += lhs.size();
+                }
+                return false;
+            };
+
+            class BaseMutationFinder : public RecursiveASTVisitor<BaseMutationFinder> {
+              public:
+                const SourceManager &SM;
+                const LangOptions &LO;
+                const VarDecl *TrackedPtr;
+                std::function<bool(const std::string &)> baseContains;
+                std::string mutated_lhs;
+                bool mutated = false;
+
+                BaseMutationFinder(const SourceManager &SM,
+                                   const LangOptions &LO,
+                                   const VarDecl *TrackedPtr,
+                                   std::function<bool(const std::string &)> bc)
+                    : SM(SM), LO(LO), TrackedPtr(TrackedPtr),
+                      baseContains(std::move(bc)) {}
+
+                // Skip assignments/mutations of the pointer being
+                // tracked — those are part of the normal rewrite, not
+                // base-expression mutations. e.g. for a parameter
+                // `int *in` whose base text is "in", `in = arr + 5`
+                // becomes `in_index = 5` after rewriting, which is
+                // fine.
+                bool refsTrackedPtr(const Expr *E) const {
+                    if (!E) return false;
+                    if (const auto *DRE = dyn_cast<DeclRefExpr>(E))
+                        return DRE->getDecl() == TrackedPtr;
+                    return false;
+                }
+
+                void check(const Expr *E) {
+                    if (!E || mutated) return;
+                    if (refsTrackedPtr(E)) return;
+                    std::string txt = getSourceText(E, SM, LO);
+                    if (baseContains(txt)) {
+                        mutated_lhs = txt;
+                        mutated = true;
+                    }
+                }
+
+                bool VisitBinaryOperator(BinaryOperator *BO) {
+                    if (!BO->isAssignmentOp())
+                        return true;
+                    check(BO->getLHS()->IgnoreParenImpCasts());
+                    return !mutated;
+                }
+
+                bool VisitUnaryOperator(UnaryOperator *UO) {
+                    if (!UO->isIncrementDecrementOp())
+                        return true;
+                    check(UO->getSubExpr()->IgnoreParenImpCasts());
+                    return !mutated;
+                }
+            };
+
+            BaseMutationFinder finder(SM, LO, PtrVar, baseContains);
+            finder.TraverseStmt(EnclosingFD->getBody());
+            if (finder.mutated) {
+                error = "Base expression '" + base_text +
+                        "' depends on '" + finder.mutated_lhs +
+                        "', which is mutated within the function";
+                return false;
+            }
+        }
+    }
+
     // The Rewriter can't edit text inside macro expansions, so any
     // "real" access (deref, subscript, comparison expr) inside a macro
     // would be left untouched while sibling accesses get rewritten —

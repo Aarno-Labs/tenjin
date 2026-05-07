@@ -104,14 +104,20 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
     std::vector<Edit> edits;
 
-    // ---- Detect a brand-new RustSlice rooted at this pointer ----------
-    // (The check above covered the *already-registered* case; this
-    // block runs for functions that detection didn't catch but whose
-    // pointer-plus-bound shape is still recoverable here.)
+    // ---- Re-derive the RustSlice info for this pointer ---------------
+    // Only enter this branch if detection already approved the
+    // function. detectAllTransformations is the source of truth for
+    // whether a RustSlice rewrite is safe (it rejects functions that
+    // would produce broken output, e.g. ones with non-rewriteable
+    // pointers referencing the removed params). If we re-detected
+    // here we'd produce a half-rewrite: the signature gets changed
+    // but emitTypedefs / rewriteCallSites / replaceRemovedParams all
+    // gate on g_transformed_functions and would skip the function.
     bool is_rust_slice = false;
     RustSliceInfo slice_info;
 
-    if (!candidate.is_parameter && FD->getNumParams() > 0) {
+    if (g_transformed_functions.count(FD->getCanonicalDecl()) &&
+        !candidate.is_parameter && FD->getNumParams() > 0) {
         // Check if original base_array matches a function parameter
         for (unsigned i = 0; i < FD->getNumParams(); i++) {
             const ParmVarDecl *P = FD->getParamDecl(i);
@@ -577,10 +583,43 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Standalone increment: p++ -> p_index++ ----
+        // If the increment expression's value is consumed as a pointer
+        // (passed to a function, returned, assigned to a pointer var),
+        // wrap the rewrite so the result type stays a pointer:
+        //   func(++p) -> func(base + ++p_index)
+        //   func(p++) -> func(base + p_index++)
+        // Otherwise (statement context, e.g. just `p++;`) keep the
+        // integer-only form. Same logic applies to Decrement below.
+        //
+        // Pre-increment semantics: `++p` returns the new pointer, and
+        // `(base + ++p_index)` evaluates `++p_index` first (yielding
+        // the new index), then adds base — same value.
+        // Post-increment semantics: `p++` returns the OLD pointer,
+        // and `(base + p_index++)` evaluates `p_index++` first
+        // (yielding the OLD index), then adds base — same value.
+        // Bug this guards against: in url.h's decode_percent,
+        // `unhex(++in)` was rewritten to `unhex(++in_index)` — passing
+        // an integer where a `char *` was expected. c2rust then cast
+        // the int to a pointer, producing literal addresses like 0x4
+        // and SIGSEGV'ing on dereference.
         case PointerAccessKind::Increment: {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
             if (!UO) break;
+
+            bool wrap = false;
+            const Stmt *GP = findGrandParent(UO);
+            if (GP) {
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP)) {
+                    wrap = true;
+                } else if (const auto *BO = dyn_cast<BinaryOperator>(GP)) {
+                    if (BO->isAssignmentOp() &&
+                        BO->getRHS()->IgnoreParenImpCasts() == UO &&
+                        BO->getLHS()->getType()->isPointerType()) {
+                        wrap = true;
+                    }
+                }
+            }
 
             SourceLocation StartLoc = UO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -588,9 +627,13 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
             std::string replacement;
             if (UO->getOpcode() == UO_PostInc)
-                replacement = index_name + "++";
+                replacement = wrap
+                    ? ("(" + base_array + " + " + index_name + "++)")
+                    : (index_name + "++");
             else // UO_PreInc
-                replacement = "++" + index_name;
+                replacement = wrap
+                    ? ("(" + base_array + " + ++" + index_name + ")")
+                    : ("++" + index_name);
 
             Edit e;
             e.type = Edit::Replace;
@@ -603,10 +646,25 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Standalone decrement: p-- -> p_index-- ----
+        // Same context-aware wrapping as Increment above; see comment there.
         case PointerAccessKind::Decrement: {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
             if (!UO) break;
+
+            bool wrap = false;
+            const Stmt *GP = findGrandParent(UO);
+            if (GP) {
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP)) {
+                    wrap = true;
+                } else if (const auto *BO = dyn_cast<BinaryOperator>(GP)) {
+                    if (BO->isAssignmentOp() &&
+                        BO->getRHS()->IgnoreParenImpCasts() == UO &&
+                        BO->getLHS()->getType()->isPointerType()) {
+                        wrap = true;
+                    }
+                }
+            }
 
             SourceLocation StartLoc = UO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -614,9 +672,13 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
             std::string replacement;
             if (UO->getOpcode() == UO_PostDec)
-                replacement = index_name + "--";
+                replacement = wrap
+                    ? ("(" + base_array + " + " + index_name + "--)")
+                    : (index_name + "--");
             else // UO_PreDec
-                replacement = "--" + index_name;
+                replacement = wrap
+                    ? ("(" + base_array + " + --" + index_name + ")")
+                    : ("--" + index_name);
 
             Edit e;
             e.type = Edit::Replace;
@@ -845,7 +907,39 @@ bool FunctionAccessAnalyzer::generateTransformation(
         case PointerAccessKind::AssignFromAllowedFunc: {
             std::string func_name = access.offset_text;  // stored in offset_text field
             std::string wrapper_name = func_name + "_index";
-            std::string other_args = access.operand_text;  // non-pointer args
+
+            // Re-walk the original call's args using the now-known base.
+            // The collector recorded operand_text at collect time, when
+            // the candidate's base may not have been inferred yet (e.g.
+            // an uninitialized local `const char *l;` whose base is only
+            // learned later from `l = path + strlen(path)`). Any arg
+            // that resolves to the tracked pointer or the base is
+            // already passed implicitly via the wrapper's `start` and
+            // `base` params — including it here would emit a duplicate
+            // arg and a "too many arguments to function call" C error.
+            std::string other_args;
+            const CallExpr *CE = dyn_cast_or_null<CallExpr>(access.enclosing_stmt);
+            if (CE) {
+                for (unsigned i = 0; i < CE->getNumArgs(); i++) {
+                    const Expr *Arg = CE->getArg(i)->IgnoreParenImpCasts();
+                    if (const DeclRefExpr *ArgDRE = dyn_cast<DeclRefExpr>(Arg)) {
+                        if (ArgDRE->getDecl() == PtrVar)
+                            continue; // already passed as `start`
+                        if (const VarDecl *AVD = dyn_cast<VarDecl>(ArgDRE->getDecl())) {
+                            if (AVD->getNameAsString() == candidate.base_array_text)
+                                continue; // already passed as `base`
+                        }
+                    }
+                    std::string arg_text = getSourceText(CE->getArg(i), SM, LO);
+                    if (!candidate.base_array_text.empty() &&
+                        arg_text == candidate.base_array_text)
+                        continue; // text-level fallback
+                    if (!other_args.empty()) other_args += ", ";
+                    other_args += arg_text;
+                }
+            } else {
+                other_args = access.operand_text; // fallback
+            }
 
             // Find the enclosing assignment: p = func(...)
             const Stmt *P = findParent(access.expr);
@@ -1254,10 +1348,35 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
             if (!UO) break;
+            // See the longer comment on the Increment case in the
+            // earlier transformer pass: when the result of `++p`/`p++`
+            // is consumed as a pointer (call arg, return, assignment
+            // to pointer var), wrap the rewrite as `(base + ...)` so
+            // the value type stays a pointer.
+            bool wrap = false;
+            const Stmt *GP = findGrandParent(UO);
+            if (GP) {
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP)) {
+                    wrap = true;
+                } else if (const auto *BO = dyn_cast<BinaryOperator>(GP)) {
+                    if (BO->isAssignmentOp() &&
+                        BO->getRHS()->IgnoreParenImpCasts() == UO &&
+                        BO->getLHS()->getType()->isPointerType()) {
+                        wrap = true;
+                    }
+                }
+            }
             SourceLocation StartLoc = UO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(UO->getEndLoc(), 0, SM, LO);
-            std::string repl = (UO->getOpcode() == UO_PostInc)
-                ? index_name + "++" : "++" + index_name;
+            std::string repl;
+            if (UO->getOpcode() == UO_PostInc)
+                repl = wrap
+                    ? ("(" + base_array + " + " + index_name + "++)")
+                    : (index_name + "++");
+            else
+                repl = wrap
+                    ? ("(" + base_array + " + ++" + index_name + ")")
+                    : ("++" + index_name);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
                              StartLoc, EndLoc, repl});
             break;
@@ -1267,10 +1386,30 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
             if (!UO) break;
+            bool wrap = false;
+            const Stmt *GP = findGrandParent(UO);
+            if (GP) {
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP)) {
+                    wrap = true;
+                } else if (const auto *BO = dyn_cast<BinaryOperator>(GP)) {
+                    if (BO->isAssignmentOp() &&
+                        BO->getRHS()->IgnoreParenImpCasts() == UO &&
+                        BO->getLHS()->getType()->isPointerType()) {
+                        wrap = true;
+                    }
+                }
+            }
             SourceLocation StartLoc = UO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(UO->getEndLoc(), 0, SM, LO);
-            std::string repl = (UO->getOpcode() == UO_PostDec)
-                ? index_name + "--" : "--" + index_name;
+            std::string repl;
+            if (UO->getOpcode() == UO_PostDec)
+                repl = wrap
+                    ? ("(" + base_array + " + " + index_name + "--)")
+                    : (index_name + "--");
+            else
+                repl = wrap
+                    ? ("(" + base_array + " + --" + index_name + ")")
+                    : ("--" + index_name);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
                              StartLoc, EndLoc, repl});
             break;

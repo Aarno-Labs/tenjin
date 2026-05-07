@@ -239,6 +239,33 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
         return;
     }
 
+    // A `?:` in a value-producing slot just forwards the pointer to whatever
+    // encloses the conditional (return, assignment, function call, ...). The
+    // pointer's real consumer — and thus the right context to classify the
+    // access against — is past the `?:`. Walk up through any chain of
+    // value-forwarding `?:`s so the dispatch below sees the actual consumer.
+    //
+    // Only the cond slot is genuine boolean context; leave Parent alone there
+    // so it falls through to the boolean-context branch below.
+    //
+    // Bug this guards against: in `return (p != start) ? p : NULL;`, the `p`
+    // in the true slot used to be classified as BoolTrue (because its parent
+    // is a ConditionalOperator), which hid the fact that p escapes via
+    // return. The pass would then convert p to an index, c2rust would emit a
+    // bool→int→pointer cast chain, and the translated Rust would SIGSEGV.
+    while (const auto *CO = dyn_cast<ConditionalOperator>(Parent)) {
+        if (OutermostDRE != CO->getTrueExpr() &&
+            OutermostDRE != CO->getFalseExpr())
+            break; // OutermostDRE is the cond — leave Parent as the `?:`
+        OutermostDRE = CO;
+        Parent = skipTransparentParentsOf(CO, Ctx, OutermostDRE);
+        if (!Parent) {
+            access_list.push_back({PointerAccessKind::Unknown, DRE->getLocation(),
+                                   DRE, nullptr, "", "", "", ""});
+            return;
+        }
+    }
+
     // ---- UnaryOperator: *p, p++, p--, &p, !p ---------------------------
     if (const UnaryOperator *UO = dyn_cast<UnaryOperator>(Parent)) {
         switch (UO->getOpcode()) {
@@ -568,7 +595,11 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
 
                 // p = strchr(...) — record so we can emit a wrapper. We
                 // also collect the non-pointer arguments into operand_text
-                // for the rewriter.
+                // for the rewriter. The wrapper takes (base, start, c, ...),
+                // so skip both the tracked pointer (passed as `start`) and
+                // any arg matching the candidate's base (passed as `base`)
+                // — otherwise the rewritten call ends up with a duplicated
+                // base argument that fails to compile.
                 if (const CallExpr *RhsCall = dyn_cast<CallExpr>(RHS)) {
                     if (const FunctionDecl *Callee = RhsCall->getDirectCallee()) {
                         std::string func_name = Callee->getNameAsString();
@@ -579,10 +610,24 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                                 const Expr *Arg = RhsCall->getArg(i)->IgnoreParenImpCasts();
                                 if (const DeclRefExpr *ArgDRE = dyn_cast<DeclRefExpr>(Arg)) {
                                     if (ArgDRE->getDecl() == PtrVar)
-                                        continue;  // the pointer is already rewritten separately
+                                        continue;  // the pointer is the wrapper's `start` param
+                                    // The base may be passed as the first strchr arg
+                                    // (e.g. Lua's `l = strchr(path, sep)` where `path`
+                                    // is l's base). It's already covered by the wrapper's
+                                    // `base` param — skip it here too.
+                                    if (const VarDecl *ArgVD = dyn_cast<VarDecl>(ArgDRE->getDecl())) {
+                                        if (ArgVD->getNameAsString() == candidate.base_array_text)
+                                            continue;
+                                    }
                                 }
+                                // Fallback: source-text match against base, in case the
+                                // base isn't a bare DRE (e.g. `arr.field` or a cast).
+                                std::string arg_text = getSourceText(RhsCall->getArg(i), SM, LO);
+                                if (!candidate.base_array_text.empty() &&
+                                    arg_text == candidate.base_array_text)
+                                    continue;
                                 if (!other_args.empty()) other_args += ", ";
-                                other_args += getSourceText(RhsCall->getArg(i), SM, LO);
+                                other_args += arg_text;
                             }
                             access_list.push_back({PointerAccessKind::AssignFromAllowedFunc,
                                                    BO->getBeginLoc(), DRE, RhsCall,

@@ -321,17 +321,75 @@ void FunctionAccessAnalyzer::detectAllTransformations(ASTContext &Ctx) {
                 }
             }
 
-            // Detect return type change
-            if (FD->getReturnType()->isPointerType()) {
-                for (auto &[pv, pa] : analysis.accesses) {
-                    for (const auto &acc : pa) {
-                        if (acc.kind == PointerAccessKind::ReturnPtr) {
-                            info.return_type_changed = true;
-                            break;
-                        }
+            // Detect return type change.
+            //
+            // The return type can only become `int` if every return
+            // statement either returns NULL or returns a tracked
+            // pointer whose base array is the slice's base — i.e. one
+            // we can render as an integer index into the slice. A
+            // function that returns an unrelated pointer (e.g.
+            // `return malloc(...)`, `return p->next`) would silently
+            // become an integer-returning function whose returned
+            // value the caller still treats as a pointer. We refuse
+            // the rewrite in that case.
+            if (FD->getReturnType()->isPointerType() && FD->hasBody()) {
+                const std::string &slice_base = candidate.base_array_text;
+
+                class ReturnSafetyChecker : public RecursiveASTVisitor<ReturnSafetyChecker> {
+                public:
+                    const std::string &slice_base;
+                    const std::map<const VarDecl *, PointerCandidate> &tracked;
+                    bool any_return = false;
+                    bool all_safe = true;
+
+                    ReturnSafetyChecker(const std::string &sb,
+                                        const std::map<const VarDecl *, PointerCandidate> &t)
+                        : slice_base(sb), tracked(t) {}
+
+                    static bool isNullLike(const Expr *E) {
+                        E = E->IgnoreParenImpCasts();
+                        if (const auto *IL = dyn_cast<IntegerLiteral>(E))
+                            return IL->getValue() == 0;
+                        if (isa<GNUNullExpr>(E))
+                            return true;
+                        if (const auto *CE = dyn_cast<CStyleCastExpr>(E))
+                            return isNullLike(CE->getSubExpr());
+                        return false;
                     }
-                    if (info.return_type_changed) break;
-                }
+
+                    bool VisitReturnStmt(ReturnStmt *RS) {
+                        const Expr *V = RS->getRetValue();
+                        if (!V)
+                            return true;  // void return - shouldn't happen for a pointer-returning function
+                        any_return = true;
+
+                        const Expr *Stripped = V->IgnoreParenImpCasts();
+                        while (const auto *C = dyn_cast<CStyleCastExpr>(Stripped))
+                            Stripped = C->getSubExpr()->IgnoreParenImpCasts();
+
+                        if (isNullLike(Stripped))
+                            return true;
+
+                        // Accept only DeclRefs to tracked pointers
+                        // whose base matches the slice's base.
+                        if (const auto *DRE = dyn_cast<DeclRefExpr>(Stripped)) {
+                            if (const auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                                auto it = tracked.find(VD);
+                                if (it != tracked.end() &&
+                                    it->second.base_array_text == slice_base)
+                                    return true;
+                            }
+                        }
+
+                        all_safe = false;
+                        return false;
+                    }
+                };
+
+                ReturnSafetyChecker checker(slice_base, analysis.tracked_pointers);
+                checker.TraverseStmt(FD->getBody());
+                if (checker.any_return && checker.all_safe)
+                    info.return_type_changed = true;
             }
 
             // Detect inclusive end
@@ -346,6 +404,87 @@ void FunctionAccessAnalyzer::detectAllTransformations(ASTContext &Ctx) {
                             break;
                         }
                     }
+                }
+            }
+
+            // Safety: refuse the rewrite if any *non-rewriteable*
+            // pointer in the body references the base/end/len params.
+            //
+            // After the signature change, replaceRemovedParams blindly
+            // rewrites every textual reference to those params to
+            // arr.ptr/arr.len. That's correct for pointers we're also
+            // rewriting to indices — `q_index < arr.len` makes sense.
+            // But for a pointer that stays a real pointer (because it
+            // was reseated from an opaque expression like
+            // `q = find_comma(q) + 1`), the rewrite turns
+            // `q < end` into `char *q < size_t arr.len`, which compiles
+            // but is meaningless and silently breaks the loop.
+            {
+                std::string base_name = FD->getParamDecl(info.base_param_index)->getNameAsString();
+                std::string end_name = info.end_param_index >= 0
+                    ? FD->getParamDecl(info.end_param_index)->getNameAsString()
+                    : std::string();
+                std::string len_name = info.len_param_index >= 0
+                    ? FD->getParamDecl(info.len_param_index)->getNameAsString()
+                    : std::string();
+
+                auto containsWord = [](const std::string &s, const std::string &w) {
+                    if (w.empty()) return false;
+                    size_t pos = 0;
+                    while ((pos = s.find(w, pos)) != std::string::npos) {
+                        bool before_ok = pos == 0 ||
+                            (!isalnum((unsigned char)s[pos - 1]) && s[pos - 1] != '_');
+                        bool after_ok = pos + w.size() >= s.size() ||
+                            (!isalnum((unsigned char)s[pos + w.size()]) &&
+                             s[pos + w.size()] != '_');
+                        if (before_ok && after_ok) return true;
+                        pos += w.size();
+                    }
+                    return false;
+                };
+
+                bool unsafe = false;
+                for (auto &[OtherPtr, OtherAccesses] : analysis.accesses) {
+                    if (OtherPtr == PtrVar) continue;
+                    if (isa<ParmVarDecl>(OtherPtr)) continue;
+                    if (OtherAccesses.empty()) continue;
+
+                    // If this pointer would itself be rewritten as an
+                    // index, the rewriter handles its references to
+                    // base/end correctly.
+                    auto &OC = analysis.tracked_pointers[OtherPtr];
+                    std::string verr;
+                    if (validatePointerCandidate(OtherPtr, OC, OtherAccesses, Ctx, verr))
+                        continue;
+
+                    // Otherwise, look for any reference to the removed
+                    // params in the pointer's metadata.
+                    bool refs = (!base_name.empty() && OC.base_array_text == base_name);
+                    if (!refs) {
+                        for (const auto &acc : OtherAccesses) {
+                            if (containsWord(acc.operand_text, base_name) ||
+                                containsWord(acc.operand_text, end_name) ||
+                                containsWord(acc.operand_text, len_name) ||
+                                containsWord(acc.offset_text, base_name) ||
+                                containsWord(acc.offset_text, end_name) ||
+                                containsWord(acc.offset_text, len_name)) {
+                                refs = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (refs) {
+                        unsafe = true;
+                        break;
+                    }
+                }
+
+                if (unsafe) {
+                    if (VERBOSE)
+                        llvm::outs() << "[Detect] Skipping RustSlice in "
+                                      << FD->getNameAsString()
+                                      << ": non-rewriteable pointer references removed param\n";
+                    continue;
                 }
             }
 
@@ -714,18 +853,69 @@ void FunctionAccessAnalyzer::detectAllTransformations(ASTContext &Ctx) {
                 }
             }
 
-            // Detect return type change
+            // Detect return type change. Same safety check as in
+            // sub-phase A: every return must be NULL or a tracked
+            // pointer whose base is the slice base (here, the first
+            // pointer parameter's name). Otherwise the function would
+            // become `int`-returning while still returning an
+            // unrelated pointer.
             bool return_changed = false;
-            if (FD->getReturnType()->isPointerType()) {
-                for (auto &[pv, pa] : analysis.accesses) {
-                    for (const auto &acc : pa) {
-                        if (acc.kind == PointerAccessKind::ReturnPtr) {
-                            return_changed = true;
-                            break;
-                        }
+            if (FD->getReturnType()->isPointerType() && FD->hasBody()) {
+                std::string slice_base = BaseParam->getNameAsString();
+
+                class ReturnSafetyChecker : public RecursiveASTVisitor<ReturnSafetyChecker> {
+                public:
+                    const std::string &slice_base;
+                    const std::map<const VarDecl *, PointerCandidate> &tracked;
+                    bool any_return = false;
+                    bool all_safe = true;
+
+                    ReturnSafetyChecker(const std::string &sb,
+                                        const std::map<const VarDecl *, PointerCandidate> &t)
+                        : slice_base(sb), tracked(t) {}
+
+                    static bool isNullLike(const Expr *E) {
+                        E = E->IgnoreParenImpCasts();
+                        if (const auto *IL = dyn_cast<IntegerLiteral>(E))
+                            return IL->getValue() == 0;
+                        if (isa<GNUNullExpr>(E))
+                            return true;
+                        if (const auto *CE = dyn_cast<CStyleCastExpr>(E))
+                            return isNullLike(CE->getSubExpr());
+                        return false;
                     }
-                    if (return_changed) break;
-                }
+
+                    bool VisitReturnStmt(ReturnStmt *RS) {
+                        const Expr *V = RS->getRetValue();
+                        if (!V)
+                            return true;
+                        any_return = true;
+
+                        const Expr *Stripped = V->IgnoreParenImpCasts();
+                        while (const auto *C = dyn_cast<CStyleCastExpr>(Stripped))
+                            Stripped = C->getSubExpr()->IgnoreParenImpCasts();
+
+                        if (isNullLike(Stripped))
+                            return true;
+
+                        if (const auto *DRE = dyn_cast<DeclRefExpr>(Stripped)) {
+                            if (const auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                                auto it = tracked.find(VD);
+                                if (it != tracked.end() &&
+                                    it->second.base_array_text == slice_base)
+                                    return true;
+                            }
+                        }
+
+                        all_safe = false;
+                        return false;
+                    }
+                };
+
+                ReturnSafetyChecker checker(slice_base, analysis.tracked_pointers);
+                checker.TraverseStmt(FD->getBody());
+                if (checker.any_return && checker.all_safe)
+                    return_changed = true;
             }
 
             RustSliceInfo info;
