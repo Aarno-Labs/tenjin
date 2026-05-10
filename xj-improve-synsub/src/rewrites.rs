@@ -329,9 +329,9 @@ impl Rewriter {
     }
 
     /// Rewrite `memset(arr.as_mut_ptr(), val, len)`
-    /// into `arr.as_u8_mut_slice()[..len].fill(val)`
+    /// into `arr.as_u8_mut_slice()[..len as usize].fill(val)`
     ///     when `arr` can be coerced to a u8 slice, or
-    /// into `cast_slice_mut(arr)[..len].fill(val)`
+    /// into `cast_slice_mut(arr)[..len as usize].fill(val)`
     ///     when `arr` is a non-byte-sized slice or array.
     ///
     pub fn rewrite_memset_on_slice_or_array(
@@ -366,7 +366,7 @@ impl Rewriter {
                 item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
             });
             let replacement: Expr = syn::parse_quote! {
-                #coerced_arr[..#len_arg].fill(#val_arg_as_u8)
+                #coerced_arr[..#len_arg as usize].fill(#val_arg_as_u8)
             };
             return Some((replacement, Depth::Limited(0)));
         }
