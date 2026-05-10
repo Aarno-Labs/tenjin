@@ -1839,11 +1839,15 @@ def update_vars_of_type_guidance_for_xjg(
 
 def extract_function_info(
     tus, nonmain_tissue_functions
-) -> tuple[set[str], dict[str, list[TissueFunctionCursorInfo]]]:
+) -> tuple[
+    set[tenj_types.CIdentifier], dict[tenj_types.CIdentifier, list[TissueFunctionCursorInfo]]
+]:
     all_function_names = set()
 
     # Collect all declarations (both definitions and forward declarations)
-    nonmain_tissue_function_cursors: dict[str, list[TissueFunctionCursorInfo]] = {}
+    nonmain_tissue_function_cursors: dict[
+        tenj_types.CIdentifier, list[TissueFunctionCursorInfo]
+    ] = {}
 
     for abs_path, tu in tus.items():
         for cursor in tu.cursor.walk_preorder():

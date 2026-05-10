@@ -405,6 +405,10 @@ fn emit_cargo_toml(
 
 fn compute_workspace_crate_names(link_cmd: &LinkCmd) -> Vec<String> {
     let mut res = vec![];
+    // Link commands can reference shared libraries either directly
+    // by filename, in which case they appear in `link_cmd.inputs`,
+    // or indirectly via `-l` flags, in which case they appear in
+    // `link_cmd.libs`.
     for input in link_cmd.inputs.iter() {
         if input.ends_with(".so") || input.ends_with(".a") {
             let module_name = Path::new(input)
