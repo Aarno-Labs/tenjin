@@ -113,11 +113,18 @@ def download(url: str, filename: Path, first_attempt=True) -> None:
 
     def report_insurmountable_error_and_die(e: Exception):
         sez(f"Failed to download {url}: {e}", ctx="(download) ", err=True)
-        sez(
-            "You might try deleting the `_local` directory and re-provisioning?",
-            ctx="(download) ",
-            err=True,
-        )
+        if hermetic.running_in_ci():
+            sez(
+                "This occasionally happens with GitHub; re-running the CI job often resolves it.",
+                ctx="(download) ",
+                err=True,
+            )
+        else:
+            sez(
+                "You might try deleting the `_local` directory and re-provisioning?",
+                ctx="(download) ",
+                err=True,
+            )
         sys.exit(1)
 
     try:
