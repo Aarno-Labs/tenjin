@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -470,6 +471,62 @@ class LocalizeMutableGlobalsPhase1Results:
     applied_rewrites: dict[str, list[tuple[int, int, str]]]
 
 
+TYPEDEF_CLONE_SUFFIX = "_xjtp"
+
+
+def rewrite_fn_ptr_params_text(original_text: str, lparen_offset: int, rparen_offset: int) -> str:
+    between_parens = original_text[lparen_offset + 1 : rparen_offset].strip()
+    if between_parens == "void" or not between_parens:
+        target_offset = rparen_offset
+        replacement = "struct XjGlobals *"
+    else:
+        target_offset = lparen_offset + 1
+        replacement = "struct XjGlobals *, "
+
+    after_opening_paren = lparen_offset + 1
+    return original_text[:after_opening_paren] + replacement + original_text[target_offset:]
+
+
+def clone_fn_ptr_typedef_text(
+    original_text: str, typedef_decl: "FnPtrTypedefDecl", clone_name: str
+) -> str:
+    rel_start = typedef_decl["def_start_offset"]
+    rel_name = typedef_decl["name_offset"] - rel_start
+    rel_lparen = typedef_decl["lparen_offset"] - rel_start
+    rel_rparen = typedef_decl["rparen_offset"] - rel_start
+    original_name = typedef_decl["name"]
+
+    if original_text[rel_name : rel_name + len(original_name)] != original_name:
+        raise ValueError(
+            f"Unable to locate typedef name {original_name!r} inside typedef declaration text"
+        )
+
+    clone_text = (
+        original_text[:rel_name] + clone_name + original_text[rel_name + len(original_name) :]
+    )
+    rel_lparen += len(clone_name) - len(original_name)
+    rel_rparen += len(clone_name) - len(original_name)
+    return rewrite_fn_ptr_params_text(clone_text, rel_lparen, rel_rparen)
+
+
+def choose_typedef_clone_names(
+    source_typedef_names: set[str], contents_by_file: dict[str, bytes]
+) -> dict[str, str]:
+    all_text = "\n".join(content.decode("utf-8") for content in contents_by_file.values())
+    clone_names: dict[str, str] = {}
+    for typedef_name in sorted(source_typedef_names):
+        candidate = f"{typedef_name}{TYPEDEF_CLONE_SUFFIX}"
+        suffix_num = 0
+        while (
+            candidate in clone_names.values()
+            or re.search(rf"\b{re.escape(candidate)}\b", all_text) is not None
+        ):
+            suffix_num += 1
+            candidate = f"{typedef_name}{TYPEDEF_CLONE_SUFFIX}_{suffix_num}"
+        clone_names[typedef_name] = candidate
+    return clone_names
+
+
 def localize_mutable_globals_phase1(
     compdb: compilation_database.CompileCommands,
     j: dict,
@@ -568,6 +625,45 @@ def localize_mutable_globals_phase1(
     print(f"  collect_cursors_by_loc took {cbl_elapsed:.3f} seconds")
 
     with batching_rewriter.BatchingRewriter() as rewriter:
+        typedefs_to_clone = {
+            use["clone_source_typedef_name"]
+            for uses in fpd_output["modified_fn_ptr_typedef_uses"].values()
+            for use in uses
+        }
+        contents_by_file = {filepath: rewriter.get_content(filepath) for filepath in tus}
+        typedef_clone_names = choose_typedef_clone_names(typedefs_to_clone, contents_by_file)
+        typedef_decls_by_name: dict[str, list[tuple[str, FnPtrTypedefDecl]]] = {}
+        for filepath_str, typedef_decls in fpd_output["fn_ptr_typedef_decls"].items():
+            for typedef_decl in typedef_decls:
+                typedef_decls_by_name.setdefault(typedef_decl["name"], []).append((
+                    filepath_str,
+                    typedef_decl,
+                ))
+
+        print("phase1, cloning typedef-backed function pointer types")
+        for source_typedef_name, clone_name in typedef_clone_names.items():
+            for filepath_str, typedef_decl in typedef_decls_by_name.get(source_typedef_name, []):
+                original_text = contents_by_file[filepath_str][
+                    typedef_decl["def_start_offset"] : typedef_decl["decl_post_offset"]
+                ].decode("utf-8")
+                clone_text = clone_fn_ptr_typedef_text(original_text, typedef_decl, clone_name)
+                rewriter.add_rewrite(
+                    filepath_str,
+                    typedef_decl["decl_post_offset"],
+                    0,
+                    "\n" + clone_text,
+                )
+
+        print("phase1, renaming typedef-backed function pointer use sites")
+        for filepath_str, typedef_uses in fpd_output["modified_fn_ptr_typedef_uses"].items():
+            for typedef_use in typedef_uses:
+                rewriter.add_rewrite(
+                    filepath_str,
+                    typedef_use["use_offset"],
+                    len(typedef_use["written_typedef_name"]),
+                    typedef_clone_names[typedef_use["clone_source_typedef_name"]],
+                )
+
         # In each translation unit,
         #   for each identified function pointer type,
         #       modify it to add 'struct XjGlobals *' as first parameter.
@@ -736,7 +832,8 @@ def localize_mutable_globals_phase1(
 
         # Replicate edits to type definitions across translation units
         equiv_classes = c_refact_type_mod_replicator.collect_type_definitions(
-            list(tus.values()), fpd_output["var_decl_fn_ptr_arg_lparen_locs"]
+            list(tus.values()),
+            fpd_output["var_decl_fn_ptr_arg_lparen_locs"],
         )
         pprint.pprint(
             equiv_classes,
@@ -794,8 +891,25 @@ def combine_unmod_fn_occ_wrappers(
 type ModifiedFnPtrTypeLoc = tuple[int, int]  # start offsets for fn ty param parens
 
 
+class ModifiedFnPtrTypedefUse(TypedDict):
+    written_typedef_name: str
+    use_offset: int
+    clone_source_typedef_name: str
+
+
+class FnPtrTypedefDecl(TypedDict):
+    name: str
+    def_start_offset: int
+    decl_post_offset: int
+    name_offset: int
+    lparen_offset: int
+    rparen_offset: int
+
+
 class BaseXjFindPtrDeclsOutput(TypedDict):
     modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
+    modified_fn_ptr_typedef_uses: dict[str, list[ModifiedFnPtrTypedefUse]]
+    fn_ptr_typedef_decls: dict[str, list[FnPtrTypedefDecl]]
     higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
     var_decl_fn_ptr_arg_lparen_locs: dict[str, dict[str, int]]
     globals_without_initializers: list[str]
