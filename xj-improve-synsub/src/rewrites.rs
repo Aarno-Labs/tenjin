@@ -58,8 +58,8 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
-    /// Rewrite `xj_isinf(e as f64) != 0` into `!e.is_infinite()`, and similarly for `isnan`.
-    /// Rewrite `xj_isinf(e as f64) == 0` into `e.is_infinite()`, and similarly for `isnan`.
+    /// Rewrite `xj_isinf(e as f64) != 0` into `e.is_infinite()`, and similarly for `isnan`.
+    /// Rewrite `xj_isinf(e as f64) == 0` into `!e.is_infinite()`, and similarly for `isnan`.
     pub fn rewrite_isinf_isnan_comparisons(
         &self,
         _symbols: &SymbolTable,
@@ -110,9 +110,9 @@ impl Rewriter {
         };
 
         let replacement: Expr = if is_equality {
-            syn::parse_quote! { #receiver.#method_ident() }
-        } else {
             syn::parse_quote! { !#receiver.#method_ident() }
+        } else {
+            syn::parse_quote! { #receiver.#method_ident() }
         };
 
         Some((replacement, Depth::Limited(0)))
