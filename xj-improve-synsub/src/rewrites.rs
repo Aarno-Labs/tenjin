@@ -366,7 +366,7 @@ impl Rewriter {
                 item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
             });
             let replacement: Expr = syn::parse_quote! {
-                #coerced_arr.as_mut_u8_slice()[..#len_arg].fill(#val_arg_as_u8)
+                #coerced_arr[..#len_arg].fill(#val_arg_as_u8)
             };
             return Some((replacement, Depth::Limited(0)));
         }
