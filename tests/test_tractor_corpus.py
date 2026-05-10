@@ -1345,6 +1345,12 @@ def test_tractor_b2_organic_gjk_lib(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
+def test_tractor_b2_organic_helxo_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/helxo_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_organic_hm_geti_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/hm_geti_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
@@ -1423,6 +1429,18 @@ def test_tractor_b2_organic_search_and_replace_lib(tenjin_fixtures: TenjinFixtur
 
 
 @pytest.mark.slow
+def test_tractor_b2_organic_sh_geti_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/sh_geti_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_sh_puts_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/sh_puts_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_organic_siphash_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/siphash_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
@@ -1431,6 +1449,24 @@ def test_tractor_b2_organic_siphash_lib(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow
 def test_tractor_b2_organic_spec_ray_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/spec_ray_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_str_dups_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/str_dups_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_str_put_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/str_put_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_strdup_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/strdup_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
