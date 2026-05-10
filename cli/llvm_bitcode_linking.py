@@ -6,6 +6,7 @@ and link them into a single module.
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 from pathlib import Path
 from subprocess import CalledProcessError
@@ -111,7 +112,7 @@ def compile_and_link_bitcode(
 
         if len(bitcode_files) == 1:
             # If there's only one bitcode file, just move it to the target path
-            bitcode_files[0].replace(destination_path)
+            shutil.move(bitcode_files[0], destination_path)
         else:
             llvm_link_args = [
                 "llvm-link",
