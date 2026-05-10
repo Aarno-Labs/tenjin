@@ -148,7 +148,7 @@ def difference(label: str, expected: str, actual: str, n: int = 1500) -> str:
 def run_tractor_test_vector(
     binary: Path,
     test_name: str,
-    spec: dict,
+    test_vector: Path,
     verbose: bool = True,
     cwd: Path | None = None,
 ) -> TestOutcome:
@@ -161,8 +161,8 @@ def run_tractor_test_vector(
         Path to the binary to test
     test_name : str
         Name of the test (for reporting)
-    spec : dict
-        Test specification containing argv, stdin, stdout, stderr, rc, has_ub
+    spec_path : Path
+        Path to the test vector JSON file
     verbose : bool
         If True, print verbose output including diffs
     cwd : Path, optional
@@ -173,6 +173,9 @@ def run_tractor_test_vector(
     TestOutcome
         Result of the test execution
     """
+
+    spec = json.loads(test_vector.read_text(encoding="utf-8"))
+
     # Skip tests marked with undefined behavior
     if "has_ub" in spec:
         return TestOutcome(
@@ -183,10 +186,16 @@ def run_tractor_test_vector(
         )
 
     # Build command
-    argv_strs = [
-        str(arg) for arg in spec.get("argv", [])
-    ]  # TA3's JSON may have raw ints, not just strings
-    cmd = [str(binary), *argv_strs]
+    if "lib_state_in" in spec:
+        # Libary tests pass the runner the path to the test vector JSON.
+        cmd = [str(binary), "lib", "-q", "-c", str(test_vector)]
+    else:
+        # Application tests: just run the binary with the given arguments and input
+        argv_strs = [
+            str(arg) for arg in spec.get("argv", [])
+        ]  # TA3's JSON may have raw ints, not just strings
+        cmd = [str(binary), *argv_strs]
+
     stdin = spec.get("stdin", None)
 
     try:
