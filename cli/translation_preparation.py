@@ -1596,6 +1596,55 @@ def run_preparation_passes(
         print(cp.stderr.decode("utf-8"))
         return cp
 
+    def prep_pointertransform(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        builddir = hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
+        assert builddir.exists(), (
+            f"Build directory {builddir} does not exist, should have been built already"
+        )
+
+        # Keep in sync with `xj-prepare-pointertransform/CMakeLists.txt`
+        binary_path = builddir / "xj-prepare-pointertransform"
+
+        compdb_path = current_codebase / "compile_commands.json"
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
+
+        with open(compdb_path, encoding="utf-8") as f:
+            compdb_entries = json.load(f)
+        source_files = [entry["file"] for entry in compdb_entries]
+
+        assert len(source_files) > 0, (
+            "No source files found in compilation database: " + compdb_path.as_posix()
+        )
+
+        xj_clang_resource_dir = (
+            hermetic.run(["clang", "-print-resource-dir"], capture_output=True, check=True)
+            .stdout.decode()
+            .strip()
+        )
+
+        xj_start = time.time()
+        cp = hermetic.run(
+            [
+                binary_path.as_posix(),
+                "--inplace",
+                "-p",
+                current_codebase.as_posix(),
+                "--extra-arg=-Wno-zero-length-array",
+                "--extra-arg=-Wno-implicit-int-conversion",
+                "--extra-arg=-Wno-unused-function",
+                f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+                *source_files,
+            ],
+            cwd=current_codebase,
+            check=True,
+            capture_output=True,
+        )
+        xj_elapsed = time.time() - xj_start
+        print(f"xj-prepare-pointertransform completed in {xj_elapsed:.1f} seconds")
+        print("xj-prepare-pointertransform stderr:")
+        print(cp.stderr.decode("utf-8"))
+        return cp
+
     def prep_refold_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
         all_build_targets = store.build_info.get_all_targets()
@@ -1618,6 +1667,7 @@ def run_preparation_passes(
         ("expand_preprocessor", prep_expand_preprocessor),
         ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
+        ("pointertransform", prep_pointertransform),
         ("uniquify_statics", prep_uniquify_statics),
     ]
 
