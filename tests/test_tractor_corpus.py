@@ -1445,6 +1445,12 @@ def test_tractor_b2_synthetic_char_to_bool_app(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
+def test_tractor_b2_synthetic_container_of_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_synthetic/container_of"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_synthetic_generic_foreach_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/generic_foreach"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
