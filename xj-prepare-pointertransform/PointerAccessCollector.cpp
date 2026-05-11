@@ -21,6 +21,69 @@ bool PointerAccessCollector::isNullExpr(const Expr *E) {
     return false;
 }
 
+// Check whether a base expression is unsafe to capture as the
+// pointer's base array.
+//
+// The rewriter substitutes the base's source text at every access
+// site, so two properties must hold for that substitution to be sound:
+//
+//  1. No side effects in the expression. If the base contains `++`,
+//     `--`, a function call, or any assignment, those side effects
+//     run once in the original (at the pointer's declaration) but
+//     would run once *per access* after the rewrite. e.g.
+//     `host = argv[n++]; ... host[0]` runs `n++` twice after rewrite.
+//
+//  2. For globals: every operand must reference a name visible
+//     everywhere the pointer is used. If the base mentions a local
+//     variable or parameter, pasting it into other functions emits
+//     code that references an out-of-scope identifier.
+//
+// Returns true if the expression is unsafe; the caller should emit
+// PointerAccessKind::Unknown instead of capturing the base.
+static bool baseIsUnsafe(const Expr *E, bool is_global) {
+    if (!E) return false;
+
+    struct Walker : public RecursiveASTVisitor<Walker> {
+        bool is_global;
+        bool unsafe = false;
+
+        explicit Walker(bool g) : is_global(g) {}
+
+        bool VisitUnaryOperator(UnaryOperator *UO) {
+            if (UO->isIncrementDecrementOp()) {
+                unsafe = true;
+                return false;
+            }
+            return true;
+        }
+        bool VisitBinaryOperator(BinaryOperator *BO) {
+            if (BO->isAssignmentOp() || BO->getOpcode() == BO_Comma) {
+                unsafe = true;
+                return false;
+            }
+            return true;
+        }
+        bool VisitCallExpr(CallExpr *) {
+            unsafe = true;
+            return false;
+        }
+        bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+            if (!is_global) return true;
+            if (const auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                if (!VD->hasGlobalStorage()) {
+                    unsafe = true;
+                    return false;
+                }
+            }
+            return true;
+        }
+    };
+
+    Walker w(is_global);
+    w.TraverseStmt(const_cast<Expr *>(E));
+    return w.unsafe;
+}
+
 // Match the `&arr[i]` pattern and pull the base array text and the
 // index expression out separately. Used when classifying initializers
 // like `int *p = &buf[3];`.
@@ -76,9 +139,27 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
         return;
     }
 
+    bool is_global = PtrVar && PtrVar->hasGlobalStorage();
+
+    auto emitUnknown = [&](const Expr *E) {
+        PointerAccess pa;
+        pa.kind = PointerAccessKind::Unknown;
+        pa.loc = E->getBeginLoc();
+        pa.expr = E;
+        pa.enclosing_stmt = nullptr;
+        access_list.push_back(pa);
+    };
+
     // Case 2: &arr[i] — base is arr, initial index is i.
     std::string base_text, index_text;
     if (isAddrOfSubscript(Init, base_text, index_text)) {
+        const auto *UO = cast<UnaryOperator>(Init);
+        const auto *ASE = cast<ArraySubscriptExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
+        if (baseIsUnsafe(ASE->getBase()->IgnoreParenImpCasts(), is_global) ||
+            baseIsUnsafe(ASE->getIdx(), is_global)) {
+            emitUnknown(Init);
+            return;
+        }
         candidate.base_array = Init;
         candidate.base_array_text = base_text;
 
@@ -99,6 +180,10 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
             const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
 
             if (LHS->getType()->isPointerType() || LHS->getType()->isArrayType()) {
+                if (baseIsUnsafe(LHS, is_global) || baseIsUnsafe(RHS, is_global)) {
+                    emitUnknown(Init);
+                    return;
+                }
                 candidate.base_array = LHS;
                 candidate.base_array_text = getSourceText(LHS, SM, LO);
 
@@ -117,6 +202,10 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
     // Case 4: bare pointer/array reference, e.g. `int *p = arr;` or
     // `char *p = bs->buf;`. The whole RHS becomes the base text.
     if (Init->getType()->isPointerType() || Init->getType()->isArrayType()) {
+        if (baseIsUnsafe(Init, is_global)) {
+            emitUnknown(Init);
+            return;
+        }
         candidate.base_array = Init;
         candidate.base_array_text = getSourceText(Init, SM, LO);
 
@@ -552,9 +641,20 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                     return;
                 }
 
+                bool is_global = PtrVar && PtrVar->hasGlobalStorage();
+
                 // p = &arr[i]
                 std::string base_text, index_text;
                 if (isAddrOfSubscript(RHS, base_text, index_text)) {
+                    const auto *UO = cast<UnaryOperator>(RHS);
+                    const auto *ASE = cast<ArraySubscriptExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
+                    if (baseIsUnsafe(ASE->getBase()->IgnoreParenImpCasts(), is_global) ||
+                        baseIsUnsafe(ASE->getIdx(), is_global)) {
+                        access_list.push_back({PointerAccessKind::Unknown,
+                                               BO->getBeginLoc(), DRE, nullptr,
+                                               "", "", "", ""});
+                        return;
+                    }
                     if (candidate.base_array_text.empty()) {
                         candidate.base_array_text = base_text;
                         candidate.base_array = RHS;
@@ -574,12 +674,19 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 if (const BinaryOperator *AddBO = dyn_cast<BinaryOperator>(RHS)) {
                     if (AddBO->getOpcode() == BO_Add &&
                         AddBO->getLHS()->IgnoreParenImpCasts()->getType()->isPointerType()) {
-                        std::string rhs_base = getSourceText(
-                            AddBO->getLHS()->IgnoreParenImpCasts(), SM, LO);
+                        const Expr *AddLHS = AddBO->getLHS()->IgnoreParenImpCasts();
+                        if (baseIsUnsafe(AddLHS, is_global) ||
+                            baseIsUnsafe(AddBO->getRHS(), is_global)) {
+                            access_list.push_back({PointerAccessKind::Unknown,
+                                                   BO->getBeginLoc(), DRE, nullptr,
+                                                   "", "", "", ""});
+                            return;
+                        }
+                        std::string rhs_base = getSourceText(AddLHS, SM, LO);
                         std::string rhs_offset = getSourceText(AddBO->getRHS(), SM, LO);
                         if (candidate.base_array_text.empty()) {
                             candidate.base_array_text = rhs_base;
-                            candidate.base_array = AddBO->getLHS()->IgnoreParenImpCasts();
+                            candidate.base_array = AddLHS;
                         } else if (rhs_base != candidate.base_array_text) {
                             access_list.push_back({PointerAccessKind::Unknown,
                                                    BO->getBeginLoc(), DRE, nullptr,
@@ -640,6 +747,16 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 // p = arr (or another pointer/array expression that
                 // matches the existing base).
                 if (RHS->getType()->isPointerType() || RHS->getType()->isArrayType()) {
+                    if (baseIsUnsafe(RHS, is_global)) {
+                        // RHS has a side effect (e.g. `p = argv[n++]`) or,
+                        // for a global pointer, references a local — pasting
+                        // it at every access site would duplicate the side
+                        // effect or paste an out-of-scope name.
+                        access_list.push_back({PointerAccessKind::Unknown,
+                                               BO->getBeginLoc(), DRE, nullptr,
+                                               "", "", "", ""});
+                        return;
+                    }
                     std::string rhs_text = getSourceText(RHS, SM, LO);
                     if (candidate.base_array_text.empty()) {
                         candidate.base_array_text = rhs_text;
