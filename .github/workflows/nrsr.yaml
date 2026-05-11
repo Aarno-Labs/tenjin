@@ -24,7 +24,7 @@ jobs:
   not-rocket-science-py:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Provision Python via uv
         run: cli/10j provision uv
@@ -47,8 +47,8 @@ jobs:
       run:
         shell: bash # GitHub Actions applies pipefail only for explicitly requested bash shell.
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: c2rust
           prefix-key: release-
@@ -88,7 +88,7 @@ jobs:
       # XREF:ci-opam-paths
       - name: Cache OCaml
         id: cache-ocaml
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.opam
@@ -100,7 +100,7 @@ jobs:
       # and is otherwise just a source checkout with no build step.
       - name: Cache CodeHawk
         id: cache-codehawk
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             _local/codehawk
@@ -108,7 +108,7 @@ jobs:
 
       - name: Cache Upstream c2rust
         id: cache-upstream-c2rust
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             _local/upstream-c2rust
@@ -152,8 +152,8 @@ jobs:
   not-rocket-science-rs-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: c2rust
           cache-workspace-crates: true

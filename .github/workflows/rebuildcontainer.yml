@@ -37,30 +37,30 @@ jobs:
     runs-on: ${{ matrix.runner }}
  
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: aarnotenjin
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       # - name: Login to GitHub Container Registry
-      #   uses: docker/login-action@v3
+      #   uses: docker/login-action@v4
       #   with:
       #     registry: ghcr.io
       #     username: ${{ github.actor }}
       #     password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Get Git commit timestamp
         run: echo "TIMESTAMP=$(git log -1 --pretty=%ct)" >> $GITHUB_ENV
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             aarnotenjin/${{ env.CONTAINERFILE }}
@@ -68,7 +68,7 @@ jobs:
             org.opencontainers.image.created={{commit_date 'YYYY-MM-DDTHH:mm:ss.SSS[Z]'}}
 
       - name: Build and push ${{ env.CONTAINERFILE }} by digest
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         id: buildandpush
         with:
           platforms: ${{ matrix.platslash }}
@@ -96,7 +96,7 @@ jobs:
           touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: digests-${{ matrix.platdash }}
           path: ${{ runner.temp }}/digests/*
@@ -114,31 +114,31 @@ jobs:
       - dockerbuilds
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-*
           merge-multiple: true
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: aarnotenjin
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       # - name: Login to GitHub Container Registry
-      #   uses: docker/login-action@v3
+      #   uses: docker/login-action@v4
       #   with:
       #     registry: ghcr.io
       #     username: ${{ github.actor }}
       #     password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v5
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             aarnotenjin/${{ env.CONTAINERFILE }}
