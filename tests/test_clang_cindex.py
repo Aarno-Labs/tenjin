@@ -3,6 +3,9 @@
 from clang.cindex import Cursor, TranslationUnit  # type: ignore
 
 
+import cindex_helpers
+
+
 def parse_single_declaration(c_source: str) -> Cursor:
     """Parse a C source string containing a single declaration and return its cursor.
 
@@ -12,10 +15,12 @@ def parse_single_declaration(c_source: str) -> Cursor:
     Returns:
         The Cursor for the declaration.
     """
+    index = cindex_helpers.create_xj_clang_index()
     tu = TranslationUnit.from_source(
         "decl.c",
         args=["-std=c11"],
         unsaved_files=[("decl.c", c_source)],
+        index=index,
     )
     # Get the first (and assumed only) top-level declaration
     children = list(tu.cursor.get_children())
