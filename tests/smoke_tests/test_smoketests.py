@@ -25,12 +25,16 @@ def test_single_c_file(test_dir, test_tmp_dir, tenjin_fixtures):
     c_prog_output = hermetic.run([str(test_tmp_dir / "main")], check=True, capture_output=True)
     assert c_prog_output.stdout == b"Hello, Tenjin!\n"
 
+    guidance = """{
+        "vars_of_type": {"&[u8]": ["get_bits:p"]}
+    }"""
+
     translation.do_translate(
         tenjin_fixtures.root,
         tmp_codebase,
         tmp_resultsdir,
         cratename="single_c_file",
-        guidance_path_or_literal="{}",
+        guidance_path_or_literal=guidance,
     )
 
     assert (tmp_resultsdir / "final" / "Cargo.toml").exists()
@@ -72,6 +76,17 @@ def test_single_c_file(test_dir, test_tmp_dir, tenjin_fixtures):
   #include <stdio.h>
   #include <assert.h>
   
+- int get_bits(const short *p, int n) {
+-     int next, cache = 0, s = n & 7;
+-     int shl = n + s;
+-     next = *p++ & (255 >> s);  // <- pointer modified
+-     while ((shl-= 8) > 0) {
+-         cache |= next << shl;
+-         next = *p++;           // <- pointer modified
+-     }
+-     return cache | (next >> -shl);
+- }
+  
   int main(int argc, char** argv)
 + {
 + 	printf("Hello, Tenjin!\\n");
@@ -84,7 +99,7 @@ def test_single_c_file(test_dir, test_tmp_dir, tenjin_fixtures):
 + }
 
 ========================================
-Total covered lines: 6 / 8 = 75.00%
+Total covered lines: 6 / 18 = 33.33%
 """  # noqa: W293
     )
 
@@ -129,6 +144,12 @@ def test_cmake_lone_exe(test_dir, test_tmp_dir, tenjin_fixtures):
     rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
 
     assert rs_prog_output.stdout == c_prog_output.stdout
+
+    main_rses = list((tmp_resultsdir / "final").glob("**/src/main*.rs"))
+    assert len(main_rses) == 1, "No main.rs file found"
+
+    # float_to_bits should be converted from unsafe union to safe Rust method.
+    assert ".to_bits()" in main_rses[0].read_text(encoding="utf-8")
 
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
