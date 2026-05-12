@@ -41,8 +41,6 @@ jobs:
       matrix:
         runner: [ubuntu-latest, macos-14, macos-15]
     runs-on: ${{ matrix.runner }}
-    env:
-      C2RUST_TESTED_CRATES: "-p c2rust -p c2rust-transpile -p c2rust-ast-printer"
     defaults:
       run:
         shell: bash # GitHub Actions applies pipefail only for explicitly requested bash shell.
@@ -64,11 +62,8 @@ jobs:
       - name: Provision Rust
         run: cli/10j provision rust 2>&1 | ./tss
 
-      - name: Build c2rust tests
-        run: cd c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES --no-run 2>&1 | ../tss
-
-      - name: Run c2rust unit tests
-        run: cd c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES 2>&1 | ../tss
+      - name: Run Rust unit tests
+        run: XJ_BUILD_RS_PROFILE=release cli/10j test-unit-rs 2>&1 | ./tss
 
       - name: Build c2rust binaries
         run: XJ_BUILD_RS_PROFILE=release cli/10j build-rs 2>&1 | ./tss
@@ -121,7 +116,7 @@ jobs:
         run: cli/10j provision all 2>&1 | ./tss
 
       - name: Run Tenjin end-to-end tests
-        run: XJ_BUILD_RS_PROFILE=release cli/10j pytest tests --capture=no
+        run: XJ_BUILD_RS_PROFILE=release cli/10j pytest tests --capture=no -n auto
 
 
   not-rocket-science-reprovision:

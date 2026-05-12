@@ -143,7 +143,7 @@ def compute_build_info_in(
                 )
             c_file = c_files[0]
 
-        index = c_refact.create_xj_clang_index()
+        index = cindex_helpers.create_xj_clang_index()
         tu = c_refact.parse_translation_unit_with_args(index, c_file.as_posix(), [])
         if translation_unit_has_main(tu):
             buildcmd = [
@@ -301,7 +301,7 @@ def collect_decls_by_rel_tu(
     # Note that the two FilePathStrs here can be different,
     # e.g. the declaration can be in a header file included by the TU file.
 
-    index = c_refact.create_xj_clang_index()
+    index = cindex_helpers.create_xj_clang_index()
     tus = c_refact.parse_project(index, compdb)
     for tu_path, tu in tus.items():
         assert Path(tu_path).is_relative_to(current_codebase), (
@@ -1055,7 +1055,7 @@ def run_preparation_passes(
         items_src_by_tu: dict[FilePathStr, dict[QUSS_and_defn, FileContentsStr]] = {}
         tus_modifying_decls: dict[QUSS_and_defn, set[FilePathStr]] = {}
 
-        index = c_refact.create_xj_clang_index()
+        index = cindex_helpers.create_xj_clang_index()
         tus = c_refact.parse_project(index, compdb)
 
         # Build a map from QUSS to the expected (original) source text from headers

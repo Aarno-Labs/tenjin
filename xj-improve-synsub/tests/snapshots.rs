@@ -117,7 +117,7 @@ fn isinf_isnan_strips_f64_cast() {
         "fn demo(x: f64) -> bool { xj_isinf(x as f64) != 0 && xj_isnan(x as f64) == 0 }",
         expect![[r#"
             fn demo(x: f64) -> bool {
-                !x.is_infinite() && x.is_nan()
+                x.is_infinite() && !x.is_nan()
             }
         "#]],
     );
@@ -132,7 +132,7 @@ fn isinf_isnan_without_cast() {
         "fn demo(x: f64) -> bool { xj_isinf(x) != 0 && xj_isnan(x) == 0 }",
         expect![[r#"
             fn demo(x: f64) -> bool {
-                !x.is_infinite() && x.is_nan()
+                x.is_infinite() && !x.is_nan()
             }
         "#]],
     );
@@ -164,8 +164,7 @@ fn memset_on_cast() {
         expect![[r#"
             use ::xj_cstr::ByteSlice;
             fn demo(buf: &mut [u8]) {
-                buf.as_u8_slice()
-                    .as_mut_u8_slice()[..buf.len() as somelongtype]
+                buf.as_mut_u8_slice()[..buf.len() as somelongtype as usize]
                     .fill((0 as foo).try_into().unwrap());
             }
         "#]],

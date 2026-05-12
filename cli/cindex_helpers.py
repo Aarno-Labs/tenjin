@@ -1,12 +1,36 @@
 from typing import Generator
-from pycparser import c_lexer  # type: ignore
+import platform
 
+from pycparser import c_lexer  # type: ignore
 from clang.cindex import (  # type: ignore
     TypeKind,
     Cursor,
     CursorKind,
     TranslationUnit,
 )
+import clang.cindex as cindex  # type: ignore
+
+import repo_root
+import hermetic
+
+
+def create_xj_clang_index() -> cindex.Index:
+    """Create a clang Index configured to use the hermetic xj-llvm installation."""
+
+    if not cindex.Config.loaded:
+        xj_llvm = hermetic.xj_llvm_root(repo_root.localdir())
+
+        if platform.system() == "Darwin":
+            libclang_path = xj_llvm / "lib" / "libclang.dylib"
+        else:
+            # Keep this version in sync with `constants.py`, which must be compatible
+            # with the one embedded in `pyproject.toml`.
+            libclang_path = xj_llvm / "lib" / "libclang.so.21.1.8"
+
+        cindex.Config.set_library_file(libclang_path)
+
+    return cindex.Index.create()
+
 
 type AncestorChain = tuple[Cursor, AncestorChain | None]
 
