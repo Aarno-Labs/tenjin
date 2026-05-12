@@ -683,7 +683,7 @@ impl Rewriter {
         }
     }
 
-    /// Rewrite let-binding statements.
+    /// Rewrite let-bound expressions when simpler forms exist.
     pub fn rewrite_local(&self, symbols: &SymbolTable, stmt: &Stmt) -> Option<(Stmt, Depth)> {
         let Stmt::Local(local) = stmt else {
             return None;

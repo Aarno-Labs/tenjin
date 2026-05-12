@@ -27,6 +27,22 @@ import cargo_workspace_helpers
 import static_measurements_rust
 
 
+def run_built_workspace_binary(
+    root: Path, workspace_dir: str, binary_name: str, args: list[str], dir: Path
+) -> CompletedProcess:
+    target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
+    return hermetic.run(
+        [binary_name, *args, dir],
+        cwd=dir,
+        env_ext={
+            "PATH": os.pathsep.join([
+                str(root / workspace_dir / "target" / target_subdir),
+                os.environ["PATH"],
+            ]),
+        },
+    )
+
+
 def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
     def run_ast_grep_rewrite(pattern: str, rewrite: str) -> CompletedProcess:
         cp = hermetic.run(
@@ -80,16 +96,12 @@ def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProce
         "($BASE[$IDX as usize])",
     )
 
-    target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
-    synsub_cp = hermetic.run(
-        ["xj-improve-synsub", *args, dir],
-        cwd=dir,
-        env_ext={
-            "PATH": os.pathsep.join([
-                str(root / "xj-improve-synsub" / "target" / target_subdir),
-                os.environ["PATH"],
-            ]),
-        },
+    synsub_cp = run_built_workspace_binary(
+        root,
+        "xj-improve-synsub",
+        "xj-improve-synsub",
+        args,
+        dir,
     )
 
     run_ast_grep_rewrite(
@@ -98,6 +110,16 @@ def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProce
     )
 
     return synsub_cp
+
+
+def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> CompletedProcess:
+    return run_built_workspace_binary(
+        root,
+        "xj-improve-lift-call-args",
+        "xj-improve-lift-call-args",
+        args,
+        dir,
+    )
 
 
 def quiet_cargo(args: list[str], cwd: Path, env_ext=None) -> CompletedProcess:
@@ -739,6 +761,10 @@ def run_improvement_passes(
             "synsub",
             lambda root, dir: run_improve_synsub(root, ["--modify-in-place"], dir),
         ),
+        (
+            "lift-call-args",
+            lambda root, dir: run_improve_lift_call_args(root, ["--modify-in-place"], dir),
+        ),
         ("fmt", run_cargo_fmt),
         ("fix", run_cargo_fix),
         (
@@ -778,19 +804,27 @@ def run_improvement_passes(
                         f"TENJIN WARNING: improvement pass {counter} ({tag}) failed, skipping further passes."
                     )
                     break
+
             mid_ns = time.perf_counter_ns()
-            # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
-            quiet_cargo(["check"], cwd=newdir)
-            # Clean up the target directory so the next pass starts fresh.
-            quiet_cargo(
-                ["clean", *cargo_workspace_helpers.flags_for_all_cargo_workspace_packages(newdir)],
-                cwd=newdir,
-            )
-            # Ensure any plugin results are also removed, since they may prevent
-            # subsequent passes from running correctly.
-            for child in (newdir / "target").glob("plugin-*"):
-                if child.is_dir():
-                    shutil.rmtree(child)
+            # Assumption: the first two passes are `synsub` and `lift-call-args`.
+            # The output of synsub is assumed to be type-correct but not necessarily
+            # borrowck-correct, so we only run `cargo check` on passes after the first.
+            if counter > 1:
+                # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
+                quiet_cargo(["check"], cwd=newdir)
+                # Clean up the target directory so the next pass starts fresh.
+                quiet_cargo(
+                    [
+                        "clean",
+                        *cargo_workspace_helpers.flags_for_all_cargo_workspace_packages(newdir),
+                    ],
+                    cwd=newdir,
+                )
+                # Ensure any plugin results are also removed, since they may prevent
+                # subsequent passes from running correctly.
+                for child in (newdir / "target").glob("plugin-*"):
+                    if child.is_dir():
+                        shutil.rmtree(child)
             end_ns = time.perf_counter_ns()
 
             core_ms = round(elapsed_ms_of_ns(start_ns, mid_ns))
