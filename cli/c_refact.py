@@ -1,7 +1,6 @@
 import json
 import time
 from dataclasses import dataclass
-import platform
 from pathlib import Path
 import subprocess
 import shutil
@@ -12,7 +11,6 @@ from os import environ
 from clang.cindex import (  # type: ignore
     Index,
     CursorKind,
-    Config,
     Diagnostic,
     LinkageKind,
     StorageClass,
@@ -26,29 +24,15 @@ import hermetic
 import repo_root
 import compilation_database
 import batching_rewriter
-from cindex_helpers import render_declaration_sans_qualifiers, yield_matching_cursors
+from cindex_helpers import (
+    create_xj_clang_index,
+    render_declaration_sans_qualifiers,
+    yield_matching_cursors,
+)
 import c_refact_type_mod_replicator
 from constants import XJ_GUIDANCE_FILENAME
 import targets
 import tenj_types
-
-
-def create_xj_clang_index() -> Index:
-    """Create a clang Index configured to use the hermetic xj-llvm installation."""
-
-    if not Config.loaded:
-        xj_llvm = hermetic.xj_llvm_root(repo_root.localdir())
-
-        if platform.system() == "Darwin":
-            libclang_path = xj_llvm / "lib" / "libclang.dylib"
-        else:
-            # Keep this version in sync with `constants.py`, which must be compatible
-            # with the one embedded in `pyproject.toml`.
-            libclang_path = xj_llvm / "lib" / "libclang.so.21.1.8"
-
-        Config.set_library_file(libclang_path)
-
-    return Index.create()
 
 
 def xj_comp_db_from_directory(dir: str) -> compilation_database.CompileCommands:

@@ -33,6 +33,7 @@ import batching_rewriter
 import compilation_database
 import c_refact
 from cindex_helpers import (
+    create_xj_clang_index,
     render_declaration_sans_qualifiers,
     yield_matching_cursors,
     AncestorChain,
@@ -355,7 +356,7 @@ def lift_subfield_args(
     print("=" * 80)
 
     # Parse the project
-    index = c_refact.create_xj_clang_index()
+    index = create_xj_clang_index()
     tus = c_refact.parse_project(index, compdb)
 
     # Collect all call expressions by location

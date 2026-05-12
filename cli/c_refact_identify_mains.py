@@ -4,6 +4,7 @@ from clang.cindex import (  # type: ignore
 )
 
 import c_refact
+import cindex_helpers
 import compilation_database
 
 
@@ -20,7 +21,7 @@ def translation_unit_has_main(tu: TranslationUnit) -> bool:
 def find_main_translation_units(
     compdb: compilation_database.CompileCommands,
 ) -> list[compilation_database.CompileCommand]:
-    index = c_refact.create_xj_clang_index()
+    index = cindex_helpers.create_xj_clang_index()
     result: list[compilation_database.CompileCommand] = []
 
     for cmd in compdb.commands:
