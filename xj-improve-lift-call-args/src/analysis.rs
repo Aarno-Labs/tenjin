@@ -100,9 +100,22 @@ pub struct CallAnalysis {
     pub call_span: TextRange,
     pub accesses: Vec<Access>,
     pub shapes: HashMap<SubexprId, TyShape>,
-    /// Mirrors `shapes` but carries the source text fragments needed by the
-    /// emitter: (original text, inner-place text).
-    pub snippets: HashMap<SubexprId, (String, String)>,
+    /// Mirrors `shapes` but carries the source-text fragments and
+    /// inner-place span the emitter needs.
+    pub snippets: HashMap<SubexprId, SnippetData>,
+}
+
+/// Source-text + span information for one analyzed subexpression.
+///
+/// The `inner_place_span` is required by `emit::emit_edits` to compose
+/// nested lifts: when an outer lift's RHS is the inner place of a `&place`
+/// expression and another (smaller) lift falls inside that inner place,
+/// we need its bounds in source coordinates to substitute correctly.
+#[derive(Debug, Clone)]
+pub struct SnippetData {
+    pub original_text: String,
+    pub inner_place_text: String,
+    pub inner_place_span: Option<TextRange>,
 }
 
 /// Walk a single file and produce one `CallAnalysis` per top-level call
@@ -180,7 +193,7 @@ fn analyze_call(
     let call_span = call_node.text_range();
     let mut accesses = Vec::new();
     let mut shapes: HashMap<SubexprId, TyShape> = HashMap::new();
-    let mut snippets: HashMap<SubexprId, (String, String)> = HashMap::new();
+    let mut snippets: HashMap<SubexprId, SnippetData> = HashMap::new();
 
     if let Some(method) = ast::MethodCallExpr::cast(call_node.clone()) {
         let receiver_kind = method_receiver_kind(sema, &method);
@@ -289,7 +302,7 @@ fn walk_arg_expr(
     ids: &mut IdGen,
     accesses: &mut Vec<Access>,
     shapes: &mut HashMap<SubexprId, TyShape>,
-    snippets: &mut HashMap<SubexprId, (String, String)>,
+    snippets: &mut HashMap<SubexprId, SnippetData>,
 ) {
     let id = ids.fresh();
     let span = node.text_range();
@@ -300,7 +313,7 @@ fn walk_arg_expr(
         None => return,
     };
 
-    let (form, place_opt, inner_place_text) = classify_expr(&expr);
+    let (form, place_opt, inner_place_text, inner_place_span) = classify_expr(&expr);
 
     // Trust the type-derived classification over the parameter-derived
     // hint when the hint disagrees on Copy-ness with the actual expression
@@ -322,7 +335,14 @@ fn walk_arg_expr(
 
     let shape = derive_shape(sema, &expr, form);
 
-    snippets.insert(id, (original_text, inner_place_text));
+    snippets.insert(
+        id,
+        SnippetData {
+            original_text,
+            inner_place_text,
+            inner_place_span,
+        },
+    );
     shapes.insert(id, shape);
 
     if let Some(place) = place_opt {
@@ -364,7 +384,7 @@ fn recurse_children(
     ids: &mut IdGen,
     accesses: &mut Vec<Access>,
     shapes: &mut HashMap<SubexprId, TyShape>,
-    snippets: &mut HashMap<SubexprId, (String, String)>,
+    snippets: &mut HashMap<SubexprId, SnippetData>,
 ) {
     for event in node.preorder() {
         if let WalkEvent::Enter(n) = event {
@@ -408,36 +428,38 @@ fn recurse_children(
     }
 }
 
-fn classify_expr(expr: &ast::Expr) -> (ExprForm, Option<Place>, String) {
+fn classify_expr(expr: &ast::Expr) -> (ExprForm, Option<Place>, String, Option<TextRange>) {
     match expr {
         ast::Expr::PathExpr(p) => {
             let place = path_to_place(p);
-            (ExprForm::BarePlace, place, String::new())
+            (ExprForm::BarePlace, place, String::new(), None)
         }
         ast::Expr::FieldExpr(_) | ast::Expr::IndexExpr(_) => {
             let place = place_for_expr(expr);
-            (ExprForm::BarePlace, place, String::new())
+            (ExprForm::BarePlace, place, String::new(), None)
         }
         ast::Expr::PrefixExpr(p) if p.op_kind() == Some(ast::UnaryOp::Deref) => {
             let place = place_for_expr(expr);
-            (ExprForm::BarePlace, place, String::new())
+            (ExprForm::BarePlace, place, String::new(), None)
         }
         ast::Expr::RefExpr(r) => {
-            let inner_text = r
-                .expr()
+            let inner = r.expr();
+            let inner_text = inner
+                .as_ref()
                 .map(|e| e.syntax().text().to_string())
                 .unwrap_or_default();
+            let inner_span = inner.as_ref().map(|e| e.syntax().text_range());
             let form = if r.mut_token().is_some() {
                 ExprForm::MutBorrowOf
             } else {
                 ExprForm::BorrowOf
             };
-            (form, None, inner_text)
+            (form, None, inner_text, inner_span)
         }
         ast::Expr::CallExpr(_) | ast::Expr::MethodCallExpr(_) => {
-            (ExprForm::NestedCall, None, String::new())
+            (ExprForm::NestedCall, None, String::new(), None)
         }
-        _ => (ExprForm::Other, None, String::new()),
+        _ => (ExprForm::Other, None, String::new(), None),
     }
 }
 

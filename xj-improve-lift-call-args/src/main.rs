@@ -104,12 +104,13 @@ fn main() -> Result<()> {
             // Build the snippet map keyed by SubexprId for the emitter.
             let snippets_for_emit: BTreeMap<SubexprId, LiftSnippet> = snippets
                 .into_iter()
-                .map(|(k, (orig, inner))| {
+                .map(|(k, snip)| {
                     (
                         k,
                         LiftSnippet {
-                            original_text: orig,
-                            inner_place_text: inner,
+                            original_text: snip.original_text,
+                            inner_place_text: snip.inner_place_text,
+                            inner_place_span: snip.inner_place_span,
                         },
                     )
                 })
