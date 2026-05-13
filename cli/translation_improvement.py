@@ -44,41 +44,40 @@ def run_built_workspace_binary(
     )
 
 
-def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
-    def run_ast_grep_rewrite(pattern: str, rewrite: str) -> CompletedProcess:
-        cp = hermetic.run(
-            [
-                hermetic.xj_ast_grep_exe(repo_root.localdir()),
-                "-p",
-                pattern,
-                "--rewrite",
-                rewrite,
-                "--update-all",
-                "-l",
-                "rs",
-                dir,
-            ],
-            cwd=dir,
-            capture_output=True,
-            check=False,
-        )
-        if cp.returncode != 0:
-            stderr = cp.stderr.decode("utf-8")
-            if not stderr:
-                # Treat pattern-not-found as success, not failure.
-                cp.returncode = 0
-            else:
-                # If the pattern is not found, ast-grep will return 1
-                # without printing anything to stderr. So if we do see
-                # output, something is amiss; print it and fail loudly.
-                click.echo(stderr, err=True)
-                click.echo(
-                    "TENJIN WARNING: ast-grep rewrite failed for pattern: " + pattern, err=True
-                )
-                click.echo(cp.stdout.decode("utf-8"), err=True)
-                cp.check_returncode()
-        return cp
+def run_ast_grep_rewrite(dir: Path, pattern: str, rewrite: str) -> CompletedProcess:
+    cp = hermetic.run(
+        [
+            hermetic.xj_ast_grep_exe(repo_root.localdir()),
+            "-p",
+            pattern,
+            "--rewrite",
+            rewrite,
+            "--update-all",
+            "-l",
+            "rs",
+            dir,
+        ],
+        cwd=dir,
+        capture_output=True,
+        check=False,
+    )
+    if cp.returncode != 0:
+        stderr = cp.stderr.decode("utf-8")
+        if not stderr:
+            # Treat pattern-not-found as success, not failure.
+            cp.returncode = 0
+        else:
+            # If the pattern is not found, ast-grep will return 1
+            # without printing anything to stderr. So if we do see
+            # output, something is amiss; print it and fail loudly.
+            click.echo(stderr, err=True)
+            click.echo("TENJIN WARNING: ast-grep rewrite failed for pattern: " + pattern, err=True)
+            click.echo(cp.stdout.decode("utf-8"), err=True)
+            cp.check_returncode()
+    return cp
 
+
+def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
     # Macro arguments are in general token trees, not expressions,
     # and ast-grep rightly treats them as such. But there are important
     # special cases, so we temporarily rewrite invocation sites to look like
@@ -86,13 +85,11 @@ def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProce
     #
     # This produces, as an ephemeral intermediate state, code that does not
     # type check, but ast-grep can still match on it.
-    run_ast_grep_rewrite(
-        "println!($$$ARGS)",
-        "xj_astgrep_println($$$ARGS)",
-    )
+    run_ast_grep_rewrite(dir, "println!($$$ARGS)", "xj_astgrep_println($$$ARGS)")
 
     # Direct indexing of arrays takes an unnecessary detour through unsafe pointers
     run_ast_grep_rewrite(
+        dir,
         "(*$BASE.as_mut_ptr().offset($IDX as isize))",
         "($BASE[$IDX as usize])",
     )
@@ -105,22 +102,24 @@ def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProce
         dir,
     )
 
-    run_ast_grep_rewrite(
-        "xj_astgrep_println($$$ARGS)",
-        "println!($$$ARGS)",
-    )
-
     return synsub_cp
 
 
 def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> CompletedProcess:
-    return run_built_workspace_binary(
+    # rust-analyzer's surface syntax treats macro args as opaque token
+    # trees, so we wait until after this pass to restore the original println! syntax.
+
+    lift_cp = run_built_workspace_binary(
         root,
         "xj-improve-lift-call-args",
         "xj-improve-lift-call-args",
         args,
         dir,
     )
+
+    run_ast_grep_rewrite(dir, "xj_astgrep_println($$$ARGS)", "println!($$$ARGS)")
+
+    return lift_cp
 
 
 def quiet_cargo(args: list[str], cwd: Path, env_ext=None) -> CompletedProcess:
