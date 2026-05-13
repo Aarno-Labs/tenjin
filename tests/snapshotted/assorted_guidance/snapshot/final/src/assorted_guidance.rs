@@ -62,13 +62,13 @@ pub fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
 }
 #[no_mangle]
 pub fn guided_str_init_lit() {
-    let ostr: String = String::from("owned String");
+    let _ostr: String = String::from("owned String");
     print_owned_String(String::from("ddedd"));
-    let mut uptr = b"unguided pointer\0" as *const u8 as *const ::core::ffi::c_char;
+    let _uptr = b"unguided pointer\0" as *const u8 as *const ::core::ffi::c_char;
 }
 #[no_mangle]
 pub fn guided_str_init_empty_lit() {
-    let mut ostr: String = String::new();
+    let _ostr: String = String::new();
     print_owned_String(String::new());
 }
 #[no_mangle]
@@ -107,7 +107,7 @@ pub fn guided_ret_ostr() -> String {
     String::new()
 }
 #[no_mangle]
-pub fn guided_condition_string_null_check_neq(mut ostr: String) -> ::core::ffi::c_int {
+pub fn guided_condition_string_null_check_neq(_ostr: String) -> ::core::ffi::c_int {
     if true {
         2
     } else {
@@ -143,7 +143,7 @@ pub fn guided_vec_memset_zero_mulsizeof_deref(mut ovu8: Vec<u8>) {
     ovu8[..3].fill(0);
 }
 #[no_mangle]
-pub fn guided_mut_ref_neq(mut xstr: &mut str, mut xstr2: &mut str) -> ::core::ffi::c_int {
+pub fn guided_mut_ref_neq(_xstr: &mut str, _xstr2: &mut str) -> ::core::ffi::c_int {
     1
 }
 #[no_mangle]
@@ -151,7 +151,7 @@ pub fn guided_1d_slice(
     mut x: &[::core::ffi::c_int],
     mut index: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
-    let mut x2: &[::core::ffi::c_int] = &x[3..];
+    let _x2: &[::core::ffi::c_int] = &x[3..];
     x[index as usize]
 }
 #[no_mangle]
@@ -179,13 +179,13 @@ pub fn guided_2d_vec(
 }
 #[no_mangle]
 pub fn guided_local_int_as_char() {
-    let mut unguided = 65 as ::core::ffi::c_char;
-    let mut oc: char = 'A';
+    let _unguided = 65 as ::core::ffi::c_char;
+    let _oc: char = 'A';
 }
 #[no_mangle]
-pub fn takes_shared_str(mut rstr: &str) {}
+pub fn takes_shared_str(_rstr: &str) {}
 #[no_mangle]
-pub fn takes_shared_u8(mut ru8: &u8) {}
+pub fn takes_shared_u8(_ru8: &u8) {}
 #[no_mangle]
 pub fn guided_coerce_borrow_arg() {
     let mut ostr: String = guided_ret_ostr();
@@ -197,7 +197,7 @@ pub unsafe fn unguided_coerce_asref(mut unguided: *mut ::core::ffi::c_uchar) {
 }
 #[no_mangle]
 pub fn guided_string_zero_empty() {
-    let mut ostr: String = String::new();
+    let _ostr: String = String::new();
 }
 #[no_mangle]
 pub unsafe fn struct_unguided_ptr_with_guided_members(mut ug_ptr: *mut StructWithMembersA) {
@@ -214,7 +214,7 @@ pub unsafe fn struct_guided_ptr_with_guided_members(mut gm_ptr: &mut StructWithM
 pub fn guided_union_float_int_bitcast(mut f: ::core::ffi::c_float) -> ::core::ffi::c_uint {
     let mut __tenjin_tmp_in_u: ::core::ffi::c_float = 0.;
     let mut __tenjin_tmp_out_u: ::core::ffi::c_uint = 0;
-    let mut u = UsedForFloatIntBitcast { ui: 0 };
+    let _u = UsedForFloatIntBitcast { ui: 0 };
     __tenjin_tmp_in_u = f;
     __tenjin_tmp_out_u = __tenjin_tmp_in_u.to_bits() as ::core::ffi::c_uint;
     __tenjin_tmp_out_u
@@ -224,7 +224,7 @@ pub fn guided_union_float_int_bitcast(mut f: ::core::ffi::c_float) -> ::core::ff
 pub fn guided_union_int_float_bitcast(mut ui: ::core::ffi::c_uint) -> ::core::ffi::c_float {
     let mut __tenjin_tmp_in_u: ::core::ffi::c_uint = 0;
     let mut __tenjin_tmp_out_u: ::core::ffi::c_float = 0.;
-    let mut u = UsedForFloatIntBitcast { ui: 0 };
+    let _u = UsedForFloatIntBitcast { ui: 0 };
     __tenjin_tmp_in_u = ui;
     __tenjin_tmp_out_u = f32::from_bits(__tenjin_tmp_in_u as u32);
     __tenjin_tmp_out_u

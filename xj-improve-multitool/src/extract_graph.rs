@@ -251,6 +251,7 @@ impl<'c> Visitor<'c> for GraphExtractionVisitor<'c> {
             }
             Res::PrimTy(_)
             | Res::ToolMod
+            | Res::OpenMod(_)
             | Res::NonMacroAttr(_)
             | Res::SelfTyParam { .. }
             | Res::SelfTyAlias { .. }

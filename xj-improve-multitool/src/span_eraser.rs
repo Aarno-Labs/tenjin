@@ -118,7 +118,7 @@ impl SpanEraser {
                     .source_file_by_stable_id(*id)
                     .expect("Stable ID did not map to a source file");
                 match &srcfile.name {
-                    rustc_span::FileName::Real(rustc_span::RealFileName::LocalPath(path)) => {
+                    rustc_span::FileName::Real(real) if let Some(path) = real.local_path() => {
                         if let Ok(mut file) = std::fs::OpenOptions::new()
                             .write(true)
                             .truncate(true)
@@ -134,7 +134,7 @@ impl SpanEraser {
                     }
                     _ => {
                         eprintln!(
-                            "Cannot modify source file with non-real name: {:?}",
+                            "Cannot modify source file with non-local name: {:?}",
                             srcfile.name
                         );
                     }

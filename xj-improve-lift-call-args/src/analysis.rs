@@ -237,7 +237,8 @@ fn analyze_call(
                 );
             }
         }
-    } else if let Some(call) = ast::CallExpr::cast(call_node.clone()) {
+    } else {
+        let call = ast::CallExpr::cast(call_node.clone())?;
         // Resolve the callee to derive per-parameter access kinds. For
         // by-ref parameters we want SharedBorrow/MutBorrow even when the
         // argument is written as a bare place expression (rustc would
@@ -285,8 +286,6 @@ fn analyze_call(
                 );
             }
         }
-    } else {
-        return None;
     }
 
     Some(CallAnalysis {

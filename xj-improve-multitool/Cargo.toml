@@ -8,7 +8,7 @@ publish = false
 rustc_private = true
 
 [dependencies]
-rustc_plugin = "=0.14.3-nightly-2025-08-20"
+rustc_plugin = "=0.15.2-nightly-2026-05-01"
 env_logger = {version = "0.10", default-features = false}
 clap = {version = "4.4", features = ["derive"]}
 serde = {version = "1", features = ["derive"]}

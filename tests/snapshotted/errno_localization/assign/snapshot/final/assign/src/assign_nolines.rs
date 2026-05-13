@@ -93,8 +93,8 @@ unsafe fn _xj_wrap_strerror_xjtr_0(
     ret
 }
 unsafe fn main_0(
-    mut argc: ::core::ffi::c_int,
-    mut argv: *mut *mut ::core::ffi::c_char,
+    _argc: ::core::ffi::c_int,
+    _argv: *mut *mut ::core::ffi::c_char,
 ) -> ::core::ffi::c_int {
     let mut _xj_local_errno: i32 = 0;
     foo();
