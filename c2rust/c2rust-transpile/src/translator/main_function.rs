@@ -164,15 +164,27 @@ impl Translation<'_> {
                     )),
                 }?;
                 let args = mk().ident_expr("args_ptrs");
-                let argc = mk().binary_expr(
+                let argc_expr = mk().binary_expr(
                     BinOp::Sub(Default::default()),
                     mk().method_call_expr(args.clone(), "len", no_args.clone()),
                     mk().lit_expr(mk().int_lit(1, "")),
                 );
                 let argv = mk().method_call_expr(args, "as_mut_ptr", no_args.clone());
 
-                main_args.push(mk().cast_expr(argc, argc_ty));
-                main_args.push(mk().cast_expr(argv, argv_ty));
+                stmts.push(mk().local_stmt(Box::new(mk().local(
+                    mk().ident_pat("argc"),
+                    None,
+                    Some(mk().cast_expr(argc_expr, argc_ty)),
+                ))));
+
+                stmts.push(mk().local_stmt(Box::new(mk().local(
+                    mk().ident_pat("argv"),
+                    None,
+                    Some(mk().cast_expr(argv, argv_ty)),
+                ))));
+
+                main_args.push(mk().ident_expr("argc"));
+                main_args.push(mk().ident_expr("argv"));
             }
 
             if n >= 3 {

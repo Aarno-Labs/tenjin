@@ -46,13 +46,7 @@ pub fn main() -> ExitCode {
         .map(|arg| arg.as_mut_ptr() as *mut ::core::ffi::c_char)
         .chain(::core::iter::once(::core::ptr::null_mut()))
         .collect();
-    unsafe {
-        ExitCode::from({
-            let __lift_1_1662_0 = (args_ptrs.len() - 1) as ::core::ffi::c_int;
-            main_0(
-                __lift_1_1662_0,
-                args_ptrs.as_mut_ptr() as *mut *mut ::core::ffi::c_char,
-            )
-        } as u8)
-    }
+    let argc = (args_ptrs.len() - 1) as ::core::ffi::c_int;
+    let argv = args_ptrs.as_mut_ptr() as *mut *mut ::core::ffi::c_char;
+    unsafe { ExitCode::from(main_0(argc, argv) as u8) }
 }
