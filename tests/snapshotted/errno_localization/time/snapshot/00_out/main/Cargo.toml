@@ -15,6 +15,5 @@ crate-type = ["rlib"]
 path = "src/main_nolines.rs"
 name = "main_nolines"
 [dependencies]
-xj_ctime = { version = "0.1.1" }
 
 

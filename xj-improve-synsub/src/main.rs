@@ -43,6 +43,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_ctor_over_if);
     rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
+    rw.add_expr_rewrite(Rewriter::rewrite_ctime_time);
 
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
     rw.add_stmt_rewrite(Rewriter::rewrite_local);
@@ -117,6 +118,7 @@ fn add_deps_to_manifest(
 
 fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
+        "xj_ctime" => "0.1.1",
         "xj_cstr" => "0.1.4",
         "xj_scanf" => "0.2.6",
         "bytemuck" => "1.25.0",

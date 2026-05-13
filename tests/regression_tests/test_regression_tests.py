@@ -38,6 +38,11 @@ def test_time_coercion_unguided(test_dir, tenjin_fixtures):
     rs_prog_output = run_cargo_on_final(
         tenjin_fixtures.tmp_resultsdir / "final", ["run"], capture_output=True
     )
+    # We'll generate
+    # pub unsafe extern "C" fn wrap_time(mut tloc: *mut time_t) -> time_t {
+    #     return xj_ctime::compat::time(tloc.as_mut());
+    # }
+
     assert rs_prog_output.stdout == b"1\n"
 
 
@@ -51,3 +56,7 @@ def test_time_coercion_guided(test_dir, tenjin_fixtures):
     )
     assert rs_prog_output.stdout == b"1\n"
     assert_final_had_no_unsafe_fns(tenjin_fixtures.tmp_resultsdir)
+    # We'll generate
+    # pub extern "C" fn wrap_time(mut tloc: &mut time_t) -> time_t {
+    #     return xj_ctime::compat::time(Some(tloc));
+    # }
