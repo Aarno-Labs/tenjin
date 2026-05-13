@@ -19,7 +19,6 @@ from codehawk import CodehawkSummary
 import compilation_database
 import batching_rewriter
 import c_refact
-import c_refact_arglifter
 import c_refact_decl_splitter
 import c_refact_type_mod_replicator
 from c_refact_identify_mains import translation_unit_has_main
@@ -765,15 +764,6 @@ def run_preparation_passes(
             print(
                 "TENJIN: NOTE: Skipping localization of mutable globals for multi-target codebase."
             )
-
-    def prep_lift_subfield_args(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        # Lifting of subfield arguments is idempotent, so we apply it to all targets
-        # without concern for overlapping source files.
-        for target in store.build_info.get_all_targets():
-            compdb_for_target = store.build_info.compdb_for_target_within(
-                target.key, current_codebase
-            )
-            c_refact_arglifter.lift_subfield_args(compdb_for_target)
 
     def should_use_cclyzer_cache():
         # Don't use cached results during parallel tests.
@@ -1678,7 +1668,6 @@ def run_preparation_passes(
         preparation_passes.extend([
             ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
             ("localize_mutable_globals", prep_localize_mutable_globals),
-            ("lift_subfield_args", prep_lift_subfield_args),
         ])
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") == "1":

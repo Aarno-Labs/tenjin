@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 import os
+import platform
 
 import pytest
 
@@ -34,6 +35,8 @@ def lua_5_4_0_immunant_git_clone() -> Path:
 def test_sbase_cal(
     tenjin_fixtures: TenjinFixtures,
 ):
+    if platform.system() == "Darwin":
+        pytest.skip("c2rust drops the `drawcal` function on macOS but not Linux (!)")
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = suckless_sbase_git_clone()
 

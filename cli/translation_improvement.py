@@ -27,41 +27,57 @@ import cargo_workspace_helpers
 import static_measurements_rust
 
 
-def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
-    def run_ast_grep_rewrite(pattern: str, rewrite: str) -> CompletedProcess:
-        cp = hermetic.run(
-            [
-                hermetic.xj_ast_grep_exe(repo_root.localdir()),
-                "-p",
-                pattern,
-                "--rewrite",
-                rewrite,
-                "--update-all",
-                "-l",
-                "rs",
-                dir,
-            ],
-            cwd=dir,
-            capture_output=True,
-            check=False,
-        )
-        if cp.returncode != 0:
-            stderr = cp.stderr.decode("utf-8")
-            if not stderr:
-                # Treat pattern-not-found as success, not failure.
-                cp.returncode = 0
-            else:
-                # If the pattern is not found, ast-grep will return 1
-                # without printing anything to stderr. So if we do see
-                # output, something is amiss; print it and fail loudly.
-                click.echo(stderr, err=True)
-                click.echo(
-                    "TENJIN WARNING: ast-grep rewrite failed for pattern: " + pattern, err=True
-                )
-                click.echo(cp.stdout.decode("utf-8"), err=True)
-                cp.check_returncode()
-        return cp
+def run_built_workspace_binary(
+    root: Path, workspace_dir: str, binary_name: str, args: list[str], dir: Path
+) -> CompletedProcess:
+    default_profile = "debug" if binary_name != "xj-improve-lift-call-args" else "release"
+    target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", default_profile)
+    return hermetic.run(
+        [binary_name, *args, dir],
+        cwd=dir,
+        env_ext={
+            "PATH": os.pathsep.join([
+                str(root / workspace_dir / "target" / target_subdir),
+                os.environ["PATH"],
+            ]),
+        },
+    )
 
+
+def run_ast_grep_rewrite(dir: Path, pattern: str, rewrite: str) -> CompletedProcess:
+    cp = hermetic.run(
+        [
+            hermetic.xj_ast_grep_exe(repo_root.localdir()),
+            "-p",
+            pattern,
+            "--rewrite",
+            rewrite,
+            "--update-all",
+            "-l",
+            "rs",
+            dir,
+        ],
+        cwd=dir,
+        capture_output=True,
+        check=False,
+    )
+    if cp.returncode != 0:
+        stderr = cp.stderr.decode("utf-8")
+        if not stderr:
+            # Treat pattern-not-found as success, not failure.
+            cp.returncode = 0
+        else:
+            # If the pattern is not found, ast-grep will return 1
+            # without printing anything to stderr. So if we do see
+            # output, something is amiss; print it and fail loudly.
+            click.echo(stderr, err=True)
+            click.echo("TENJIN WARNING: ast-grep rewrite failed for pattern: " + pattern, err=True)
+            click.echo(cp.stdout.decode("utf-8"), err=True)
+            cp.check_returncode()
+    return cp
+
+
+def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
     # Macro arguments are in general token trees, not expressions,
     # and ast-grep rightly treats them as such. But there are important
     # special cases, so we temporarily rewrite invocation sites to look like
@@ -69,35 +85,47 @@ def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProce
     #
     # This produces, as an ephemeral intermediate state, code that does not
     # type check, but ast-grep can still match on it.
-    run_ast_grep_rewrite(
-        "println!($$$ARGS)",
-        "xj_astgrep_println($$$ARGS)",
-    )
+    run_ast_grep_rewrite(dir, "println!($$$ARGS)", "xj_astgrep_println($$$ARGS)")
+    run_ast_grep_rewrite(dir, "print!($$$ARGS)", "xj_astgrep_print($$$ARGS)")
+    run_ast_grep_rewrite(dir, "eprintln!($$$ARGS)", "xj_astgrep_eprintln($$$ARGS)")
+    run_ast_grep_rewrite(dir, "eprint!($$$ARGS)", "xj_astgrep_eprint($$$ARGS)")
 
     # Direct indexing of arrays takes an unnecessary detour through unsafe pointers
     run_ast_grep_rewrite(
+        dir,
         "(*$BASE.as_mut_ptr().offset($IDX as isize))",
         "($BASE[$IDX as usize])",
     )
 
-    target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
-    synsub_cp = hermetic.run(
-        ["xj-improve-synsub", *args, dir],
-        cwd=dir,
-        env_ext={
-            "PATH": os.pathsep.join([
-                str(root / "xj-improve-synsub" / "target" / target_subdir),
-                os.environ["PATH"],
-            ]),
-        },
-    )
-
-    run_ast_grep_rewrite(
-        "xj_astgrep_println($$$ARGS)",
-        "println!($$$ARGS)",
+    synsub_cp = run_built_workspace_binary(
+        root,
+        "xj-improve-synsub",
+        "xj-improve-synsub",
+        args,
+        dir,
     )
 
     return synsub_cp
+
+
+def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> CompletedProcess:
+    # rust-analyzer's surface syntax treats macro args as opaque token
+    # trees, so we wait until after this pass to restore the original println! syntax.
+
+    lift_cp = run_built_workspace_binary(
+        root,
+        "xj-improve-lift-call-args",
+        "xj-improve-lift-call-args",
+        args,
+        dir,
+    )
+
+    run_ast_grep_rewrite(dir, "xj_astgrep_println($$$ARGS)", "println!($$$ARGS)")
+    run_ast_grep_rewrite(dir, "xj_astgrep_print($$$ARGS)", "print!($$$ARGS)")
+    run_ast_grep_rewrite(dir, "xj_astgrep_eprintln($$$ARGS)", "eprintln!($$$ARGS)")
+    run_ast_grep_rewrite(dir, "xj_astgrep_eprint($$$ARGS)", "eprint!($$$ARGS)")
+
+    return lift_cp
 
 
 def quiet_cargo(args: list[str], cwd: Path, env_ext=None) -> CompletedProcess:
@@ -125,7 +153,13 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path) -> 
     # but it's a bit faster to just build & run from `target`.
     target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
     return quiet_cargo(
-        ["xj-improve-multitool", "--tool", tool, *args],
+        [
+            hermetic.tenjin_multitool_toolchain_specifier(),  # don't use the toolchain for generated Rust!
+            "xj-improve-multitool",
+            "--tool",
+            tool,
+            *args,
+        ],
         cwd=dir,
         env_ext={
             "PATH": os.pathsep.join([
@@ -739,6 +773,10 @@ def run_improvement_passes(
             "synsub",
             lambda root, dir: run_improve_synsub(root, ["--modify-in-place"], dir),
         ),
+        (
+            "lift-call-args",
+            lambda root, dir: run_improve_lift_call_args(root, ["--modify-in-place"], dir),
+        ),
         ("fmt", run_cargo_fmt),
         ("fix", run_cargo_fix),
         (
@@ -778,19 +816,27 @@ def run_improvement_passes(
                         f"TENJIN WARNING: improvement pass {counter} ({tag}) failed, skipping further passes."
                     )
                     break
+
             mid_ns = time.perf_counter_ns()
-            # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
-            quiet_cargo(["check"], cwd=newdir)
-            # Clean up the target directory so the next pass starts fresh.
-            quiet_cargo(
-                ["clean", *cargo_workspace_helpers.flags_for_all_cargo_workspace_packages(newdir)],
-                cwd=newdir,
-            )
-            # Ensure any plugin results are also removed, since they may prevent
-            # subsequent passes from running correctly.
-            for child in (newdir / "target").glob("plugin-*"):
-                if child.is_dir():
-                    shutil.rmtree(child)
+            # Assumption: the first two passes are `synsub` and `lift-call-args`.
+            # The output of synsub is assumed to be type-correct but not necessarily
+            # borrowck-correct, so we only run `cargo check` on passes after the first.
+            if counter > 1:
+                # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
+                quiet_cargo(["check"], cwd=newdir)
+                # Clean up the target directory so the next pass starts fresh.
+                quiet_cargo(
+                    [
+                        "clean",
+                        *cargo_workspace_helpers.flags_for_all_cargo_workspace_packages(newdir),
+                    ],
+                    cwd=newdir,
+                )
+                # Ensure any plugin results are also removed, since they may prevent
+                # subsequent passes from running correctly.
+                for child in (newdir / "target").glob("plugin-*"):
+                    if child.is_dir():
+                        shutil.rmtree(child)
             end_ns = time.perf_counter_ns()
 
             core_ms = round(elapsed_ms_of_ns(start_ns, mid_ns))

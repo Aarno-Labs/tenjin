@@ -251,9 +251,9 @@ dependencies = [
 
 [[package]]
 name = "rustc_plugin"
-version = "0.14.3-nightly-2025-08-20"
+version = "0.15.2-nightly-2026-05-01"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1b19bf2776e78e40184ce98da1706a3d97d2d337c66f0f831836a450f8b1243"
+checksum = "a9a531c11120bc5361eed63d769b216aee7c8a4923da7fc5e21b01e6ec4ad9a6"
 dependencies = [
  "cargo_metadata",
  "log",

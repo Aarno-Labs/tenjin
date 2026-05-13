@@ -32,6 +32,8 @@ pub fn main() -> ExitCode {
         .map(|arg| arg.as_mut_ptr() as *mut ::core::ffi::c_char)
         .chain(::core::iter::once(::core::ptr::null_mut()))
         .collect();
+    let argc = (args_ptrs.len() - 1) as ::core::ffi::c_int;
+    let argv = args_ptrs.as_mut_ptr() as *mut *mut ::core::ffi::c_char;
     let mut vars: Vec<*mut ::core::ffi::c_char> = Vec::new();
     for (var_name, var_value) in ::std::env::vars() {
         let var: String = format!("{}={}", var_name, var_value);
@@ -44,8 +46,8 @@ pub fn main() -> ExitCode {
     vars.push(::core::ptr::null_mut());
     unsafe {
         ExitCode::from(main_0(
-            (args_ptrs.len() - 1) as ::core::ffi::c_int,
-            args_ptrs.as_mut_ptr() as *mut *mut ::core::ffi::c_char,
+            argc,
+            argv,
             vars.as_mut_ptr() as *mut *mut ::core::ffi::c_char,
         ) as u8)
     }

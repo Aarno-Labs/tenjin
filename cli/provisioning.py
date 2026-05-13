@@ -375,6 +375,7 @@ def want_10j_llvm():
 def want_10j_rust_toolchains():
     """This must not lead back to hermetic.common_helper_for_run()."""
     want("10j-xj-improve-multitool-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
+    want("10j-generated-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
     want("10j-xj-default-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
 
 

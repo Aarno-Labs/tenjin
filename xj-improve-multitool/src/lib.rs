@@ -286,10 +286,10 @@ impl CondensedSpanGraph {
             #[allow(clippy::map_entry)]
             if !file_map.contains_key(&srcfile.stable_id) {
                 match &srcfile.name {
-                    rustc_span::FileName::Real(rustc_span::RealFileName::LocalPath(path)) => {
+                    rustc_span::FileName::Real(real) if let Some(path) = real.local_path() => {
                         let file_index = c.files.len();
                         file_map.insert(srcfile.stable_id, file_index);
-                        c.files.push(path.clone());
+                        c.files.push(path.to_path_buf());
                         def_to_file_idx.insert(*def_id, file_index);
                     }
                     _ => {
