@@ -188,6 +188,25 @@ fn case_22_double_move_non_copy_aborts() {
 }
 
 #[test]
+fn mut_borrow_and_read_of_same_static_lifts_the_read() {
+    // func(&mut errno, errno) where errno is Copy.
+    //   arg 0: MutBorrow of place `errno` (from &mut errno)
+    //   arg 1: Read of place `errno` (Copy value)
+    // Same place, MutBorrow vs Read -> conflict. Lift the Read.
+    let xs = vec![
+        at(0, Place::named("errno"), AccessKind::MutBorrow, 0),
+        at(1, Place::named("errno"), AccessKind::Read, 1),
+    ];
+    let plan = plan_lifts(TextRange::default(), &xs, |_| {
+        Some(shape(ExprForm::BarePlace, true, true))
+    })
+    .unwrap();
+    assert_eq!(plan.lifts.len(), 1);
+    assert_eq!(plan.lifts[0].arg_index, 1);
+    assert_eq!(plan.lifts[0].strategy, LiftStrategy::BindValue);
+}
+
+#[test]
 fn regression_nested_call_with_no_place_args_does_not_pollute() {
     // Models: f(callee, chain.method().method(), raw_ptr)
     // where `chain.method().method()` is a nested call whose place

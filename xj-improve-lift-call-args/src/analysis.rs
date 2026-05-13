@@ -449,12 +449,17 @@ fn classify_expr(expr: &ast::Expr) -> (ExprForm, Option<Place>, String, Option<T
                 .map(|e| e.syntax().text().to_string())
                 .unwrap_or_default();
             let inner_span = inner.as_ref().map(|e| e.syntax().text_range());
+            // The place being borrowed is the inner place — without this,
+            // `func(&mut x, x)` produces no access for `&mut x` and the
+            // conflict is missed. The borrow-kind itself comes from
+            // `form` in walk_arg_expr.
+            let inner_place = inner.as_ref().and_then(place_for_expr);
             let form = if r.mut_token().is_some() {
                 ExprForm::MutBorrowOf
             } else {
                 ExprForm::BorrowOf
             };
-            (form, None, inner_text, inner_span)
+            (form, inner_place, inner_text, inner_span)
         }
         ast::Expr::CallExpr(_) | ast::Expr::MethodCallExpr(_) => {
             (ExprForm::NestedCall, None, String::new(), None)
