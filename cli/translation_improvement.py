@@ -153,7 +153,13 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path) -> 
     # but it's a bit faster to just build & run from `target`.
     target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
     return quiet_cargo(
-        ["xj-improve-multitool", "--tool", tool, *args],
+        [
+            hermetic.tenjin_multitool_toolchain_specifier(),  # don't use the toolchain for generated Rust!
+            "xj-improve-multitool",
+            "--tool",
+            tool,
+            *args,
+        ],
         cwd=dir,
         env_ext={
             "PATH": os.pathsep.join([

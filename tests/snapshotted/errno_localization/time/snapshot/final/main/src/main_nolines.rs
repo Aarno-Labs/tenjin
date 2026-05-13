@@ -21,8 +21,8 @@ unsafe fn _xj_wrap_time_xjtr_0(mut _xj_errno: &mut i32, mut __timer: *mut time_t
     ret
 }
 unsafe fn main_0(
-    _argc: ::core::ffi::c_int,
-    _argv: *mut *mut ::core::ffi::c_char,
+    mut argc: ::core::ffi::c_int,
+    mut argv: *mut *mut ::core::ffi::c_char,
 ) -> ::core::ffi::c_int {
     let mut _xj_local_errno: i32 = 0;
     _xj_local_errno = 0;
