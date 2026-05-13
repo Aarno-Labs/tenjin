@@ -209,7 +209,10 @@ pub fn emit_edits(input: EmitInput) -> Option<TextEdit> {
                 );
                 local.replace_range(range_as_usize(rel), &repl);
             }
-            let wrapped = format!("{{ {}{} }}", lets, local);
+            // Forcibly parenthesize in case the surrounding context is
+            // a cast in statement position, since `{ e } as T;` is invalid
+            // but `({ e }) as T;` is fine.
+            let wrapped = format!("({{ {}{} }})", lets, local);
             builder.replace(cs, wrapped);
         }
     }
