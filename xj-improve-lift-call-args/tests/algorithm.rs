@@ -21,6 +21,7 @@ fn at(arg: usize, place: Place, kind: AccessKind, id: u32) -> Access {
         kind,
         span: TextRange::default(),
         subexpr_id: SubexprId(id),
+        outer_subexpr: SubexprId(id),
     }
 }
 
@@ -56,7 +57,7 @@ fn case_01_f_p_px_copy_field() {
         ),
     ];
     let plan = plan_lifts(TextRange::default(), &xs, |_| {
-        Some(shape(ExprForm::BarePlace, true, true))
+        Some((shape(ExprForm::BarePlace, true, true), TextRange::default()))
     })
     .unwrap();
     assert_eq!(plan.lifts.len(), 1);
@@ -82,7 +83,10 @@ fn case_05_f_pa_pb_direct_fields_no_change() {
         ),
     ];
     let plan = plan_lifts(TextRange::default(), &xs, |_| {
-        Some(shape(ExprForm::BarePlace, false, true))
+        Some((
+            shape(ExprForm::BarePlace, false, true),
+            TextRange::default(),
+        ))
     })
     .unwrap();
     assert!(plan.lifts.is_empty(), "splittable siblings need no lift");
@@ -110,7 +114,10 @@ fn case_06_through_box_non_splittable_lifts_via_clone() {
         ),
     ];
     let plan = plan_lifts(TextRange::default(), &xs, |_| {
-        Some(shape(ExprForm::BarePlace, false, true))
+        Some((
+            shape(ExprForm::BarePlace, false, true),
+            TextRange::default(),
+        ))
     })
     .unwrap();
     assert_eq!(plan.lifts.len(), 1);
@@ -139,7 +146,10 @@ fn case_17_swap_mut_indices_aborts() {
         ),
     ];
     let err = plan_lifts(TextRange::default(), &xs, |_| {
-        Some(shape(ExprForm::MutBorrowOf, false, false))
+        Some((
+            shape(ExprForm::MutBorrowOf, false, false),
+            TextRange::default(),
+        ))
     })
     .unwrap_err();
     assert!(err.reason.contains("infeasible"));
@@ -167,7 +177,7 @@ fn case_18_shared_borrows_on_indices_no_change() {
         ),
     ];
     let plan = plan_lifts(TextRange::default(), &xs, |_| {
-        Some(shape(ExprForm::BorrowOf, false, true))
+        Some((shape(ExprForm::BorrowOf, false, true), TextRange::default()))
     })
     .unwrap();
     assert!(plan.lifts.is_empty(), "both shared borrows never conflict");
@@ -181,10 +191,53 @@ fn case_22_double_move_non_copy_aborts() {
         at(1, Place::named("p"), AccessKind::Move, 1),
     ];
     let err = plan_lifts(TextRange::default(), &xs, |_| {
-        Some(shape(ExprForm::BarePlace, false, false))
+        Some((
+            shape(ExprForm::BarePlace, false, false),
+            TextRange::default(),
+        ))
     })
     .unwrap_err();
     assert!(err.reason.contains("infeasible") || err.reason.contains("Move"));
+}
+
+#[test]
+fn outer_mut_borrow_vs_inner_nested_call_mut_borrow_lifts_the_call() {
+    // outer(&mut x, inner(&mut x, ...))
+    //   arg 0: MutBorrow of x  (outer's &mut x)
+    //   arg 1: Call on some place  (from inner call's join)
+    //   arg 1: MutBorrow of x  (inner's &mut x, sub-access — outer_subexpr
+    //                            points back to the whole inner call)
+    // Conflict between the two MutBorrows of x. Step 3 picks arg 1 (higher
+    // index); Step 4 classifies the OUTER (the whole nested call) and
+    // since calls return owned values, BindValue is feasible.
+    let outer_call_id = SubexprId(10);
+    let xs = vec![
+        at(0, Place::named("x"), AccessKind::MutBorrow, 0),
+        Access {
+            arg_index: 1,
+            place: Place::named("x"),
+            kind: AccessKind::MutBorrow,
+            span: TextRange::default(),
+            subexpr_id: SubexprId(11),
+            outer_subexpr: outer_call_id,
+        },
+    ];
+    let plan = plan_lifts(TextRange::default(), &xs, |sid| {
+        // Shape lookup keyed by outer_subexpr. For sid==10 (the outer
+        // arg's whole nested call): NestedCall form, owned return.
+        if sid == outer_call_id {
+            Some((
+                shape(ExprForm::NestedCall, false, true),
+                TextRange::default(),
+            ))
+        } else {
+            Some((shape(ExprForm::BarePlace, true, true), TextRange::default()))
+        }
+    })
+    .unwrap();
+    assert_eq!(plan.lifts.len(), 1, "expected 1 lift, got {:?}", plan.lifts);
+    assert_eq!(plan.lifts[0].subexpr_id, outer_call_id);
+    assert_eq!(plan.lifts[0].strategy, LiftStrategy::BindValue);
 }
 
 #[test]
@@ -198,7 +251,7 @@ fn mut_borrow_and_read_of_same_static_lifts_the_read() {
         at(1, Place::named("errno"), AccessKind::Read, 1),
     ];
     let plan = plan_lifts(TextRange::default(), &xs, |_| {
-        Some(shape(ExprForm::BarePlace, true, true))
+        Some((shape(ExprForm::BarePlace, true, true), TextRange::default()))
     })
     .unwrap();
     assert_eq!(plan.lifts.len(), 1);
@@ -225,7 +278,7 @@ fn regression_nested_call_with_no_place_args_does_not_pollute() {
         at(2, Place::named("raw_ptr"), AccessKind::Read, 2),
     ];
     let plan = plan_lifts(TextRange::default(), &xs, |_| {
-        Some(shape(ExprForm::BarePlace, true, true))
+        Some((shape(ExprForm::BarePlace, true, true), TextRange::default()))
     })
     .unwrap();
     assert!(
@@ -244,9 +297,15 @@ fn case_15_f_gp_p_nested_call_owned_return_lifts_gp() {
     ];
     let plan = plan_lifts(TextRange::default(), &xs, |sid| {
         if sid == SubexprId(0) {
-            Some(shape(ExprForm::NestedCall, false, true))
+            Some((
+                shape(ExprForm::NestedCall, false, true),
+                TextRange::default(),
+            ))
         } else {
-            Some(shape(ExprForm::BarePlace, false, true))
+            Some((
+                shape(ExprForm::BarePlace, false, true),
+                TextRange::default(),
+            ))
         }
     })
     .unwrap();

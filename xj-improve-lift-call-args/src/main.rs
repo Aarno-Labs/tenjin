@@ -14,13 +14,12 @@ use ra_ap_ide::AnalysisHost;
 use ra_ap_syntax::ast::AstNode;
 
 use xj_improve_lift_call_args::access::SubexprId;
-use xj_improve_lift_call_args::text_edit::TextEdit;
 use xj_improve_lift_call_args::analysis::{
-    CallAnalysis, Workspace, analyze_file, file_path, file_source,
-    statement_insertion_point,
+    CallAnalysis, Workspace, analyze_file, file_path, file_source, statement_insertion_point,
 };
 use xj_improve_lift_call_args::emit::{EmitInput, InsertSite, LiftSnippet, emit_edits};
 use xj_improve_lift_call_args::lift::{Diagnostic, PlannedLift, plan_lifts};
+use xj_improve_lift_call_args::text_edit::TextEdit;
 
 #[derive(Parser)]
 #[command(
@@ -73,15 +72,23 @@ fn main() -> Result<()> {
             snippets,
         } in analyses
         {
-            // Step 1-5 in one shot.
+            // Step 1-5 in one shot. The shape_of closure also yields the
+            // OUTER expression's span, which plan_lifts uses to plant the
+            // lift on the whole containing argument when the chosen
+            // access is a sub-expression of a nested call.
             let shapes_map = shapes;
-            let lift_result = plan_lifts(call_span, &accesses, |sid| shapes_map.get(&sid).cloned());
+            let snippets_for_span = &snippets;
+            let lift_result = plan_lifts(call_span, &accesses, |sid| {
+                let shape = shapes_map.get(&sid)?;
+                let span = snippets_for_span.get(&sid).map(|s| s.span)?;
+                Some((shape.clone(), span))
+            });
 
             let plan = match lift_result {
                 Ok(plan) if plan.lifts.is_empty() => continue,
                 Ok(plan) => plan,
                 Err(diag) => {
-                    diagnostics.push((path.clone(), diag));
+                    diagnostics.push((path.clone(), *diag));
                     continue;
                 }
             };
@@ -159,8 +166,7 @@ fn main() -> Result<()> {
         let mut text = file_source_for_path(&workspace.host, &workspace.vfs, &path)?;
         edit.apply(&mut text);
         if args.modify_in_place {
-            std::fs::write(&path, &text)
-                .with_context(|| format!("writing {}", path.display()))?;
+            std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
             eprintln!("xj-improve-lift-call-args rewrote {}", path.display());
         } else {
             println!("// {}", path.display());
@@ -197,15 +203,14 @@ fn file_source_for_path(
 ) -> Result<String> {
     // Find the file id corresponding to `path` and read its source.
     for (file_id, vfs_path) in vfs.iter() {
-        if let Some(p) = file_path(vfs, file_id) {
-            if p == *path {
-                return file_source(host, file_id);
-            }
+        if let Some(p) = file_path(vfs, file_id)
+            && p == *path
+        {
+            return file_source(host, file_id);
         }
         let _ = vfs_path;
     }
-    std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
 }
 
 #[derive(Default)]

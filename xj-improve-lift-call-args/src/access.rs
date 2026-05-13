@@ -204,10 +204,14 @@ impl AccessKind {
 
 /// One access recorded by the Step-1 walk.
 ///
-/// `subexpr_id` is an opaque key (typically a `TextRange`-derived value)
-/// uniquely identifying the AST node that produced this access. Multiple
-/// accesses from a single argument share `arg_index` but each has its own
-/// subexpression identity.
+/// `subexpr_id` is an opaque key uniquely identifying the AST node that
+/// produced this access. `outer_subexpr` identifies the top-level
+/// argument expression that contains it: for a top-level access the two
+/// are equal; for sub-accesses produced by recursing into a nested call,
+/// `outer_subexpr` points back to the enclosing argument's outer
+/// expression. Step 4 lifts that outer expression, since `&mut x` etc.
+/// inside a nested call can only be resolved by hoisting the whole call
+/// out, not by binding the inner borrow.
 #[derive(Debug, Clone)]
 pub struct Access {
     pub arg_index: usize,
@@ -215,6 +219,7 @@ pub struct Access {
     pub kind: AccessKind,
     pub span: TextRange,
     pub subexpr_id: SubexprId,
+    pub outer_subexpr: SubexprId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -312,6 +317,7 @@ mod tests {
             kind,
             span: TextRange::default(),
             subexpr_id: SubexprId(id),
+            outer_subexpr: SubexprId(id),
         }
     }
 

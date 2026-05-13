@@ -113,6 +113,10 @@ pub struct CallAnalysis {
 /// we need its bounds in source coordinates to substitute correctly.
 #[derive(Debug, Clone)]
 pub struct SnippetData {
+    /// Source span of the expression this snippet describes. Used by the
+    /// lift planner to find the outer expression's span when the chosen
+    /// access is an inner sub-expression of a nested call.
+    pub span: TextRange,
     pub original_text: String,
     pub inner_place_text: String,
     pub inner_place_span: Option<TextRange>,
@@ -137,6 +141,15 @@ pub fn analyze_file(host: &AnalysisHost, file_id: ra_ap_vfs::FileId) -> Result<V
         let mut out = Vec::new();
         let mut id_gen = IdGen::default();
 
+        // Per spec implementation note: "nested calls require recursion:
+        // handle inner calls before outer". We analyze EVERY call site,
+        // not only top-level ones. Each call gets its own access set and
+        // its own lift plan, so a conflict that exists between two args
+        // of an inner call is detected even when that inner call is
+        // itself an argument to an outer call (where the merged accesses
+        // would otherwise be silenced by the intra-arg-pair rule). Order
+        // matters for `Step 5` purposes: process innermost-first so that
+        // textual edits from inner lifts are sequenced before outer ones.
         for node in syntax.descendants() {
             if !matches!(
                 node.kind(),
@@ -144,32 +157,19 @@ pub fn analyze_file(host: &AnalysisHost, file_id: ra_ap_vfs::FileId) -> Result<V
             ) {
                 continue;
             }
-            if has_enclosing_call(&node) {
-                continue;
-            }
             if let Some(analysis) = analyze_call(&sema, &node, &mut id_gen) {
                 out.push(analysis);
             }
         }
+        // Sort by nesting: innermost first (longest start offset, then
+        // shortest range). This keeps edits ordered so that text changes
+        // from an inner call land in the source before its enclosing call
+        // is re-evaluated (which never actually re-runs in this pass —
+        // but it keeps emit order deterministic and matches the spec's
+        // "innermost first" guidance).
+        out.sort_by_key(|a| (std::cmp::Reverse(a.call_span.start()), a.call_span.len()));
         out
     }))
-}
-
-fn has_enclosing_call(node: &SyntaxNode) -> bool {
-    let mut cur = node.parent();
-    while let Some(p) = cur {
-        if matches!(p.kind(), SyntaxKind::CALL_EXPR | SyntaxKind::METHOD_CALL_EXPR) {
-            return true;
-        }
-        if matches!(
-            p.kind(),
-            SyntaxKind::BLOCK_EXPR | SyntaxKind::FN | SyntaxKind::EXPR_STMT
-        ) {
-            return false;
-        }
-        cur = p.parent();
-    }
-    false
 }
 
 #[derive(Default)]
@@ -214,6 +214,7 @@ fn analyze_call(
                 receiver.syntax(),
                 0,
                 receiver_kind,
+                None,
                 ids,
                 &mut accesses,
                 &mut shapes,
@@ -228,6 +229,7 @@ fn analyze_call(
                     arg.syntax(),
                     i + 1,
                     hint,
+                    None,
                     ids,
                     &mut accesses,
                     &mut shapes,
@@ -260,6 +262,7 @@ fn analyze_call(
                 callee.syntax(),
                 0,
                 None,
+                None,
                 ids,
                 &mut accesses,
                 &mut shapes,
@@ -274,6 +277,7 @@ fn analyze_call(
                     arg.syntax(),
                     i + 1,
                     hint,
+                    None,
                     ids,
                     &mut accesses,
                     &mut shapes,
@@ -299,12 +303,18 @@ fn walk_arg_expr(
     node: &SyntaxNode,
     arg_index: usize,
     outer_hint: Option<AccessKind>,
+    // `None` ⇒ this *is* the outer expression of an argument; we use the
+    // freshly-allocated id below as the outer. `Some(id)` ⇒ this is a
+    // sub-expression of some larger argument expression and we propagate
+    // that argument's outer id downward.
+    outer_subexpr_id: Option<SubexprId>,
     ids: &mut IdGen,
     accesses: &mut Vec<Access>,
     shapes: &mut HashMap<SubexprId, TyShape>,
     snippets: &mut HashMap<SubexprId, SnippetData>,
 ) {
     let id = ids.fresh();
+    let outer = outer_subexpr_id.unwrap_or(id);
     let span = node.text_range();
     let original_text = node.text().to_string();
 
@@ -338,6 +348,7 @@ fn walk_arg_expr(
     snippets.insert(
         id,
         SnippetData {
+            span,
             original_text,
             inner_place_text,
             inner_place_span,
@@ -352,6 +363,7 @@ fn walk_arg_expr(
             kind,
             span,
             subexpr_id: id,
+            outer_subexpr: outer,
         });
     } else if matches!(kind, AccessKind::Call) {
         // For nested calls, only synthesize a Call access when we can
@@ -369,11 +381,130 @@ fn walk_arg_expr(
                 kind: AccessKind::Call,
                 span,
                 subexpr_id: id,
+                outer_subexpr: outer,
             });
         }
     }
 
-    recurse_children(sema, node, arg_index, ids, accesses, shapes, snippets);
+    // When the argument is itself a call, walk each of its inner args (and
+    // its receiver, for method calls) as full subexpressions. Without
+    // this, the inner args of THIS call (e.g. `&mut x`, `(*p).f`) get no
+    // access records — `recurse_children` only fires for *deeper*
+    // CALL_EXPRs nested inside this one. We skip the generic
+    // `recurse_children` walk in this branch because `walk_nested_call_
+    // args` already covers every direct child and recurses through
+    // further nested calls.
+    if matches!(form, ExprForm::NestedCall) {
+        walk_nested_call_args(
+            sema, &expr, arg_index, outer, ids, accesses, shapes, snippets,
+        );
+    } else {
+        recurse_children(
+            sema, node, arg_index, outer, ids, accesses, shapes, snippets,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_nested_call_args(
+    sema: &Semantics<'_, RootDatabase>,
+    expr: &ast::Expr,
+    arg_index: usize,
+    outer: SubexprId,
+    ids: &mut IdGen,
+    accesses: &mut Vec<Access>,
+    shapes: &mut HashMap<SubexprId, TyShape>,
+    snippets: &mut HashMap<SubexprId, SnippetData>,
+) {
+    match expr {
+        ast::Expr::CallExpr(call) => {
+            // Derive parameter hints from the inner callable so each inner
+            // arg gets its borrow-kind right (auto-ref / reborrow).
+            let param_kinds: Vec<Option<AccessKind>> = call
+                .expr()
+                .as_ref()
+                .and_then(|e| sema.resolve_expr_as_callable(e))
+                .map(|callable| {
+                    callable
+                        .params()
+                        .iter()
+                        .map(|p| Some(param_access_kind(sema, p.ty())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(callee) = call.expr() {
+                walk_arg_expr(
+                    sema,
+                    callee.syntax(),
+                    arg_index,
+                    None,
+                    Some(outer),
+                    ids,
+                    accesses,
+                    shapes,
+                    snippets,
+                );
+            }
+            if let Some(arg_list) = call.arg_list() {
+                for (i, a) in arg_list.args().enumerate() {
+                    let hint = param_kinds.get(i).copied().flatten();
+                    walk_arg_expr(
+                        sema,
+                        a.syntax(),
+                        arg_index,
+                        hint,
+                        Some(outer),
+                        ids,
+                        accesses,
+                        shapes,
+                        snippets,
+                    );
+                }
+            }
+        }
+        ast::Expr::MethodCallExpr(m) => {
+            let receiver_kind = method_receiver_kind(sema, m);
+            let param_kinds: Vec<Option<AccessKind>> = sema
+                .resolve_method_call(m)
+                .map(|func| {
+                    func.params_without_self(sema.db)
+                        .iter()
+                        .map(|p| Some(param_access_kind(sema, p.ty())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(recv) = m.receiver() {
+                walk_arg_expr(
+                    sema,
+                    recv.syntax(),
+                    arg_index,
+                    receiver_kind,
+                    Some(outer),
+                    ids,
+                    accesses,
+                    shapes,
+                    snippets,
+                );
+            }
+            if let Some(arg_list) = m.arg_list() {
+                for (i, a) in arg_list.args().enumerate() {
+                    let hint = param_kinds.get(i).copied().flatten();
+                    walk_arg_expr(
+                        sema,
+                        a.syntax(),
+                        arg_index,
+                        hint,
+                        Some(outer),
+                        ids,
+                        accesses,
+                        shapes,
+                        snippets,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -381,6 +512,7 @@ fn recurse_children(
     sema: &Semantics<'_, RootDatabase>,
     node: &SyntaxNode,
     arg_index: usize,
+    outer: SubexprId,
     ids: &mut IdGen,
     accesses: &mut Vec<Access>,
     shapes: &mut HashMap<SubexprId, TyShape>,
@@ -393,25 +525,27 @@ fn recurse_children(
             }
             match n.kind() {
                 SyntaxKind::INDEX_EXPR => {
-                    if let Some(ix) = ast::IndexExpr::cast(n.clone()) {
-                        if let Some(idx_expr) = ix.index() {
-                            walk_arg_expr(
-                                sema,
-                                idx_expr.syntax(),
-                                arg_index,
-                                None,
-                                ids,
-                                accesses,
-                                shapes,
-                                snippets,
-                            );
-                        }
+                    if let Some(ix) = ast::IndexExpr::cast(n.clone())
+                        && let Some(idx_expr) = ix.index()
+                    {
+                        walk_arg_expr(
+                            sema,
+                            idx_expr.syntax(),
+                            arg_index,
+                            None,
+                            Some(outer),
+                            ids,
+                            accesses,
+                            shapes,
+                            snippets,
+                        );
                     }
                 }
                 SyntaxKind::CALL_EXPR | SyntaxKind::METHOD_CALL_EXPR => {
                     if let Some(sub) = analyze_call(sema, &n, ids) {
                         for mut acc in sub.accesses {
                             acc.arg_index = arg_index;
+                            acc.outer_subexpr = outer;
                             accesses.push(acc);
                         }
                         for (k, v) in sub.shapes {
@@ -479,28 +613,36 @@ fn path_to_place(p: &ast::PathExpr) -> Option<Place> {
 }
 
 fn place_for_expr(expr: &ast::Expr) -> Option<Place> {
+    // We build the projection chain outer-first while walking down the
+    // AST, then reverse it. Splittability of a Field projection depends
+    // on whether anything between it and the ROOT is non-splittable
+    // (Deref/Index/method) — i.e., anything earlier in the *reversed*
+    // chain, which is anything we encounter *later* in the walk. So we
+    // can't decide splittability during the walk; we fix it up after the
+    // reverse below.
     let mut chain: Vec<Projection> = Vec::new();
     let mut cur = expr.clone();
-    let mut saw_deref_or_index = false;
     loop {
         match cur {
             ast::Expr::FieldExpr(f) => {
-                let splittable = !saw_deref_or_index;
                 let proj = match f.field_access()? {
                     ast::FieldKind::Name(nr) => Projection::Field {
                         name: nr.text().to_string(),
-                        splittable,
+                        // Fixed up below.
+                        splittable: true,
                     },
                     ast::FieldKind::Index(tok) => {
                         let idx = tok.text().parse::<u32>().ok()?;
-                        Projection::TupleField { idx, splittable }
+                        Projection::TupleField {
+                            idx,
+                            splittable: true,
+                        }
                     }
                 };
                 chain.push(proj);
                 cur = f.expr()?;
             }
             ast::Expr::IndexExpr(ix) => {
-                saw_deref_or_index = true;
                 let key = match ix.index() {
                     Some(ast::Expr::Literal(lit)) => match lit.kind() {
                         ast::LiteralKind::IntNumber(n) => n
@@ -516,13 +658,36 @@ fn place_for_expr(expr: &ast::Expr) -> Option<Place> {
                 cur = ix.base()?;
             }
             ast::Expr::PrefixExpr(p) if p.op_kind() == Some(ast::UnaryOp::Deref) => {
-                saw_deref_or_index = true;
                 chain.push(Projection::Deref);
                 cur = p.expr()?;
+            }
+            ast::Expr::ParenExpr(pe) => {
+                // Parentheses are transparent for place semantics:
+                // `(*p).f` denotes the same place as `*p . f`.
+                cur = pe.expr()?;
             }
             ast::Expr::PathExpr(p) => {
                 let mut place = path_to_place(&p)?;
                 chain.reverse();
+                // Fix up Field/TupleField splittability: a field is
+                // splittable iff every step from the root up to (but not
+                // including) it is also splittable. Walk root-to-leaf
+                // tracking whether we've seen any Deref/Index — once we
+                // have, all subsequent fields are non-splittable.
+                let mut after_unsplittable = false;
+                for proj in chain.iter_mut() {
+                    match proj {
+                        Projection::Deref | Projection::Index { .. } => {
+                            after_unsplittable = true;
+                        }
+                        Projection::Field { splittable, .. }
+                        | Projection::TupleField { splittable, .. } => {
+                            if after_unsplittable {
+                                *splittable = false;
+                            }
+                        }
+                    }
+                }
                 place.projections = chain;
                 return Some(place);
             }

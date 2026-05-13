@@ -253,11 +253,11 @@ fn compute_parents(items: &[EmitItem]) -> Vec<Option<usize>> {
         let child = items[i].lift_span;
         let mut best: Option<usize> = None;
         let mut best_len: u32 = u32::MAX;
-        for j in 0..n {
+        for (j, jth) in items.iter().enumerate().take(n) {
             if i == j {
                 continue;
             }
-            let cand = items[j].rhs_span;
+            let cand = jth.rhs_span;
             if cand.start() <= child.start() && cand.end() >= child.end() {
                 let len: u32 = (cand.end() - cand.start()).into();
                 if len < best_len || (len == best_len && Some(j) < best) {
@@ -277,9 +277,9 @@ fn post_order(items: &[EmitItem], parent: &[Option<usize>]) -> Vec<usize> {
     let n = items.len();
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut roots: Vec<usize> = Vec::new();
-    for i in 0..n {
-        match parent[i] {
-            Some(p) => children[p].push(i),
+    for (i, ith) in parent.iter().enumerate().take(n) {
+        match ith {
+            Some(p) => children[*p].push(i),
             None => roots.push(i),
         }
     }

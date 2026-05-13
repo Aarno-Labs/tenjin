@@ -8,9 +8,8 @@ use std::collections::BTreeMap;
 
 use ra_ap_syntax::TextRange;
 
-use crate::access::{
-    Access, AccessKind, SubexprId, conflict_edges, resolved_by_splitting,
-};
+#[rustfmt::skip]
+use crate::access::{Access, AccessKind, SubexprId, conflict_edges, resolved_by_splitting};
 
 /// Per-subexpression type/shape information supplied by the rust-analyzer
 /// front-end. Captures only what Step 4 actually needs.
@@ -93,24 +92,34 @@ pub struct Diagnostic {
 
 /// Run Step 3 + Step 4 + Step 5 on the access list.
 ///
-/// `shape_of` returns the `TyShape` for an access's owning subexpression.
+/// `shape_of` returns `(TyShape, span)` for the given subexpression id.
 /// Returning `None` indicates the front-end could not produce shape info;
 /// `plan_lifts` will then refuse to lift that subexpression and report
 /// infeasibility, because conservatively we cannot prove the lift is safe.
+///
+/// The lift target for each conflict is the access's `outer_subexpr` —
+/// the top-level argument expression that contains the conflicting access.
+/// This matters when the conflict resolves to a sub-expression of a
+/// nested call (e.g. an inner `&mut x`): lifting that sub-expression
+/// directly is infeasible (`let _ = &mut x;` just renames the borrow),
+/// but lifting the enclosing nested call is feasible and produces a
+/// local holding the call's return value, releasing the inner borrow.
 pub fn plan_lifts<F>(
     call_span: TextRange,
     accesses: &[Access],
     mut shape_of: F,
-) -> Result<LiftPlan, Diagnostic>
+) -> Result<LiftPlan, Box<Diagnostic>>
 where
-    F: FnMut(SubexprId) -> Option<TyShape>,
+    F: FnMut(SubexprId) -> Option<(TyShape, TextRange)>,
 {
     let edges = conflict_edges(accesses);
     if edges.is_empty() {
         return Ok(LiftPlan { lifts: Vec::new() });
     }
 
-    // Step 3: choose ONE side of each unresolved edge to lift.
+    // Step 3: choose ONE side of each unresolved edge to lift. Dedup by
+    // the chosen access's *outer* subexpression — multiple inner accesses
+    // of the same argument collapse to a single lift of the whole arg.
     let mut chosen: BTreeMap<SubexprId, usize> = BTreeMap::new();
     for (i, j) in &edges {
         let a = &accesses[*i];
@@ -123,7 +132,7 @@ where
         let lift_idx = choose_lift_side(*i, *j, accesses);
         let chosen_access = &accesses[lift_idx];
         chosen
-            .entry(chosen_access.subexpr_id)
+            .entry(chosen_access.outer_subexpr)
             .or_insert(lift_idx);
     }
 
@@ -131,13 +140,15 @@ where
         return Ok(LiftPlan { lifts: Vec::new() });
     }
 
-    // Step 4: classify each chosen subexpression's lift strategy. Abort on
-    // the first infeasible lift with a precise diagnostic.
+    // Step 4: classify each chosen subexpression's lift strategy on its
+    // OUTER expression (see plan_lifts doc above). Abort on the first
+    // infeasible lift with a precise diagnostic.
     let mut lifts: Vec<PlannedLift> = Vec::with_capacity(chosen.len());
-    for (_, idx) in &chosen {
+    for (outer_sid, idx) in &chosen {
         let acc = &accesses[*idx];
-        let Some(shape) = shape_of(acc.subexpr_id) else {
-            return Err(Diagnostic {
+        let outer_sid = *outer_sid;
+        let Some((shape, outer_span)) = shape_of(outer_sid) else {
+            return Err(Box::new(Diagnostic {
                 call_span,
                 conflicting: pick_witness_pair(accesses, &edges, acc.subexpr_id),
                 reason: format!(
@@ -146,24 +157,27 @@ where
                     acc.span,
                 ),
                 suggestion: None,
-            });
+            }));
         };
 
+        // Classify using the OUTER's shape (so e.g. NestedCall form → a
+        // feasible BindValue) but the inner access's kind (so diagnostics
+        // retain context if classification fails).
         let strategy = match classify_lift(acc, &shape) {
             Ok(s) => s,
             Err(reason) => {
-                return Err(Diagnostic {
+                return Err(Box::new(Diagnostic {
                     call_span,
                     conflicting: pick_witness_pair(accesses, &edges, acc.subexpr_id),
                     reason,
                     suggestion: suggest_for(acc, &shape),
-                });
+                }));
             }
         };
 
         lifts.push(PlannedLift {
-            subexpr_id: acc.subexpr_id,
-            span: acc.span,
+            subexpr_id: outer_sid,
+            span: outer_span,
             arg_index: acc.arg_index,
             strategy,
         });
@@ -173,11 +187,6 @@ where
     // already encodes left-to-right argument order, and within an argument
     // by `TextRange::start`.
     lifts.sort_by_key(|l| (l.span.start(), l.arg_index));
-
-    // Step 5 hazard check is a structural property of the source spans we
-    // have already established (each lift's span is a child of one argument
-    // and the arguments do not textually interleave), so no additional
-    // check is needed here.
 
     Ok(LiftPlan { lifts })
 }
@@ -211,7 +220,11 @@ fn choose_lift_side(i: usize, j: usize, accesses: &[Access]) -> usize {
         return if a.arg_index > b.arg_index { i } else { j };
     }
 
-    if a.span.start() <= b.span.start() { i } else { j }
+    if a.span.start() <= b.span.start() {
+        i
+    } else {
+        j
+    }
 }
 
 fn classify_lift(acc: &Access, shape: &TyShape) -> Result<LiftStrategy, String> {
@@ -235,13 +248,11 @@ fn classify_lift(acc: &Access, shape: &TyShape) -> Result<LiftStrategy, String> 
                     // reuse. So default to clone.
                     Ok(LiftStrategy::BindClone)
                 } else {
-                    Err(
-                        "infeasible: by-value Move of a non-Copy, non-Clone value \
+                    Err("infeasible: by-value Move of a non-Copy, non-Clone value \
                          whose source is also accessed elsewhere in the call — \
                          lifting alone cannot resolve this (would need \
                          mem::take/replace)"
-                            .into(),
-                    )
+                        .into())
                 }
             }
             SharedBorrow | MutBorrow => {
@@ -249,22 +260,18 @@ fn classify_lift(acc: &Access, shape: &TyShape) -> Result<LiftStrategy, String> 
                 // happens when the callee takes &T / &mut T and Rust
                 // auto-refs. Treat as borrow of the place.
                 if matches!(acc.kind, MutBorrow) {
-                    Err(
-                        "cannot lift an auto-ref `&mut` of a place that is also \
+                    Err("cannot lift an auto-ref `&mut` of a place that is also \
                          borrowed by another argument; rewriting requires \
                          split_at_mut or mem::replace"
-                            .into(),
-                    )
+                        .into())
                 } else if shape.inner_place_is_copy {
                     Ok(LiftStrategy::BindInnerPlace)
                 } else if shape.inner_place_is_clone {
                     Ok(LiftStrategy::BindInnerPlaceClone)
                 } else {
-                    Err(
-                        "shared auto-ref of a non-Copy, non-Clone place — cannot \
+                    Err("shared auto-ref of a non-Copy, non-Clone place — cannot \
                          lift without changing semantics"
-                            .into(),
-                    )
+                        .into())
                 }
             }
             Call => unreachable!("Call kind only arises for NestedCall form"),
@@ -275,11 +282,9 @@ fn classify_lift(acc: &Access, shape: &TyShape) -> Result<LiftStrategy, String> 
             } else if shape.inner_place_is_clone {
                 Ok(LiftStrategy::BindInnerPlaceClone)
             } else {
-                Err(
-                    "shared borrow `&place` of a non-Copy, non-Clone type — \
+                Err("shared borrow `&place` of a non-Copy, non-Clone type — \
                      cannot lift without changing semantics"
-                        .into(),
-                )
+                    .into())
             }
         }
         MutBorrowOf => Err(
@@ -346,18 +351,14 @@ mod tests {
     use super::*;
     use crate::access::{Place, PlaceRoot, Projection, SubexprId};
 
-    fn mk_access(
-        arg: usize,
-        place: Place,
-        kind: AccessKind,
-        id: u32,
-    ) -> Access {
+    fn mk_access(arg: usize, place: Place, kind: AccessKind, id: u32) -> Access {
         Access {
             arg_index: arg,
             place,
             kind,
             span: TextRange::default(),
             subexpr_id: SubexprId(id),
+            outer_subexpr: SubexprId(id),
         }
     }
 
@@ -393,19 +394,16 @@ mod tests {
             AccessKind::SharedBorrow,
             1,
         );
-        let plan = plan_lifts(TextRange::default(), &[a, b], |_| Some(shape(ExprForm::BarePlace)))
-            .unwrap();
+        let plan = plan_lifts(TextRange::default(), &[a, b], |_| {
+            Some((shape(ExprForm::BarePlace), TextRange::default()))
+        })
+        .unwrap();
         assert!(plan.lifts.is_empty());
     }
 
     #[test]
     fn mut_borrow_lift_is_infeasible() {
-        let a = mk_access(
-            0,
-            Place::named("p"),
-            AccessKind::MutBorrow,
-            0,
-        );
+        let a = mk_access(0, Place::named("p"), AccessKind::MutBorrow, 0);
         let b = mk_access(
             1,
             Place::named("p").pushed(Projection::Field {
@@ -416,7 +414,7 @@ mod tests {
             1,
         );
         let err = plan_lifts(TextRange::default(), &[a, b], |_| {
-            Some(shape(ExprForm::MutBorrowOf))
+            Some((shape(ExprForm::MutBorrowOf), TextRange::default()))
         })
         .unwrap_err();
         assert!(err.reason.contains("infeasible"));
@@ -436,12 +434,8 @@ mod tests {
             AccessKind::Read,
             1,
         );
-        let plan = plan_lifts(TextRange::default(), &[a, b], |sid| {
-            if sid == SubexprId(1) {
-                Some(shape(ExprForm::BarePlace))
-            } else {
-                Some(shape(ExprForm::BarePlace))
-            }
+        let plan = plan_lifts(TextRange::default(), &[a, b], |_| {
+            Some((shape(ExprForm::BarePlace), TextRange::default()))
         })
         .unwrap();
         assert_eq!(plan.lifts.len(), 1);
