@@ -30,7 +30,8 @@ import static_measurements_rust
 def run_built_workspace_binary(
     root: Path, workspace_dir: str, binary_name: str, args: list[str], dir: Path
 ) -> CompletedProcess:
-    target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
+    default_profile = "debug" if binary_name != "xj-improve-lift-call-args" else "release"
+    target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", default_profile)
     return hermetic.run(
         [binary_name, *args, dir],
         cwd=dir,

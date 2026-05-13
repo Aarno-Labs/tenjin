@@ -95,28 +95,29 @@ def do_fix_rs():
 
 
 def do_build_rs(root: Path, capture_output: bool = False):
-    cargo_profile = os.environ.get("XJ_BUILD_RS_PROFILE", "dev")
-    cargo_flags = f"--locked --profile={cargo_profile}"
+    cargo_profile_dev = os.environ.get("XJ_BUILD_RS_PROFILE", "dev")
+    cargo_profile_rel = os.environ.get("XJ_BUILD_RS_PROFILE", "release")
+    cargo_flags = "--locked"
     hermetic.run_cargo_in(
-        f"build {cargo_flags} -p c2rust -p c2rust-transpile".split(),
+        f"build {cargo_flags} --profile={cargo_profile_dev} -p c2rust -p c2rust-transpile".split(),
         cwd=root / "c2rust",
         check=True,
         capture_output=capture_output,
     )
     hermetic.run_cargo_in(
-        f"build {cargo_flags} --workspace".split(),
+        f"build {cargo_flags} --profile={cargo_profile_dev} --workspace".split(),
         cwd=root / "xj-improve-multitool",
         check=True,
         capture_output=capture_output,
     )
     hermetic.run_cargo_in(
-        f"build {cargo_flags} --workspace".split(),
+        f"build {cargo_flags} --profile={cargo_profile_dev} --workspace".split(),
         cwd=root / "xj-improve-synsub",
         check=True,
         capture_output=capture_output,
     )
     hermetic.run_cargo_in(
-        f"build {cargo_flags} --workspace".split(),
+        f"build {cargo_flags} --profile={cargo_profile_rel} --workspace".split(),
         cwd=root / "xj-improve-lift-call-args",
         check=True,
         capture_output=capture_output,
