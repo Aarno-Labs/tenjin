@@ -86,6 +86,9 @@ def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProce
     # This produces, as an ephemeral intermediate state, code that does not
     # type check, but ast-grep can still match on it.
     run_ast_grep_rewrite(dir, "println!($$$ARGS)", "xj_astgrep_println($$$ARGS)")
+    run_ast_grep_rewrite(dir, "print!($$$ARGS)", "xj_astgrep_print($$$ARGS)")
+    run_ast_grep_rewrite(dir, "eprintln!($$$ARGS)", "xj_astgrep_eprintln($$$ARGS)")
+    run_ast_grep_rewrite(dir, "eprint!($$$ARGS)", "xj_astgrep_eprint($$$ARGS)")
 
     # Direct indexing of arrays takes an unnecessary detour through unsafe pointers
     run_ast_grep_rewrite(
@@ -118,6 +121,9 @@ def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> Comple
     )
 
     run_ast_grep_rewrite(dir, "xj_astgrep_println($$$ARGS)", "println!($$$ARGS)")
+    run_ast_grep_rewrite(dir, "xj_astgrep_print($$$ARGS)", "print!($$$ARGS)")
+    run_ast_grep_rewrite(dir, "xj_astgrep_eprintln($$$ARGS)", "eprintln!($$$ARGS)")
+    run_ast_grep_rewrite(dir, "xj_astgrep_eprint($$$ARGS)", "eprint!($$$ARGS)")
 
     return lift_cp
 
