@@ -52,6 +52,7 @@ jobs:
           prefix-key: release-
           key: ${{ matrix.runner }}
           cache-workspace-crates: true
+          env-vars: "ImageVersion RUST"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install tss utility for showing timestamps
@@ -152,6 +153,7 @@ jobs:
         with:
           workspaces: c2rust
           cache-workspace-crates: true
+          env-vars: "ImageVersion RUST"
           # No need for key since we only run this on one runner.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
