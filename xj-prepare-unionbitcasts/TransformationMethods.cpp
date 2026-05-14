@@ -167,9 +167,12 @@ bool FunctionAccessAnalyzer::generateConversionFunctionCode(TransformContext &ct
         return false;
     }
 
-    // Queue edit to insert typedefs and function definition before the enclosing function
+    // Queue edit to insert typedefs and function definition before the enclosing function.
+    // If the function's start location is inside a macro expansion (e.g. the return type
+    // is spelled via a macro like `uint32_t`), `InsertTextBefore` would silently fail,
+    // so resolve to the file (expansion) location before inserting.
     if (generatedObjects.find(ctx.funcName) == generatedObjects.end()) {
-        SourceLocation funcStart = ctx.FD->getSourceRange().getBegin();
+        SourceLocation funcStart = ctx.SM.getExpansionLoc(ctx.FD->getSourceRange().getBegin());
         ctx.edits.push_back({Edit::InsertBefore, ctx.SM.getFileOffset(funcStart), funcStart,
                              SourceLocation(),
                              ctx.src_typedef_code + ctx.dst_typedef_code + funcCode + "\n"});
