@@ -1134,9 +1134,6 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "difftime") => {
                     self.recognize_preconversion_call_difftime(ctx, cargs)
                 }
-                _ if tenjin::is_path_exactly_1(path, "time") => {
-                    self.recognize_preconversion_call_time(ctx, cargs)
-                }
                 _ if tenjin::is_path_exactly_1(path, "localtime")
                     || tenjin::is_path_exactly_1(path, "localtime_r") =>
                 {
@@ -1814,47 +1811,6 @@ impl Translation<'_> {
                 vec![e1.to_expr(), e2.to_expr()],
             );
             return Ok(Some(WithStmts::new_val(difftime_call)));
-        }
-        Ok(None)
-    }
-
-    /// Map NULL -> None, &x -> Some(&[mut] x), otherwise `x.as_mut()`.
-    fn c_coerce_pointer_to_option_mut(
-        &self,
-        ctx: ExprContext,
-        cexpr: CExprId,
-    ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        if let CExprKind::ImplicitCast(_, _, CastKind::NullToPointer, _, _) =
-            self.ast_context[cexpr].kind
-        {
-            return Ok(WithStmts::new_val(mk().path_expr(vec!["None"])));
-        }
-        Ok(self.convert_expr(ctx.used(), cexpr, None)?.map(|e| {
-            if let Expr::Reference(_) = &*e {
-                mk().call_expr(mk().path_expr("Some"), vec![e])
-            } else {
-                mk().method_call_expr(e, "as_mut", vec![])
-            }
-        }))
-    }
-
-    #[allow(clippy::borrowed_box)]
-    fn recognize_preconversion_call_time(
-        &self,
-        ctx: ExprContext,
-        cargs: &[CExprId],
-    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
-        if cargs.len() == 1 {
-            self.use_crate(ExternCrate::XjCtime);
-            return Ok(Some(
-                self.c_coerce_pointer_to_option_mut(ctx, cargs[0])?
-                    .map(|arg_expr| {
-                        mk().call_expr(
-                            mk().path_expr(vec!["xj_ctime", "compat", "time"]),
-                            vec![arg_expr],
-                        )
-                    }),
-            ));
         }
         Ok(None)
     }

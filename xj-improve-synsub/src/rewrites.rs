@@ -14,6 +14,41 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    pub fn rewrite_ctime_time(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(ref func) = *call.func else {
+            return None;
+        };
+        if !func.path.is_ident("time") {
+            return None;
+        }
+        if call.args.len() != 1 {
+            return None;
+        }
+
+        let arg = &call.args[0];
+        let arg_form: Expr = if let Some(name) = expr_ident_name(arg) {
+            let arg_ty = symbols.get(&name)?;
+            if matches!(arg_ty, Type::Ptr(_)) {
+                Some(syn::parse_quote! { #arg.as_mut() })
+            } else if matches!(arg_ty, Type::Reference(r) if r.mutability.is_some()) {
+                Some(syn::parse_quote! { Some(#arg) })
+            } else {
+                None
+            }
+        } else {
+            // The argument is not a simple identifier, so we won't know how to rewrite it.
+            None
+        }?;
+        self.add_dep("xj_ctime");
+        let replacement: Expr = syn::parse_quote! {
+            xj_ctime::compat::time(#arg_form)
+        };
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite `getchar()` and `fgetc(stdin)`
     pub fn rewrite_getchar_variants(
         &self,
