@@ -139,7 +139,10 @@ std::string FunctionAccessAnalyzer::generateTmpDeclaration(const std::string tmp
 void FunctionAccessAnalyzer::ensureMemcpyDeclared(const FunctionDecl *FD, ASTContext &Ctx,
                                                    std::vector<Edit> &edits) {
     SourceManager &SM = Ctx.getSourceManager();
-    FileID FID = SM.getFileID(FD->getSourceRange().getBegin());
+    // Resolve through macro expansion: if the function's start is spelled via a macro
+    // (e.g. `uint32_t` from `#define uint32_t unsigned int`), the raw FileID points to
+    // a scratch buffer with no FileEntry, and we'd bail out without declaring memcpy.
+    FileID FID = SM.getFileID(SM.getExpansionLoc(FD->getSourceRange().getBegin()));
     const FileEntry *FE = SM.getFileEntryForID(FID);
     if (!FE)
         return;

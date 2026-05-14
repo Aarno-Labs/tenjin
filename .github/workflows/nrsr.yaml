@@ -135,6 +135,8 @@ jobs:
 
       - run: cd /tenjin && cli/10j provision  # Reprovisioning is automatic outside of CI.
 
+      - run: rustup component list | grep 'rust-src'
+
       - name: Build c2rust tests
         run: cd /tenjin/c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES --no-run
 
