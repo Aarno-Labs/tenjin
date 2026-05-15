@@ -523,10 +523,12 @@ def _CompileCommand_from_intercepted_command(
     # Never treat warnings as errors; some transformations we apply
     # (such as macro blocking) can introduce warnings but should not
     # cause the build to fail.
+    # Also strip -save-temps, which can interfere with libclang.
     # We should eventually move this to `convert_intercepted_entry()`
     # in `targets_from_intercept` but we don't yet use the parsed
     # flags here, only the raw arguments.
-    raw_arguments = [arg for arg in icmd.entry["arguments"] if arg != "-Werror"]
+    strip_args = {"-Werror", "-save-temps", "-save-temps=obj"}
+    raw_arguments = [arg for arg in icmd.entry["arguments"] if arg not in strip_args]
 
     if extra_compile_or_link_flags:
         if not icmd.compile_only and raw_arguments[0].endswith("ld"):
