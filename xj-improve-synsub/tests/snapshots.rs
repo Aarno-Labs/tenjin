@@ -154,6 +154,37 @@ fn usleep_to_thread_sleep() {
 }
 
 #[test]
+fn casted_literal_comparison_strips_outer_casts() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
+    check(
+        &rw,
+        "fn demo(x: i32, y: i32) { let _ = (x + 5 as i32) as i64 == (y + 3 as i32) as i64; }",
+        expect![[r#"
+            fn demo(x: i32, y: i32) {
+                let _ = (x + 5 as i32) == (y + 3 as i32);
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn casted_literal_comparison_skips_bitwise_op() {
+    // Bitwise ops are not safe to rewrite since the cast width affects the value.
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
+    check(
+        &rw,
+        "fn demo(x: i32, y: i32) { let _ = (x + 5 as i32) as i64 | (y + 3 as i32) as i64; }",
+        expect![[r#"
+            fn demo(x: i32, y: i32) {
+                let _ = (x + 5 as i32) as i64 | (y + 3 as i32) as i64;
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn memset_on_cast() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
