@@ -146,12 +146,23 @@ class BuildInfo:
             i = 0
             while i < len(orig):
                 arg = orig[i]
-                if arg == "-o" and i + 1 < len(orig):
+                next_arg = orig[i + 1] if i + 1 < len(orig) else None
+                if arg == "-o" and next_arg is not None:
                     i += 2  # drop existing output; we append below
                 elif cmd.output is not None and arg == f"-o{cmd.output}":
                     i += 1  # drop -ofoo form; we append below
                 elif arg in c_inputs_set and arg != c_input:
                     i += 1  # skip other C source files
+                elif arg in ("-shared", "-dynamiclib", "-static", "-rdynamic"):
+                    i += 1
+                elif arg.startswith("-Wl,"):
+                    i += 1
+                elif arg in ("-l", "-L") and next_arg is not None:
+                    i += 2
+                elif arg == "-Xlinker" and next_arg is not None:
+                    i += 2
+                elif arg.startswith("-l") or arg.startswith("-L"):
+                    i += 1
                 else:
                     new_args.append(arg)
                     i += 1
