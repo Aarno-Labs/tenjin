@@ -14,6 +14,54 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    /// Rewrite `(_ BINOP1 _) as Y CMP_BINOP3 (_ BINOP2 _) as Y`
+    /// into    `(_ BINOP1 _)      CMP_BINOP3 (_ BINOP2 _)`
+    pub fn rewrite_casted_literal_comparison(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(outer_bin) = expr else {
+            return None;
+        };
+
+        // Only strip the outer casts when the operator is a comparison; bitwise and
+        // arithmetic ops can change value when the cast width differs.
+        if !is_comparison_op(&outer_bin.op) {
+            return None;
+        }
+
+        let Expr::Cast(left_outer) = &*outer_bin.left else {
+            return None;
+        };
+        let Expr::Cast(right_outer) = &*outer_bin.right else {
+            return None;
+        };
+
+        // Both outer casts must target the same type Y.
+        if left_outer.ty != right_outer.ty {
+            return None;
+        }
+
+        // Inner expressions must be binary ops.
+        if !matches!(expr_strip_parens(&left_outer.expr), Expr::Binary(_)) {
+            return None;
+        }
+        if !matches!(expr_strip_parens(&right_outer.expr), Expr::Binary(_)) {
+            return None;
+        }
+
+        let left_inner = &left_outer.expr;
+        let right_inner = &right_outer.expr;
+        let op3 = &outer_bin.op;
+
+        let replacement: Expr = syn::parse_quote! {
+            #left_inner #op3 #right_inner
+        };
+
+        Some((replacement, Depth::Limited(0)))
+    }
+
     pub fn rewrite_ctime_time(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else {
             return None;
@@ -132,17 +180,10 @@ impl Rewriter {
             func_path.span(),
         );
 
-        // Per the docstring, `xj_isinf(e as f64)` rewrites to `e.is_infinite()` —
-        // i.e. the `as f64` cast is stripped.  Without stripping, the generated
-        // tokens `(e as f64).is_infinite()` would re-parse as a cast followed by
-        // a method call, which Rust rejects ("casts cannot be followed by a
-        // field access").
-        let receiver = match arg_expr {
-            Expr::Cast(cast) if matches!(&*cast.ty, Type::Path(tp) if tp.path.is_ident("f64")) => {
-                (*cast.expr).clone()
-            }
-            other => other.clone(),
-        };
+        // Stripping casts is valid because (A) isinf/isnan (at least the versions from math.h)
+        // cannot be given arguments of non-floating-point type, and (B) floating point casts
+        // do not change the value's isinf/isnan-ness.
+        let receiver = expr_strip_casts(arg_expr);
 
         let replacement: Expr = if is_equality {
             syn::parse_quote! { !#receiver.#method_ident() }
@@ -1048,6 +1089,18 @@ fn expr_get_int_literal(expr: &Expr) -> Option<LitInt> {
         return None;
     };
     Some(lit_int.clone())
+}
+
+fn is_comparison_op(op: &syn::BinOp) -> bool {
+    matches!(
+        op,
+        syn::BinOp::Eq(_)
+            | syn::BinOp::Ne(_)
+            | syn::BinOp::Lt(_)
+            | syn::BinOp::Le(_)
+            | syn::BinOp::Gt(_)
+            | syn::BinOp::Ge(_)
+    )
 }
 
 fn expr_ident(expr: &Expr) -> Option<&syn::Ident> {

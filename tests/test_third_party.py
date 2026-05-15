@@ -31,6 +31,34 @@ def lua_5_4_0_immunant_git_clone() -> Path:
     )
 
 
+@pytest.mark.slow  # expected runtime: 35 s
+def test_nhjschulz_cfsm(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/nhjschulz/cfsm.git", "73315639cce1f6101091323fc5568304b218a4dc"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        tenjin_fixtures.root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="nhjschulz_cfsm",
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(
+        tmp_resultsdir / "final", ["run", "--bin", "test_c_fsm"], capture_output=True
+    )
+    # The test output includes absolute paths, so we just check that the last few lines look right.
+    stdout_lines_b = rs_prog_output.stdout.split(b"\n")
+    assert stdout_lines_b[-4:] == [
+        b"-----------------------",
+        b"4 Tests 0 Failures 0 Ignored ",
+        b"OK",
+        b"",
+    ], f"Got: {rs_prog_output.stdout!r}"
+
+
 @pytest.mark.slow  # expected runtime: 30 s
 def test_sbase_cal(
     tenjin_fixtures: TenjinFixtures,
