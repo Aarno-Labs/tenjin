@@ -16,7 +16,6 @@ ra_ap_hir            = "=0.0.332"
 ra_ap_hir_def        = "=0.0.332"
 ra_ap_hir_ty         = "=0.0.332"
 ra_ap_ide            = "=0.0.332"
-ra_ap_ide_db         = "=0.0.332"
 ra_ap_load-cargo     = "=0.0.332"
 ra_ap_paths          = "=0.0.332"
 ra_ap_project_model  = "=0.0.332"
@@ -25,8 +24,6 @@ ra_ap_vfs            = "=0.0.332"
 
 anyhow      = "1"
 clap        = { version = "4", features = ["derive"] }
-itertools   = "0.13"
-rustc-hash  = "1.1"
 tracing     = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
