@@ -126,9 +126,12 @@ def test_cmake_lone_exe(test_dir, test_tmp_dir, tenjin_fixtures):
 
     # Ensure it compiles and runs as expected
     hermetic.run(["cmake", "-B", str(build_dir), "-S", str(tmp_codebase)], check=True)
-    hermetic.run(["cmake", "--build", str(build_dir)], check=True, capture_output=True)
+    hermetic.run(["cmake", "--build", str(build_dir)], check=True)
     c_prog_output = hermetic.run(
-        [str(build_dir / "tenjin_smoke_test_lone_exe")], check=True, capture_output=True
+        [str(build_dir / "tenjin_smoke_test_lone_exe")], capture_output=True
+    )
+    assert c_prog_output.returncode == 0, (
+        f"Program exited with code {c_prog_output.returncode}, stderr: {c_prog_output.stderr!r}"
     )
     assert c_prog_output.stdout == b"Hello, Tenjin! 43\n", f"Got: {c_prog_output.stdout!r}"
 
