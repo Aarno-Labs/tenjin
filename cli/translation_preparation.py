@@ -110,6 +110,7 @@ def compute_build_info_in(
                 link_txt.write_text(content.replace(llvm_ar_path, ar_interceptor), encoding="utf-8")
 
         # Build the project to ensure all compile and link commands are intercepted.
+        click.secho("((( Building via `cmake --build`", fg="cyan", bold=True)
         cp2 = hermetic.run(
             [
                 "cmake",
@@ -164,16 +165,24 @@ def compute_build_info_in(
     # input codebase, logging the intercepted commands.
     shutil.copytree(codebase, builddir, dirs_exist_ok=True)
 
-    hermetic.run(
+    click.secho(f"((( Building via `{buildcmd}`", fg="cyan", bold=True)
+    cp = hermetic.run(
         buildcmd,
         cwd=builddir,
         shell=isinstance(buildcmd, str),
-        check=True,
+        check=False,
         env_ext={
             "BUILD_COMMANDS_DIRECTORY": str(buildcmds),
             "pre-Tenjin PATH prefix": [str(cc_ld_intercept_dir)],
         },
     )
+    click.secho(f"))) `{buildcmd}` finished ", nl=False, fg="cyan", bold=True)
+    click.secho(
+        f"with return code {cp.returncode}", fg="cyan" if cp.returncode == 0 else "red", bold=True
+    )
+    if not cp.returncode == 0:
+        raise tenj_types.UserFacingError("Tenjin was unable to build the provided codebase.")
+
     copy_new_source_files_back(codebase, builddir)
     convert_intercepted_commands_to_build_info()
     assert not mut_build_info.is_empty(), "Failed to intercept commands from build"
