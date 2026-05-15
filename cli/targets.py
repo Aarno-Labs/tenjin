@@ -138,11 +138,43 @@ class BuildInfo:
                 p.with_stem(p.stem + "_xji_").with_suffix(".o").as_posix()
             )  # xji = tenjin intermediate
 
+        c_inputs_set = set(cmd.c_inputs)
+
+        def rebuild_args_for_compile(c_input: str) -> list[str]:
+            orig = cmd.entry["arguments"]
+            new_args = []
+            i = 0
+            while i < len(orig):
+                arg = orig[i]
+                if arg == "-o" and i + 1 < len(orig):
+                    i += 2  # drop existing output; we append below
+                elif cmd.output is not None and arg == f"-o{cmd.output}":
+                    i += 1  # drop -ofoo form; we append below
+                elif arg in c_inputs_set and arg != c_input:
+                    i += 1  # skip other C source files
+                else:
+                    new_args.append(arg)
+                    i += 1
+            if "-c" not in new_args:
+                new_args.append("-c")
+            new_args.extend(["-o", o_file_for(c_input)])
+            return new_args
+
+        def rebuild_args_for_link() -> list[str]:
+            orig = cmd.entry["arguments"]
+            new_args = [arg for arg in orig if arg not in c_inputs_set]
+            new_args.extend(o_file_for(c) for c in cmd.c_inputs)
+            return new_args
+
         # This is a hybrid command. We need to split it into one or more compile steps
         # (which produce one object file each) and a link step.
         def mk_compile_cmd(c_input: str) -> targets_from_intercept.InterceptedCommand:
             return targets_from_intercept.InterceptedCommand(
-                entry=cmd.entry,
+                entry={
+                    **cmd.entry,
+                    "arguments": rebuild_args_for_compile(c_input),
+                    "file": c_input,
+                },
                 args=targets_from_intercept.CategorizedCommandArgs(
                     shared=cmd.args.shared,
                     compile_only=cmd.args.compile_only,
@@ -159,7 +191,7 @@ class BuildInfo:
             )
 
         link_cmd = targets_from_intercept.InterceptedCommand(
-            entry=cmd.entry,
+            entry={**cmd.entry, "arguments": rebuild_args_for_link()},
             args=targets_from_intercept.CategorizedCommandArgs(
                 shared=cmd.args.shared,
                 compile_only=[],
