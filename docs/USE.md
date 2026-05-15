@@ -104,6 +104,31 @@ correct program. Note that one may rationally want to produce an incorrect
 translation, if the cost of fixing the unhandled cases from "incorrect" guidance
 is lower than the cost of otherwise obtaining an acceptably correct translation.
 
+## Preparatory Refactoring and Improvement Passes
+
+Tenjin applies a suite of source-to-source refactorings on C code which help
+narrow the semantic gap between C and Rust. The full list can be found in
+the `preparation_passes` list within [translation_preparation.py](/cli/translation_preparation.py).
+Some notable passes:
+
+- [convert union bitcasts](passes/convert_union_bitcasts.md)
+- [errno localization](passes/errno_localization.md)
+- [mutable global localization](passes/mutable_global_localization.md)
+- [pointer arithmetic reduction](passes/pointer_arithmetic_reduction.md)
+
+Tenjin also applies a suite of transformations on the generated Rust code to improve its
+safety and/or idiomaticity:
+
+- trimming of unused functions and types
+- removal of unnecessary `unsafe` markers
+- [aliased argument lifting](passes/aliased_arguments.md)
+- removal of trivial numeric casts
+- `clippy fix` suggestions
+
+The full list can be found in the `improvement_passes` list within
+[translation_improvement.py](/cli/translation_improvement.py)
+
+
 ## Coverage
 
 Tenjin provides support for collecting and manipulating coverage
