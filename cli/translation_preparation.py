@@ -104,7 +104,7 @@ def compute_build_info_in(
         # like it does for `cc` and `ld`.
         llvm_ar_path = str(hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "llvm-ar")
         ar_interceptor = str(cc_ld_intercept_dir / "ar")
-        for link_txt in (builddir / "CMakeFiles").rglob("link.txt"):
+        for link_txt in builddir.rglob("link.txt"):
             content = link_txt.read_text(encoding="utf-8")
             if llvm_ar_path in content:
                 link_txt.write_text(content.replace(llvm_ar_path, ar_interceptor), encoding="utf-8")
