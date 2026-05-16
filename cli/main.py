@@ -540,7 +540,9 @@ if __name__ == "__main__":
                 ]).returncode
             )
         if sys.argv[1] == "intercept-exec":
-            if len(sys.argv) >= 6:
+            if len(sys.argv) < 6:
+                pass
+            else:
                 import intercept_exec
 
                 category = sys.argv[2]
