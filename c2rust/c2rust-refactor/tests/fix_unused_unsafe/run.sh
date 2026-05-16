@@ -5,6 +5,4 @@ if [ `uname` = 'Darwin' ]; then
     export LD_LIBRARY_PATH=$not_LD_LIBRARY_PATH
 fi
 
-$refactor \
-    rename_unnamed \
-    -- old.rs $rustflags
+$refactor fix_unused_unsafe -- old.rs $rustflags

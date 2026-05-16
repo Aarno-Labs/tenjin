@@ -82,8 +82,15 @@ pub mod transform;
 
 mod context;
 
-use cargo::core::TargetKind;
+use cargo::core::compiler::{CompileMode, Context, DefaultExecutor, Executor, Unit};
+use cargo::core::{PackageId, Target, TargetKind, Verbosity, Workspace};
+use cargo::ops;
+use cargo::ops::CompileOptions;
+use cargo::util::errors::CargoResult;
+use cargo::util::important_paths::find_root_manifest_for_wd;
+use cargo::Config;
 use cargo_util::paths;
+use cargo_util::ProcessBuilder;
 use log::info;
 use rustc_ast::NodeId;
 use rustc_interface::interface;
@@ -91,7 +98,8 @@ use std::collections::HashSet;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
-use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::{Arc, Once};
 
 use crate::ast_builder::IntoSymbol;
 
@@ -236,18 +244,7 @@ fn get_rustc_arg_strings(src: RustcArgSource) -> Vec<RustcArgs> {
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
-fn get_rustc_cargo_args(target_type: CargoTarget) -> Vec<RustcArgs> {
-    use cargo::core::compiler::{CompileMode, Context, DefaultExecutor, Executor, Unit};
-    use cargo::core::{PackageId, Target, Verbosity, Workspace};
-    use cargo::ops;
-    use cargo::ops::CompileOptions;
-    use cargo::util::errors::CargoResult;
-    use cargo::util::important_paths::find_root_manifest_for_wd;
-    use cargo::Config;
-    use cargo_util::ProcessBuilder;
-    use std::sync::Mutex;
-
+fn cargo_config() -> Config {
     let mut config = Config::default().unwrap();
     config
         .configure(
@@ -263,6 +260,10 @@ fn get_rustc_cargo_args(target_type: CargoTarget) -> Vec<RustcArgs> {
         )
         .unwrap();
     config.shell().set_verbosity(Verbosity::Quiet);
+    config
+}
+
+fn setup_cargo<'cfg>(config: &'cfg Config) -> (CompileOptions, Workspace<'cfg>) {
     let mode = CompileMode::Check { test: false };
     let mut compile_opts = CompileOptions::new(&config, mode).unwrap();
 
@@ -273,6 +274,14 @@ fn get_rustc_cargo_args(target_type: CargoTarget) -> Vec<RustcArgs> {
 
     let manifest_path = find_root_manifest_for_wd(config.cwd()).unwrap();
     let ws = Workspace::new(&manifest_path, &config).unwrap();
+
+    (compile_opts, ws)
+}
+
+#[cfg_attr(feature = "profile", flame)]
+fn get_rustc_cargo_args(target_type: CargoTarget) -> Vec<RustcArgs> {
+    let config = cargo_config();
+    let (compile_opts, ws) = setup_cargo(&config);
 
     struct LoggingExecutor {
         default: DefaultExecutor,
@@ -375,28 +384,13 @@ fn get_rustc_cargo_args(target_type: CargoTarget) -> Vec<RustcArgs> {
 }
 
 fn rebuild() {
-    use cargo::core::compiler::CompileMode;
-    use cargo::core::{Verbosity, Workspace};
-    use cargo::ops;
-    use cargo::ops::CompileOptions;
-    use cargo::util::important_paths::find_root_manifest_for_wd;
-    use cargo::Config;
-
-    let config = Config::default().unwrap();
-    config.shell().set_verbosity(Verbosity::Quiet);
-    let mode = CompileMode::Check { test: false };
-    let compile_opts = CompileOptions::new(&config, mode).unwrap();
-
-    let manifest_path = find_root_manifest_for_wd(config.cwd()).unwrap();
-    let ws = Workspace::new(&manifest_path, &config).unwrap();
+    let config = cargo_config();
+    let (compile_opts, ws) = setup_cargo(&config);
     ops::compile(&ws, &compile_opts).expect("Could not rebuild crate");
 }
 
-#[cfg_attr(feature = "profile", flame)]
-pub fn lib_main(opts: Options) -> interface::Result<()> {
+fn init() {
     env_logger::init();
-    rustc_driver::install_ice_hook();
-    info!("Begin refactoring");
 
     // Make sure we compile with the toolchain version that the refactoring tool
     // is built against.
@@ -412,6 +406,14 @@ pub fn lib_main(opts: Options) -> interface::Result<()> {
     rustflags.push(" -Awarnings");
     env::set_var("RUSTFLAGS", rustflags);
 
+    rustc_driver::install_ice_hook();
+}
+
+static INIT: Once = Once::new();
+
+#[cfg_attr(feature = "profile", flame)]
+pub fn lib_main(opts: Options) -> interface::Result<()> {
+    INIT.call_once(init);
     rustc_driver::catch_fatal_errors(move || main_impl(opts)).and_then(|x| x)
 }
 

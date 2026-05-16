@@ -263,7 +263,7 @@ fn emit_lib_rs(
     let crates = convert_dependencies_list(crates.clone(), tcfg.c2rust_dir.as_deref());
     let workspace_crate_names = compute_workspace_crate_names(link_cmd);
     let file_name = get_lib_rs_file_name(tcfg);
-    let rs_xcheck_backend = tcfg.cross_check_backend.replace("-", "_");
+    let rs_xcheck_backend = tcfg.cross_check_backend.replace('-', "_");
     let json = json!({
         "lib_rs_file": file_name,
         "reorganize_definitions": tcfg.reorganize_definitions,

@@ -557,7 +557,7 @@ impl ParsedGuidance {
     }
 }
 
-type ZeroInitsExprAndImports = (WithStmts<Box<Expr>>, IndexSet<Import>);
+type ZeroInits = IndexMap<CDeclId, (WithStmts<Box<Expr>>, IndexSet<Import>)>;
 
 pub struct Translation<'c> {
     // Translation environment
@@ -576,7 +576,7 @@ pub struct Translation<'c> {
     parent_expr_map: HashMap<CExprId, CExprId>,
     type_converter: RefCell<TypeConverter>,
     renamer: RefCell<Renamer<CDeclId>>,
-    zero_inits: RefCell<IndexMap<CDeclId, ZeroInitsExprAndImports>>,
+    zero_inits: RefCell<ZeroInits>,
     function_context: RefCell<FuncContext>,
     potential_flexible_array_members: RefCell<IndexSet<CDeclId>>,
     macro_expansions: RefCell<IndexMap<CDeclId, Option<MacroExpansion>>>,
@@ -1327,7 +1327,7 @@ impl<'a> IdentsOrGlob<'a> {
 }
 
 /// Extract the set of names made visible by a `use`.
-fn use_idents<'a>(i: &'a UseTree) -> IdentsOrGlob<'a> {
+fn use_idents(i: &UseTree) -> IdentsOrGlob<'_> {
     use UseTree::*;
     match i {
         Path(up) => use_idents(&up.tree),
@@ -1337,7 +1337,7 @@ fn use_idents<'a>(i: &'a UseTree) -> IdentsOrGlob<'a> {
         Group(ugr) => ugr
             .items
             .iter()
-            .map(|tree| use_idents(tree))
+            .map(use_idents)
             .reduce(IdentsOrGlob::join)
             .unwrap_or(IdentsOrGlob::Idents(vec![])),
     }
@@ -1600,10 +1600,7 @@ fn arrange_header(t: &Translation, is_binary: bool) -> (Vec<syn::Attribute>, Vec
             // we upgrade to a newer nightly (Rust 1.81) that supports it.
             out_items.push(
                 mk().call_attr("allow", vec!["unused_imports"])
-                    .use_simple_item(
-                        mk().abs_path(vec![t.tcfg.crate_name().clone()]),
-                        None::<Ident>,
-                    ),
+                    .use_simple_item(mk().abs_path(vec![t.tcfg.crate_name()]), None::<Ident>),
             )
         }
     }
