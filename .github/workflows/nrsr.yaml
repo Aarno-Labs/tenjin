@@ -48,8 +48,12 @@ jobs:
       - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          workspaces: c2rust
-          prefix-key: release-
+          workspaces: |
+            c2rust
+            xj-improve-multitool
+            xj-improve-synsub
+            xj-improve-lift-call-args
+          prefix-key: epoch2_release-
           key: ${{ matrix.runner }}
           cache-workspace-crates: true
           env-vars: "ImageVersion RUST"
@@ -153,7 +157,12 @@ jobs:
       - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          workspaces: c2rust
+          workspaces: |
+            c2rust
+            xj-improve-multitool
+            xj-improve-synsub
+            xj-improve-lift-call-args
+          prefix-key: epoch2_dev-
           cache-workspace-crates: true
           env-vars: "ImageVersion RUST"
           # No need for key since we only run this on one runner.
