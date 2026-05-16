@@ -9,6 +9,7 @@ dependencies = [
     "click==8.1.8",
     "cmake-file-api==0.0.8.3",
     "dataclasses-json>=0.6.7",
+    "meson==1.11.1",
     "mypy==1.19.0",
     "packaging==24.2",
     "pycparser==2.23",
