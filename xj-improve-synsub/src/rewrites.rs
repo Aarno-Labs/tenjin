@@ -38,16 +38,21 @@ impl Rewriter {
             return None;
         };
 
-        // Both outer casts must target the same type Y.
-        if left_outer.ty != right_outer.ty {
+        // Inner expressions must be comparison binary ops, guaranteeing they are bool.
+        // To be soundly elided, the outer casts must not be lossy, and the inner
+        // subexpressions must be of the same type.
+        let Expr::Binary(left_inner_bin) = expr_strip_parens(&left_outer.expr) else {
+            return None;
+        };
+        let Expr::Binary(right_inner_bin) = expr_strip_parens(&right_outer.expr) else {
+            return None;
+        };
+        if !is_comparison_op(&left_inner_bin.op) || !is_comparison_op(&right_inner_bin.op) {
             return None;
         }
 
-        // Inner expressions must be binary ops.
-        if !matches!(expr_strip_parens(&left_outer.expr), Expr::Binary(_)) {
-            return None;
-        }
-        if !matches!(expr_strip_parens(&right_outer.expr), Expr::Binary(_)) {
+        // Both outer casts must target the same type Y.
+        if left_outer.ty != right_outer.ty {
             return None;
         }
 

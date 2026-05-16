@@ -159,26 +159,51 @@ fn casted_literal_comparison_strips_outer_casts() {
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
     check(
         &rw,
-        "fn demo(x: i32, y: i32) { let _ = (x + 5 as i32) as i64 == (y + 3 as i32) as i64; }",
+        "fn demo(x: i32, y: i32) { let _ = (x < 5 as i32) as i64 == (y < 3 as i32) as i64; }",
         expect![[r#"
             fn demo(x: i32, y: i32) {
-                let _ = (x + 5 as i32) == (y + 3 as i32);
+                let _ = (x < 5 as i32) == (y < 3 as i32);
             }
         "#]],
     );
 }
 
 #[test]
-fn casted_literal_comparison_skips_bitwise_op() {
-    // Bitwise ops are not safe to rewrite since the cast width affects the value.
+fn casted_literal_comparison_skips_non_comparison_outer_op() {
+    // Inner ops are comparisons (bool result), but the outer op is bitwise — no rewrite.
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
     check(
         &rw,
-        "fn demo(x: i32, y: i32) { let _ = (x + 5 as i32) as i64 | (y + 3 as i32) as i64; }",
+        "fn demo(x: i32, y: i32) { let _ = (x < 5 as i32) as i64 | (y < 3 as i32) as i64; }",
         expect![[r#"
             fn demo(x: i32, y: i32) {
-                let _ = (x + 5 as i32) as i64 | (y + 3 as i32) as i64;
+                let _ = (x < 5 as i32) as i64 | (y < 3 as i32) as i64;
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn casted_literal_comparison_skips_non_comparison_inner_op() {
+    // Outer op is a comparison, but inner ops are arithmetic — no rewrite.
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
+    check(
+        &rw,
+        "fn demo(x: i32, y: i32) { let _ = (x + 5 as i32) as i64 == (y < 3 as i32) as i64; }",
+        expect![[r#"
+            fn demo(x: i32, y: i32) {
+                let _ = (x + 5 as i32) as i64 == (y < 3 as i32) as i64;
+            }
+        "#]],
+    );
+    check(
+        &rw,
+        "fn demo(x: i32, b: bool) { let _ = (x & b as i32) as i64 == (0 + b as i32) as i64; }",
+        expect![[r#"
+            fn demo(x: i32, b: bool) {
+                let _ = (x & b as i32) as i64 == (0 + b as i32) as i64;
             }
         "#]],
     );
