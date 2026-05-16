@@ -58,6 +58,9 @@ def test_nhjschulz_cfsm(tenjin_fixtures: TenjinFixtures):
         b"",
     ], f"Got: {rs_prog_output.stdout!r}"
 
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
 
 @pytest.mark.slow  # expected runtime: 20 s
 def test_marc_q__libbmp(tenjin_fixtures: TenjinFixtures):
@@ -92,6 +95,89 @@ Points	4/4
 Failed	0
 """
     )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 70 s
+def test_rupertwh__bmplib(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/rupertwh/bmplib.git", "e7910ac36bfdc6c46fcaf5f8291ed9956ba98fd8"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # The codebase symlinks the old and new style config files but meson doesn't like that.
+    (tmp_codebase / "meson_options.txt").unlink()
+
+    hermetic.run(["meson", "setup", "builddir"], cwd=str(tmp_codebase), check=True)
+    # Meson sets up placeholder symlinks but they interfere with `shutil.copytree`.
+    for f in (tmp_codebase / "builddir").glob("libbmp.*"):
+        if f.is_symlink():
+            f.unlink()
+    # The main build needs to generate this file but the program that generates it
+    # should not be part of the translation.
+    hermetic.run(["ninja", "-C", "builddir", "huffman-codes.h"], cwd=str(tmp_codebase), check=True)
+
+    translation.do_translate(
+        tenjin_fixtures.root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="rupertwh_bmplib",
+        buildcmd="ninja -C builddir",
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    specs = {
+        "test_read_io": [
+            "read_u32_le",
+            "read_s32_le",
+            "read_u16_le",
+            "read_s16_le",
+        ],
+        "test_write_io": [
+            "write_u32_le",
+            "write_s32_le",
+            "write_u16_le",
+            "write_s16_le",
+            "s_imgrgb_to_outbytes int",
+            "s_imgrgb_to_outbytes float",
+            "s_imgrgb_to_outbytes s2.13",
+        ],
+        "test_read_conversions": [
+            "s_s2_13_to_float",
+            "s_float_to_s2_13",
+            "s_convert64",
+            "roundtrip_s2.13-float-s2.13",
+            "s_srgb_gamma_float",
+            "s_int8_to_result_format float",
+            "s_int8_to_result_format s2.13",
+            "s_int8_to_result_format int",
+        ],
+    }
+    for binname, argstrs in specs.items():
+        binpath = tmp_resultsdir / "final" / "target" / "debug" / binname
+        for argstr in argstrs:
+            args = argstr.split()
+            rs_prog_output = hermetic.run([str(binpath), *args], check=False, capture_output=True)
+            c_prog_output = hermetic.run(
+                [str(tmp_resultsdir / "_build_1" / "builddir" / binname), *args],
+                check=False,
+                capture_output=True,
+            )
+            assert rs_prog_output.stdout == c_prog_output.stdout, (
+                f"Failed on {binname} with args {args!r}; got stdout: {rs_prog_output.stdout!r}, expected: {c_prog_output.stdout!r}"
+            )
+            assert rs_prog_output.stderr == c_prog_output.stderr, (
+                f"Failed on {binname} with args {args!r}; got stderr: {rs_prog_output.stderr!r}, expected: {c_prog_output.stderr!r}"
+            )
+            assert rs_prog_output.returncode == c_prog_output.returncode, (
+                f"Failed on {binname} with args {args!r}; got return code: {rs_prog_output.returncode}, expected: {c_prog_output.returncode}"
+            )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
 @pytest.mark.slow  # expected runtime: 30 s
