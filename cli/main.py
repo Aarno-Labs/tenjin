@@ -539,17 +539,18 @@ if __name__ == "__main__":
                     *sys.argv[2:],
                 ]).returncode
             )
-        if sys.argv[1] == "intercept-exec" and len(sys.argv) >= 6:
-            import intercept_exec
+        if sys.argv[1] == "intercept-exec":
+            if len(sys.argv) >= 6:
+                import intercept_exec
 
-            category = sys.argv[2]
-            run_as = sys.argv[3]
-            assert category in ("cc", "ld", "ar")
-            sys.exit(
-                intercept_exec.intercept_exec(
-                    cast(Literal["cc", "ld", "ar"], category), Path(run_as), sys.argv[4:]
+                category = sys.argv[2]
+                run_as = sys.argv[3]
+                assert category in ("cc", "ld", "ar")
+                sys.exit(
+                    intercept_exec.intercept_exec(
+                        cast(Literal["cc", "ld", "ar"], category), Path(run_as), sys.argv[4:]
+                    )
                 )
-            )
         if sys.argv[1] == "covset-gen":
             ns, rest = parse_covset_gen_args(sys.argv[2:])
             try:
