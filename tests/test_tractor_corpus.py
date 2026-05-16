@@ -1457,6 +1457,12 @@ def test_tractor_b2_synthetic_generic_foreach_app(tenjin_fixtures: TenjinFixture
 
 
 @pytest.mark.slow
+def test_tractor_b2_synthetic_hashmap_tree_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_synthetic/hashmap_tree"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_synthetic_macrodepth_add_5_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/macrodepth_add_5"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
