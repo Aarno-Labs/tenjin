@@ -59,6 +59,41 @@ def test_nhjschulz_cfsm(tenjin_fixtures: TenjinFixtures):
     ], f"Got: {rs_prog_output.stdout!r}"
 
 
+@pytest.mark.slow  # expected runtime: 20 s
+def test_marc_q__libbmp(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/marc-q/libbmp.git", "66bec6d7daf254e6dc07d55c9383fd68276a6a39"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        tenjin_fixtures.root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="marc_q_libbmp",
+        buildcmd="make -C test CC=cc",
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
+    # The test output includes absolute paths, so we just check that the last few lines look right.
+
+    assert (
+        rs_prog_output.stdout
+        == b"""LibBMP-Test v. 0.0.1 A (C) 2016 - 2017 Marc Volker Dickmann
+
+BMP_GET_PADDING		PASSED!
+header_size		PASSED!
+header_init_df		PASSED!
+pixel_init		PASSED!
+
+
+Points	4/4
+Failed	0
+"""
+    )
+
+
 @pytest.mark.slow  # expected runtime: 30 s
 def test_sbase_cal(
     tenjin_fixtures: TenjinFixtures,
