@@ -16,6 +16,32 @@ class InterceptedCommandInfo(TypedDict):
     output: str | None
 
 
+def is_executable_file(path: str) -> bool:
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def resolve_sans_intercept(name: str) -> Path:
+    """Resolve the given command name to an absolute path, bypassing any intercept wrappers."""
+    # Note a subtlety of the PATH setup here. Example:
+    #  - The user runs `./cli/10j pytest tests -k triplicated`
+    #  - 10j invokes pytest with PATH extended with Tenjin deps
+    #  - pytest invokes do_translate() with buildcmd="make"
+    #  - do_translate runs compute_build_info_in, which runs `make` with
+    #    cli/sh/cc-ld-intercept as the first PATH entry.
+    #  - `make` invokes cli/sh/cc-ld-intercept/cc
+    #  - which runs $CLI_DIR/10j intercept-exec cc "$@"
+    #  - So now we're here, with an extended PATH. But when *we* invoke cc,
+    #    we don't want the intercept script. So we'll search the PATH ourselves,
+    #    skipping our cc-ld-intercept directory.
+    for pd in os.environ.get("PATH", "").split(os.pathsep):
+        if "cc-ld-intercept" in pd:
+            continue
+        candidate = os.path.join(pd, name)
+        if is_executable_file(candidate):
+            return Path(candidate)
+    raise FileNotFoundError(f"Could not find non-intercepted command for {name}")
+
+
 # Integrated functionality from c2rust/scripts/cc-wrappers/common.py
 # which does not require Python to be installed outside the hermetic environment.
 def intercept_exec(build_type: InterceptedBuildType, run_as: Path, args: list[str]) -> int:
@@ -23,34 +49,11 @@ def intercept_exec(build_type: InterceptedBuildType, run_as: Path, args: list[st
     # real compiler as the first argument. When invoked directly, the first argument
     # will just be an argument like "-c" or a source file name.
 
-    def is_executable_file(path: str) -> bool:
-        return os.path.isfile(path) and os.access(path, os.X_OK)
-
     if len(args) > 0 and os.path.isabs(args[0]) and is_executable_file(args[0]):
         arguments = args
     else:
-        # Note a subtlety of the PATH setup here. Example:
-        #  - The user runs `./cli/10j pytest tests -k triplicated`
-        #  - 10j invokes pytest with PATH extended with Tenjin deps
-        #  - pytest invokes do_translate() with buildcmd="make"
-        #  - do_translate runs compute_build_info_in, which runs `make` with
-        #    cli/sh/cc-ld-intercept as the first PATH entry.
-        #  - `make` invokes cli/sh/cc-ld-intercept/cc
-        #  - which runs $CLI_DIR/10j intercept-exec cc "$@"
-        #  - So now we're here, with an extended PATH. But when *we* invoke cc,
-        #    we don't want the intercept script. So we'll search the PATH ourselves,
-        #    skipping our cc-ld-intercept directory.
-        non_intercepted_command = ""
-        for pd in os.environ.get("PATH", "").split(os.pathsep):
-            if "cc-ld-intercept" in pd:
-                continue
-            # We might be invoked with an absolute path, so just use the basename.
-            candidate = os.path.join(pd, run_as.name)
-            if is_executable_file(candidate):
-                non_intercepted_command = candidate
-                break
-        assert non_intercepted_command, f"Could not find non-intercepted command for {args[0]}"
-        arguments = [non_intercepted_command, *args]
+        non_intercepted_command = resolve_sans_intercept(run_as.name)
+        arguments = [non_intercepted_command.as_posix(), *args]
 
     build_commands_dir = os.environ.get("BUILD_COMMANDS_DIRECTORY", "/tmp/build_commands")
     # Ensure the build commands directory exists (concurrency-safe)
