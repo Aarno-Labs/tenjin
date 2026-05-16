@@ -544,14 +544,15 @@ if __name__ == "__main__":
                 click.echo("Error: Not enough arguments for intercept-exec", err=True)
                 sys.exit(1)
 
+            category = sys.argv[2]
+            run_as = sys.argv[3]
+            assert category in ("cc", "ld", "ar")
+
             if len(sys.argv) < 6:
                 pass
             else:
                 import intercept_exec
 
-                category = sys.argv[2]
-                run_as = sys.argv[3]
-                assert category in ("cc", "ld", "ar")
                 sys.exit(
                     intercept_exec.intercept_exec(
                         cast(Literal["cc", "ld", "ar"], category), Path(run_as), sys.argv[4:]
