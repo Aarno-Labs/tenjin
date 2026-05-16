@@ -1,7 +1,6 @@
 # Tenjin User Documentation
 
-N.B. Tenjin is still extremely early stage; these are mostly a placeholder.
-
+N.B. Tenjin is still early stage; these notes are not yet complete.
 ## Translation
 
 ```
@@ -16,10 +15,16 @@ will be contained in a subdirectory called `final/`.
 
 Currently, Tenjin requires either a project directory or a lone C file
 (which should be compilable without
-any preprocessor definitions or include flags). If providing a project
-directory, it should contain a `CMakeLists.txt` file.
+any preprocessor definitions or include flags). CMake-based projects will be
+configured and built automatically.
 For other build systems, there is a `--buildcmd` flag which can, for example,
 invoke `make` on a particular target, or using a particular Makefile.
+Tenjin will record what files are built and linked,
+so as to generate a corresponding Rust project structure.
+Because configuration steps often probe host system properties by
+compiling and linking synthetic test programs that should not be translated
+to Rust, it's usually a mistake to pass `./configure && make` as the
+buildcmd. Instead, run the configure step (`10j exec ./configure`) separately.
 
 Currently, Tenjin requires that the codebase being translated live in a
 Git or jj repository, with a remote named `origin`. Information about the
