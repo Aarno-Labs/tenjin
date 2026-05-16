@@ -547,12 +547,15 @@ if __name__ == "__main__":
             category = sys.argv[2]
             run_as = sys.argv[3]
             assert category in ("cc", "ld", "ar")
+            import intercept_exec
 
             if len(sys.argv) < 6:
-                pass
+                # Either we were invoked directly instead of via an intercept wrapper,
+                # or the intercept wrapper was invoked with at most one flag, like `--version`.
+                # We'll pass through the argument without interception.
+                real_cmd = intercept_exec.resolve_sans_intercept(Path(run_as).name)
+                sys.exit(hermetic.run_shell_cmd([str(real_cmd), *sys.argv[4:]]).returncode)
             else:
-                import intercept_exec
-
                 sys.exit(
                     intercept_exec.intercept_exec(
                         cast(Literal["cc", "ld", "ar"], category), Path(run_as), sys.argv[4:]
