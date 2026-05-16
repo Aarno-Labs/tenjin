@@ -540,6 +540,10 @@ if __name__ == "__main__":
                 ]).returncode
             )
         if sys.argv[1] == "intercept-exec":
+            if len(sys.argv) < 4:
+                click.echo("Error: Not enough arguments for intercept-exec", err=True)
+                sys.exit(1)
+
             if len(sys.argv) < 6:
                 pass
             else:
