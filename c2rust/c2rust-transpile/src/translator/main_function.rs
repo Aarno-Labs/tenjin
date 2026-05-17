@@ -299,9 +299,7 @@ impl Translation<'_> {
 
             if let CTypeKind::Void = ret {
                 let call_main = mk().call_expr(main_fn, main_args);
-                let unsafe_block = mk().unsafe_block(vec![mk().expr_stmt(call_main)]);
-
-                stmts.push(mk().expr_stmt(mk().unsafe_block_expr(unsafe_block)));
+                stmts.push(mk().expr_stmt(mk().unsafe_block_expr(vec![mk().expr_stmt(call_main)])));
 
                 let exit_succ = mk().path_expr(vec!["ExitCode", "SUCCESS"]);
 
@@ -312,7 +310,7 @@ impl Translation<'_> {
 
                 let exit_fn = mk().path_expr(vec!["ExitCode", "from"]);
                 let call_exit = mk().call_expr(exit_fn, vec![main_result_casted]);
-                let unsafe_block = mk().unsafe_block(vec![mk().expr_stmt(call_exit)]);
+                let unsafe_block = vec![mk().expr_stmt(call_exit)];
 
                 stmts.push(mk().expr_stmt(mk().unsafe_block_expr(unsafe_block)));
             };

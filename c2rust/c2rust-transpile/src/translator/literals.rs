@@ -13,15 +13,21 @@ impl Translation<'_> {
         ty: CQualTypeId,
         val: u64,
         base: IntBase,
+        negative: bool,
     ) -> TranslationResult<Box<Expr>> {
         let lit = match base {
             IntBase::Dec => mk().int_unsuffixed_lit(val),
             IntBase::Hex => mk().float_unsuffixed_lit(&format!("0x{val:x}")),
             IntBase::Oct => mk().float_unsuffixed_lit(&format!("0o{val:o}")),
         };
+        let mut expr = mk().lit_expr(lit);
+
+        if negative {
+            expr = neg_expr(expr);
+        }
 
         let target_ty = self.convert_type(ty.ctype)?;
-        Ok(mk().cast_expr(mk().lit_expr(lit), target_ty))
+        Ok(mk().cast_expr(expr, target_ty))
     }
 
     /// Return whether the literal can be directly translated as this type.
@@ -57,38 +63,38 @@ impl Translation<'_> {
                 // XREF:guided_int_as_char
                 self.convert_literal(ctx, ty, &CLiteral::Character(val), guided_type)
             }
-            CLiteral::Integer(val, base) => Ok(WithStmts::new_val(self.mk_int_lit(ty, val, base)?)),
+            CLiteral::Integer(val, base) => {
+                Ok(WithStmts::new_val(self.mk_int_lit(ty, val, base, false)?))
+            }
             CLiteral::Character(val) => {
                 let val = val as u32;
-                let expr = match char::from_u32(val) {
-                    Some(c) => {
-                        if guided_type
-                            .as_ref()
-                            .is_some_and(|g| tenjin::type_is_char(&g.parsed))
-                        {
-                            // If the guided type is `char`, we can return a char literal directly
-                            mk().lit_expr(c)
-                        } else {
-                            // Otherwise, we match the C semantics with a cast to i32
-                            let expr = mk().lit_expr(c);
-                            let i32_type = mk().path_ty(vec!["i32"]);
-                            mk().cast_expr(expr, i32_type)
+                let expr =
+                    match char::from_u32(val) {
+                        Some(c) => {
+                            if guided_type
+                                .as_ref()
+                                .is_some_and(|g| tenjin::type_is_char(&g.parsed))
+                            {
+                                // If the guided type is `char`, we can return a char literal directly
+                                mk().lit_expr(c)
+                            } else {
+                                // Otherwise, we match the C semantics with a cast to i32
+                                let expr = mk().lit_expr(c);
+                                let i32_type = mk().path_ty(vec!["i32"]);
+                                mk().cast_expr(expr, i32_type)
+                            }
                         }
-                    }
-                    None => {
-                        // Fallback for characters outside of the valid Unicode range
-                        if (val as i32) < 0 {
-                            mk().unary_expr(
-                                UnOp::Neg(Default::default()),
-                                mk().lit_expr(
+                        None => {
+                            // Fallback for characters outside of the valid Unicode range
+                            if (val as i32) < 0 {
+                                neg_expr(mk().lit_expr(
                                     mk().int_lit((val as i32).unsigned_abs() as u128, "i32"),
-                                ),
-                            )
-                        } else {
-                            mk().lit_expr(mk().int_lit(val as u128, "i32"))
+                                ))
+                            } else {
+                                mk().lit_expr(mk().int_lit(val as u128, "i32"))
+                            }
                         }
-                    }
-                };
+                    };
                 Ok(WithStmts::new_val(expr))
             }
 
@@ -100,7 +106,7 @@ impl Translation<'_> {
                     c_str.to_owned()
                 };
                 let val = match self.ast_context.resolve_type(ty.ctype).kind {
-                    CTypeKind::LongDouble => {
+                    CTypeKind::LongDouble | CTypeKind::Float128 => {
                         if ctx.is_const {
                             return Err(format_translation_err!(
                                 None,
@@ -123,7 +129,7 @@ impl Translation<'_> {
             }
 
             CLiteral::String(ref bytes, element_size) => {
-                self.convert_string_literal(ty, bytes, element_size, guided_type)
+                self.convert_string_literal(ctx, ty, bytes, element_size, guided_type)
             }
         }
     }
@@ -131,6 +137,7 @@ impl Translation<'_> {
     /// Convert a C string literal to a Rust expression via casting a byte array
     pub fn convert_string_literal(
         &self,
+        ctx: ExprContext,
         ty: CQualTypeId,
         bytes: &[u8],
         element_size: u8,
@@ -148,17 +155,23 @@ impl Translation<'_> {
 
         let bytes_padded = self.string_literal_bytes(ty.ctype, bytes, element_size);
 
-        // std::mem::transmute::<[u8; size], ctype>(*b"xxxx")
-        let array_ty = mk().array_ty(
-            mk().ident_ty("u8"),
-            mk().lit_expr(bytes_padded.len() as u128),
-        );
-        let val = transmute_expr(
-            array_ty,
-            self.convert_type(ty.ctype)?,
-            mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(bytes_padded)),
-        );
-        Ok(WithStmts::new_unsafe_val(val))
+        if ctx.needs_address && element_size == 1 {
+            // Unlike in C, Rust string literals are already references by default.
+            // So if the address needs to be taken, just make a bare literal.
+            Ok(WithStmts::new_val(mk().lit_expr(bytes_padded)))
+        } else {
+            // std::mem::transmute::<[u8; size], ctype>(*b"xxxx")
+            let array_ty = mk().array_ty(
+                mk().ident_ty("u8"),
+                mk().lit_expr(bytes_padded.len() as u128),
+            );
+            let val = transmute_expr(
+                array_ty,
+                self.convert_type(ty.ctype)?,
+                mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(bytes_padded)),
+            );
+            Ok(WithStmts::new_unsafe_val(val))
+        }
     }
 
     /// Convert a C string literal to a Rust expression of type `String`
@@ -189,18 +202,10 @@ impl Translation<'_> {
     /// Returns the bytes of a string literal, including any additional zero bytes to pad the
     /// literal to the expected size.
     pub fn string_literal_bytes(&self, ctype: CTypeId, bytes: &[u8], element_size: u8) -> Vec<u8> {
-        let num_elems = match self.ast_context.resolve_type(ctype).kind {
-            CTypeKind::ConstantArray(_, num_elems) => num_elems,
-            ref kind => {
-                panic!("String literal with unknown size: {bytes:?}, kind = {kind:?}")
-            }
-        };
-
-        let size = num_elems * (element_size as usize);
+        let size = self.ast_context.array_len(ctype) * element_size as usize;
         let mut bytes_padded = Vec::with_capacity(size);
         bytes_padded.extend(bytes);
         bytes_padded.resize(size, 0);
-
         bytes_padded
     }
 
@@ -273,7 +278,7 @@ impl Translation<'_> {
                         // This was likely a C array of the form `int x[16] = {}`.
                         // We'll emit that as [0; 16].
                         let len = mk().lit_expr(mk().int_unsuffixed_lit(n as u128));
-                        let zeroed = self.implicit_default_expr(ty, ctx.is_static)?;
+                        let zeroed = self.implicit_default_expr(ctx, ty)?;
                         Ok(zeroed.map(|default_value| mk().repeat_expr(default_value, len)))
                     }
                     &[single] if is_string_literal(single) => {
@@ -299,7 +304,7 @@ impl Translation<'_> {
                             .chain(
                                 // Pad out the array literal with default values to the desired size
                                 std::iter::repeat_n(
-                                    self.implicit_default_expr(ty, ctx.is_static),
+                                    self.implicit_default_expr(ctx, ty),
                                     n - ids.len(),
                                 ),
                             )
@@ -330,51 +335,6 @@ impl Translation<'_> {
                 self.convert_expr(ctx.used(), *id, None)
             }
             ref t => Err(format_err!("Init list not implemented for {:?}", t).into()),
-        }
-    }
-
-    fn convert_union_literal(
-        &self,
-        ctx: ExprContext,
-        union_id: CRecordId,
-        ids: &[CExprId],
-        _ty: CQualTypeId,
-        opt_union_field_id: Option<CFieldId>,
-    ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let union_field_id = opt_union_field_id.expect("union field ID");
-
-        match self.ast_context.index(union_id).kind {
-            CDeclKind::Union { .. } => {
-                let union_name = self
-                    .type_converter
-                    .borrow()
-                    .resolve_decl_name(union_id)
-                    .unwrap();
-                log::debug!("importing union {union_name}, id {union_id:?}");
-                self.add_import(union_id, &union_name);
-                match self.ast_context.index(union_field_id).kind {
-                    CDeclKind::Field { typ: field_ty, .. } => {
-                        let val = if ids.is_empty() {
-                            self.implicit_default_expr(field_ty.ctype, ctx.is_static)?
-                        } else {
-                            self.convert_expr(ctx.used(), ids[0], None)?
-                        };
-
-                        Ok(val.map(|v| {
-                            let name = vec![mk().path_segment(union_name)];
-                            let field_name = self
-                                .type_converter
-                                .borrow()
-                                .resolve_field_name(Some(union_id), union_field_id)
-                                .unwrap();
-                            let fields = vec![mk().field(field_name, v)];
-                            mk().struct_expr(name, fields)
-                        }))
-                    }
-                    _ => panic!("Union field decl mismatch"),
-                }
-            }
-            _ => panic!("Expected union decl"),
         }
     }
 }

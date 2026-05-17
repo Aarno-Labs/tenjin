@@ -476,7 +476,7 @@ pub fn is_bitcast_to_int_or_float(
     if let CExprKind::ExplicitCast(outer_cqt, exp, CastKind::BitCast, _opt_field_id, _lrvalue) =
         argkind
     {
-        if let CExprKind::Unary(inner_cqt, c_ast::UnOp::AddressOf, inner_exp, _lrval) =
+        if let CExprKind::Unary(inner_cqt, CUnOp::AddressOf, inner_exp, _lrval) =
             t.ast_context[*exp].kind
         {
             // TENJIN-TODO(intsizes): be more robust about determining actual int sizes
@@ -741,14 +741,14 @@ impl Translation<'_> {
         let get_sizeof =
             |t: &Translation<'_>, expr: CExprId| -> Option<(Option<CExprId>, CTypeId)> {
                 let kind = &t.ast_context.index(expr).kind;
-                if let CExprKind::UnaryType(_cqt1, UnTypeOp::SizeOf, mb_expr_id, cqt2) = kind {
+                if let CExprKind::UnaryType(_cqt1, CUnTypeOp::SizeOf, mb_expr_id, cqt2) = kind {
                     Some((*mb_expr_id, cqt2.ctype))
                 } else {
                     None
                 }
             };
 
-        if let CExprKind::Binary(_cq, c_ast::BinOp::Multiply, lhs, rhs, _opt_cq_lhs, _opt_cq_rhs) =
+        if let CExprKind::Binary(_cq, CBinOp::Multiply, lhs, rhs, _opt_cq_lhs, _opt_cq_rhs) =
             self.ast_context.index(expr).kind
         {
             if let Some((mb_expr_id, typ)) = get_sizeof(self, lhs) {
@@ -2026,7 +2026,7 @@ impl Translation<'_> {
             // and the size of the pointee type.
             if let Some(sized_expr) = sized_expr {
                 return match &self.ast_context[*sized_expr].kind {
-                    CExprKind::Unary(_, c_ast::UnOp::Deref, inner, _lrvalue) => {
+                    CExprKind::Unary(_, CUnOp::Deref, inner, _lrvalue) => {
                         // XREF:guided_vec_memset_zero_mulsizeof_deref
                         self.c_expr_decl_id(*inner) == self.c_expr_decl_id(*dst)
                     }

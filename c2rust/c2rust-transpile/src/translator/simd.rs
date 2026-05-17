@@ -3,11 +3,11 @@
 
 use super::*;
 
-use crate::c_ast::BinOp::{Add, BitAnd, ShiftRight};
 use crate::c_ast::CExprKind::{Binary, Call, Conditional, ExplicitCast, ImplicitCast, Literal};
 use crate::c_ast::CLiteral::Integer;
 use crate::c_ast::CTypeKind::{Char, Double, Float, Int, LongLong, Short};
 use crate::c_ast::CastKind::{BitCast, IntegralCast};
+use crate::CBinOp::{Add, BitAnd, ShiftRight};
 
 /// As of rustc 1.29, rust is known to be missing some SIMD functions.
 /// See <https://github.com/rust-lang-nursery/stdsimd/issues/579>
@@ -160,9 +160,12 @@ impl Translation<'_> {
                 .into());
             }
 
-            // The majority of x86/64 SIMD is stable, however there are still some
-            // bits that are behind a feature gate.
-            self.use_feature("stdsimd");
+            if self.tcfg.edition < Edition2024 {
+                // Edition 2024 was released in Rust 1.85.
+                // In Rust 1.78, `#![feature(stdsimd)]` was removed and split into individual features.
+                // All of the x86_64 parts (that we use at least) were stabilized.
+                self.use_feature("stdsimd");
+            }
 
             self.with_cur_file_item_store(|item_store| {
                 // REVIEW: Also a linear lookup
@@ -238,9 +241,9 @@ impl Translation<'_> {
     /// is specified with the underlying element type and the number of elements in the vector.
     pub fn implicit_vector_default(
         &self,
+        ctx: ExprContext,
         ctype: CTypeId,
         len: usize,
-        is_static: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // NOTE: This is only for x86/_64, and so support for other architectures
         // might need some sort of disambiguation to be exported
@@ -251,12 +254,7 @@ impl Translation<'_> {
             (Double, 4) => ("_mm256_setzero_pd", 32),
             (Char, 16) | (Int, 4) | (LongLong, 2) => ("_mm_setzero_si128", 16),
             (Char, 32) | (Int, 8) | (LongLong, 4) => ("_mm256_setzero_si256", 32),
-            (Char, 8) | (Int, 2) | (LongLong, 1) => {
-                // __m64 is still unstable as of rust 1.29
-                self.use_feature("stdsimd");
-
-                ("_mm_setzero_si64", 8)
-            }
+            (Char, 8) | (Int, 2) | (LongLong, 1) => ("_mm_setzero_si64", 8),
             (kind, len) => {
                 return Err(format_err!(
                     "Unsupported vector default initializer: {:?} x {}",
@@ -267,7 +265,7 @@ impl Translation<'_> {
             }
         };
 
-        if is_static {
+        if ctx.is_const {
             let zero_expr = mk().lit_expr(mk().int_lit(0, "u8"));
             let n_bytes_expr = mk().lit_expr(mk().int_lit(bytes, ""));
             let expr = mk().repeat_expr(zero_expr, n_bytes_expr);
@@ -297,9 +295,9 @@ impl Translation<'_> {
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let param_translation = self.convert_exprs(ctx, ids, None)?;
         param_translation.and_then(|mut params| {
-            // When used in a static, we cannot call the standard functions since they
+            // When used in a const context, we cannot call the standard functions since they
             // are not const and so we are forced to transmute
-            let call = if ctx.is_static {
+            let call = if ctx.is_const {
                 let tuple = mk().tuple_expr(params);
 
                 transmute_expr(mk().infer_ty(), mk().infer_ty(), tuple)
