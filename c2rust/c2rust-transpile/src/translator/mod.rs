@@ -17,11 +17,11 @@ use quote::TokenStreamExt;
 use syn::spanned::Spanned as _;
 use syn::{
     AttrStyle, BareVariadic, Block, Expr, ExprBinary, ExprBlock, ExprBreak, ExprCast, ExprField,
-    ExprIndex, ExprParen, ExprUnary, FnArg, ForeignItem, ForeignItemFn, ForeignItemMacro,
-    ForeignItemStatic, ForeignItemType, Ident, Item, ItemConst, ItemEnum, ItemExternCrate, ItemFn,
-    ItemForeignMod, ItemImpl, ItemMacro, ItemMod, ItemStatic, ItemStruct, ItemTrait,
-    ItemTraitAlias, ItemType, ItemUnion, ItemUse, Lit, Macro, MacroDelimiter, PathSegment,
-    ReturnType, Stmt, Type, TypeTuple, UseTree, Visibility,
+    ExprIndex, ExprParen, ExprReturn, ExprUnary, FnArg, ForeignItem, ForeignItemFn,
+    ForeignItemMacro, ForeignItemStatic, ForeignItemType, Ident, Item, ItemConst, ItemEnum,
+    ItemExternCrate, ItemFn, ItemForeignMod, ItemImpl, ItemMacro, ItemMod, ItemStatic, ItemStruct,
+    ItemTrait, ItemTraitAlias, ItemType, ItemUnion, ItemUse, Lit, Macro, MacroDelimiter,
+    PathSegment, ReturnType, Stmt, Type, TypeTuple, UseTree, Visibility,
 };
 use syn::{BinOp, UnOp}; // To override `c_ast::{BinOp,UnOp}` from glob import.
 
@@ -49,6 +49,7 @@ mod assembly;
 mod atomics;
 mod builtins;
 mod comments;
+mod enums;
 mod literals;
 mod main_function;
 mod named_references;
@@ -65,8 +66,8 @@ pub use crate::diagnostics::{TranslationError, TranslationErrorKind};
 use crate::CrateSet;
 use crate::PragmaVec;
 
-pub const INNER_SUFFIX: &str = "_Inner";
-pub const PADDING_SUFFIX: &str = "_PADDING";
+pub const INNER_SUFFIX: &str = "Inner";
+pub const PADDING_SUFFIX: &str = "PADDING";
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct Import {
@@ -1001,7 +1002,7 @@ pub fn translate(
                 Name::Anonymous => {
                     t.type_converter
                         .borrow_mut()
-                        .declare_decl_name(decl_id, "C2RustUnnamed");
+                        .declare_decl_name(decl_id, "C2Rust_Unnamed");
                 }
                 Name::Type(name) => {
                     t.type_converter
@@ -2774,7 +2775,7 @@ impl<'c> Translation<'c> {
         let fn_name = self
             .renamer
             .borrow_mut()
-            .pick_name("run_static_initializers");
+            .pick_name("c2rust_run_static_initializers");
         let fn_ty = ReturnType::Default;
         let fn_decl = mk().fn_decl(fn_name.clone(), vec![], None, fn_ty.clone());
         let fn_bare_decl = (vec![], None, fn_ty);
@@ -3047,42 +3048,9 @@ impl<'c> Translation<'c> {
             Enum {
                 integral_type: Some(integral_type),
                 ..
-            } => {
-                let enum_name = &self
-                    .type_converter
-                    .borrow()
-                    .resolve_decl_name(decl_id)
-                    .expect("Enums should already be renamed");
-                let ty = self.convert_type(integral_type.ctype)?;
-                Ok(ConvertedDecl::Item(
-                    mk().span(span).pub_().type_item(enum_name, ty),
-                ))
-            }
+            } => self.convert_enum(decl_id, span, integral_type),
 
-            EnumConstant { value, .. } => {
-                let name = self
-                    .renamer
-                    .borrow_mut()
-                    .get(&decl_id)
-                    .expect("Enum constant not named");
-                let enum_id = self.ast_context.parents[&decl_id];
-                let enum_name = self
-                    .type_converter
-                    .borrow()
-                    .resolve_decl_name(enum_id)
-                    .expect("Enums should already be renamed");
-                self.add_import(enum_id, &enum_name);
-
-                let ty = mk().path_ty(vec![enum_name]);
-                let val = match value {
-                    ConstIntExpr::I(value) => signed_int_expr(value),
-                    ConstIntExpr::U(value) => mk().lit_expr(mk().int_unsuffixed_lit(value as u128)),
-                };
-
-                Ok(ConvertedDecl::Item(
-                    mk().span(span).pub_().const_item(name, ty, val),
-                ))
-            }
+            EnumConstant { value, .. } => self.convert_enum_constant(decl_id, span, value),
 
             // We can allow non top level function declarations (i.e. extern
             // declarations) without any problem. Clang doesn't support nested
@@ -3308,7 +3276,7 @@ impl<'c> Translation<'c> {
 
                     let mut init = init?.to_expr();
 
-                    let comment = String::from("// Initialized in run_static_initializers");
+                    let comment = String::from("// Initialized in c2rust_run_static_initializers");
                     let comment_pos = if span.is_dummy() {
                         None
                     } else {
@@ -3643,7 +3611,8 @@ impl<'c> Translation<'c> {
                     _ => panic!("function body expects to be a compound statement"),
                 };
                 let mut converted_body =
-                    self.convert_function_body(ctx, name, body_ids, return_type, ret)?;
+                    self.convert_block_with_scope(ctx, name, body_ids, return_type, ret)?;
+                strip_tail_return(&mut converted_body);
 
                 // If `alloca` was used in the function body, include a variable to hold the
                 // allocations.
@@ -3653,7 +3622,7 @@ impl<'c> Translation<'c> {
                     .alloca_allocations_name
                     .take()
                 {
-                    // let mut alloca_allocations: Vec<Vec<u8>> = Vec::new();
+                    // let mut c2rust_alloca_allocations: Vec<Vec<u8>> = Vec::new();
                     let inner_vec = mk().path_ty(vec![mk().path_segment_with_args(
                         "Vec",
                         mk().angle_bracketed_args(vec![mk().ident_ty("u8")]),
@@ -3782,7 +3751,6 @@ impl<'c> Translation<'c> {
         graph: cfg::Cfg<cfg::Label, cfg::StmtOrDecl>,
         store: cfg::DeclStmtStore,
         live_in: IndexSet<CDeclId>,
-        cut_out_trailing_ret: bool,
     ) -> TranslationResult<Vec<Stmt>> {
         if self.tcfg.dump_function_cfgs {
             graph
@@ -3817,12 +3785,12 @@ impl<'c> Translation<'c> {
             }
         }
 
-        let current_block_ident = self.renamer.borrow_mut().pick_name("current_block");
+        let current_block_ident = self.renamer.borrow_mut().pick_name("c2rust_current_block");
         let current_block = mk().ident_expr(&current_block_ident);
         let mut stmts: Vec<Stmt> = lifted_stmts;
         if cfg::structures::has_multiple(&relooped) {
             if self.tcfg.fail_on_multiple {
-                panic!("Uses of `current_block' are illegal with `--fail-on-multiple'.");
+                panic!("Uses of `c2rust_current_block' are illegal with `--fail-on-multiple'.");
             }
 
             let current_block_ty = if self.tcfg.debug_relooper_labels {
@@ -3844,7 +3812,6 @@ impl<'c> Translation<'c> {
             &mut self.comment_store.borrow_mut(),
             current_block,
             self.tcfg.debug_relooper_labels,
-            cut_out_trailing_ret,
         )?);
         Ok(stmts)
     }
@@ -3878,7 +3845,7 @@ impl<'c> Translation<'c> {
         }
     }
 
-    fn convert_function_body(
+    fn convert_block_with_scope(
         &self,
         ctx: ExprContext,
         name: &str,
@@ -3889,7 +3856,7 @@ impl<'c> Translation<'c> {
         // Function body scope
         self.with_scope(|| {
             let (graph, store) = cfg::Cfg::from_stmts(self, ctx, body_ids, name, ret, ret_ty)?;
-            self.convert_cfg(name, graph, store, IndexSet::new(), true)
+            self.convert_cfg(name, graph, store, IndexSet::new())
         })
     }
 
@@ -4054,7 +4021,7 @@ impl<'c> Translation<'c> {
                     guided_mutbl,
                 )?;
                 let default_init = self.implicit_default_expr(typ.ctype, true)?.to_expr();
-                let comment = String::from("// Initialized in run_static_initializers");
+                let comment = String::from("// Initialized in c2rust_run_static_initializers");
                 let span = self
                     .comment_store
                     .borrow_mut()
@@ -4970,11 +4937,9 @@ impl<'c> Translation<'c> {
                 }
 
                 // If the variable is actually an `EnumConstant`, we need to add a cast to the
-                // expected integral type. When modifying this, look at `Translation::enum_cast` -
-                // this function assumes `DeclRef`'s to `EnumConstants`'s will translate to casts.
+                // expected integral type.
                 if let &CDeclKind::EnumConstant { .. } = decl {
-                    let ty = self.convert_type(qual_ty.ctype)?;
-                    val = mk().cast_expr(val, ty);
+                    val = self.convert_cast_from_enum(qual_ty.ctype, val)?;
                 }
 
                 // If we are referring to a function and need its address, we
@@ -5895,15 +5860,21 @@ impl<'c> Translation<'c> {
                 let mut stmts = match self.ast_context[result_id].kind {
                     CStmtKind::Expr(expr_id) => {
                         let ret = cfg::ImplicitReturnType::StmtExpr(ctx, expr_id, lbl.clone());
-                        self.convert_function_body(ctx, &name, &substmt_ids[0..(n - 1)], None, ret)?
+                        self.convert_block_with_scope(
+                            ctx,
+                            &name,
+                            &substmt_ids[0..(n - 1)],
+                            None,
+                            ret,
+                        )?
                     }
 
-                    _ => self.convert_function_body(
+                    _ => self.convert_block_with_scope(
                         ctx,
                         &name,
                         substmt_ids,
                         None,
-                        cfg::ImplicitReturnType::Void,
+                        cfg::ImplicitReturnType::StmtExprVoid,
                     )?,
                 };
 
@@ -6227,14 +6198,15 @@ impl<'c> Translation<'c> {
                     // Casts targeting `enum` types...
                     let expr =
                         expr.ok_or_else(|| format_err!("Casts to enums require a C ExprId"))?;
-                    Ok(self.enum_cast(
-                        target_cty.ctype,
-                        enum_decl_id,
-                        expr,
-                        val,
-                        source_ty,
-                        target_ty,
-                    ))
+                    val.result_map(|val| {
+                        self.convert_cast_to_enum(
+                            ctx,
+                            target_cty.ctype,
+                            enum_decl_id,
+                            Some(expr),
+                            val,
+                        )
+                    })
                 } else if target_ty_kind.is_floating_type() && source_ty_kind.is_bool() {
                     val.and_then(|x| {
                         Ok(WithStmts::new_val(mk().cast_expr(
@@ -6258,6 +6230,9 @@ impl<'c> Translation<'c> {
                             Ok(WithStmts::new_unsafe_val(transmute_expr(
                                 source_ty, target_ty, x,
                             )))
+                        } else if let &CTypeKind::Enum(..) = source_ty_kind {
+                            self.convert_cast_from_enum(target_cty.ctype, x)
+                                .map(WithStmts::new_val)
                         } else {
                             Ok(WithStmts::new_val(tenjin::cast_expr_guided(
                                 x,
@@ -6389,61 +6364,6 @@ impl<'c> Translation<'c> {
 
             mk().method_call_expr(to_call, "unwrap", Vec::new())
         }))
-    }
-
-    /// This handles translating casts when the target type in an `enum` type.
-    ///
-    /// When translating variable references to `EnumConstant`'s, we always insert casts to the
-    /// expected type. In C, `EnumConstants` have some integral type, _not_ the enum type. However,
-    /// if we then immediately have a cast to convert this variable back into an enum type, we would
-    /// like to produce Rust with _no_ casts. This function handles this simplification.
-    fn enum_cast(
-        &self,
-        enum_type: CTypeId,
-        enum_decl: CEnumId, // ID of the enum declaration corresponding to the target type
-        expr: CExprId,      // ID of initial C argument to cast
-        val: WithStmts<Box<Expr>>, // translated Rust argument to cast
-        _source_ty: Box<Type>, // source type of cast
-        target_ty: Box<Type>, // target type of cast
-    ) -> WithStmts<Box<Expr>> {
-        // Extract the IDs of the `EnumConstant` decls underlying the enum.
-        let variants = match self.ast_context.index(enum_decl).kind {
-            CDeclKind::Enum { ref variants, .. } => variants,
-            _ => panic!("{enum_decl:?} does not point to an `enum` declaration"),
-        };
-
-        match self.ast_context.index(expr).kind {
-            // This is the case of finding a variable which is an `EnumConstant` of the same enum
-            // we are casting to. Here, we can just remove the extraneous cast instead of generating
-            // a new one.
-            CExprKind::DeclRef(_, decl_id, _) if variants.contains(&decl_id) => {
-                return val.map(|x| match *unparen(&x) {
-                    Expr::Cast(ExprCast { ref expr, .. }) => expr.clone(),
-                    // If this DeclRef expanded to a const macro, we actually need to insert a cast,
-                    // because the translation of a const macro skips implicit casts in its context.
-                    Expr::Path(..) => mk().cast_expr(x, target_ty),
-                    _ => panic!("DeclRef {expr:?} of enum {enum_decl:?} is not cast: {x:?}"),
-                });
-            }
-
-            CExprKind::Literal(_, CLiteral::Integer(i, _)) => {
-                return val.map(|_| self.enum_for_i64(enum_type, i as i64));
-            }
-
-            CExprKind::Unary(_, c_ast::UnOp::Negate, subexpr_id, _) => {
-                if let &CExprKind::Literal(_, CLiteral::Integer(i, _)) =
-                    &self.ast_context[subexpr_id].kind
-                {
-                    return val.map(|_| self.enum_for_i64(enum_type, -(i as i64)));
-                }
-            }
-
-            // In all other cases, a cast to an enum requires a `transmute` - Rust enums cannot be
-            // converted into integral types as easily as C ones.
-            _ => {}
-        }
-
-        val.map(|x| mk().cast_expr(x, target_ty))
     }
 
     pub fn implicit_default_expr_guided(
@@ -6635,7 +6555,7 @@ impl<'c> Translation<'c> {
             }
 
             // Transmute the number `0` into the enum type
-            CDeclKind::Enum { .. } => WithStmts::new_val(self.enum_for_i64(type_id, 0)),
+            CDeclKind::Enum { .. } => self.convert_enum_zero_initializer(type_id),
 
             _ => {
                 return Err(TranslationError::generic(
@@ -7086,5 +7006,13 @@ impl<'c> Translation<'c> {
             } if has_static_duration || has_thread_duration => {}
             ref e => unimplemented!("{:?}", e),
         }
+    }
+}
+
+// If the very last statement in the vector is a `return`, either cut it out or replace it with
+// the returned value.
+fn strip_tail_return(stmts: &mut Vec<Stmt>) {
+    if let Some(Stmt::Expr(Expr::Return(ExprReturn { expr: None, .. }), _)) = stmts.last() {
+        stmts.pop();
     }
 }

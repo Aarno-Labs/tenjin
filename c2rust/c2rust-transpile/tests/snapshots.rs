@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use c2rust_rust_tools::rustc;
 use c2rust_transpile::{ReplaceMode, TranspilerConfig};
 
 fn config(guidance: serde_json::Value) -> TranspilerConfig {
@@ -125,8 +126,6 @@ fn transpile(platform: Option<&str>, c_path: &Path) {
         }
     };
 
-    let edition = "2021";
-
     let rs = fs::read_to_string(&rs_path).unwrap();
     let debug_expr = format!("cat {}", rs_path.display());
 
@@ -150,29 +149,14 @@ fn transpile(platform: Option<&str>, c_path: &Path) {
         return;
     }
 
-    // Don't need to worry about platform clashes here, as this is immediately deleted.
-    let rlib_path = format!("lib{crate_name}.rlib");
-    let status = Command::new("rustc")
-        .args([
-            "+nightly-2023-04-15",
-            "--crate-type",
-            "lib",
-            "--edition",
-            edition,
-            "--crate-name",
-            crate_name,
-            "-o",
-            &rlib_path,
-            "-Awarnings", // Disable warnings.
-        ])
-        .arg(&rs_path)
-        .status();
-    assert!(status.unwrap().success());
-    fs::remove_file(&rlib_path).unwrap();
+    rustc(&rs_path).crate_name(crate_name).run();
 }
 
 #[test]
 fn transpile_all() {
+    // TODO parallelize these `insta::glob!`s across multiple `#[test]`s
+    // now that we use `cargo nextest`.
+
     insta::glob!("snapshots/*.c", |x| transpile(None, x));
 
     // Some things transpile differently on Linux vs. macOS,
