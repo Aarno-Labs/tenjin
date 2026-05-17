@@ -3,28 +3,171 @@ use c2rust_refactor::lib_main;
 use c2rust_refactor::Command as RefactorCommand;
 use c2rust_refactor::Options;
 use c2rust_refactor::RustcArgSource;
+use c2rust_rust_tools::rustc;
+use c2rust_rust_tools::rustfmt;
+use c2rust_rust_tools::EDITION;
 use insta::assert_snapshot;
+use itertools::Itertools;
 use std::path::Path;
-use std::process::Command;
 
-fn test_refactor(command: &str) {
-    let tests_dir = Path::new("tests");
-    let dir = tests_dir.join(command);
-    let old_rs_path = dir.join("old.rs");
-    let new_path = dir.join("old.new"); // Output from `alongside`.
+#[must_use]
+struct RefactorTest<'a> {
+    command: &'a str,
+    command_args: &'a [&'a str],
+    path: Option<&'a str>,
+    old_expect_format_error: bool,
+    new_expect_format_error: bool,
+    old_expect_compile_error: bool,
+    new_expect_compile_error: bool,
+}
 
-    // TODO Make sure `c2rust-transpile` and `c2rust-refactor` use the same edition.
-    // Refactor it into a `const`.
-    let edition = "2021";
+fn refactor(command: &str) -> RefactorTest {
+    RefactorTest {
+        command,
+        command_args: &[],
+        path: None,
+        old_expect_format_error: false,
+        new_expect_format_error: false,
+        old_expect_compile_error: false,
+        new_expect_compile_error: false,
+    }
+}
 
-    let old_rs_path = old_rs_path.to_str().unwrap();
-    let rustc_args = [old_rs_path, "--edition", edition, "-Awarnings"];
+impl<'a> RefactorTest<'a> {
+    #[allow(unused)] // TODO remove, will be used soon
+    pub fn command_args(self, command_args: &'a [&'a str]) -> Self {
+        Self {
+            command_args,
+            ..self
+        }
+    }
+
+    pub fn named(self, path: &'a str) -> Self {
+        Self {
+            path: Some(path),
+            ..self
+        }
+    }
+
+    pub fn old_expect_format_error(self, expect_error: bool) -> Self {
+        Self {
+            old_expect_format_error: expect_error,
+            ..self
+        }
+    }
+
+    pub fn new_expect_format_error(self, expect_error: bool) -> Self {
+        Self {
+            new_expect_format_error: expect_error,
+            ..self
+        }
+    }
+
+    pub fn expect_format_error(self, expect_error: bool) -> Self {
+        self.old_expect_format_error(expect_error)
+            .new_expect_format_error(expect_error)
+    }
+
+    pub fn old_expect_compile_error(self, expect_error: bool) -> Self {
+        Self {
+            old_expect_compile_error: expect_error,
+            ..self
+        }
+    }
+
+    pub fn new_expect_compile_error(self, expect_error: bool) -> Self {
+        Self {
+            new_expect_compile_error: expect_error,
+            ..self
+        }
+    }
+
+    #[allow(unused)] // TODO remove when used
+    pub fn expect_compile_error(self, expect_error: bool) -> Self {
+        self.old_expect_compile_error(expect_error)
+            .new_expect_compile_error(expect_error)
+    }
+
+    pub fn test(self) {
+        let Self {
+            command,
+            path,
+            command_args,
+            old_expect_format_error,
+            new_expect_format_error,
+            old_expect_compile_error,
+            new_expect_compile_error,
+        } = self;
+        let path_buf;
+        let path = match path {
+            Some(path) => path,
+            None => {
+                path_buf = format!("{command}.rs");
+                &path_buf
+            }
+        };
+        test_refactor(
+            command,
+            command_args,
+            path,
+            old_expect_format_error,
+            new_expect_format_error,
+            old_expect_compile_error,
+            new_expect_compile_error,
+        );
+    }
+}
+
+/// Replace all non-alphanumeric characters and `-_.` with `_`s
+/// so that we have a sanitized, idiomatic file name that excludes weird characters,
+/// even if they're technically allowed in a file name.
+fn sanitize_file_name(file_name: &str) -> String {
+    file_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn test_refactor(
+    command: &str,
+    command_args: &[&str],
+    path: &str,
+    old_expect_format_error: bool,
+    new_expect_format_error: bool,
+    old_expect_compile_error: bool,
+    new_expect_compile_error: bool,
+) {
+    let tests_dir = Path::new("tests/snapshots");
+    let old_path = tests_dir.join(path);
+
+    rustfmt(&old_path)
+        .check(true)
+        .expect_error(old_expect_format_error)
+        .run();
+    rustc(&old_path)
+        .expect_error(old_expect_compile_error)
+        .run();
+
+    let new_path = old_path.with_extension("new"); // Output from `alongside`.
+
+    let old_path = old_path.to_str().unwrap();
+    let rustc_args = [old_path, "--edition", EDITION];
 
     lib_main(Options {
         rewrite_modes: vec![OutputMode::Alongside],
         commands: vec![RefactorCommand {
             name: command.to_owned(),
-            args: vec![],
+            args: command_args
+                .iter()
+                .copied()
+                .map(|arg| arg.to_owned())
+                .collect(),
         }],
         rustc_args: RustcArgSource::CmdLine(rustc_args.map(|arg| arg.to_owned()).to_vec()),
         cursors: Default::default(),
@@ -36,24 +179,212 @@ fn test_refactor(command: &str) {
 
     // TODO Run `rustfmt` by default as part of `c2rust-refactor`
     // with the same `--disable-rustfmt` flag that `c2rust-transpile` has.
-    // Then import `fn rustfmt` from `c2rust_transpile` to do this.
-    let status = Command::new("rustfmt")
-        .args(["--edition", edition])
-        .arg(&new_path)
-        .status()
-        .unwrap();
-    assert!(status.success());
+    rustfmt(&new_path)
+        .expect_error(new_expect_format_error)
+        .run();
+    rustc(&new_path)
+        .expect_error(new_expect_compile_error)
+        .run();
 
     let new_rs = fs_err::read_to_string(&new_path).unwrap();
 
-    let snapshot_name = format!("refactor-{command}");
-    let rustc_args = shlex::try_join(rustc_args).unwrap();
-    let debug_expr = format!("c2rust-refactor {command} --rewrite-mode alongside -- {rustc_args}");
+    let snapshot_parts_no_cmd;
+    let snapshot_parts_with_cmd;
+    let snapshot_name_parts = if Some(command) == path.strip_suffix(".rs") {
+        snapshot_parts_no_cmd = ["refactor", path];
+        &snapshot_parts_no_cmd[..]
+    } else {
+        snapshot_parts_with_cmd = ["refactor", command, path];
+        &snapshot_parts_with_cmd[..]
+    };
+
+    let snapshot_name = [snapshot_name_parts, command_args]
+        .into_iter()
+        .flatten()
+        .join("-");
+    let snapshot_name = sanitize_file_name(&snapshot_name);
+    let cli_args = [
+        &["c2rust-refactor", command],
+        command_args,
+        &["--rewrite-mode", "alongside", "--"],
+        &rustc_args,
+    ];
+    let debug_expr = shlex::try_join(cli_args.into_iter().flatten().copied()).unwrap();
 
     assert_snapshot!(snapshot_name, new_rs, &debug_expr);
 }
 
+// NOTE: Tests should be listed in alphabetical order.
+
+#[test]
+fn test_bitcast_retype() {
+    refactor("bitcast_retype")
+        .command_args(&["i32", "u32"])
+        .test();
+}
+
+#[test]
+fn test_collapse_cfg() {
+    refactor("test_one_plus_one")
+        .named("collapse_cfg.rs")
+        .test();
+}
+
+#[test]
+fn test_collapse_cfg_attr() {
+    refactor("test_one_plus_one")
+        .named("collapse_cfg_attr.rs")
+        .test();
+}
+
+#[test]
+fn test_convert_exits() {
+    refactor("convert_exits").test();
+}
+
+#[test]
+fn test_convert_exits_skip() {
+    refactor("convert_exits")
+        .named("convert_exits_skip.rs")
+        .test();
+}
+
+#[test]
+fn test_convert_math_funcs() {
+    refactor("convert_math_funcs").test();
+}
+
+#[test]
+fn test_convert_math_skip() {
+    refactor("convert_math_funcs")
+        .named("convert_math_skip.rs")
+        .test();
+}
+
+#[test]
+fn test_fix_unused_unsafe() {
+    refactor("fix_unused_unsafe").test();
+}
+
+#[test]
+fn test_fold_let_assign() {
+    refactor("fold_let_assign").test();
+}
+
+#[test]
+fn test_matcher_def() {
+    refactor("rewrite_expr")
+        .command_args(&["def!(crate::f)()", "crate::f2()"])
+        .named("matcher_def.rs")
+        .test()
+}
+
+/// TODO Broken.
+/// `b: u16` is not replaced with `1000u16`.
+#[test]
+fn test_matcher_typed() {
+    refactor("rewrite_expr")
+        .command_args(&["typed!($i:Ident, u16)", "1000u16"])
+        .named("matcher_typed.rs")
+        .test();
+}
+
+/// TODO Broken.
+/// This panics with the error:
+///
+/// ```shell
+///     thread 'rustc' panicked at 'Could not find an HIR id for NodeId NodeId(61); span=Some(NodeSpan { span: Span { lo: BytePos(237), hi: BytePos(325), ctxt: #0 }, kind: Stmt }), context=Some(NodeContextKey { stmt_index: Some(6), child_path: [], symbol: None, owner: Some(NodeId(8)) })', c2rust-refactor/src/context.rs:927:13
+/// ```
+#[should_panic]
+#[test]
+fn test_reconstruct_for_range() {
+    refactor("reconstruct_for_range").test();
+}
+
+#[test]
+fn test_reconstruct_while() {
+    refactor("reconstruct_while").test();
+}
+
+/// TODO Broken
+/// Suffixes are not actually removed.
+#[test]
+fn test_remove_literal_suffixes() {
+    refactor("remove_literal_suffixes").test();
+}
+
+#[test]
+fn test_remove_paren() {
+    refactor("test_one_plus_one")
+        .named("remove_paren.rs")
+        .test();
+}
+
+#[test]
+fn test_remove_unused_labels() {
+    refactor("remove_unused_labels").test();
+}
+
 #[test]
 fn test_rename_unnamed() {
-    test_refactor("rename_unnamed");
+    refactor("rename_unnamed").test();
+}
+
+#[test]
+fn test_reorder_derives() {
+    refactor("noop")
+        .named("reorder_derives.rs")
+        .expect_format_error(true)
+        .test();
+}
+
+#[cfg(target_os = "linux")] // `statvfs` and `statfs64` are Linux only.
+#[test]
+fn test_reorganize_definitions() {
+    refactor("reorganize_definitions")
+        .new_expect_compile_error(true)
+        .test();
+}
+
+#[test]
+fn test_sink_lets() {
+    refactor("sink_lets").test();
+}
+
+#[test]
+fn test_struct_assign_to_update() {
+    refactor("struct_assign_to_update").test();
+}
+
+#[test]
+fn test_struct_merge_updates() {
+    refactor("struct_merge_updates")
+        .new_expect_compile_error(true)
+        .test();
+}
+
+/// TODO Broken
+/// `f(x)` doesn't become `x + 1`.
+#[test]
+fn test_test_f_plus_one() {
+    refactor("test_f_plus_one").test();
+}
+
+/// TODO Broken
+/// `2` doesn't become `1 + 1`.
+#[test]
+fn test_test_one_plus_one() {
+    refactor("test_one_plus_one").test();
+}
+
+#[test]
+fn test_test_reflect() {
+    refactor("test_reflect")
+        .new_expect_compile_error(true)
+        .test();
+}
+
+#[test]
+fn test_uninit_to_default() {
+    refactor("uninit_to_default").test();
 }

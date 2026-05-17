@@ -187,7 +187,7 @@ dependencies = [
  "bitflags 2.9.1",
  "cexpr",
  "clang-sys",
- "itertools",
+ "itertools 0.10.5",
  "lazy_static 1.4.0",
  "lazycell",
  "log",
@@ -313,7 +313,7 @@ dependencies = [
  "env_logger 0.10.0",
  "fs-err",
  "indexmap",
- "itertools",
+ "itertools 0.10.5",
  "libc",
  "log",
  "polonius-engine",
@@ -333,7 +333,7 @@ version = "0.22.1"
 name = "c2rust-ast-builder"
 version = "0.22.1"
 dependencies = [
- "itertools",
+ "itertools 0.10.5",
  "proc-macro2",
  "syn 2.0.106",
 ]
@@ -399,7 +399,7 @@ dependencies = [
  "fs-err",
  "fs2",
  "indexmap",
- "itertools",
+ "itertools 0.10.5",
  "log",
  "once_cell",
  "rand 0.8.5",
@@ -430,7 +430,7 @@ dependencies = [
  "indexed_vec",
  "indexmap",
  "insta",
- "itertools",
+ "itertools 0.10.5",
  "linked_hash_set",
  "log",
  "serde",
@@ -444,6 +444,7 @@ dependencies = [
  "c2rust-analysis-rt",
  "c2rust-build-paths",
  "c2rust-macros",
+ "c2rust-rust-tools",
  "cargo",
  "cargo-util",
  "clap 2.34.0",
@@ -457,6 +458,7 @@ dependencies = [
  "fs-err",
  "indexmap",
  "insta",
+ "itertools 0.14.0",
  "json",
  "kstring",
  "libc",
@@ -472,6 +474,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "c2rust-rust-tools"
+version = "0.22.1"
+dependencies = [
+ "fs-err",
+ "log",
+]
+
+[[package]]
 name = "c2rust-transpile"
 version = "0.22.1"
 dependencies = [
@@ -479,6 +489,7 @@ dependencies = [
  "c2rust-ast-exporter",
  "c2rust-ast-printer",
  "c2rust-bitfields",
+ "c2rust-rust-tools",
  "colored 2.0.0",
  "dtoa",
  "failure",
@@ -486,7 +497,7 @@ dependencies = [
  "handlebars",
  "indexmap",
  "insta",
- "itertools",
+ "itertools 0.10.5",
  "log",
  "log-reroute",
  "pathdiff",
@@ -534,7 +545,7 @@ dependencies = [
  "ignore",
  "im-rc",
  "indexmap",
- "itertools",
+ "itertools 0.10.5",
  "jobserver",
  "lazy_static 1.4.0",
  "lazycell",
@@ -1538,6 +1549,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1680,12 +1700,9 @@ checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
 
 [[package]]
 name = "log"
-version = "0.4.17"
+version = "0.4.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abb12e687cfb44aa40f41fc3978ef76448f9b6038cad6aef4259d3c095a2382e"
-dependencies = [
- "cfg-if",
-]
+checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
 
 [[package]]
 name = "log-reroute"
@@ -2630,7 +2647,7 @@ checksum = "5376256e44f2443f8896ac012507c19a012df0fe8758b55246ae51a2279db51f"
 dependencies = [
  "combine",
  "indexmap",
- "itertools",
+ "itertools 0.10.5",
  "kstring",
  "serde",
 ]
