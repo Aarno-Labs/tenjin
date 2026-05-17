@@ -312,7 +312,13 @@ pub fn expr_is_lit_char(expr: &Expr) -> bool {
     false
 }
 
-pub fn expr_is_lit_str_or_bytes(expr: &Expr) -> bool {
+pub fn expr_is_lit_str_or_bytes(mut expr: &Expr) -> bool {
+    if let Expr::MethodCall(ref call) = *expr {
+        if call.method == "as_ptr" {
+            expr = &call.receiver;
+        }
+    }
+
     if let Expr::Lit(ref lit) = *expr {
         return matches!(&lit.lit, syn::Lit::Str(_) | syn::Lit::ByteStr(_));
     }

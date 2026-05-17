@@ -945,6 +945,8 @@ fn categorize_scanf_arg(expr: &Expr) -> ScanfArgCategory {
         }
     }
 
+    // Probably a direct raw pointer; can't safely convert that.
+
     ScanfArgCategory::Other
 }
 
@@ -961,6 +963,12 @@ fn get_litbytestr(expr: &Expr) -> Option<LitByteStr> {
     while let Expr::Cast(cast) = inner {
         inner = &cast.expr;
     }
+
+    if let Expr::MethodCall(call) = inner {
+        if call.method == "as_ptr" {
+            return get_litbytestr(&call.receiver);
+        }
+    };
 
     let Expr::Lit(expr_lit) = inner else {
         return None;

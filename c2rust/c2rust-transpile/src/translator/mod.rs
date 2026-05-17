@@ -1864,6 +1864,7 @@ mod refactor_format {
 
     fn expr_as_lit_str<'a>(expr: &'a Expr) -> Option<LitStrOrByteStr<'a>> {
         match *expr {
+            Expr::MethodCall(ref call) => expr_as_lit_str(&call.receiver),
             Expr::Lit(syn::ExprLit {
                 lit: Lit::Str(ref s),
                 ..
