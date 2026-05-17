@@ -7,6 +7,7 @@ WANT = {
     "10j-dune": "3.19.1",
     "10j-ocaml": "5.2.0",
     "10j-cmake": "3.31.7",
+    "10j-cargo-nextest": "0.9.136",
     "10j-bullseye-sysroot-extras": "rev-b578a0937",
     "10j-build-deps": "rev-d915905d0",
     # Note that 10j-more-deps builds against a specific version of LLVM, so before
