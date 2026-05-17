@@ -35,7 +35,7 @@ impl RustEdition {
     pub const fn toolchain(&self) -> &'static str {
         match self {
             // 1.70 (1.68 for syn v2.0, 1.70 for sparse registry)
-            Edition2021 => "+nightly-2023-04-15",
+            Edition2021 => "+nightly-2025-08-20",
             // This doesn't really need to be pinned, but pin it for stability.
             Edition2024 => "+nightly-2026-03-03",
         }
