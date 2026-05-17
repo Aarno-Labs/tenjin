@@ -254,6 +254,7 @@ def provision_desires(wanted: str):
 
     if wanted in ("all", "rust"):
         want_10j_rust_toolchains()
+        want_10j_cargo_nextest()
 
     if wanted in ("all", "ocaml"):
         want_dune()
@@ -377,6 +378,10 @@ def want_10j_rust_toolchains():
     want("10j-xj-improve-multitool-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
     want("10j-generated-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
     want("10j-xj-default-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
+
+
+def want_10j_cargo_nextest():
+    want("10j-cargo-nextest", "cargo-nextest", "cargo-nextest", provision_10j_cargo_nextest_with)
 
 
 def want_10j_reference_c2rust_tag():
@@ -723,6 +728,54 @@ def provision_10j_rust_toolchain_with(version: str, keyname: str):
     )
 
     HAVE.note_we_have(keyname, specifier=toolchain_spec)
+
+
+def provision_10j_cargo_nextest_with(version: str, keyname: str):
+    """Download and install cargo-nextest binary."""
+
+    def say(msg: str):
+        sez(msg, ctx="(cargo-nextest) ")
+
+    def mk_url() -> str:
+        base_url = "https://github.com/nextest-rs/nextest/releases/download"
+        tag = f"cargo-nextest-{version}"
+        match [platform.system(), machine_normalized()]:
+            case ["Linux", "x86_64"]:
+                suffix = "x86_64-unknown-linux-gnu"
+            case ["Linux", "aarch64"]:
+                suffix = "aarch64-unknown-linux-gnu"
+            case ["Darwin", _]:
+                suffix = "universal-apple-darwin"
+            case sys_mach:
+                raise ProvisioningError(f"cargo-nextest: unsupported platform: {sys_mach}")
+
+        filename = f"cargo-nextest-{version}-{suffix}.tar.gz"
+        return f"{base_url}/{tag}/{filename}"
+
+    target_dir = hermetic.xj_cargo_nextest(HAVE.localdir)
+    if target_dir.is_dir():
+        shutil.rmtree(target_dir)
+
+    download_and_extract_tarball(mk_url(), target_dir, ctx="(cargo-nextest) ")
+
+    binary_path = target_dir / "cargo-nextest"
+    if not binary_path.is_file():
+        raise ProvisioningError("cargo-nextest binary not found after extraction")
+
+    binary_path.chmod(binary_path.stat().st_mode | 0o111)
+
+    out = subprocess.check_output([binary_path, "--version"], text=True).strip()
+    match out.split():
+        case ["cargo-nextest", saw_version, *_]:
+            if Version(saw_version) != Version(version):
+                raise ProvisioningError(
+                    f"Expected cargo-nextest version {version}, got {saw_version}."
+                )
+        case _:
+            raise ProvisioningError(f"Unexpected output from cargo-nextest version command:\n{out}")
+
+    HAVE.note_we_have(keyname, version=Version(version))
+    say(f"v{version} acquired successfully")
 
 
 def grab_opam_stdout(args: list[str]) -> str:
@@ -1634,12 +1687,18 @@ def extract_tarball(
     replicated_target_basename = final_dir_contents == [final_target_dir / final_target_dir.name]
     if replicated_tarball_name or replicated_target_basename:
         extracted_path = final_dir_contents[0]
-        # The tarball unpacks a single directory, so move its contents up a level
-        for item in extracted_path.iterdir():
-            shutil.move(str(item), str(final_target_dir))
+        if extracted_path.is_dir():
+            # The tarball unpacks a single directory, so move its contents up a level
+            for item in extracted_path.iterdir():
+                shutil.move(str(item), str(final_target_dir))
 
-        # Remove the now-empty directory
-        extracted_path.rmdir()
+            # Remove the now-empty directory
+            extracted_path.rmdir()
+        else:
+            # The tarball contained a single non-directory file which matched
+            # the tarball name. Nothing else for us to do!
+            # This case occurs for `cargo-nextest`.
+            pass
 
     return final_target_dir
 

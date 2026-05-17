@@ -41,6 +41,10 @@ def xj_more_deps(localdir: Path) -> Path:
     return localdir / "xj-more-deps"
 
 
+def xj_cargo_nextest(localdir: Path) -> Path:
+    return localdir / "cargo-nextest"
+
+
 def xj_gmp_root(localdir: Path) -> Path:
     return xj_more_deps(localdir) / "gmp-6.3.0"
 
@@ -120,6 +124,7 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
             *path_prefix,
             str(xj_build_deps(localdir) / "bin"),
             str(xj_more_deps(localdir) / "bin"),
+            str(xj_cargo_nextest(localdir)),
             str(llvm_root / "bin"),
             str(localdir / "cmake" / "bin"),
             env["PATH"],
