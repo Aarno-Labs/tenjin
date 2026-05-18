@@ -580,9 +580,11 @@ def run_trivial_numeric_casts_improvement(root: Path, dir: Path) -> None:
         for msg in messages:
             if msg.get("reason") != "compiler-message":
                 continue
+
             message = msg.get("message", {})
-            if message.get("code", {}).get("code") != "trivial_numeric_casts":
-                continue
+            if msg_code := message.get("code", {}):
+                if not msg_code or msg_code.get("code") != "trivial_numeric_casts":
+                    continue
 
             for span in message.get("spans", []):
                 if not span.get("is_primary"):

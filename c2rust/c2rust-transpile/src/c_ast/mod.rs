@@ -176,6 +176,18 @@ impl PartialOrd for SrcLocInclude<'_> {
     }
 }
 
+/// The range of source code locations for a C declaration.
+#[derive(Copy, Clone)]
+pub struct CDeclSrcRange {
+    /// The earliest position where this declaration or its documentation might start.
+    pub earliest_begin: SrcLoc,
+    /// A position by which this declaration itself is known to have begun.
+    /// Attributes or return type may possibly precede this position.
+    pub strict_begin: SrcLoc,
+    /// The end of the declaration, except for possible trailing semicolon.
+    pub end: SrcLoc,
+}
+
 impl TypedAstContext {
     // TODO: build the TypedAstContext during initialization, rather than
     // building an empty one and filling it later.
@@ -208,6 +220,16 @@ impl TypedAstContext {
                 file_map.push(files.len());
                 files.push(file.clone());
             }
+        }
+
+        // Ensure that the main file is actually present. This is not the case if it is empty,
+        // in which case the AST exporter's visitor would have never observed it.
+        if !files.iter().any(|f| f.path.as_ref() == Some(&main_file)) {
+            file_map.push(files.len());
+            files.push(SrcFile {
+                path: Some(main_file.clone()),
+                include_loc: None,
+            });
         }
 
         TypedAstContext {
@@ -318,7 +340,7 @@ impl TypedAstContext {
     }
 
     /// Construct a map from top-level decls in the main file to their source ranges.
-    pub fn top_decl_locs(&self) -> IndexMap<CDeclId, (SrcLoc, SrcLoc)> {
+    pub fn top_decl_locs(&self) -> IndexMap<CDeclId, CDeclSrcRange> {
         let mut name_loc_map = IndexMap::new();
         let mut prev_end_loc = SrcLoc {
             fileid: 0,
@@ -328,7 +350,9 @@ impl TypedAstContext {
         // Sort decls by source location so we can reason about the possibly comment-containing gaps
         // between them.
         let mut decls_sorted = self.c_decls_top.clone();
-        decls_sorted.sort_by_key(|decl| self.c_decls[decl].begin_loc());
+        // Break ties in `begin_loc` (e.g. from `int a, b;`) using `end_loc`.
+        decls_sorted
+            .sort_by_key(|decl| (self.c_decls[decl].begin_loc(), self.c_decls[decl].end_loc()));
         for decl_id in &decls_sorted {
             let decl = &self.c_decls[decl_id];
             let begin_loc: SrcLoc = decl.begin_loc().expect("no begin loc for top-level decl");
@@ -385,13 +409,25 @@ impl TypedAstContext {
             }
 
             // End of the previous decl is the start of comments pertaining to the current one.
-            let new_begin_loc = if is_nested { begin_loc } else { prev_end_loc };
+            let earliest_begin_loc = if is_nested { begin_loc } else { prev_end_loc };
 
             // Include only decls from the main file.
             if self.c_decls_top.contains(decl_id)
                 && self.get_source_path(decl) == Some(&self.main_file)
             {
-                let entry = (new_begin_loc, end_loc);
+                // For multiple decls, e.g. `int a, b;`, `begin_loc` is shared, in which case it is
+                // earlier than `earliest_begin_loc` for decls after the first; to maintain their
+                // relative order we must either move `earliest_begin_loc` earlier or move
+                // `begin_loc` later.
+                // For now, we move `begin_loc` later, so that the range used by each variable from
+                // a multiple decl does not overlap the others. If other tooling would benefit more
+                // from maximal but overlapping ranges, we could go the other way.
+                let begin_loc = begin_loc.max(earliest_begin_loc);
+                let entry = CDeclSrcRange {
+                    earliest_begin: earliest_begin_loc,
+                    strict_begin: begin_loc,
+                    end: end_loc,
+                };
                 name_loc_map.insert(*decl_id, entry);
             }
             if !is_nested {
@@ -576,6 +612,14 @@ impl TypedAstContext {
         }
     }
 
+    /// Returns the length of an array type, or panics.
+    pub fn array_len(&self, typ: CTypeId) -> usize {
+        match self.resolve_type(typ).kind {
+            CTypeKind::ConstantArray(_, len) => len,
+            ref kind => panic!("CTypeId {typ:?} is {kind:?}, not a ConstantArray"),
+        }
+    }
+
     /// Can the given field decl be a flexible array member?
     pub fn maybe_flexible_array(&self, typ: CTypeId) -> bool {
         let field_ty = self.resolve_type(typ);
@@ -603,7 +647,7 @@ impl TypedAstContext {
 
     /// Returns the expression inside an `__extension__` operator.
     pub fn resolve_extension(&self, expr_id: CExprId) -> CExprId {
-        if let CExprKind::Unary(_, UnOp::Extension, subexpr, _) = self.index(expr_id).kind {
+        if let CExprKind::Unary(_, CUnOp::Extension, subexpr, _) = self.index(expr_id).kind {
             subexpr
         } else {
             expr_id
@@ -773,11 +817,11 @@ impl TypedAstContext {
             ShuffleVector(..) |
             ConvertVector(..) |
             Call(..) |
-            Unary(_, UnOp::PreIncrement, _, _) |
-            Unary(_, UnOp::PostIncrement, _, _) |
-            Unary(_, UnOp::PreDecrement, _, _) |
-            Unary(_, UnOp::PostDecrement, _, _) |
-            Binary(_, BinOp::Assign, _, _, _, _) |
+            Unary(_, CUnOp::PreIncrement, _, _) |
+            Unary(_, CUnOp::PostIncrement, _, _) |
+            Unary(_, CUnOp::PreDecrement, _, _) |
+            Unary(_, CUnOp::PostDecrement, _, _) |
+            Binary(_, CBinOp::Assign, _, _, _, _) |
             InitList { .. } |
             ImplicitValueInit { .. } |
             Predefined(..) |
@@ -853,8 +897,8 @@ impl TypedAstContext {
             UnaryType(_, _, expr, _) => expr.is_none_or(is_const),
             // Not sure what a `OffsetOfKind::Variable` means.
             OffsetOf(_, _) => true,
-            // `ptr::offset` (ptr `BinOp::Add`) was `const` stabilized in `1.61.0`.
-            // `ptr::offset_from` (ptr `BinOp::Subtract`) was `const` stabilized in `1.65.0`.
+            // `ptr::offset` (ptr `CBinOp::Add`) was `const` stabilized in `1.61.0`.
+            // `ptr::offset_from` (ptr `CBinOp::Subtract`) was `const` stabilized in `1.65.0`.
             // TODO `f128` is not yet handled, as we should eventually
             // switch to the (currently unstable) `f128` primitive type (#1262).
             Binary(_, _, lhs, rhs, _, _) => is_const(lhs) && is_const(rhs),
@@ -1140,7 +1184,7 @@ impl TypedAstContext {
                             } else {
                                 Some(rhs_type_id)
                             }
-                        } else if op == BinOp::ShiftLeft || op == BinOp::ShiftRight {
+                        } else if op == CBinOp::ShiftLeft || op == CBinOp::ShiftRight {
                             Some(lhs_type_id)
                         } else {
                             return;
@@ -1152,11 +1196,11 @@ impl TypedAstContext {
                     ),
                     CExprKind::Paren(_ty, e) => self.ast_context.c_exprs[&e].kind.get_qual_type(),
                     CExprKind::UnaryType(_, op, _, _) => {
-                        // All of these `UnTypeOp`s should return `size_t`.
+                        // All of these `CUnTypeOp`s should return `size_t`.
                         let kind = match op {
-                            UnTypeOp::SizeOf => CTypeKind::Size,
-                            UnTypeOp::AlignOf => CTypeKind::Size,
-                            UnTypeOp::PreferredAlignOf => CTypeKind::Size,
+                            CUnTypeOp::SizeOf => CTypeKind::Size,
+                            CUnTypeOp::AlignOf => CTypeKind::Size,
+                            CUnTypeOp::PreferredAlignOf => CTypeKind::Size,
                         };
                         let ty = self
                             .ast_context
@@ -1540,10 +1584,10 @@ pub enum CExprKind {
     Literal(CQualTypeId, CLiteral),
 
     /// Unary operator.
-    Unary(CQualTypeId, UnOp, CExprId, LRValue),
+    Unary(CQualTypeId, CUnOp, CExprId, LRValue),
 
     /// Unary type operator.
-    UnaryType(CQualTypeId, UnTypeOp, Option<CExprId>, CQualTypeId),
+    UnaryType(CQualTypeId, CUnTypeOp, Option<CExprId>, CQualTypeId),
 
     /// `offsetof` expression.
     OffsetOf(CQualTypeId, OffsetOfKind),
@@ -1551,7 +1595,7 @@ pub enum CExprKind {
     /// Binary operator.
     Binary(
         CQualTypeId,
-        BinOp,
+        CBinOp,
         CExprId,
         CExprId,
         Option<CQualTypeId>,
@@ -1750,9 +1794,66 @@ pub enum CastKind {
     NonAtomicToAtomic,
 }
 
+impl CastKind {
+    pub fn from_types(source_ty_kind: &CTypeKind, target_ty_kind: &CTypeKind) -> Option<Self> {
+        Some(match (source_ty_kind, target_ty_kind) {
+            (CTypeKind::VariableArray(..), CTypeKind::Pointer(..))
+            | (CTypeKind::ConstantArray(..), CTypeKind::Pointer(..))
+            | (CTypeKind::IncompleteArray(..), CTypeKind::Pointer(..)) => {
+                CastKind::ArrayToPointerDecay
+            }
+
+            (CTypeKind::Function(..), CTypeKind::Pointer(..)) => CastKind::FunctionToPointerDecay,
+
+            (_, CTypeKind::Pointer(..)) if source_ty_kind.is_integral_type() => {
+                CastKind::IntegralToPointer
+            }
+
+            (CTypeKind::Pointer(..), CTypeKind::Bool) => CastKind::PointerToBoolean,
+
+            (CTypeKind::Pointer(..), _) if target_ty_kind.is_integral_type() => {
+                CastKind::PointerToIntegral
+            }
+
+            (_, CTypeKind::Bool) if source_ty_kind.is_integral_type() => {
+                CastKind::IntegralToBoolean
+            }
+
+            (CTypeKind::Bool, _) if target_ty_kind.is_signed_integral_type() => {
+                CastKind::BooleanToSignedIntegral
+            }
+
+            (_, _) if source_ty_kind.is_integral_type() && target_ty_kind.is_integral_type() => {
+                CastKind::IntegralCast
+            }
+
+            (_, _) if source_ty_kind.is_integral_type() && target_ty_kind.is_floating_type() => {
+                CastKind::IntegralToFloating
+            }
+
+            (_, CTypeKind::Bool) if source_ty_kind.is_floating_type() => {
+                CastKind::FloatingToBoolean
+            }
+
+            (_, _) if source_ty_kind.is_floating_type() && target_ty_kind.is_integral_type() => {
+                CastKind::FloatingToIntegral
+            }
+
+            (_, _) if source_ty_kind.is_floating_type() && target_ty_kind.is_floating_type() => {
+                CastKind::FloatingCast
+            }
+
+            (CTypeKind::Pointer(..), CTypeKind::Pointer(..)) => CastKind::BitCast,
+
+            // Ignoring Complex casts for now
+            _ => return None,
+        })
+    }
+}
+
 /// Represents a unary operator in C (6.5.3 Unary operators) and GNU C extensions
 #[derive(Debug, Clone, Copy)]
-pub enum UnOp {
+pub enum CUnOp {
     AddressOf,     // &x
     Deref,         // *x
     Plus,          // +x
@@ -1769,9 +1870,9 @@ pub enum UnOp {
     Coawait,       // [C++ Coroutines] co_await x
 }
 
-impl UnOp {
+impl CUnOp {
     pub fn as_str(&self) -> &'static str {
-        use UnOp::*;
+        use CUnOp::*;
         match self {
             AddressOf => "&",
             Deref => "*",
@@ -1796,7 +1897,7 @@ impl UnOp {
         ast_context: &TypedAstContext,
         arg_type: CQualTypeId,
     ) -> Option<CQualTypeId> {
-        use UnOp::*;
+        use CUnOp::*;
         let resolved_ty = ast_context.resolve_type(arg_type.ctype);
         Some(match self {
             // We could construct CTypeKind::Pointer here, but it is not guaranteed to have a
@@ -1827,7 +1928,7 @@ impl UnOp {
     }
 }
 
-impl Display for UnOp {
+impl Display for CUnOp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
@@ -1835,15 +1936,15 @@ impl Display for UnOp {
 
 /// Represents a unary type operator in C
 #[derive(Debug, Clone, Copy)]
-pub enum UnTypeOp {
+pub enum CUnTypeOp {
     SizeOf,
     AlignOf,
     PreferredAlignOf,
 }
 
-impl UnTypeOp {
+impl CUnTypeOp {
     pub fn as_str(&self) -> &'static str {
-        use UnTypeOp::*;
+        use CUnTypeOp::*;
         match self {
             SizeOf => "sizeof",
             AlignOf => "alignof",
@@ -1852,22 +1953,22 @@ impl UnTypeOp {
     }
 }
 
-impl Display for UnTypeOp {
+impl Display for CUnTypeOp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
 
-impl UnOp {
+impl CUnOp {
     /// Check is the operator is rendered before or after is operand.
     pub fn is_prefix(&self) -> bool {
-        !matches!(*self, UnOp::PostIncrement | UnOp::PostDecrement)
+        !matches!(*self, CUnOp::PostIncrement | CUnOp::PostDecrement)
     }
 }
 
 /// Represents a binary operator in C (6.5.5 Multiplicative operators - 6.5.14 Logical OR operator)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinOp {
+pub enum CBinOp {
     Multiply,     // *
     Divide,       // /
     Modulus,      // %
@@ -1902,9 +2003,9 @@ pub enum BinOp {
     Comma,  // ,
 }
 
-impl BinOp {
+impl CBinOp {
     pub fn as_str(&self) -> &'static str {
-        use BinOp::*;
+        use CBinOp::*;
         match self {
             Multiply => "*",
             Divide => "/",
@@ -1944,7 +2045,7 @@ impl BinOp {
     /// Does the rust equivalent of this operator have type (T, T) -> U?
     #[rustfmt::skip]
     pub fn input_types_same(&self) -> bool {
-        use BinOp::*;
+        use CBinOp::*;
         self.all_types_same() || matches!(self,
             Less | Greater | LessEqual | GreaterEqual | EqualEqual | NotEqual
             | And | Or
@@ -1957,7 +2058,7 @@ impl BinOp {
     /// Does the rust equivalent of this operator have type (T, T) -> T?
     /// This ignores cases where one argument is a pointer and we translate to `.offset()`.
     pub fn all_types_same(&self) -> bool {
-        use BinOp::*;
+        use CBinOp::*;
         matches!(
             self,
             Multiply | Divide | Modulus | Add | Subtract | BitAnd | BitXor | BitOr
@@ -1965,19 +2066,19 @@ impl BinOp {
     }
 }
 
-impl Display for BinOp {
+impl Display for CBinOp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
 
-impl BinOp {
+impl CBinOp {
     /// Maps compound assignment operators to operator underlying them, and returns `None` for all
     /// other operators.
     ///
     /// For example, `AssignAdd` maps to `Some(Add)` but `Add` maps to `None`.
-    pub fn underlying_assignment(&self) -> Option<BinOp> {
-        use BinOp::*;
+    pub fn underlying_assignment(&self) -> Option<CBinOp> {
+        use CBinOp::*;
         Some(match *self {
             AssignAdd => Add,
             AssignSubtract => Subtract,
@@ -2634,7 +2735,10 @@ impl CTypeKind {
 
     pub fn is_floating_type(&self) -> bool {
         use CTypeKind::*;
-        matches!(self, Float | Double | LongDouble | Half | BFloat16)
+        matches!(
+            self,
+            Float | Double | LongDouble | Float128 | Half | BFloat16
+        )
     }
 
     pub fn as_underlying_decl(&self) -> Option<CDeclId> {
@@ -2689,6 +2793,7 @@ impl CTypeKind {
             (ULongLong, ty) | (ty, ULongLong) if int(ty) => ULongLong,
 
             (LongDouble, ty) | (ty, LongDouble) if float(ty) || int(ty) => LongDouble,
+            (Float128, ty) | (ty, Float128) if float(ty) || int(ty) => Float128,
 
             (Int128, ty) | (ty, Int128) if int(ty) => Int128,
             (UInt128, ty) | (ty, UInt128) if int(ty) => UInt128,

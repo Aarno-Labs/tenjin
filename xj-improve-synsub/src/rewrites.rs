@@ -260,7 +260,7 @@ impl Rewriter {
         }
 
         let first_arg = &call.args[0];
-        if let Some(decayed) = Self::peek_array_decay_coercion(first_arg) {
+        if let Some(decayed) = Self::peek_array_decay_coercion(first_arg, symbols) {
             // If the first argument is a String, we should use a different (simpler!) helper.
             if is_u8_or_i8_sliceable_expr(decayed, symbols)
                 && is_effectively_mutable_expr(decayed, symbols)
@@ -305,37 +305,44 @@ impl Rewriter {
         None
     }
 
-    /// Given `e.as_mut_ptr()`, implying that `e` is an array or slice, return `Some(e)`.
-    fn peek_array_decay_coercion(mut expr: &Expr) -> Option<&Expr> {
+    /// Given `e.as_mut_ptr()` or `&raw mut e` (where `e` is array-typed), return `Some(e)`.
+    fn peek_array_decay_coercion<'e>(
+        mut expr: &'e Expr,
+        symbols: &SymbolTable,
+    ) -> Option<&'e Expr> {
         if let Expr::Cast(cast) = expr {
             if let syn::Type::Ptr(_) = *cast.ty {
                 expr = &*cast.expr;
             }
         }
 
-        let Expr::MethodCall(method_call) = expr else {
-            return None;
-        };
-        let is_array_decay_method_call = method_call.args.is_empty()
-            && (method_call.method == "as_mut_ptr" || method_call.method == "as_ptr");
-
-        if !is_array_decay_method_call {
-            return None;
+        match expr {
+            Expr::MethodCall(method_call) => {
+                let is_array_decay = method_call.args.is_empty()
+                    && (method_call.method == "as_mut_ptr" || method_call.method == "as_ptr");
+                if !is_array_decay {
+                    return None;
+                }
+                Some(&method_call.receiver)
+            }
+            Expr::RawAddr(raw_addr) if is_array_typed(&raw_addr.expr, symbols) => {
+                Some(&raw_addr.expr)
+            }
+            _ => None,
         }
-        Some(&method_call.receiver)
     }
 
     /// Rewrite `e1.as_mut_ptr()[e2]` into `e1[e2]`
     /// (it's an artifact of guidance).
     pub fn rewrite_decayed_array_subscript(
         &self,
-        _symbols: &SymbolTable,
+        symbols: &SymbolTable,
         expr: &Expr,
     ) -> Option<(Expr, Depth)> {
         let Expr::Index(index) = expr else {
             return None;
         };
-        if let Some(decayed) = Self::peek_array_decay_coercion(&index.expr) {
+        if let Some(decayed) = Self::peek_array_decay_coercion(&index.expr, symbols) {
             let subscript = &index.index;
             let replacement: Expr = syn::parse_quote! {
                 #decayed[#subscript]
@@ -452,7 +459,7 @@ impl Rewriter {
             return Some((replacement, Depth::Limited(0)));
         }
 
-        if let Some(receiver) = extract_slice_ptr_base(arr_arg) {
+        if let Some(receiver) = extract_slice_ptr_base(arr_arg, symbols) {
             // If the type is not pod-compatible, we cannot use `bytemuck`.
             if !is_pod_compatible_expr(receiver, symbols) {
                 return None;
@@ -474,7 +481,7 @@ impl Rewriter {
     /// and likewise for `sscanf(...)`.
     pub fn rewrite_scanf_variants(
         &self,
-        _symbols: &SymbolTable,
+        symbols: &SymbolTable,
         expr: &Expr,
     ) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else {
@@ -529,7 +536,7 @@ impl Rewriter {
 
         let mut scanf_compatible_args = vec![];
         for arg in value_args {
-            if let Some(coerced) = self.coerce_scanf_arg(arg) {
+            if let Some(coerced) = self.coerce_scanf_arg(arg, symbols) {
                 scanf_compatible_args.push(*coerced);
             } else {
                 eprintln!(
@@ -550,7 +557,7 @@ impl Rewriter {
             syn::parse_quote! {
                 xj_scanf::scanf!(#fmt_arg, #comma_punctuated_args)
             }
-        } else if let Some(input_u8s) = self.coerce_u8s(&call.args[0], _symbols, false) {
+        } else if let Some(input_u8s) = self.coerce_u8s(&call.args[0], symbols, false) {
             self.add_dep("xj_scanf");
             // self.with_cur_file_item_store(|item_store| {
             //     item_store.add_use(false, vec!["xj_scanf".into()], "bscanf");
@@ -743,7 +750,7 @@ impl Rewriter {
         }
 
         let arg = &call.args[0];
-        if let Some(decayed) = Self::peek_array_decay_coercion(arg) {
+        if let Some(decayed) = Self::peek_array_decay_coercion(arg, _symbols) {
             if is_u8_sliceable_expr(decayed, _symbols) {
                 let replacement: Expr = syn::parse_quote! {
                     (::std::ffi::CStr::from_bytes_until_nul(#decayed).unwrap().count_bytes()) as size_t
@@ -887,7 +894,7 @@ impl Rewriter {
         symbols: &SymbolTable,
         exclusive: bool,
     ) -> Option<Box<Expr>> {
-        let receiver = extract_slice_ptr_base(expr)?;
+        let receiver = extract_slice_ptr_base(expr, symbols)?;
         if !is_u8_or_i8_sliceable_expr(receiver, symbols) {
             return None;
         }
@@ -910,8 +917,8 @@ impl Rewriter {
         Some(Box::new(coerced))
     }
 
-    fn coerce_scanf_arg(&self, expr: &Expr) -> Option<Box<Expr>> {
-        match categorize_scanf_arg(expr) {
+    fn coerce_scanf_arg(&self, expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> {
+        match categorize_scanf_arg(expr, symbols) {
             ScanfArgCategory::Borrow(e) => Some(Box::new(syn::parse_quote! { &mut #e })),
             ScanfArgCategory::AsMutPtr(e) => {
                 self.add_dep("xj_cstr");
@@ -931,11 +938,16 @@ enum ScanfArgCategory {
     Other,
 }
 
-fn categorize_scanf_arg(expr: &Expr) -> ScanfArgCategory {
+fn categorize_scanf_arg(mut expr: &Expr, symbols: &SymbolTable) -> ScanfArgCategory {
+    expr = strip_casts(expr);
     if let Expr::Reference(reference) = expr {
         return ScanfArgCategory::Borrow(reference.expr.clone());
     }
     if let Expr::RawAddr(reference) = expr {
+        // Raw borrows of arrays should be treated as if we used .as_mut_ptr()
+        if is_array_typed(&reference.expr, symbols) {
+            return ScanfArgCategory::AsMutPtr(reference.expr.clone());
+        }
         return ScanfArgCategory::Borrow(reference.expr.clone());
     }
 
@@ -944,6 +956,8 @@ fn categorize_scanf_arg(expr: &Expr) -> ScanfArgCategory {
             return ScanfArgCategory::AsMutPtr(method_call.receiver.clone());
         }
     }
+
+    // Probably a direct raw pointer; can't safely convert that.
 
     ScanfArgCategory::Other
 }
@@ -956,11 +970,22 @@ fn as_u64(expr: &Expr) -> Box<Expr> {
     Box::new(syn::parse_quote! { #expr as u64 })
 }
 
-fn get_litbytestr(expr: &Expr) -> Option<LitByteStr> {
+fn strip_casts(expr: &Expr) -> &Expr {
     let mut inner = expr;
     while let Expr::Cast(cast) = inner {
         inner = &cast.expr;
     }
+    inner
+}
+
+fn get_litbytestr(expr: &Expr) -> Option<LitByteStr> {
+    let inner = strip_casts(expr);
+
+    if let Expr::MethodCall(call) = inner {
+        if call.method == "as_ptr" {
+            return get_litbytestr(&call.receiver);
+        }
+    };
 
     let Expr::Lit(expr_lit) = inner else {
         return None;
@@ -1012,14 +1037,14 @@ fn coerce_str_as_bytes(expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> 
     Some(Box::new(coerced))
 }
 
-fn extract_slice_ptr_base(expr: &Expr) -> Option<&Expr> {
-    let Expr::MethodCall(call) = expr else {
-        return None;
-    };
-    if call.method != "as_mut_ptr" || !call.args.is_empty() {
-        return None;
+fn extract_slice_ptr_base<'e>(expr: &'e Expr, symbols: &SymbolTable) -> Option<&'e Expr> {
+    match expr {
+        Expr::MethodCall(call) if call.method == "as_mut_ptr" && call.args.is_empty() => {
+            Some(&call.receiver)
+        }
+        Expr::RawAddr(raw_addr) if is_array_typed(&raw_addr.expr, symbols) => Some(&raw_addr.expr),
+        _ => None,
     }
-    Some(&call.receiver)
 }
 
 /// Returns `true` when `expr` is an identifier typed as a `u8` slice.
@@ -1123,6 +1148,14 @@ fn expr_ident_name(expr: &Expr) -> Option<String> {
 fn expr_ident_type<'a>(expr: &Expr, symbols: &'a SymbolTable) -> Option<&'a syn::Type> {
     let name = expr_ident_name(expr)?;
     symbols.get(&name)
+}
+
+fn is_array_typed(expr: &Expr, symbols: &SymbolTable) -> bool {
+    matches!(expr_ident_type(expr, symbols), Some(ty) if is_array_type(ty))
+}
+
+fn is_array_type(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Array(_))
 }
 
 fn is_u8_sliceable_type(ty: &syn::Type) -> bool {

@@ -15,3 +15,6 @@ crate-type = ["staticlib", "rlib"]
 bytemuck = { version = "1.23.2", features = ["derive", "extern_crate_alloc"] }
 
 
+
+[profile.release]
+strip = "debuginfo"

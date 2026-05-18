@@ -1,26 +1,28 @@
 use log::{info, warn};
-use std::collections::{HashMap, HashSet};
-use rustc_hir::def_id::DefId;
-use rustc_type_ir::sty::TyKind;
 use rustc_ast::ast;
-use rustc_ast::*;
 use rustc_ast::mut_visit::{self, MutVisitor};
 use rustc_ast::ptr::P;
-use rustc_span::{sym, DUMMY_SP};
+use rustc_ast::*;
+use rustc_hir::def_id::DefId;
 use rustc_span::symbol::Ident;
+use rustc_span::{sym, DUMMY_SP};
+use rustc_type_ir::sty::TyKind;
 use smallvec::{smallvec, SmallVec};
+use std::collections::{HashMap, HashSet};
+use std::mem;
 
 use crate::ast_builder::{mk, IntoSymbol};
-use crate::ast_manip::{FlatMapNodes, MutVisitNodes, fold_modules, visit_nodes, MutVisit};
+use crate::ast_manip::{
+    collect_comments, fold_modules, visit_nodes, CommentMap, FlatMapNodes, MutVisit, MutVisitNodes,
+};
 use crate::command::{CommandState, Registry};
-use crate::driver::{Phase, parse_expr};
-use crate::{expect, match_or, unpack};
-use crate::matcher::{BindingType, MatchCtxt, Subst, mut_visit_match_with};
+use crate::driver::{parse_expr, Phase};
+use crate::matcher::{mut_visit_match_with, BindingType, MatchCtxt, Subst};
 use crate::path_edit::{fold_resolved_paths, fold_resolved_paths_with_id};
 use crate::transform::Transform;
 use crate::util::Lone;
 use crate::RefactorCtxt;
-
+use crate::{expect, match_or, unpack};
 
 /// # `func_to_method` Command
 ///
@@ -47,8 +49,9 @@ impl Transform for ToMethod {
 
         FlatMapNodes::visit(krate, |i: P<Item>| {
             // We're looking for an inherent impl (no `TraitRef`) marked with a cursor.
-            if !st.marked(i.id, "dest") ||
-               !matches!(i.kind, ItemKind::Impl(box Impl { of_trait: None, .. })) {
+            if !st.marked(i.id, "dest")
+                || !matches!(i.kind, ItemKind::Impl(box Impl { of_trait: None, .. }))
+            {
                 return smallvec![i];
             }
 
@@ -63,7 +66,6 @@ impl Transform for ToMethod {
             return;
         }
         let dest = dest.unwrap();
-
 
         // (2) Collect all marked functions, removing them from the AST.  Note that we collect only
         // free functions, not trait or impl methods.
@@ -84,7 +86,8 @@ impl Transform for ToMethod {
         fold_modules(krate, |curs| {
             while let Some(arg_idx) = curs.advance_until_match(|i| {
                 // Find the argument under the cursor.
-                let sig = match_or!([i.kind] ItemKind::Fn(box Fn { ref sig, .. }) => sig; return None);
+                let sig =
+                    match_or!([i.kind] ItemKind::Fn(box Fn { ref sig, .. }) => sig; return None);
                 for (idx, arg) in sig.decl.inputs.iter().enumerate() {
                     if st.marked(arg.id, "target") {
                         return Some(Some(idx));
@@ -100,7 +103,9 @@ impl Transform for ToMethod {
                     ItemKind::Fn(box Fn { sig, generics, body, .. }) => (sig, generics, body));
                 fns.push(FnInfo {
                     item: i,
-                    sig, generics, body,
+                    sig,
+                    generics,
+                    body,
                     arg_idx,
                 });
             }
@@ -111,14 +116,18 @@ impl Transform for ToMethod {
             ident: Ident,
             arg_idx: Option<usize>,
         }
-        let fn_ref_info = fns.iter().map(|f| {
-            (cx.node_def_id(f.item.id),
-             FnRefInfo {
-                 ident: f.item.ident,
-                 arg_idx: f.arg_idx,
-             })
-        }).collect::<HashMap<_, _>>();
-
+        let fn_ref_info = fns
+            .iter()
+            .map(|f| {
+                (
+                    cx.node_def_id(f.item.id),
+                    FnRefInfo {
+                        ident: f.item.ident,
+                        arg_idx: f.arg_idx,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
 
         // (3) Rewrite function signatures and bodies, replacing the marked arg with `self`.
         for f in &mut fns {
@@ -131,7 +140,10 @@ impl Transform for ToMethod {
 
             let mode = match arg.pat.kind {
                 PatKind::Ident(mode, _, _) => mode,
-                _ => panic!("unsupported argument pattern (expected ident): {:?}", arg.pat),
+                _ => panic!(
+                    "unsupported argument pattern (expected ident): {:?}",
+                    arg.pat
+                ),
             };
 
             let pat_ty = cx.node_type(arg.pat.id);
@@ -147,12 +159,11 @@ impl Transform for ToMethod {
                     }
                 } else {
                     match pat_ty.kind() {
-                        TyKind::Ref(_, ty, _) if *ty == self_ty => {
-                            match arg.ty.kind {
-                                ast::TyKind::Rptr(ref lt, ref mty) =>
-                                    Some(SelfKind::Region(*lt, mty.mutbl)),
-                                _ => None,
+                        TyKind::Ref(_, ty, _) if *ty == self_ty => match arg.ty.kind {
+                            ast::TyKind::Rptr(ref lt, ref mty) => {
+                                Some(SelfKind::Region(*lt, mty.mutbl))
                             }
+                            _ => None,
                         },
                         _ => None,
                     }
@@ -160,14 +171,19 @@ impl Transform for ToMethod {
             };
             let self_kind = match self_kind {
                 Some(x) => x,
-                None => panic!("unsupported argument type (expected {:?} or a ref): {:?}",
-                               self_ty, pat_ty),
+                None => panic!(
+                    "unsupported argument type (expected {:?} or a ref): {:?}",
+                    self_ty, pat_ty
+                ),
             };
 
             inputs.insert(0, mk().self_arg(self_kind));
 
             // Update `decl`
-            f.sig.decl = f.sig.decl.clone().map(|fd| FnDecl { inputs: inputs, .. fd });
+            f.sig.decl = f.sig.decl.clone().map(|fd| FnDecl {
+                inputs: inputs,
+                ..fd
+            });
 
             // Rewrite references to the marked argument within the function body.
 
@@ -176,18 +192,18 @@ impl Transform for ToMethod {
             // to fix this in path_edit.rs
             fold_resolved_paths(&mut f.body, cx, |qself, path, def| {
                 match cx.res_to_hir_id(&def[0]) {
-                    Some(hir_id) =>
+                    Some(hir_id) => {
                         if hir_id == arg_hir_id {
                             assert!(qself.is_none());
                             return (None, mk().path(vec!["self"]));
                         } else {
                             (qself, path)
-                        },
-                    None => (qself, path)
+                        }
+                    }
+                    None => (qself, path),
                 }
             });
         }
-
 
         // (4) Find the destination impl again, and fill it in with the new methods.
 
@@ -200,9 +216,16 @@ impl Transform for ToMethod {
 
             smallvec![i.map(|i| {
                 let ItemKind::Impl(box Impl {
-                    unsafety, polarity, generics, constness,
-                    defaultness, of_trait, self_ty, mut items
-                }) = i.kind else {
+                    unsafety,
+                    polarity,
+                    generics,
+                    constness,
+                    defaultness,
+                    of_trait,
+                    self_ty,
+                    mut items,
+                }) = i.kind
+                else {
                     panic!("expected ItemKind::Impl, got {:?}", i.kind);
                 };
 
@@ -225,14 +248,19 @@ impl Transform for ToMethod {
                 }));
                 Item {
                     kind: ItemKind::Impl(Box::new(Impl {
-                          unsafety, polarity, generics, constness,
-                          defaultness, of_trait, self_ty, items,
+                        unsafety,
+                        polarity,
+                        generics,
+                        constness,
+                        defaultness,
+                        of_trait,
+                        self_ty,
+                        items,
                     })),
-                    .. i
+                    ..i
                 }
             })]
         });
-
 
         // (5) Find all uses of marked functions, and rewrite them into method calls.
 
@@ -254,11 +282,7 @@ impl Transform for ToMethod {
                 let self_arg = args.remove(arg_idx);
                 args.insert(0, self_arg);
 
-                e.kind = ExprKind::MethodCall(
-                    mk().path_segment(&info.ident),
-                    args,
-                    DUMMY_SP,
-                );
+                e.kind = ExprKind::MethodCall(mk().path_segment(&info.ident), args, DUMMY_SP);
             } else {
                 // There is no `self` argument, but change the function reference to the new path.
                 let mut new_path = cx.def_path(cx.node_def_id(dest.id));
@@ -274,36 +298,46 @@ impl Transform for ToMethod {
     }
 }
 
-
 /// # `fix_unused_unsafe` Command
 ///
 /// Usage: `fix_unused_unsafe`
 ///
-/// Find unused `unsafe` blocks and turn them into ordinary blocks. This relies
-/// on the compiler's `#[warn(unused_unsafe)]` warnings, and will not work with warnings
+/// Find unused `unsafe` blocks and turn them into ordinary blocks, removing the
+/// block entirely where possible. This relies on the compiler's
+/// `#[warn(unused_unsafe)]` warnings, and will not work with warnings
 /// suppressed.
+///
+/// Blocks are removed entirely (preserving their contents) if:
+///
+/// - The block is unlabeled.
+/// - There are no comments on the block.
+/// - There are no values in the block that require drop.
+/// - And either:
+///   - The block is used as a statement, in which case its inner statements are
+///     lifted into the surrounding block (possibly multiple statements).
+///   - The block is used as an expression and consists only of a tail expression,
+///     in which case the block is replaced by that expression.
 pub struct FixUnusedUnsafe;
 
 impl Transform for FixUnusedUnsafe {
     fn transform(&self, krate: &mut Crate, _st: &CommandState, cx: &RefactorCtxt) {
-        MutVisitNodes::visit(krate, |b: &mut P<Block>| {
-            if let BlockCheckMode::Unsafe(UnsafeSource::UserProvided) = b.rules {
-                let hir_id = cx.hir_map().node_to_hir_id(b.id);
-                let parent = cx.hir_map().get_parent_item(hir_id);
-                let result = cx.ty_ctxt().unsafety_check_result(parent);
-                let unused = result
-                    .unused_unsafes
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|&(id, _)| {
-                        // TODO: do we need to check the UnusedUnsafe argument?
-                        id == cx.hir_map().node_to_hir_id(b.id)
-                    });
-                if unused {
-                    b.rules = BlockCheckMode::Default;
-                }
-            }
+        // HACK: Check if there have been compilation errors before running the
+        // transformation. When there are errors, rustc's unsafe checker can produce
+        // incorrect results, incorrectly marking blocks with actual unsafe
+        // operations as "unused". This would cause us to remove the `unsafe`
+        // keyword from blocks that still need it, so we bail out in that case
+        // instead of corrupting the code.
+        if cx.session().diagnostic().has_errors().is_some() {
+            warn!("Skipping fix_unused_unsafe transform due to compilation errors");
+            return;
+        }
+
+        let comment_map =
+            collect_comments(krate, cx.session().source_map(), &cx.session().parse_sess);
+
+        krate.visit(&mut FixUnusedUnsafeFolder {
+            cx,
+            comment_map: &comment_map,
         });
     }
 
@@ -312,6 +346,132 @@ impl Transform for FixUnusedUnsafe {
     }
 }
 
+struct FixUnusedUnsafeFolder<'a, 'tcx> {
+    cx: &'a RefactorCtxt<'a, 'tcx>,
+    comment_map: &'a CommentMap,
+}
+
+impl<'a, 'tcx> FixUnusedUnsafeFolder<'a, 'tcx> {
+    fn is_unused_unsafe_block(&self, b: &Block) -> bool {
+        let BlockCheckMode::Unsafe(UnsafeSource::UserProvided) = b.rules else {
+            return false;
+        };
+
+        let hir_id = self.cx.hir_map().node_to_hir_id(b.id);
+        let parent = self.cx.hir_map().get_parent_item(hir_id);
+        let result = self.cx.ty_ctxt().unsafety_check_result(parent);
+        result
+            .unused_unsafes
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|&(id, _)| id == self.cx.hir_map().node_to_hir_id(b.id))
+    }
+}
+
+impl<'a, 'tcx> MutVisitor for FixUnusedUnsafeFolder<'a, 'tcx> {
+    fn flat_map_stmt(&mut self, mut stmt: Stmt) -> SmallVec<[Stmt; 1]> {
+        'noop: {
+            let (StmtKind::Expr(expr) | StmtKind::Semi(expr)) = &mut stmt.kind else {
+                break 'noop;
+            };
+
+            let expr_id = expr.id;
+            let ExprKind::Block(block, None) = &mut expr.kind else {
+                break 'noop;
+            };
+
+            if !self.is_unused_unsafe_block(block) {
+                break 'noop;
+            }
+
+            let block_id = block.id;
+            let hir_id = self.cx.hir_map().node_to_hir_id(block.id);
+            let parent = self.cx.hir_map().get_parent_item(hir_id);
+            let param_env = self.cx.ty_ctxt().param_env(parent);
+
+            let has_comments = [stmt.id, expr_id, block_id].iter().any(|id| {
+                self.comment_map
+                    .get(id)
+                    .map_or(false, |comments| !comments.is_empty())
+            });
+
+            let has_drop = block.stmts.iter().any(|stmt| match stmt.kind {
+                StmtKind::Local(ref local) => {
+                    let ty = self
+                        .cx
+                        .opt_node_type(local.id)
+                        .or_else(|| self.cx.opt_node_type(local.pat.id));
+                    ty.map_or(false, |ty| ty.needs_drop(self.cx.ty_ctxt(), param_env))
+                }
+                _ => false,
+            });
+
+            // Remove the block if there's nothing preventing us from doing so.
+            if !has_comments && !has_drop {
+                let mut stmts = mem::take(&mut block.stmts);
+
+                // If the block has a tail expr, turn it into a statement. This is valid
+                // because this is a block statement, which means that the tail expr isn't
+                // being used as part of an expression and so can (and must be) turned into
+                // a statement.
+                if let Some(last) = stmts.last_mut()
+                    && let StmtKind::Expr(expr) = &mut last.kind
+                {
+                    let expr = std::mem::replace(expr, mk().tuple_expr(Vec::<P<Expr>>::new()));
+                    last.kind = StmtKind::Semi(expr);
+                }
+
+                return SmallVec::from_vec(stmts);
+            }
+        }
+
+        mut_visit::noop_flat_map_stmt(stmt, self)
+    }
+
+    fn visit_expr(&mut self, expr: &mut P<Expr>) {
+        'noop: {
+            // We only want to touch unsafe block exprs where the unsafe is unused.
+            let ExprKind::Block(block, None) = &mut expr.kind else {
+                break 'noop;
+            };
+            if !self.is_unused_unsafe_block(block) {
+                break 'noop;
+            }
+
+            // We only remove the block if it consists of a single tail expr.
+            let [stmt] = &mut block.stmts[..] else {
+                break 'noop;
+            };
+
+            // We don't want to remove the block if our tail expr has a comment on it, since
+            // doing so would delete the comment.
+            let has_comments = self
+                .comment_map
+                .get(&stmt.id)
+                .map_or(false, |comments| !comments.is_empty());
+            if has_comments {
+                break 'noop;
+            }
+
+            let StmtKind::Expr(inner) = &mut stmt.kind else {
+                break 'noop;
+            };
+
+            *expr = std::mem::replace(inner, mk().tuple_expr(Vec::<P<Expr>>::new()));
+        }
+
+        mut_visit::noop_visit_expr(expr, self)
+    }
+
+    fn visit_block(&mut self, b: &mut P<Block>) {
+        if self.is_unused_unsafe_block(b) {
+            b.rules = BlockCheckMode::Default;
+        }
+
+        mut_visit::noop_visit_block(b, self)
+    }
+}
 
 /// # `sink_unsafe` Command
 ///
@@ -333,10 +493,14 @@ impl<'a> MutVisitor for SinkUnsafeFolder<'a> {
         let i = if self.st.marked(i.id, "target") {
             i.map(|mut i| {
                 match i.kind {
-                    ItemKind::Fn(box Fn { ref mut sig, body: Some(ref mut body), .. }) => {
+                    ItemKind::Fn(box Fn {
+                        ref mut sig,
+                        body: Some(ref mut body),
+                        ..
+                    }) => {
                         sink_unsafe(&mut sig.header.unsafety, body);
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
                 i
             })
@@ -344,17 +508,20 @@ impl<'a> MutVisitor for SinkUnsafeFolder<'a> {
             i
         };
 
-
         mut_visit::noop_flat_map_item(i, self)
     }
 
     fn flat_map_impl_item(&mut self, mut i: P<AssocItem>) -> SmallVec<[P<AssocItem>; 1]> {
         if self.st.marked(i.id, "target") {
             match i.kind {
-                AssocItemKind::Fn(box Fn { sig: FnSig { ref mut header, .. }, body: Some(ref mut body), .. }) => {
+                AssocItemKind::Fn(box Fn {
+                    sig: FnSig { ref mut header, .. },
+                    body: Some(ref mut body),
+                    ..
+                }) => {
                     sink_unsafe(&mut header.unsafety, body);
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
 
@@ -365,9 +532,10 @@ impl<'a> MutVisitor for SinkUnsafeFolder<'a> {
 fn sink_unsafe(unsafety: &mut Unsafe, block: &mut P<Block>) {
     if let Unsafe::Yes(_) = *unsafety {
         *unsafety = Unsafe::No;
-        *block = mk().block(vec![
-            mk().expr_stmt(mk().block_expr(mk().unsafe_().block(
-                        block.stmts.clone())))]);
+        *block =
+            mk().block(vec![mk().expr_stmt(
+                mk().block_expr(mk().unsafe_().block(block.stmts.clone())),
+            )]);
     }
 }
 
@@ -376,7 +544,6 @@ impl Transform for SinkUnsafe {
         krate.visit(&mut SinkUnsafeFolder { st })
     }
 }
-
 
 /// # `wrap_extern` Command
 ///
@@ -454,9 +621,9 @@ impl Transform for WrapExtern {
                         ident: fi.ident,
                         decl: sig.decl.clone(),
                     });
-                },
+                }
 
-                _ => {},
+                _ => {}
             }
         });
 
@@ -485,46 +652,51 @@ impl Transform for WrapExtern {
 
                 for f in &fns {
                     let func_path = cx.def_path(cx.node_def_id(f.id));
-                    let arg_names = f.decl.inputs.iter().enumerate().map(|(idx, arg)| {
-                        // TODO: match_arg("__i: __t", arg).ident("__i")
-                        match arg.pat.kind {
-                            PatKind::Ident(BindingMode::ByValue(Mutability::Not),
-                                           ident,
-                                           None) => {
-                                ident
-                            },
-                            _ => {
-                                mk().ident(format!("arg{}", idx))
-                            },
-                        }
-                    }).collect::<Vec<_>>();
-                    let wrapper_args = f.decl.inputs.iter()
-                        .zip(arg_names.iter())
-                        .map(|(old, name)| {
-                            Param {
-                                pat: mk().ident_pat(name.clone()),
-                                ..old.clone()
+                    let arg_names = f
+                        .decl
+                        .inputs
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, arg)| {
+                            // TODO: match_arg("__i: __t", arg).ident("__i")
+                            match arg.pat.kind {
+                                PatKind::Ident(
+                                    BindingMode::ByValue(Mutability::Not),
+                                    ident,
+                                    None,
+                                ) => ident,
+                                _ => mk().ident(format!("arg{}", idx)),
                             }
-                        }).collect::<Vec<_>>();
-                    let arg_exprs = arg_names.iter().map(|name| {
-                        mk().ident_expr(name)
-                    }).collect::<Vec<_>>();
+                        })
+                        .collect::<Vec<_>>();
+                    let wrapper_args = f
+                        .decl
+                        .inputs
+                        .iter()
+                        .zip(arg_names.iter())
+                        .map(|(old, name)| Param {
+                            pat: mk().ident_pat(name.clone()),
+                            ..old.clone()
+                        })
+                        .collect::<Vec<_>>();
+                    let arg_exprs = arg_names
+                        .iter()
+                        .map(|name| mk().ident_expr(name))
+                        .collect::<Vec<_>>();
                     let decl = P(FnDecl {
                         inputs: wrapper_args,
                         output: f.decl.output.clone(),
                     });
                     let body = mk().block(vec![
-                            mk().expr_stmt(mk().call_expr(
-                                    mk().path_expr(func_path),
-                                    arg_exprs))]);
+                        mk().expr_stmt(mk().call_expr(mk().path_expr(func_path), arg_exprs))
+                    ]);
                     m_items.push(mk().pub_().unsafe_().fn_item(&f.ident, decl, Some(body)));
-
                 }
 
                 let m_kind = ModKind::Loaded(m_items, m_inline, m_spans);
                 Item {
                     kind: ItemKind::Mod(unsafety, m_kind),
-                    .. i
+                    ..i
                 }
             })]
         });
@@ -536,17 +708,18 @@ impl Transform for WrapExtern {
         let dest_path = dest_path.unwrap();
 
         // (3) Rewrite call sites to use the new wrappers.
-        let ident_map = fns.iter().map(|f| (f.def_id, f.ident)).collect::<HashMap<_, _>>();
-        fold_resolved_paths(krate, cx, |qself, path, def| {
-            match def[0].opt_def_id() {
-                Some(def_id) if ident_map.contains_key(&def_id) => {
-                    let ident = ident_map.get(&def_id).unwrap();
-                    let mut new_path = dest_path.clone();
-                    new_path.segments.push(mk().path_segment(ident));
-                    (qself, new_path)
-                },
-                _ => (qself, path),
+        let ident_map = fns
+            .iter()
+            .map(|f| (f.def_id, f.ident))
+            .collect::<HashMap<_, _>>();
+        fold_resolved_paths(krate, cx, |qself, path, def| match def[0].opt_def_id() {
+            Some(def_id) if ident_map.contains_key(&def_id) => {
+                let ident = ident_map.get(&def_id).unwrap();
+                let mut new_path = dest_path.clone();
+                new_path.segments.push(mk().path_segment(ident));
+                (qself, new_path)
             }
+            _ => (qself, path),
         });
     }
 
@@ -554,7 +727,6 @@ impl Transform for WrapExtern {
         Phase::Phase3
     }
 }
-
 
 /// # `wrap_api` Command
 ///
@@ -593,15 +765,19 @@ impl Transform for WrapApi {
                 ItemKind::Fn(box Fn { ref sig, .. }) => (sig.decl.clone(), sig.header.ext));
 
             // Get the exported symbol name of the function
-            let symbol =
-                if let Some(sym) = crate::util::first_attr_value_str_by_name(&i.attrs, sym::export_name) {
-                    sym
-                } else if crate::util::contains_name(&i.attrs, sym::no_mangle) {
+            let symbol = if let Some(sym) =
+                crate::util::first_attr_value_str_by_name(&i.attrs, sym::export_name)
+            {
+                sym
+            } else if crate::util::contains_name(&i.attrs, sym::no_mangle) {
+                i.ident.name
+            } else {
+                warn!(
+                    "marked function `{:?}` does not have a stable symbol",
                     i.ident.name
-                } else {
-                    warn!("marked function `{:?}` does not have a stable symbol", i.ident.name);
-                    return smallvec![i];
-                };
+                );
+                return smallvec![i];
+            };
 
             // Remove export-related attrs from the original function, and set it to Abi::Rust.
             let i = i.map(|mut i| {
@@ -621,61 +797,71 @@ impl Transform for WrapApi {
             // Pick distinct names for the arguments in the wrapper.
             let mut used_names = HashSet::new();
 
-            let arg_names = decl.inputs.iter().enumerate().map(|(idx, arg)| {
-                let base = match arg.pat.kind {
-                    // Use the name from the original function, if there is one.  Otherwise, fall
-                    // back on `arg0`, `arg1`, ...
-                    PatKind::Ident(_, ref ident, _) => ident.name,
-                    _ => format!("arg{}", idx).into_symbol(),
-                };
+            let arg_names = decl
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(idx, arg)| {
+                    let base = match arg.pat.kind {
+                        // Use the name from the original function, if there is one.  Otherwise, fall
+                        // back on `arg0`, `arg1`, ...
+                        PatKind::Ident(_, ref ident, _) => ident.name,
+                        _ => format!("arg{}", idx).into_symbol(),
+                    };
 
-                let name;
-                if !used_names.contains(&base) {
-                    name = base;
-                } else {
-                    let mut i = 0;
-                    loop {
-                        let gen_name = format!("{}_{}", base.as_str(), i).into_symbol();
-                        if !used_names.contains(&gen_name) {
-                            name = gen_name;
-                            break;
+                    let name;
+                    if !used_names.contains(&base) {
+                        name = base;
+                    } else {
+                        let mut i = 0;
+                        loop {
+                            let gen_name = format!("{}_{}", base.as_str(), i).into_symbol();
+                            if !used_names.contains(&gen_name) {
+                                name = gen_name;
+                                break;
+                            }
+                            i += 1;
                         }
-                        i += 1;
                     }
-                }
 
-                used_names.insert(name);
-                name
-            }).collect::<Vec<_>>();
+                    used_names.insert(name);
+                    name
+                })
+                .collect::<Vec<_>>();
 
             // Generate the wrapper.  It gets an `#[export_name]`  attr and the original function's
             // old ABI.
             let wrapper_decl = decl.clone().map(|decl| {
-                let new_inputs = decl.inputs.iter().zip(arg_names.iter()).map(|(arg, &name)| {
-                    mk().arg(&arg.ty, mk().ident_pat(name))
-                }).collect();
+                let new_inputs = decl
+                    .inputs
+                    .iter()
+                    .zip(arg_names.iter())
+                    .map(|(arg, &name)| mk().arg(&arg.ty, mk().ident_pat(name)))
+                    .collect();
                 FnDecl {
                     inputs: new_inputs,
-                    .. decl
+                    ..decl
                 }
             });
 
-            let wrapper_args = arg_names.iter().map(|&name| mk().ident_expr(name)).collect();
+            let wrapper_args = arg_names
+                .iter()
+                .map(|&name| mk().ident_expr(name))
+                .collect();
 
             let wrapper_name = format!("{}_wrapper", symbol.as_str());
-            let wrapper =
-                mk().vis(i.vis.clone()).unsafe_().extern_(old_ext)
-                        .str_attr(vec![sym::export_name], symbol).fn_item(
+            let wrapper = mk()
+                .vis(i.vis.clone())
+                .unsafe_()
+                .extern_(old_ext)
+                .str_attr(vec![sym::export_name], symbol)
+                .fn_item(
                     &wrapper_name,
                     wrapper_decl,
-                    Some(mk().block(vec![
-                        mk().expr_stmt(mk().call_expr(
-                                mk().path_expr(vec![i.ident.name]),
-                                wrapper_args,
-                        ))
-                    ]))
+                    Some(mk().block(vec![mk().expr_stmt(
+                        mk().call_expr(mk().path_expr(vec![i.ident.name]), wrapper_args),
+                    )])),
                 );
-
 
             let item_hir_id = cx.hir_map().node_to_hir_id(i.id);
             wrapper_map.insert(item_hir_id, wrapper_name);
@@ -715,7 +901,6 @@ impl Transform for WrapApi {
         Phase::Phase3
     }
 }
-
 
 /// # `abstract` Command
 ///
@@ -759,8 +944,11 @@ impl Transform for Abstract {
     fn transform(&self, krate: &mut Crate, st: &CommandState, cx: &RefactorCtxt) {
         let pat = parse_expr(cx.session(), &self.pat);
 
-        let func_src = format!("unsafe fn {} {{\n    {}\n}}",
-                               self.sig, self.body.as_ref().unwrap_or(&self.pat));
+        let func_src = format!(
+            "unsafe fn {} {{\n    {}\n}}",
+            self.sig,
+            self.body.as_ref().unwrap_or(&self.pat)
+        );
         let func: P<Item> = st.parse_items(cx, &func_src).lone();
         st.add_mark(func.id, sym::new);
 
@@ -782,12 +970,16 @@ impl Transform for Abstract {
             }
         }
 
-        let aba = mk().angle_bracketed_args(
-            type_args.iter().map(|name| mk().ident_ty(name)).collect());
+        let aba =
+            mk().angle_bracketed_args(type_args.iter().map(|name| mk().ident_ty(name)).collect());
         let seg = mk().path_segment_with_args(func.ident, aba);
         let call_expr = mk().call_expr(
             mk().path_expr(vec![seg]),
-            value_args.iter().map(|name| mk().ident_expr(name)).collect());
+            value_args
+                .iter()
+                .map(|name| mk().ident_expr(name))
+                .collect(),
+        );
 
         // Search and replace
 
@@ -818,7 +1010,6 @@ impl Transform for Abstract {
     }
 }
 
-
 pub fn register_commands(reg: &mut Registry) {
     use super::mk;
 
@@ -827,9 +1018,11 @@ pub fn register_commands(reg: &mut Registry) {
     reg.register("sink_unsafe", |_args| mk(SinkUnsafe));
     reg.register("wrap_extern", |_args| mk(WrapExtern));
     reg.register("wrap_api", |_args| mk(WrapApi));
-    reg.register("abstract", |args| mk(Abstract {
-        sig: args[0].clone(),
-        pat: args[1].clone(),
-        body: args.get(2).cloned(),
-    }));
+    reg.register("abstract", |args| {
+        mk(Abstract {
+            sig: args[0].clone(),
+            pat: args[1].clone(),
+            body: args.get(2).cloned(),
+        })
+    });
 }

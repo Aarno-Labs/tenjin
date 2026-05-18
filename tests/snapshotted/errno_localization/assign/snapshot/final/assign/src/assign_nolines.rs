@@ -6,7 +6,7 @@
     unused_assignments,
     unused_mut
 )]
-#![feature(extern_types)]
+#![feature(extern_types, raw_ref_op)]
 #[allow(unused_imports)]
 use ::assign;
 use ::std::process::ExitCode;
@@ -103,8 +103,8 @@ unsafe fn main_0(
         println!("Error: [{:>}]", {
             std::ffi::CStr::from_ptr(
                 ({
-                    let __lift_2_3539_0 = _xj_local_errno;
-                    _xj_wrap_strerror_xjtr_0(&mut _xj_local_errno, __lift_2_3539_0)
+                    let __lift_2_3551_0 = _xj_local_errno;
+                    _xj_wrap_strerror_xjtr_0(&mut _xj_local_errno, __lift_2_3551_0)
                 }) as *const core::ffi::c_char,
             )
             .to_str()

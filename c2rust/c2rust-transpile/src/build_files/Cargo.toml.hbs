@@ -13,7 +13,7 @@ name = "{{crate_name}}"
 authors = ["C2Rust"]
 version = "0.0.0"
 publish = false
-edition = "2021"
+edition = "{{edition}}"
 autobins = false
 
 {{#if is_library~}}
@@ -56,4 +56,9 @@ features = ["libc-hash", "fixed-length-array-hash"]
 [dependencies.c2rust-xcheck-backend-{{cross_check_backend}}]
 version = "*"
 {{~/if}}
+{{~/if}}
+
+{{#if strip_debuginfo_release~}}
+[profile.release]
+strip = "debuginfo"
 {{~/if}}
