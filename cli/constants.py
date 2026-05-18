@@ -18,7 +18,8 @@ WANT = {
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
     "10j-xj-improve-multitool-toolchain": "nightly-2026-05-01",
     "10j-xj-default-rust-toolchain": "1.88.0",
-    "10j-generated-rust-toolchain": "nightly-2025-08-20",
+    # Keep in sync with the version in `c2rust/c2rust-rust-tools/src/lib.rs`.
+    "10j-generated-rust-toolchain": "nightly-2025-05-18",
     "10j-reference-c2rust-tag": "613d3f5a7ef568aecb1681ef5960f956c1ed7344",
     "10j-ast-grep": "0.40.5",
 }
