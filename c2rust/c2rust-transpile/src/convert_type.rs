@@ -92,7 +92,7 @@ impl TypeConverter {
 
         self.fields
             .entry(record_id)
-            .or_insert_with(|| Renamer::keywords())
+            .or_insert_with(Renamer::keywords)
             .insert(FieldKey::Field(field_id), name)
             .expect("Field already declared")
     }
@@ -101,7 +101,7 @@ impl TypeConverter {
         let field = self
             .fields
             .entry(record_id)
-            .or_insert_with(|| Renamer::keywords());
+            .or_insert_with(Renamer::keywords);
         let key = FieldKey::Padding(padding_idx);
         if let Some(name) = field.get(&key) {
             name

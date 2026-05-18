@@ -216,9 +216,16 @@ impl Transform for ToMethod {
 
             smallvec![i.map(|i| {
                 let ItemKind::Impl(box Impl {
-                    unsafety, polarity, generics, constness,
-                    defaultness, of_trait, self_ty, mut items
-                }) = i.kind else {
+                    unsafety,
+                    polarity,
+                    generics,
+                    constness,
+                    defaultness,
+                    of_trait,
+                    self_ty,
+                    mut items,
+                }) = i.kind
+                else {
                     panic!("expected ItemKind::Impl, got {:?}", i.kind);
                 };
 
@@ -408,7 +415,9 @@ impl<'a, 'tcx> MutVisitor for FixUnusedUnsafeFolder<'a, 'tcx> {
                 // because this is a block statement, which means that the tail expr isn't
                 // being used as part of an expression and so can (and must be) turned into
                 // a statement.
-                if let Some(last) = stmts.last_mut() && let StmtKind::Expr(expr) = &mut last.kind {
+                if let Some(last) = stmts.last_mut()
+                    && let StmtKind::Expr(expr) = &mut last.kind
+                {
                     let expr = std::mem::replace(expr, mk().tuple_expr(Vec::<P<Expr>>::new()));
                     last.kind = StmtKind::Semi(expr);
                 }

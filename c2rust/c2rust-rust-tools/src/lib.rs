@@ -54,7 +54,7 @@ impl FromStr for RustEdition {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let choices = Self::ALL;
         choices
-            .into_iter()
+            .iter()
             .copied()
             .find(|choice| choice.as_str() == s)
             .ok_or_else(|| format!("{s} not one of {}", choices.iter().join(" ,")))

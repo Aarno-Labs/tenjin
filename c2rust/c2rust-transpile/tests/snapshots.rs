@@ -154,7 +154,7 @@ fn transpile_snapshot(
     let rs = rs.replace(cwd.to_str().unwrap(), ".");
 
     let c_file_name = c_path.file_name().unwrap().to_str().unwrap();
-    let c_file_name = sanitize_file_name(&c_file_name);
+    let c_file_name = sanitize_file_name(c_file_name);
     let snapshot_name = format!("transpile@{c_file_name}.{ext}");
 
     insta::assert_snapshot!(snapshot_name, &rs, &debug_expr);
@@ -311,11 +311,11 @@ fn generate_keywords_test() {
         "struct", "while", "do", "typeof", "char",
     ];
     let mut c_code = RUST_KEYWORDS
-        .into_iter()
+        .iter()
         .filter(|keyword| !c_keywords.contains(keyword))
         .map(|name| format!("void {name}(void) {{}}"))
         .join("\n\n");
-    c_code.push_str("\n");
+    c_code.push('\n');
     let c_path = Path::new("tests/snapshots/keywords.c");
     fs_err::write(c_path, c_code).unwrap();
 }
@@ -513,7 +513,7 @@ fn test_varargs() {
 }
 
 fn transpile_with_c_decl_map_snapshot(c_path: &Path) {
-    compile_and_transpile_file(c_path, config(Default::default()));
+    compile_and_transpile_file(c_path, config(Default::default(), Default::default()));
 
     let c_decls_path = c_path.with_extension("c_decls.json");
     let snapshot_name = format!("c_decls@{}", c_path.file_name().unwrap().to_str().unwrap());

@@ -246,7 +246,7 @@ fn main() {{
         maybe_write_to_file(&output_path, &output, tcfg.overwrite_existing);
 
         // Update the path written to `Cargo.toml`
-        m.path = Some(file_name.into());
+        m.path = Some(file_name);
         true
     });
 }
