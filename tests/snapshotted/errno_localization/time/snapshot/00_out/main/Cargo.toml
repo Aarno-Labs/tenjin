@@ -17,3 +17,6 @@ name = "main_nolines"
 [dependencies]
 
 
+
+[profile.release]
+strip = "debuginfo"

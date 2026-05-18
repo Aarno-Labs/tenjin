@@ -6,6 +6,7 @@
     unused_assignments,
     unused_mut
 )]
+#![feature(raw_ref_op)]
 #[allow(unused_imports)]
 use ::main;
 use ::std::process::ExitCode;

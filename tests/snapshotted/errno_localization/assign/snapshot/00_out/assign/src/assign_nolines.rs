@@ -6,7 +6,7 @@
     unused_assignments,
     unused_mut
 )]
-#![feature(extern_types)]
+#![feature(extern_types, raw_ref_op)]
 use ::std::process::ExitCode;
 #[allow(unused_imports)]
 use ::assign;

@@ -96,7 +96,7 @@ pub unsafe fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
 pub unsafe fn guided_str_init_lit() {
     let ostr: String = String::from("owned String");
     print_owned_String(String::from("ddedd"));
-    let mut uptr = b"unguided pointer\0" as *const u8 as *const ::core::ffi::c_char;
+    let mut uptr = b"unguided pointer\0".as_ptr() as *const ::core::ffi::c_char;
 }
 #[no_mangle]
 pub unsafe fn guided_str_init_empty_lit() {
@@ -120,7 +120,8 @@ pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
 }
 #[no_mangle]
 pub unsafe fn guided_immutable_u8_pointer() {
-    let mut rsu8: &[u8] = b"\0" as *const u8 as *const ::core::ffi::c_char;
+    let mut rsu8: &[u8] =
+        b"\0".as_ptr() as *const ::core::ffi::c_char as *const ::core::ffi::c_uchar;
     strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
 }
 #[no_mangle]

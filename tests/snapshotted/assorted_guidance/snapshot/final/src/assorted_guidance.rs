@@ -64,7 +64,7 @@ pub fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
 pub fn guided_str_init_lit() {
     let ostr: String = String::from("owned String");
     print_owned_String(String::from("ddedd"));
-    let mut uptr = b"unguided pointer\0" as *const u8 as *const ::core::ffi::c_char;
+    let mut uptr = b"unguided pointer\0".as_ptr() as *const ::core::ffi::c_char;
 }
 #[no_mangle]
 pub fn guided_str_init_empty_lit() {
