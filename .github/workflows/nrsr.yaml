@@ -145,7 +145,7 @@ jobs:
         run: cd /tenjin/c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES --no-run
 
       - name: Run c2rust unit tests
-        run: cd /tenjin/c2rust && ../cli/10j cargo test --locked --release $C2RUST_TESTED_CRATES
+        run: cd /tenjin && XJ_BUILD_RS_PROFILE=release ./cli/10j test-unit-rs
 
       - run: 10j build-rs
       - run: 10j pytest /tenjin/tests -n auto
