@@ -210,6 +210,82 @@ fn casted_literal_comparison_skips_non_comparison_inner_op() {
 }
 
 #[test]
+fn fgets_is_null_with_raw_addr_buffer() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_fgets_stdin_is_null);
+    check(
+        &rw,
+        r#"fn demo() {
+            let mut input: [::core::ffi::c_char; 256] = [0; 256];
+            let stdin: i32 = 0;
+            fgets(
+                &raw mut input as *mut ::core::ffi::c_char,
+                256 as ::core::ffi::c_int,
+                stdin,
+            ).is_null();
+        }"#,
+        expect![[r#"
+            use ::std::io::BufRead;
+            use ::xj_cstr::ByteSlice;
+            fn fgets_stdin_u8_count(buf: &mut [u8], limit: usize) -> Option<usize> {
+                let f = std::io::stdin();
+                let mut handle = f.lock();
+                let Ok(src) = handle.fill_buf() else {
+                    return None;
+                };
+                if src.is_empty() {
+                    return None;
+                }
+                let n = src
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(src.len())
+                    .min(limit - 1);
+                buf[..n].copy_from_slice(&src[..n]);
+                buf[n] = 0;
+                handle.consume(n);
+                Some(n)
+            }
+            fn demo() {
+                let mut input: [::core::ffi::c_char; 256] = [0; 256];
+                let stdin: i32 = 0;
+                fgets_stdin_u8_count(input.as_mut_u8_slice(), 256 as ::core::ffi::c_int as usize)
+                    .is_none();
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn sscanf_with_raw_addr_buffer() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
+    check(
+        &rw,
+        r#"fn demo(mut input: [::core::ffi::c_char; 256], mut choice: ::core::ffi::c_int) -> bool {
+            if sscanf(
+                &raw mut input as *mut ::core::ffi::c_char,
+                b"%d\0".as_ptr() as *const ::core::ffi::c_char,
+                &raw mut choice,
+            ) != 1 as ::core::ffi::c_int { return false; }
+            true
+        }"#,
+        expect![[r#"
+            use ::xj_cstr::ByteSlice;
+            fn demo(mut input: [::core::ffi::c_char; 256], mut choice: ::core::ffi::c_int) -> bool {
+                if xj_scanf::bscanf!(input.as_u8_slice(), "%d", & mut choice)
+                    != 1 as ::core::ffi::c_int
+                {
+                    return false;
+                }
+                true
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn memset_on_cast() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
