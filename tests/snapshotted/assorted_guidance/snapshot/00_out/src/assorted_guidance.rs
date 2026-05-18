@@ -116,7 +116,7 @@ pub unsafe fn guided_array_vec() {
 #[no_mangle]
 pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
     let rsu8: &[u8] = ::core::mem::transmute::<[u8; 1], [::core::ffi::c_uchar; 1]>(*b"\0");
-    strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
+    strlen(&raw const rsu8 as *const ::core::ffi::c_uchar as *const ::core::ffi::c_char);
 }
 #[no_mangle]
 pub unsafe fn guided_immutable_u8_pointer() {

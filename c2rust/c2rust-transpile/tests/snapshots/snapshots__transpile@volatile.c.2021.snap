@@ -1,6 +1,5 @@
 ---
 source: c2rust-transpile/tests/snapshots.rs
-assertion_line: 134
 expression: cat tests/snapshots/volatile.2021.rs
 ---
 #![allow(
@@ -24,10 +23,10 @@ pub static mut volatile_global_struct: S = S {
 #[no_mangle]
 pub unsafe extern "C" fn test_volatile() {
     let mut vi: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
-    let mut i: ::core::ffi::c_int = ::core::ptr::read_volatile::<::core::ffi::c_int>(&raw const vi);
+    let mut i: ::core::ffi::c_int = vi;
     ::core::ptr::write_volatile(&raw mut vi, i);
     let mut pvi: *mut ::core::ffi::c_int = &raw mut vi;
-    i = ::core::ptr::read_volatile::<::core::ffi::c_int>(pvi);
+    i = *pvi;
     ::core::ptr::write_volatile(pvi, i);
     ::core::ptr::write_volatile(
         &raw mut volatile_global_struct.p,

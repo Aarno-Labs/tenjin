@@ -55,8 +55,8 @@ pub const PARENS: ::core::ffi::c_int = NESTED_INT * (LITERAL_CHAR + true_0);
 pub const PTR_ARITHMETIC: *const ::core::ffi::c_char = unsafe {
     LITERAL_STR
         .as_ptr()
-        .offset(5 as ::core::ffi::c_int as isize)
-        .offset(-(3 as ::core::ffi::c_int as isize))
+        .offset(5 as isize)
+        .offset(-(3 as isize))
 };
 pub const WIDENING_CAST: ::core::ffi::c_ulonglong = LITERAL_INT as ::core::ffi::c_ulonglong;
 pub const CONVERSION_CAST: ::core::ffi::c_double = LITERAL_INT as ::core::ffi::c_double;
@@ -420,7 +420,7 @@ pub unsafe extern "C" fn use_local_value() -> ::core::ffi::c_int {
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn use_portable_type(mut len: uintptr_t) -> bool {
-    return len <= (UINTPTR_MAX as uintptr_t).wrapping_div(2 as ::core::ffi::c_int as uintptr_t);
+    return len <= (UINTPTR_MAX as uintptr_t).wrapping_div(2 as uintptr_t);
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ntlm_v2_blob_len(mut ntlm: *mut ntlmdata) -> ::core::ffi::c_uint {

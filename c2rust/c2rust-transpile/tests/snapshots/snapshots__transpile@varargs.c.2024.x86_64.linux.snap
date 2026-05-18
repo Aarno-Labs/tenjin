@@ -38,11 +38,7 @@ pub struct vastruct<'a> {
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn call_printf() {
-    printf(
-        b"%d, %f\n\0".as_ptr() as *const ::core::ffi::c_char,
-        10 as ::core::ffi::c_int,
-        1.5f64,
-    );
+    println!("{:}, {:.6}", 10 as core::ffi::c_int, 1.5f64 as f64);
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_vprintf(
@@ -71,29 +67,25 @@ pub unsafe extern "C" fn my_printf(mut fmt: *const ::core::ffi::c_char, mut c2ru
                 if !(*fmt == 0) {
                     match *fmt as ::core::ffi::c_int {
                         105 | 100 => {
-                            printf(
-                                b"%d\0".as_ptr() as *const ::core::ffi::c_char,
-                                ap.arg::<::core::ffi::c_int>(),
-                            );
+                            print!("{:}", ap.arg::<::core::ffi::c_int>() as core::ffi::c_int);
                         }
                         102 => {
-                            printf(
-                                b"%f\0".as_ptr() as *const ::core::ffi::c_char,
-                                ap.arg::<::core::ffi::c_double>(),
-                            );
+                            print!("{:.6}", ap.arg::<::core::ffi::c_double>() as f64);
                         }
                         115 => {
-                            printf(
-                                b"%s\0".as_ptr() as *const ::core::ffi::c_char,
-                                ap.arg::<*mut ::core::ffi::c_char>(),
-                            );
+                            print!("{:>}", {
+                                std::ffi::CStr::from_ptr(ap.arg::<*mut ::core::ffi::c_char>()
+                                    as *const core::ffi::c_char)
+                                .to_str()
+                                .unwrap()
+                            });
                         }
                         _ => {}
                     }
                 }
             }
             _ => {
-                putchar(*fmt as ::core::ffi::c_int);
+                print!("{:}", *fmt as ::core::ffi::c_int as u8 as char);
             }
         }
         fmt = fmt.offset(1);
@@ -152,10 +144,7 @@ pub unsafe extern "C" fn restart_valist(mut fmt: *const ::core::ffi::c_char, mut
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn print_int(mut ap: *mut ::core::ffi::VaList) {
-    printf(
-        b"%d\0".as_ptr() as *const ::core::ffi::c_char,
-        (*ap).arg::<::core::ffi::c_int>(),
-    );
+    print!("{:}", (*ap).arg::<::core::ffi::c_int>() as core::ffi::c_int);
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn borrowed_valist(mut count: size_t, mut c2rust_args: ...) {

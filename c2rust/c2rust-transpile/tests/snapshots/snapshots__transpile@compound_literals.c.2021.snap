@@ -37,10 +37,12 @@ pub unsafe extern "C" fn local_compound_literals() {
     let mut single_int_ptr: *mut ::core::ffi::c_int = &raw mut c2rust_fresh0;
     let mut c2rust_fresh1: [::core::ffi::c_int; 2] =
         [42 as ::core::ffi::c_int, 9001 as ::core::ffi::c_int];
-    let mut int_ptr_to_array: *mut ::core::ffi::c_int = c2rust_fresh1.as_mut_ptr();
+    let mut int_ptr_to_array: *mut ::core::ffi::c_int =
+        &raw mut c2rust_fresh1 as *mut ::core::ffi::c_int;
     let mut c2rust_fresh2: [::core::ffi::c_char; 6] =
         ::core::mem::transmute::<[u8; 6], [::core::ffi::c_char; 6]>(*b"hello\0");
-    let mut char_ptr_to_array: *mut ::core::ffi::c_char = c2rust_fresh2.as_mut_ptr();
+    let mut char_ptr_to_array: *mut ::core::ffi::c_char =
+        &raw mut c2rust_fresh2 as *mut ::core::ffi::c_char;
     let mut c2rust_fresh3: [::core::ffi::c_int; 2] =
         [42 as ::core::ffi::c_int, 9001 as ::core::ffi::c_int];
     let mut int_array_ptr: *mut [::core::ffi::c_int; 2] =

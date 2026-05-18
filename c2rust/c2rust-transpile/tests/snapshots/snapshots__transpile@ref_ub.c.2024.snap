@@ -11,6 +11,7 @@ expression: cat tests/snapshots/ref_ub.2024.rs
     unused_assignments,
     unused_mut
 )]
+use ::std::process::ExitCode;
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct Foo {
@@ -30,6 +31,6 @@ unsafe fn main_0() -> ::core::ffi::c_int {
     dec(fp);
     return 0;
 }
-pub fn main() {
-    unsafe { ::std::process::exit(main_0() as i32) }
+pub fn main() -> ExitCode {
+    unsafe { ExitCode::from(main_0() as u8) }
 }

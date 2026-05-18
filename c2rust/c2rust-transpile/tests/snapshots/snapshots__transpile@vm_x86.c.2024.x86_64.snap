@@ -1,6 +1,5 @@
 ---
 source: c2rust-transpile/tests/snapshots.rs
-assertion_line: 134
 expression: cat tests/snapshots/arch-specific/vm_x86.2024.x86_64.rs
 ---
 #![allow(
@@ -54,8 +53,7 @@ pub unsafe extern "C" fn VM_CallCompiled(
     *(image.offset(programStack as isize) as *mut byte as *mut ::core::ffi::c_int) =
         -1 as ::core::ffi::c_int;
     entryPoint = (*vm).codeBase.offset((*vm).entryOfs as isize);
-    opStack = (&raw mut stack as *mut byte as *mut ::core::ffi::c_int)
-        .offset(16 as ::core::ffi::c_int as isize);
+    opStack = (&raw mut stack as *mut byte as *mut ::core::ffi::c_int).offset(16 as isize);
     *opStack = 0 as ::core::ffi::c_int;
     opStackOfs = 0 as ::core::ffi::c_int;
     asm!(

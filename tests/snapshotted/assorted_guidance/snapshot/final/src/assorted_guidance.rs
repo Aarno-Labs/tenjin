@@ -1,6 +1,8 @@
 use ::bytemuck::{Pod, Zeroable};
 extern "C" {
 
+    fn strlen(s: *const ::core::ffi::c_char) -> size_t;
+
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
@@ -37,7 +39,7 @@ pub unsafe fn use_global_ints() {
 }
 #[no_mangle]
 pub fn print_owned_String(mut ostr: String) {
-    println!("{:>}", ostr);
+    println!("{ostr:>}");
 }
 #[no_mangle]
 pub unsafe fn print_unguided_ptr(mut ptr: *const ::core::ffi::c_char) {
@@ -77,11 +79,9 @@ pub fn guided_array_vec() {
     print_owned_vec_u8(ovu8);
 }
 #[no_mangle]
-pub fn guided_immutable_u8_array_slice_decay_to_ptr() {
+pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
     let rsu8: &[u8] = b"";
-    (::std::ffi::CStr::from_bytes_until_nul(rsu8)
-        .unwrap()
-        .count_bytes());
+    strlen(&raw const rsu8 as *const ::core::ffi::c_uchar as *const ::core::ffi::c_char);
 }
 #[no_mangle]
 pub fn guided_immutable_u8_pointer() {

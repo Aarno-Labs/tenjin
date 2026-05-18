@@ -1,6 +1,5 @@
 ---
 source: c2rust-transpile/tests/snapshots.rs
-assertion_line: 134
 expression: cat tests/snapshots/exprs.2021.rs
 ---
 #![allow(
