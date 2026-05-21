@@ -84,6 +84,9 @@ impl<'a> Translation<'a> {
         if has_bitfields {
             derives.push("BitfieldStruct");
             self.use_crate(ExternCrate::C2RustBitfields);
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_use(true, vec!["c2rust_bitfields".into()], "BitfieldStruct");
+            });
         }
 
         // XREF:pod_guided
