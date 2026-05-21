@@ -22,7 +22,7 @@ WANT = {
     "10j-edition2021-rust-toolchain": "nightly-2025-05-18",
     # Keep in sync with the version in `c2rust/c2rust-rust-tools/src/lib.rs`.
     "10j-edition2024-rust-toolchain": "nightly-2026-03-03",
-    "10j-reference-c2rust-tag": "613d3f5a7ef568aecb1681ef5960f956c1ed7344",
+    "10j-reference-c2rust-tag": "3558805d0c94ce42b3efbce59e8cef784dcc78f4",
     "10j-ast-grep": "0.40.5",
 }
 
