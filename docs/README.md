@@ -157,10 +157,19 @@ The `Aarno-Labs/tenjin` repository brings in the `tenjin` branch of
 To sync with the latest changes from upstream (that is, `immunant/c2rust`):
 
 1. Sync `Aarno-Labs/c2rust`'s `master` branch with `immunant/c2rust`
-2. Merge `master` into the `tenjin` branch of `Aarno-Labs/c2rust` (and push)
-3. Check out a new branch in (your fork of) `Aarno-Labs/tenjin`, then do `git subrepo pull c2rust`. (You do NOT need to do `git subrepo init` first.)
+2. Merge `master`, or some intermediate commit, into the `tenjin` branch of `Aarno-Labs/c2rust` and push after validating that `10j cargo +1.88.0 nextest run -p c2rust -p c2rust-transpile` still works.
+3. Check out a new branch in (your fork of) `Aarno-Labs/tenjin`, then do `git subrepo pull c2rust`. (You do NOT need to do `git subrepo init` first. If you've sync'ed before
+in your fork, you may need to `git subrepo clean c2rust`.)
 4. If there are merge conflicts, follow the listed instructions to address them
 5. Your new branch should eventually wind up with a commit like [this one](https://github.com/Aarno-Labs/tenjin/commit/8b6a2b94f73453f20f03e3aa58a6332a71a9638f ) for a conflict-free merge or [this one](https://github.com/Aarno-Labs/tenjin/commit/7be732b3260a9d2b08d36d53b2f262487af83c25) for a hand-resolved merge
-6. Make sure to run `10j check-rs` and `10j test-unit-rs` and `10j check-e2e-smoke-tests` and address any issues raised. Also run at least one non-trivial translation, to validate that our invocations of `c2rust` are still kosher. Do these as separate commits, to minimize changes in the merge commit.
+6. Make sure to run `10j check-rs` and `10j test-unit-rs` and `10j pytest tests --also-slow -n auto` and address any issues raised. Also run at least one non-trivial translation, to validate that our invocations of `c2rust` are still kosher. Do these as separate commits, to minimize changes in the merge commit.
 7. Update `10j-reference-c2rust-tag` in `cli/constants.py`.
 8. Push the branch!
+
+When git-subrepo prompts you to `git commit` at step 4, after resolving conflicts,
+you don't need to modify the commit message because it will be discarded in the
+end -- `git subrepo commit c2rust` will generate its own commit message.
+
+If you see
+`git-subrepo: Can't commit: 'subrepo/c2rust' doesn't contain upstream HEAD`
+it means you forgot to `git commit` the merge in `.git/tmp/subrepo/c2rust`.
