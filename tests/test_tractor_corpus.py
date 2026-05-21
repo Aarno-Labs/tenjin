@@ -1130,6 +1130,12 @@ def test_tractor_b2_synthetic_doubleneg_lib(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
+def test_tractor_b2_synthetic_envy_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_synthetic/envy_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_synthetic_fallcalc_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/fallcalc_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
@@ -1371,6 +1377,12 @@ def test_tractor_b2_organic_parse_number_lib(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
+def test_tractor_b2_organic_parse_uname_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/parse_uname_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_organic_pinflate_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/pinflate_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
@@ -1448,6 +1460,12 @@ def test_tractor_b2_synthetic_char_to_bool_app(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_container_of_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/container_of"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_confusion_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_synthetic/confusion_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
 @pytest.mark.slow
