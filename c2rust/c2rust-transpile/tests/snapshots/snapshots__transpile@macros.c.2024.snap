@@ -3,6 +3,7 @@ source: c2rust-transpile/tests/snapshots.rs
 expression: cat tests/snapshots/macros.2024.rs
 ---
 #![allow(
+    clippy::missing_safety_doc,
     dead_code,
     non_camel_case_types,
     non_snake_case,
@@ -39,7 +40,7 @@ pub const UINTPTR_MAX: ::core::ffi::c_ulong = 18446744073709551615 as ::core::ff
 pub const LITERAL_INT: ::core::ffi::c_int = 0xffff as ::core::ffi::c_int;
 pub const LITERAL_BOOL: ::core::ffi::c_int = true_0;
 pub const LITERAL_FLOAT: ::core::ffi::c_double = 3.14f64;
-pub const LITERAL_CHAR: ::core::ffi::c_int = 'x' as i32;
+pub const LITERAL_CHAR: ::core::ffi::c_int = 'x' as ::core::ffi::c_int;
 pub const LITERAL_STR: [::core::ffi::c_char; 6] =
     unsafe { ::core::mem::transmute::<[u8; 6], [::core::ffi::c_char; 6]>(*b"hello\0") };
 pub const LITERAL_STRUCT: S = S {
@@ -86,6 +87,7 @@ pub unsafe extern "C" fn local_muts() {
         3 as ::core::ffi::c_int,
     ];
     let mut nested_struct: S = NESTED_STRUCT;
+    let mut negative_int: ::core::ffi::c_int = -LITERAL_INT;
     let mut int_arithmetic: ::core::ffi::c_int = NESTED_INT + LITERAL_INT + 1 as ::core::ffi::c_int;
     let mut mixed_arithmetic: ::core::ffi::c_float = (LITERAL_INT as ::core::ffi::c_double
         + NESTED_FLOAT * LITERAL_CHAR as ::core::ffi::c_double
@@ -158,6 +160,7 @@ pub unsafe extern "C" fn local_consts() {
         3 as ::core::ffi::c_int,
     ];
     let nested_struct: S = NESTED_STRUCT;
+    let negative_int: ::core::ffi::c_int = -LITERAL_INT as ::core::ffi::c_int;
     let int_arithmetic: ::core::ffi::c_int = NESTED_INT + LITERAL_INT + 1 as ::core::ffi::c_int;
     let mixed_arithmetic: ::core::ffi::c_float = (LITERAL_INT as ::core::ffi::c_double
         + NESTED_FLOAT * LITERAL_CHAR as ::core::ffi::c_double
@@ -230,6 +233,8 @@ static mut global_static_const_nested_array: [::core::ffi::c_int; 3] = [
     3 as ::core::ffi::c_int,
 ];
 static mut global_static_const_nested_struct: S = NESTED_STRUCT;
+static mut global_static_const_negative_int: ::core::ffi::c_int =
+    -LITERAL_INT as ::core::ffi::c_int;
 static mut global_static_const_int_arithmetic: ::core::ffi::c_int =
     NESTED_INT + LITERAL_INT + 1 as ::core::ffi::c_int;
 static mut global_static_const_mixed_arithmetic: ::core::ffi::c_float =
@@ -300,6 +305,8 @@ pub static mut global_const_nested_array: [::core::ffi::c_int; 3] = [
 #[unsafe(no_mangle)]
 pub static mut global_const_nested_struct: S = NESTED_STRUCT;
 #[unsafe(no_mangle)]
+pub static mut global_const_negative_int: ::core::ffi::c_int = -LITERAL_INT as ::core::ffi::c_int;
+#[unsafe(no_mangle)]
 pub static mut global_const_int_arithmetic: ::core::ffi::c_int =
     NESTED_INT + LITERAL_INT + 1 as ::core::ffi::c_int;
 #[unsafe(no_mangle)]
@@ -359,12 +366,12 @@ pub unsafe extern "C" fn reference_define() -> ::core::ffi::c_int {
 }
 #[unsafe(no_mangle)]
 pub static mut fns: fn_ptrs = fn_ptrs {
-    v: ::core::ptr::null::<::core::ffi::c_void>() as *mut ::core::ffi::c_void,
+    v: ::core::ptr::null_mut::<::core::ffi::c_void>(),
     fn1: None,
     fn2: None,
 };
 #[unsafe(no_mangle)]
-pub static mut p: *const fn_ptrs = unsafe { &raw const fns };
+pub static mut p: *const fn_ptrs = &raw const fns;
 pub const ZSTD_WINDOWLOG_MAX_32: ::core::ffi::c_int = 30 as ::core::ffi::c_int;
 pub const ZSTD_WINDOWLOG_MAX_64: ::core::ffi::c_int = 31 as ::core::ffi::c_int;
 #[unsafe(no_mangle)]

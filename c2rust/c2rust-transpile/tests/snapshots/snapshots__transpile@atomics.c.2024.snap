@@ -3,6 +3,7 @@ source: c2rust-transpile/tests/snapshots.rs
 expression: cat tests/snapshots/atomics.2024.rs
 ---
 #![allow(
+    clippy::missing_safety_doc,
     dead_code,
     non_camel_case_types,
     non_snake_case,
@@ -121,19 +122,19 @@ pub unsafe extern "C" fn fetch_after_atomics_unsigned(
     )
     .wrapping_sub(c2rust_fresh15);
     let c2rust_fresh16 = &raw mut x;
-    let c2rust_fresh17 = 0xf as ::core::ffi::c_int as ::core::ffi::c_uint;
+    let c2rust_fresh17 = 0xf as ::core::ffi::c_uint;
     ::core::intrinsics::atomic_and::<_, _, { ::core::intrinsics::AtomicOrdering::SeqCst }>(
         c2rust_fresh16,
         c2rust_fresh17,
     ) & c2rust_fresh17;
     let c2rust_fresh18 = &raw mut x;
-    let c2rust_fresh19 = 0x10 as ::core::ffi::c_int as ::core::ffi::c_uint;
+    let c2rust_fresh19 = 0x10 as ::core::ffi::c_uint;
     ::core::intrinsics::atomic_or::<_, _, { ::core::intrinsics::AtomicOrdering::SeqCst }>(
         c2rust_fresh18,
         c2rust_fresh19,
     ) | c2rust_fresh19;
     let c2rust_fresh20 = &raw mut x;
-    let c2rust_fresh21 = 0xff as ::core::ffi::c_int as ::core::ffi::c_uint;
+    let c2rust_fresh21 = 0xff as ::core::ffi::c_uint;
     !(::core::intrinsics::atomic_nand::<_, _, { ::core::intrinsics::AtomicOrdering::SeqCst }>(
         c2rust_fresh20,
         c2rust_fresh21,
