@@ -215,24 +215,28 @@ def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: P
 
 @dataclass
 class ConsolidationRevert:
-    """A region in a TU's preprocessed .i file that pre_refold_consolidation
+    """A region in a TU's preprocessed `.i` file that pre_refold_consolidation
     reverted from a "modified" version (introduced by earlier prep passes) back
     to the original expanded header content, after stashing the modification in
     the actual header file.
 
-    The intent is to let refolding fold the region back into an `#include` form,
-    so the included (modified) header carries the change into the .c file. When
+    The intent is to let refolding fold the region back into an `#include`, so
+    the included (modified) header carries the change into the `.c`. When
     refolding fails to produce the include, the un-modified expanded content
-    survives in the .c file and the modification is silently dropped. These
+    survives in the `.c` and the modification is silently dropped. These
     records let `refold_build` detect that and re-insert the modified text in
-    the residual refolded .c file.
+    the residual refolded `.c`.
 
     `expanded_header_version` is the post-preprocessor `.i` form (macros fully
     expanded). `original_header_version` is the pre-preprocessor `.h` form
-    (with the original macros, comments stripped). The refolder, even when it
-    can't refold to `#include`, partially restores macros, so the residual
-    refolded `.c` is closer to the `.h` form than to the expanded `.i` form.
-    The original form is therefore the right pattern to search for in `.c`.
+    (with macros). The refolder partially restores macros even when it can't
+    refold to `#include`, so the `.h` form is the better pattern to find in
+    the residual `.c`; the `.i` form is a fallback.
+
+    `pre_rewrite_i_start` / `pre_rewrite_i_length` describe the region in the
+    `.i` as it stood at consolidation time (before the BatchingRewriter
+    applied any rewrites). The post-rewrite location is computed from the
+    sibling `ConsolidationRevertContext.all_i_rewrites` list.
     """
 
     modified_version: str
@@ -241,13 +245,32 @@ class ConsolidationRevert:
     header_rel_path: str
     quss: str
     is_defn: bool
+    pre_rewrite_i_start: int
+    pre_rewrite_i_length: int
+
+
+@dataclass
+class ConsolidationRevertContext:
+    """All consolidation reverts for one TU's `.i` file, plus the full list of
+    rewrites the consolidation BatchingRewriter applied to that file.
+
+    `all_i_rewrites` is `(pre_start, pre_length, post_length)` per rewrite
+    that affects this `.i` file (reverts plus any other consolidation-pass
+    edits like the `struct XjGlobals;` forward-decl removal). The triples are
+    enough to translate every revert's pre-rewrite location to its
+    post-rewrite byte range in the final `.i`, which is the anchor used to
+    look up the corresponding `.c` range via the edit-map.
+    """
+
+    reverts: list[ConsolidationRevert]
+    all_i_rewrites: list[tuple[int, int, int]]
 
 
 def refold_build(
     b: targets.BuildInfo,
     t: targets.BuildTarget,
     target_dir_path: Path,
-    consolidation_reverts_by_rel_tu: dict[str, list[ConsolidationRevert]] | None = None,
+    consolidation_data_by_rel_tu: dict[str, ConsolidationRevertContext] | None = None,
 ) -> None:
     """
     For each TU in compdb, run clang-refold to produce .c files from modified .i files
@@ -282,11 +305,11 @@ def refold_build(
             cwd=cmd.directory,
         )
 
-        if consolidation_reverts_by_rel_tu:
+        if consolidation_data_by_rel_tu:
             rel_tu_path = abs_src_path.relative_to(target_dir_path).as_posix()
-            reverts = consolidation_reverts_by_rel_tu.get(rel_tu_path, [])
-            if reverts:
-                restore_dropped_consolidation_reverts(c_path, edit_map_path, reverts)
+            ctx = consolidation_data_by_rel_tu.get(rel_tu_path)
+            if ctx is not None and ctx.reverts:
+                restore_dropped_consolidation_reverts(c_path, edit_map_path, ctx)
 
         if environ.get("XJ_REFOLD_CHECK"):
             crc_cp = hermetic.run(
@@ -313,80 +336,214 @@ def refold_build(
     b._use_preprocessed_files = False
 
 
+@dataclass
+class _EditMapEntry:
+    i_begin: int
+    i_end: int
+    c_begin: int
+    c_end: int
+
+
+def _load_edit_map(edit_map_path: Path) -> list[_EditMapEntry]:
+    """Parse the JSON sidecar emitted by `clang-refold --emit-edit-map`.
+
+    Each entry pairs a half-open byte range in the modified preprocessed `.i`
+    with the half-open byte range in the refolded `.c` that materialized it.
+    Entries are sorted by `.i` start offset; ranges may be coalesced.
+    """
+    if not edit_map_path.exists():
+        return []
+    try:
+        data = json.loads(edit_map_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    entries: list[_EditMapEntry] = []
+    for edit in data.get("edits", []):
+        try:
+            entries.append(
+                _EditMapEntry(
+                    i_begin=int(edit["modified_pp_byte_range"]["begin"]),
+                    i_end=int(edit["modified_pp_byte_range"]["end"]),
+                    c_begin=int(edit["refolded_output_byte_range"]["begin"]),
+                    c_end=int(edit["refolded_output_byte_range"]["end"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    entries.sort(key=lambda e: e.i_begin)
+    return entries
+
+
+def _post_rewrite_i_offset(
+    pre_rewrite_i_start: int,
+    pre_rewrite_i_length: int,
+    all_rewrites: list[tuple[int, int, int]],
+) -> tuple[int, int] | None:
+    """Translate a pre-rewrite [start, start+length) region in a `.i` file to
+    its post-rewrite [start, end) byte range.
+
+    `all_rewrites` lists every rewrite the BatchingRewriter applied to this
+    file as (pre_rewrite_start, pre_rewrite_length, replacement_length).
+    Rewrites must be non-overlapping; the rewrite *for this region* must be
+    one of them (length-match), and it determines the post-rewrite length.
+    Returns `None` if the region wasn't found among the rewrites — meaning
+    the consolidation rewrite never made it into the BatchingRewriter and the
+    region's post-rewrite identity is undefined.
+    """
+    cumulative_delta = 0
+    own_replacement_length: int | None = None
+    for rw_start, rw_pre_len, rw_post_len in sorted(all_rewrites, key=lambda r: r[0]):
+        if rw_start < pre_rewrite_i_start:
+            cumulative_delta += rw_post_len - rw_pre_len
+            continue
+        if rw_start == pre_rewrite_i_start and rw_pre_len == pre_rewrite_i_length:
+            own_replacement_length = rw_post_len
+            break
+        # `rw_start > pre_rewrite_i_start` means we passed our region without
+        # finding it; the consolidation revert wasn't applied.
+        break
+    if own_replacement_length is None:
+        return None
+    post_start = pre_rewrite_i_start + cumulative_delta
+    return (post_start, post_start + own_replacement_length)
+
+
+def _find_unique_in_range(
+    content: str, needle: str, search_begin: int, search_end: int
+) -> int | None:
+    """Find the unique occurrence of `needle` in `content[search_begin:search_end]`,
+    returning its absolute start offset, or None if there are zero or >1 hits.
+    """
+    if not needle:
+        return None
+    pos = max(0, search_begin)
+    end = min(len(content), search_end) if search_end >= 0 else len(content)
+    first: int | None = None
+    while pos < end:
+        idx = content.find(needle, pos, end)
+        if idx == -1:
+            break
+        if first is not None:
+            return None
+        first = idx
+        pos = idx + 1
+    return first
+
+
 def restore_dropped_consolidation_reverts(
     c_path: Path,
     edit_map_path: Path,
-    reverts: list[ConsolidationRevert],
+    ctx: ConsolidationRevertContext,
 ) -> None:
-    """For each consolidation revert in this TU, check whether refolding folded
-    the reverted region into an `#include`. If not, the .c file holds the
-    un-modified expanded content and the modification was dropped — locate the
-    expanded content and replace it with the modified text.
+    """For each consolidation revert in this TU, decide whether refolding
+    folded the reverted region into an `#include`, and if not, splice the
+    modified text into the residual refolded `.c`.
 
-    Reverted regions don't appear in clang-refold's `--emit-edit-map` (they
-    match unmodified `.i` so they aren't "edits"), so direct mapping via the
-    edit-map isn't possible. The modified/expanded blocks are typically full
-    declarations/definitions and unique enough for safe textual matching.
-    `edit_map_path` is unused here but kept in the signature for future
-    extension when textual matching is too coarse.
+    The decision uses the edit-map sidecar from `clang-refold --emit-edit-map`:
+
+      1. Translate the revert's pre-rewrite `.i` region to its post-rewrite
+         byte range using `ctx.all_i_rewrites`.
+      2. Find the edit-map entry whose modified-pp byte range contains the
+         post-rewrite `.i` region. The entry's refolded-output byte range is
+         the corresponding scope in the `.c`. (Edit-map coalescing typically
+         swallows the reverted, now-unedited bytes into a surrounding edit's
+         range. If no entry covers the region the refolder produced an
+         identity-ish mapping outside any edit and the whole `.c` is the
+         scope.)
+      3. Within that `.c` scope, look for the original `.h` form first (the
+         refolder restores macros in expansion-fallback regions), falling
+         back to the expanded `.i` form. A unique match means refolding fell
+         back to expansion — splice in the modified version. No match means
+         refolding produced an `#include` and the modified header carries the
+         change.
+
+    Restricting the search to the edit-map's `.c` scope is the principled
+    part; a textual match within that scope is still necessary because
+    edit-map coalescing collapses sub-edit structure.
     """
-    del edit_map_path
     if not c_path.exists():
         return
 
-    content = c_path.read_text(encoding="utf-8")
+    c_content = c_path.read_text(encoding="utf-8")
+    edit_map = _load_edit_map(edit_map_path)
 
     restored = 0
     skipped_ambiguous = 0
     skipped_already_folded = 0
-    for revert in reverts:
+    pending_rewrites: list[tuple[int, int, str, str]] = []
+    for revert in ctx.reverts:
         if revert.modified_version == revert.expanded_header_version:
             continue
-        # Refolding (even when it can't produce `#include`) restores macros,
-        # so prefer matching the original `.h` form first and fall back to the
-        # post-preprocessor `.i` form. Either of these found in the residual
-        # `.c` means refolding did not pull the modification through an
-        # include — splice the modified text in place.
-        candidates = [revert.original_header_version, revert.expanded_header_version]
-        chosen: str | None = None
-        chosen_count = 0
-        for candidate in candidates:
-            if not candidate:
-                continue
-            occ = content.count(candidate)
-            if occ == 1:
-                chosen = candidate
-                chosen_count = 1
-                break
-            if occ > 1 and chosen is None:
-                chosen = candidate
-                chosen_count = occ
-        if chosen is None:
+        post = _post_rewrite_i_offset(
+            revert.pre_rewrite_i_start,
+            revert.pre_rewrite_i_length,
+            ctx.all_i_rewrites,
+        )
+        if post is None:
             skipped_already_folded += 1
             continue
-        if chosen_count > 1:
-            print(
-                "refold restore: WARNING: match for",
-                revert.quss,
-                f"appears {chosen_count} times in",
-                c_path.name,
-                "- skipping to avoid ambiguous restoration",
+        i_post_start, i_post_end = post
+
+        chosen_entry: _EditMapEntry | None = None
+        for entry in edit_map:
+            if entry.i_begin <= i_post_start and i_post_end <= entry.i_end:
+                chosen_entry = entry
+                break
+        if chosen_entry is not None:
+            c_scope_begin = chosen_entry.c_begin
+            c_scope_end = chosen_entry.c_end
+        else:
+            c_scope_begin = 0
+            c_scope_end = len(c_content)
+
+        match_idx: int | None = None
+        chosen_candidate: str | None = None
+        for candidate in (revert.original_header_version, revert.expanded_header_version):
+            if not candidate:
+                continue
+            idx = _find_unique_in_range(c_content, candidate, c_scope_begin, c_scope_end)
+            if idx is not None:
+                match_idx = idx
+                chosen_candidate = candidate
+                break
+
+        if match_idx is None or chosen_candidate is None:
+            any_global_hit = any(
+                candidate and c_content.count(candidate) > 0
+                for candidate in (revert.original_header_version, revert.expanded_header_version)
             )
-            skipped_ambiguous += 1
+            if not any_global_hit:
+                skipped_already_folded += 1
+            else:
+                print(
+                    f"refold restore: WARNING: ambiguous or out-of-scope match for {revert.quss}"
+                    f" in {c_path.name} (edit-map scope=[{c_scope_begin},{c_scope_end}))"
+                )
+                skipped_ambiguous += 1
             continue
-        content = content.replace(chosen, revert.modified_version, 1)
+
+        pending_rewrites.append((
+            match_idx,
+            match_idx + len(chosen_candidate),
+            revert.modified_version,
+            revert.quss,
+        ))
+
+    pending_rewrites.sort(reverse=True)
+    for c_start, c_end, replacement, quss in pending_rewrites:
+        c_content = c_content[:c_start] + replacement + c_content[c_end:]
         restored += 1
-        print(f"refold restore: restored {revert.quss} in {c_path.name}")
+        print(f"refold restore: restored {quss} in {c_path.name}")
 
     if restored or skipped_ambiguous:
         print(
             f"refold restore for {c_path.name}: restored={restored} "
             f"skipped_ambiguous={skipped_ambiguous} "
             f"already_folded_or_absent={skipped_already_folded} "
-            f"(total reverts={len(reverts)})"
+            f"(total reverts={len(ctx.reverts)})"
         )
     if restored:
-        c_path.write_text(content, encoding="utf-8")
+        c_path.write_text(c_content, encoding="utf-8")
 
 
 @dataclass

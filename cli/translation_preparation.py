@@ -706,9 +706,9 @@ class PrepPassResultStore:
         dict[QUSS, list[tuple[FilePathStr, int, int, FileContentsStr, QUSS_is_defn]]],
     ]
     build_info: BuildInfo
-    consolidation_reverts_by_rel_tu: dict[
-        RelativeFilePathStr, list[c_refact.ConsolidationRevert]
-    ] = dataclasses.field(default_factory=dict)
+    consolidation_data_by_rel_tu: dict[RelativeFilePathStr, c_refact.ConsolidationRevertContext] = (
+        dataclasses.field(default_factory=dict)
+    )
 
 
 def run_preparation_passes(
@@ -1591,6 +1591,19 @@ def run_preparation_passes(
 
                             tus_modifying_decls.setdefault(qd, set()).add(tu_path)
 
+        # Reverts populated inside the BatchingRewriter block. Collected here
+        # because each TU's `all_i_rewrites` (needed for offset translation in
+        # the refold-time restoration) is only known after the rewriter has
+        # finished collecting rewrites.
+        consolidation_reverts_collected: dict[
+            RelativeFilePathStr, list[c_refact.ConsolidationRevert]
+        ] = {}
+        # Map TU absolute paths to their relative paths so we can key by the
+        # relative path when snapshotting rewrites after the block exits.
+        rel_tu_path_by_abs: dict[str, RelativeFilePathStr] = {
+            tu_path: Path(tu_path).relative_to(current_codebase).as_posix() for tu_path in tus
+        }
+
         with batching_rewriter.BatchingRewriter() as rewriter:
             # Remove the forward declaration of 'struct XjGlobals' from the
             # start of each TU when it doesn't seem to be needed.
@@ -1673,7 +1686,7 @@ def run_preparation_passes(
                             tu_file_path.as_posix(), start_offset, length, expanded_header_version
                         )
                         rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
-                        store.consolidation_reverts_by_rel_tu.setdefault(rel_tu_path, []).append(
+                        consolidation_reverts_collected.setdefault(rel_tu_path, []).append(
                             c_refact.ConsolidationRevert(
                                 modified_version=modified_version,
                                 expanded_header_version=expanded_header_version,
@@ -1681,6 +1694,8 @@ def run_preparation_passes(
                                 header_rel_path=q_to_header_rel_path.get(q, ""),
                                 quss=q,
                                 is_defn=qd[1],
+                                pre_rewrite_i_start=start_offset,
+                                pre_rewrite_i_length=length,
                             )
                         )
 
@@ -1765,6 +1780,31 @@ def run_preparation_passes(
                             tu_file_contents[start_include_block:end_include_block].decode("utf-8"),
                         )
                         break
+
+            # Snapshot rewrites per TU `.i` while the rewriter still holds the
+            # collected (not-yet-applied) list. `get_rewrites` doesn't clear
+            # the dict, but reading here makes the dependency explicit.
+            rewrites_snapshot = rewriter.get_rewrites(reverse=False)
+
+        # `with` block has applied rewrites. Build per-TU contexts that pair
+        # each TU's consolidation reverts with the full list of rewrites the
+        # BatchingRewriter applied to its `.i` (needed at refold time to
+        # translate pre-rewrite revert offsets into post-rewrite ones).
+        abs_by_rel: dict[RelativeFilePathStr, str] = {
+            rel: abs_ for abs_, rel in rel_tu_path_by_abs.items()
+        }
+        for rel_tu_path, reverts in consolidation_reverts_collected.items():
+            abs_tu_path = abs_by_rel.get(rel_tu_path)
+            if abs_tu_path is None:
+                continue
+            applied_for_tu = rewrites_snapshot.get(abs_tu_path, [])
+            all_i_rewrites = [
+                (start, length, len(replacement)) for (start, length, replacement) in applied_for_tu
+            ]
+            store.consolidation_data_by_rel_tu[rel_tu_path] = c_refact.ConsolidationRevertContext(
+                reverts=reverts,
+                all_i_rewrites=all_i_rewrites,
+            )
 
     def prep_expand_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
@@ -2057,7 +2097,7 @@ def run_preparation_passes(
             store.build_info,
             all_build_targets[0],
             current_codebase,
-            consolidation_reverts_by_rel_tu=store.consolidation_reverts_by_rel_tu,
+            consolidation_data_by_rel_tu=store.consolidation_data_by_rel_tu,
         )
         # build_info now marked to use refolded files, for future steps
 
