@@ -514,7 +514,10 @@ if __name__ == "__main__":
             # When pytest executes from outside of the repo, e.g. because `10j` is on the PATH,
             # it cannot find the repo root from the executing script or the cwd.
             env_ext = {"XJ_REPO_ROOT_DIR": str(repo_root.find_repo_root_dir_Path())}
-            sys.exit(hermetic.run_shell_cmd(sys.argv[1:], env_ext=env_ext).returncode)
+            try:
+                sys.exit(hermetic.run_shell_cmd(sys.argv[1:], env_ext=env_ext).returncode)
+            except KeyboardInterrupt:
+                sys.exit(130)  # Suppress traceback and use conventional exit code for Ctrl-C.
         if sys.argv[1] == "chkc":
             sys.exit(hermetic.run_chkc(sys.argv[2:]).returncode)
         if sys.argv[1] == "exec":
