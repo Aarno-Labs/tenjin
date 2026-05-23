@@ -4,8 +4,8 @@ use std::ops::Deref;
 
 use rustc_ast::ptr::P;
 use rustc_ast::{
-    Expr, ExprKind, FnDecl, FnRetTy, ForeignItem, ForeignItemKind, Item, ItemKind, NodeId, Path,
-    QSelf, UseTreeKind, DUMMY_NODE_ID,
+    AssocItem, Expr, ExprKind, FnDecl, FnRetTy, ForeignItem, ForeignItemKind, Item, ItemKind,
+    NodeId, Path, QSelf, UseTreeKind, DUMMY_NODE_ID,
 };
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::{DiagnosticBuilder, Level};
@@ -90,6 +90,8 @@ fn hir_id_to_span(id: HirId, hir_map: hir_map::Map) -> Option<NodeSpan> {
         // We do not have a SpanNodeKind for certain nodes
         Some(Node::TypeBinding(_)) => None,
         Some(Node::TraitRef(_)) => None,
+        Some(Node::ExprField(field)) => Some(NodeSpan::new(field.span, ExprField)),
+        Some(Node::PatField(field)) => Some(NodeSpan::new(field.span, PatField)),
         Some(Node::Pat(pat)) => Some(NodeSpan::new(pat.span, Pat)),
         Some(Node::Arm(arm)) => Some(NodeSpan::new(arm.span, Arm)),
         Some(Node::Block(block)) => Some(NodeSpan::new(block.span, Block)),
@@ -143,7 +145,7 @@ impl<'def, 'hir> SpanToHirMapper<'def, 'hir> {
 
     fn current_owner_node_id(&self) -> Option<NodeId> {
         let owner = self.ctx.current_owner()?;
-        let def_id = owner.owner;
+        let def_id = owner.owner.def_id;
         self.def_id_to_node_id.get(def_id).copied()
     }
 
@@ -290,16 +292,14 @@ impl<'def, 'hir> hir::intravisit::Visitor<'hir> for SpanToHirMapper<'def, 'hir> 
                     });
                 }
             }
-            hir::ExprKind::MethodCall(segment, args, _span) => {
+            hir::ExprKind::MethodCall(segment, recv, args, _span) => {
                 // Visit the method name/generics (PathSegment)
-                self.visit_path_segment(expr.span, segment);
-                // Visit receiver and arguments
+                self.visit_path_segment(segment);
+                self.visit_child(child_slot::METHOD_RECEIVER, |this| {
+                    this.visit_expr(recv);
+                });
                 for (i, arg) in args.iter().enumerate() {
-                    let slot = if i == 0 {
-                        child_slot::METHOD_RECEIVER
-                    } else {
-                        child_slot::method_arg(i - 1)
-                    };
+                    let slot = child_slot::method_arg(i);
                     self.visit_child(slot, |this| {
                         this.visit_expr(arg);
                     });
@@ -501,7 +501,8 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
             Res::Local(id) => Some(*id),
 
             Res::PrimTy(_)
-            | Res::SelfTy { .. }
+            | Res::SelfTyParam { .. }
+            | Res::SelfTyAlias { .. }
             | Res::ToolMod
             | Res::NonMacroAttr(_)
             | Res::Err => None,
@@ -984,7 +985,7 @@ impl<'hir> HirMap<'hir> {
     }
 
     pub fn get_parent_item(&self, id: HirId) -> LocalDefId {
-        self.map.get_parent_item(id)
+        self.map.get_parent_item(id).def_id
     }
 
     pub fn body_owned_by(&self, id: LocalDefId) -> BodyId {
@@ -1072,6 +1073,16 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
     pub fn compatible_types(&self, item1: &Item, item2: &Item, match_vis: bool) -> bool {
         use rustc_ast::ItemKind::*;
         match (&item1.kind, &item2.kind) {
+            (Impl(box ref impl1), Impl(box ref impl2)) => {
+                if impl1.items.len() != impl2.items.len() {
+                    return false;
+                }
+
+                (impl1.items.iter())
+                    .zip(impl2.items.iter())
+                    .all(|(item1, item2)| self.compatible_assoc_items(item1, item2, match_vis))
+            }
+
             // * Assure that these two items are in fact of the same type, just to be safe.
             (TyAlias(box ref ta1), TyAlias(box ref ta2)) => {
                 match (
@@ -1223,6 +1234,40 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                 // Fall back on AST equivalence for other items
                 item1.unnamed_equiv(item2)
             }
+        }
+    }
+
+    pub fn compatible_assoc_items(
+        &self,
+        item1: &AssocItem,
+        item2: &AssocItem,
+        match_vis: bool,
+    ) -> bool {
+        use rustc_ast::AssocItemKind::*;
+
+        // Unlike for regular items, associated items must also match by name.
+        if item1.ident.as_str() != item2.ident.as_str() {
+            return false;
+        }
+
+        match (&item1.kind, &item2.kind) {
+            (Const(def1, ty1, expr1), Const(def2, ty2, expr2)) => match (
+                self.cx.opt_node_type(item1.id),
+                self.cx.opt_node_type(item2.id),
+            ) {
+                (Some(ty1), Some(ty2)) => {
+                    self.structural_eq_tys(ty1, ty2)
+                        && expr1.unnamed_equiv(expr2)
+                        && def1.unnamed_equiv(def2)
+                }
+                _ => {
+                    self.structural_eq_ast_tys(ty1, ty2, match_vis)
+                        && expr1.unnamed_equiv(expr2)
+                        && def1.unnamed_equiv(def2)
+                }
+            },
+
+            _ => false,
         }
     }
 

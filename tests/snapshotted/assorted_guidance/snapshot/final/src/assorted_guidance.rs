@@ -124,11 +124,11 @@ pub fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
 }
 #[no_mangle]
 pub fn guided_isalnum() -> ::core::ffi::c_int {
-    xj_isalnum('A' as i32)
+    xj_isalnum('A' as ::core::ffi::c_int)
 }
 #[no_mangle]
 pub fn guided_tolower() -> ::core::ffi::c_int {
-    xj_tolower('A' as i32) as ::core::ffi::c_int
+    xj_tolower('A' as ::core::ffi::c_int) as ::core::ffi::c_int
 }
 #[no_mangle]
 pub fn guided_strcspn(mut ostr: String, mut delimiters: String) -> ::core::ffi::c_int {

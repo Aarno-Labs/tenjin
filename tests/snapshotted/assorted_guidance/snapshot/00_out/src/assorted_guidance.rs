@@ -161,11 +161,11 @@ pub unsafe fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
 }
 #[no_mangle]
 pub unsafe fn guided_isalnum() -> ::core::ffi::c_int {
-    return xj_isalnum('A' as i32);
+    return xj_isalnum('A' as ::core::ffi::c_int);
 }
 #[no_mangle]
 pub unsafe fn guided_tolower() -> ::core::ffi::c_int {
-    return xj_tolower('A' as i32) as ::core::ffi::c_int;
+    return xj_tolower('A' as ::core::ffi::c_int) as ::core::ffi::c_int;
 }
 #[no_mangle]
 pub unsafe fn guided_strcspn(mut ostr: String, mut delimiters: String) -> ::core::ffi::c_int {

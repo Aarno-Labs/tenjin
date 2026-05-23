@@ -52,9 +52,9 @@ mod atomics;
 mod builtins;
 mod comments;
 mod enums;
+mod functions;
 mod literals;
 mod macros;
-mod main_function;
 mod named_references;
 mod operators;
 pub mod parent_expr;
@@ -1025,6 +1025,10 @@ pub fn translate(
             None
         };
 
+        // Identify typedefs that name unnamed types and collapse the two declarations
+        // into a single name and declaration, eliminating the typedef altogether.
+        t.ast_context.set_prenamed_decls();
+
         // Headers often pull in declarations that are unused;
         // we simplify the translator output by omitting those.
         t.ast_context
@@ -1054,61 +1058,16 @@ pub fn translate(
             prefix_names(&mut t, prefix);
         }
 
-        // Identify typedefs that name unnamed types and collapse the two declarations
-        // into a single name and declaration, eliminating the typedef altogether.
-        let mut prenamed_decls: IndexMap<CDeclId, CDeclId> = IndexMap::new();
-        for (&decl_id, decl) in t.ast_context.iter_decls() {
-            if let CDeclKind::Typedef { ref name, typ, .. } = decl.kind {
-                if let Some(subdecl_id) = t
-                    .ast_context
-                    .resolve_type(typ.ctype)
-                    .kind
-                    .as_underlying_decl()
-                {
-                    use CDeclKind::*;
-                    let is_unnamed = match t.ast_context[subdecl_id].kind {
-                        Struct { name: None, .. }
-                        | Union { name: None, .. }
-                        | Enum { name: None, .. } => true,
-
-                        // Detect case where typedef and struct share the same name.
-                        // In this case the purpose of the typedef was simply to eliminate
-                        // the need for the 'struct' tag when referring to the type name.
-                        Struct {
-                            name: Some(ref target_name),
-                            ..
-                        }
-                        | Union {
-                            name: Some(ref target_name),
-                            ..
-                        }
-                        | Enum {
-                            name: Some(ref target_name),
-                            ..
-                        } => name == target_name,
-
-                        _ => false,
-                    };
-
-                    if is_unnamed
-                        && !prenamed_decls
-                            .values()
-                            .any(|decl_id| *decl_id == subdecl_id)
-                    {
-                        prenamed_decls.insert(decl_id, subdecl_id);
-
-                        t.type_converter
-                            .borrow_mut()
-                            .declare_decl_name(decl_id, name);
-                        t.type_converter
-                            .borrow_mut()
-                            .alias_decl_name(subdecl_id, decl_id);
-                    }
-                }
+        for (&decl_id, &subdecl_id) in &t.ast_context.prenamed_decls {
+            if let CDeclKind::Typedef { ref name, .. } = t.ast_context[decl_id].kind {
+                t.type_converter
+                    .borrow_mut()
+                    .declare_decl_name(decl_id, name);
+                t.type_converter
+                    .borrow_mut()
+                    .alias_decl_name(subdecl_id, decl_id);
             }
         }
-
-        t.ast_context.prenamed_decls = prenamed_decls;
 
         // Helper function that returns true if there is either a matching typedef or its
         // corresponding struct/union/enum
@@ -1688,7 +1647,14 @@ fn arrange_header(t: &Translation, is_binary: bool) -> (Vec<syn::Attribute>, Vec
         for (key, mut values) in pragmas {
             values.sort_unstable();
             // generate #[key(values)]
-            let meta = mk().meta_list(vec![key], values);
+            let args: Vec<_> = values
+                .into_iter()
+                .map(|path_str| {
+                    let path_vec: Vec<_> = path_str.split("::").collect();
+                    mk().meta_path(path_vec)
+                })
+                .collect();
+            let meta = mk().meta_list(vec![key], args);
             let attr = mk().attribute(AttrStyle::Inner(Default::default()), meta);
             out_attrs.push(attr);
         }
@@ -2589,11 +2555,6 @@ mod refactor_format {
     }
 }
 
-struct ConvertedFunctionParam {
-    pub ty: Box<Type>,
-    pub mutbl: Mutability,
-}
-
 impl<'c> Translation<'c> {
     pub fn new(
         mut ast_context: TypedAstContext,
@@ -2657,8 +2618,10 @@ impl<'c> Translation<'c> {
 
     /// Called when translation makes use of a language feature that will require a feature-gate.
     pub fn use_feature(&self, feature: &'static str) {
-        if matches!(feature, "asm" | "label_break_value" | "raw_ref_op")
-            && self.tcfg.edition >= Edition2024
+        if matches!(
+            feature,
+            "asm" | "inline_const" | "label_break_value" | "raw_ref_op"
+        ) && self.tcfg.edition >= Edition2024
         {
             return;
         }
@@ -2671,6 +2634,7 @@ impl<'c> Translation<'c> {
         features.extend(self.type_converter.borrow().features_used());
 
         let mut allow = vec![
+            "clippy::missing_safety_doc",
             "non_upper_case_globals",
             "non_camel_case_types",
             "non_snake_case",
@@ -2775,7 +2739,6 @@ impl<'c> Translation<'c> {
 
             use CExprKind::*;
             match self.ast_context[expr_id].kind {
-                DeclRef(_, _, LRValue::LValue) => return true,
                 ImplicitCast(_, _, cast_kind, _, _) | ExplicitCast(_, _, cast_kind, _, _) => {
                     use CastKind::*;
                     match cast_kind {
@@ -3178,82 +3141,10 @@ impl<'c> Translation<'c> {
                 body,
                 ref attrs,
                 ..
-            } => {
-                let new_name = &self
-                    .renamer
-                    .borrow()
-                    .get(&decl_id)
-                    .expect("Functions should already be renamed");
-
-                if self.import_simd_function(new_name)? {
-                    return Ok(ConvertedDecl::NoItem);
-                }
-
-                let (ret, is_variadic): (Option<CQualTypeId>, bool) =
-                    match self.ast_context.resolve_type(typ).kind {
-                        CTypeKind::Function(ret, _, is_var, is_noreturn, _) => {
-                            (if is_noreturn { None } else { Some(ret) }, is_var)
-                        }
-                        ref k => {
-                            return Err(format_err!(
-                                "Type of function {:?} was not a function type, got {:?}",
-                                decl_id,
-                                k
-                            )
-                            .into());
-                        }
-                    };
-
-                let mut args: Vec<(CDeclId, String, CQualTypeId)> = vec![];
-                for param_id in parameters {
-                    if let CDeclKind::Variable { ref ident, typ, .. } =
-                        self.ast_context.index(*param_id).kind
-                    {
-                        args.push((*param_id, ident.clone(), typ))
-                    } else {
-                        return Err(TranslationError::generic(
-                            "Parameter is not variable declaration",
-                        ));
-                    }
-                }
-
-                let is_main = self.ast_context.c_main == Some(decl_id);
-
-                let converted_function = self.convert_function(
-                    ctx,
-                    span,
-                    is_global,
-                    is_inline,
-                    is_main,
-                    is_variadic,
-                    is_extern,
-                    new_name,
-                    name,
-                    &args,
-                    ret,
-                    body,
-                    attrs,
-                );
-
-                converted_function.or_else(|e| match self.tcfg.replace_unsupported_decls {
-                    ReplaceMode::Extern if body.is_none() => self.convert_function(
-                        ctx,
-                        span,
-                        is_global,
-                        false,
-                        is_main,
-                        is_variadic,
-                        is_extern,
-                        new_name,
-                        name,
-                        &args,
-                        ret,
-                        None,
-                        attrs,
-                    ),
-                    _ => Err(e),
-                })
-            }
+            } => self.convert_function(
+                ctx, decl_id, span, is_global, is_inline, is_extern, typ, name, parameters, body,
+                attrs,
+            ),
 
             Typedef { ref typ, .. } => {
                 let new_name = &self
@@ -3364,10 +3255,6 @@ impl<'c> Translation<'c> {
                 ref attrs,
                 ..
             } if has_static_duration || has_thread_duration => {
-                if has_thread_duration {
-                    self.use_feature("thread_local");
-                }
-
                 let new_name = &self
                     .renamer
                     .borrow()
@@ -3380,11 +3267,46 @@ impl<'c> Translation<'c> {
                 // XREF:static_var_nonmutbl
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
 
+                let mut static_def = if is_externally_visible {
+                    mk_linkage(false, new_name, ident, self.tcfg.edition)
+                        .pub_()
+                        .extern_("C")
+                } else if self.cur_file.get().is_some() {
+                    mk().pub_()
+                } else {
+                    mk()
+                };
+
+                // Force mutability due to the potential for raw pointers occurring in the type
+                // and because we may be assigning to these variables in the external initializer
+                match guided_mutbl.unwrap_or(Mutability::Mutable) {
+                    Mutability::Mutable => {
+                        static_def = static_def.mutbl();
+                    }
+                    Mutability::Immutable => {}
+                }
+
+                if has_thread_duration {
+                    self.use_feature("thread_local");
+                    static_def = static_def.single_attr("thread_local");
+                }
+
+                // Add static attributes
+                for attr in attrs {
+                    static_def = match attr {
+                        c_ast::Attribute::Used => static_def.single_attr("used"),
+                        c_ast::Attribute::Section(name) => {
+                            static_def.str_attr("link_section", name)
+                        }
+                        _ => continue,
+                    };
+                }
+
                 let ctx = ctx.static_();
 
                 // Collect problematic static initializers and offload them to sections for the linker
                 // to initialize for us
-                let (ty, init) = if self.static_initializer_is_uncompilable(initializer, typ) {
+                if self.static_initializer_is_uncompilable(initializer, typ) {
                     // Note: We don't pass `is_const` through here. Extracted initializers are run
                     // outside of the static initializer, in a non-const context.
                     let ctx = ctx.not_const();
@@ -3412,7 +3334,9 @@ impl<'c> Translation<'c> {
 
                     self.add_static_initializer_to_section(ctx, new_name, typ, &mut init)?;
 
-                    (ty, init)
+                    Ok(ConvertedDecl::Item(
+                        static_def.span(span).static_item(new_name, ty, init),
+                    ))
                 } else {
                     let ConvertedVariable { ty, mutbl: _, init } = self.convert_variable(
                         ctx.const_(),
@@ -3422,62 +3346,21 @@ impl<'c> Translation<'c> {
                         guided_mutbl,
                     )?;
                     let mut init = init?;
+                    let mut items = init.stmts_to_items().ok_or_else(|| {
+                        format_err!("Expected only item statements in static initializer")
+                    })?;
+
                     // TODO: Replace this by relying entirely on
                     // WithStmts.is_unsafe() of the translated variable
                     if self.static_initializer_is_unsafe(initializer, typ) {
                         init.set_unsafe()
                     }
-                    let init = init.to_unsafe_pure_expr().ok_or_else(|| {
-                        format_err!("Expected no side-effects in static initializer")
-                    })?;
+                    let init = init.wrap_unsafe().to_pure_expr().unwrap();
+                    let item = static_def.span(span).static_item(new_name, ty, init);
+                    items.push(item);
 
-                    (ty, init)
-                };
-
-                let fn_needs_abi_preservation =
-                    if let Some(api) = &self.parsed_guidance.borrow().public_api {
-                        api.contains(ident)
-                    } else {
-                        is_externally_visible
-                    };
-                let mut static_def = if fn_needs_abi_preservation {
-                    mk_linkage(false, new_name, ident, self.tcfg.edition)
-                        .pub_()
-                        .extern_("C")
-                } else if self.cur_file.get().is_some() {
-                    mk().pub_()
-                } else {
-                    mk()
-                };
-
-                // Force mutability due to the potential for raw pointers occurring in the type
-                // and because we may be assigning to these variables in the external initializer
-                match guided_mutbl.unwrap_or(Mutability::Mutable) {
-                    Mutability::Mutable => {
-                        static_def = static_def.span(span).mutbl();
-                    }
-                    Mutability::Immutable => {}
+                    Ok(ConvertedDecl::Items(items))
                 }
-
-                if has_thread_duration {
-                    static_def = static_def.single_attr("thread_local");
-                }
-
-                // Add static attributes
-                for attr in attrs {
-                    static_def = match attr {
-                        c_ast::Attribute::Used => static_def.single_attr("used"),
-                        c_ast::Attribute::Section(name) => static_def
-                            .unsafety(attr_unsafety(self.tcfg.edition))
-                            .str_attr("link_section", name)
-                            .unsafety(Unsafety::Normal),
-                        _ => continue,
-                    }
-                }
-
-                Ok(ConvertedDecl::Item(
-                    static_def.static_item(new_name, ty, init),
-                ))
             }
 
             Variable { .. } => Err(TranslationError::generic(
@@ -3507,252 +3390,6 @@ impl<'c> Translation<'c> {
                 Ok(ConvertedDecl::NoItem)
             }
         }
-    }
-
-    fn convert_function(
-        &self,
-        ctx: ExprContext,
-        span: Span,
-        is_global: bool,
-        is_inline: bool,
-        is_main: bool,
-        is_variadic: bool,
-        is_extern: bool,
-        new_name: &str,
-        name: &str,
-        arguments: &[(CDeclId, String, CQualTypeId)],
-        return_type: Option<CQualTypeId>,
-        body: Option<CStmtId>,
-        attrs: &IndexSet<c_ast::Attribute>,
-    ) -> TranslationResult<ConvertedDecl> {
-        self.function_context.borrow_mut().enter_new(name);
-
-        self.with_scope(|| {
-            let mut args: Vec<FnArg> = vec![];
-
-            // handle regular (non-variadic) arguments
-            for &(decl_id, ref var, typ) in arguments {
-                // XREF:fn_parameter_guided
-                let guided_type = self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, decl_id);
-                // XREF:guided_mutbl_fn_param
-                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
-                let ConvertedFunctionParam { ty, mutbl } =
-                    self.convert_function_param(ctx, typ, &guided_type, guided_mutbl)?;
-
-                let pat = if var.is_empty() {
-                    mk().wild_pat()
-                } else {
-                    // extern function declarations don't support/require mut patterns
-                    let mutbl = if body.is_none() {
-                        Mutability::Immutable
-                    } else {
-                        mutbl
-                    };
-
-                    let new_var = self
-                        .renamer
-                        .borrow_mut()
-                        .insert(decl_id, var.as_str())
-                        .unwrap_or_else(|| {
-                            panic!("Failed to insert argument '{var}' while converting '{name}'")
-                        });
-
-                    mk().set_mutbl(mutbl).ident_pat(new_var)
-                };
-
-                args.push(mk().arg(ty, pat));
-            }
-
-            let variadic = if is_variadic {
-                // function definitions
-                let mut builder = mk();
-                let arg_va_list_name = if let Some(body_id) = body {
-                    // FIXME: detect mutability requirements.
-                    builder = builder.set_mutbl(Mutability::Mutable);
-                    Some(self.register_va_decls(body_id))
-                } else {
-                    None
-                };
-
-                Some(builder.variadic_arg(arg_va_list_name))
-            } else {
-                None
-            };
-
-            let ret = self.convert_function_return_type(name, return_type)?;
-
-            let decl = mk().fn_decl(new_name, args, variadic, ret);
-
-            if let Some(body) = body {
-                // Translating an actual function
-
-                let ret = match return_type {
-                    Some(return_type) => {
-                        let ret_type_id: CTypeId =
-                            self.ast_context.resolve_type_id(return_type.ctype);
-                        if let CTypeKind::Void = self.ast_context.index(ret_type_id).kind {
-                            cfg::ImplicitReturnType::Void
-                        } else if is_main {
-                            cfg::ImplicitReturnType::Main
-                        } else {
-                            cfg::ImplicitReturnType::NoImplicitReturnType
-                        }
-                    }
-                    _ => cfg::ImplicitReturnType::Void,
-                };
-
-                let mut body_stmts = vec![];
-                for &(_, _, typ) in arguments {
-                    body_stmts.append(&mut self.compute_variable_array_sizes(ctx, typ.ctype)?);
-                }
-
-                let body_ids = match self.ast_context.index(body).kind {
-                    CStmtKind::Compound(ref stmts) => stmts,
-                    _ => panic!("function body expects to be a compound statement"),
-                };
-                let mut converted_body =
-                    self.convert_block_with_scope(ctx, name, body_ids, return_type, ret)?;
-                strip_tail_return(&mut converted_body);
-
-                // If `alloca` was used in the function body, include a variable to hold the
-                // allocations.
-                if let Some(alloca_allocations_name) = self
-                    .function_context
-                    .borrow_mut()
-                    .alloca_allocations_name
-                    .take()
-                {
-                    // let mut c2rust_alloca_allocations: Vec<Vec<u8>> = Vec::new();
-                    let inner_vec = mk().path_ty(vec![mk().path_segment_with_args(
-                        "Vec",
-                        mk().angle_bracketed_args(vec![mk().ident_ty("u8")]),
-                    )]);
-                    let outer_vec = mk().path_ty(vec![mk().path_segment_with_args(
-                        "Vec",
-                        mk().angle_bracketed_args(vec![inner_vec]),
-                    )]);
-                    let alloca_allocations_stmt = mk().local_stmt(Box::new(mk().local(
-                        mk().mutbl().ident_pat(alloca_allocations_name),
-                        Some(outer_vec),
-                        Some(mk().call_expr(mk().path_expr(vec!["Vec", "new"]), vec![])),
-                    )));
-
-                    body_stmts.push(alloca_allocations_stmt);
-                }
-
-                body_stmts.append(&mut converted_body);
-                let mut block = stmts_block(body_stmts);
-                if let Some(span) = self.get_span(SomeId::Stmt(body)) {
-                    block.set_span(span);
-                }
-
-                // c99 extern inline functions should be pub, but not gnu_inline attributed
-                // extern inlines, which become subject to their gnu89 visibility (private)
-                let is_extern_inline =
-                    is_inline && is_extern && !attrs.contains(&c_ast::Attribute::GnuInline);
-
-                let is_builtin_wrapper = name.starts_with("_xj_wrap");
-
-                // Only add linkage attributes if the function is `extern`
-                let mut mk_ = if is_builtin_wrapper {
-                    mk()
-                } else if is_main {
-                    // Cross-check this function as if it was called `main`
-                    // FIXME: pass in a vector of NestedMetaItem elements,
-                    // but strings have to do for now
-                    self.mk_cross_check(mk(), vec!["entry(djb2=\"main\")", "exit(djb2=\"main\")"])
-                } else if (is_global && !is_inline) || is_extern_inline {
-                    mk_linkage(false, new_name, name, self.tcfg.edition).pub_()
-                } else if self.cur_file.get().is_some() {
-                    mk().pub_()
-                } else {
-                    mk()
-                };
-
-                // If we've been given guidance about what constitutes the public API of the
-                // code we're translating, we can use it to refine what functions are marked `extern`.
-                // Some common types like `String` and `Vec` are not FFI-safe.
-                let fn_needs_abi_preservation =
-                    if let Some(api) = &self.parsed_guidance.borrow().public_api {
-                        api.contains(name)
-                    } else {
-                        // By default, all non-static functions might be externally visible.
-                        !is_builtin_wrapper
-                    };
-
-                if fn_needs_abi_preservation && !is_main {
-                    mk_ = mk_.extern_("C");
-                }
-
-                // In Edition2024, `unsafe_op_in_unsafe_fn` is deny-by-default so we emit an allow pragma
-                // to silence warnings. Was this overridden by the `--deny_unsafe_op_in_unsafe_fn` flag?
-                if self.tcfg.deny_unsafe_op_in_unsafe_fn {
-                    mk_ = mk_.deny_unsafe_op_in_unsafe_fn();
-                }
-
-                for attr in attrs {
-                    mk_ = match attr {
-                        c_ast::Attribute::AlwaysInline => mk_.call_attr("inline", vec!["always"]),
-                        c_ast::Attribute::Cold => mk_.single_attr("cold"),
-                        c_ast::Attribute::NoInline => mk_.call_attr("inline", vec!["never"]),
-                        _ => continue,
-                    };
-                }
-
-                // If this function is just a regular inline
-                if is_inline && !attrs.contains(&c_ast::Attribute::AlwaysInline) {
-                    mk_ = mk_.single_attr("inline");
-
-                    // * In C99, a function defined inline will never, and a function defined extern
-                    //   inline will always, emit an externally visible function.
-                    // * If a non-static function is declared inline, then it must be defined in the
-                    //   same translation unit. The inline definition that does not use extern is
-                    //   not externally visible and does not prevent other translation units from
-                    //   defining the same function. This makes the inline keyword an alternative to
-                    //   static for defining functions inside header files, which may be included in
-                    //   multiple translation units of the same program.
-                    // * always_inline implies inline -
-                    //   https://gcc.gnu.org/ml/gcc-help/2007-01/msg00051.html
-                    //   even if the `inline` keyword isn't present
-                    // * gnu_inline instead applies gnu89 rules. extern inline will not emit an
-                    //   externally visible function.
-                    if is_global && is_extern && !attrs.contains(&c_ast::Attribute::GnuInline) {
-                        self.use_feature("linkage");
-                        // ensures that public inlined rust function can be used in other modules
-                        mk_ = mk_.str_attr("linkage", "external");
-                    }
-                    // NOTE: it does not seem necessary to have an else branch here that
-                    // specifies internal linkage in all other cases due to name mangling by rustc.
-                }
-
-                Ok(ConvertedDecl::Item(
-                    mk_.span(span).unsafe_().fn_item(decl, block),
-                ))
-            } else {
-                // Translating an extern function declaration
-                let mut mk_ = mk_linkage(true, new_name, name, self.tcfg.edition).span(span);
-
-                // When putting extern fns into submodules, they need to be public to be accessible
-                if self.tcfg.reorganize_definitions {
-                    mk_ = mk_.pub_();
-                };
-
-                for attr in attrs {
-                    mk_ = match attr {
-                        c_ast::Attribute::Alias(aliasee) => mk_.str_attr("link_name", aliasee),
-                        _ => continue,
-                    };
-                }
-
-                let mk_ = mk_.unsafety(extern_block_unsafety(self.tcfg.edition));
-                let function_decl = mk_.fn_foreign_item(decl);
-
-                Ok(ConvertedDecl::ForeignItem(function_decl))
-            }
-        })
     }
 
     pub fn convert_cfg(
@@ -4095,7 +3732,8 @@ impl<'c> Translation<'c> {
                 // (since we translate all `fn`s as `unsafe`). Therefore, in `const` contexts,
                 // expose any underlying unsafety in the initializer with an `unsafe` block.
                 let init = if ctx.is_const {
-                    init.to_unsafe_pure_expr()
+                    init.wrap_unsafe()
+                        .to_pure_expr()
                         .expect("init should not have any statements")
                 } else {
                     init.into_value()
@@ -4115,7 +3753,7 @@ impl<'c> Translation<'c> {
 
                 let zeroed = self.implicit_default_expr(ctx, typ.ctype)?;
                 let zeroed = if ctx.is_const {
-                    zeroed.to_unsafe_pure_expr()
+                    zeroed.wrap_unsafe().to_pure_expr()
                 } else {
                     zeroed.to_pure_expr()
                 }
@@ -4363,27 +4001,6 @@ impl<'c> Translation<'c> {
         };
 
         Ok(ConvertedVariable { ty, mutbl, init })
-    }
-
-    fn convert_function_param(
-        &self,
-        ctx: ExprContext,
-        typ: CQualTypeId,
-        guided_type: &Option<GuidedType>,
-        guided_mutbl: Option<Mutability>,
-    ) -> TranslationResult<ConvertedFunctionParam> {
-        if self.ast_context.is_va_list(typ.ctype) {
-            let mutbl = if typ.qualifiers.is_const {
-                Mutability::Immutable
-            } else {
-                Mutability::Mutable
-            };
-            let ty = mk().abs_path_ty(vec!["core", "ffi", "VaList"]);
-            return Ok(ConvertedFunctionParam { mutbl, ty });
-        }
-
-        self.convert_variable(ctx, None, typ, guided_type, guided_mutbl)
-            .map(|ConvertedVariable { ty, mutbl, .. }| ConvertedFunctionParam { ty, mutbl })
     }
 
     fn convert_type(&self, type_id: CTypeId) -> TranslationResult<Box<Type>> {
@@ -4734,47 +4351,6 @@ impl<'c> Translation<'c> {
             .collect()
     }
 
-    /// Variant of `convert_exprs` for the arguments of a function call.
-    /// Accounts for differences in translation for arguments, and for varargs where only a prefix
-    /// of the expression types are known.
-    #[allow(clippy::vec_box/*, reason = "not worth a substantial refactor"*/)]
-    fn convert_call_args(
-        &self,
-        ctx: ExprContext,
-        exprs: &[CExprId],
-        arg_tys: Option<&[CQualTypeId]>,
-        is_variadic: bool,
-        arg_guidances: Option<Vec<Option<tenjin::GuidedType>>>,
-    ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
-        let arg_tys = if let Some(arg_tys) = arg_tys {
-            if !is_variadic {
-                assert!(arg_tys.len() == exprs.len());
-            }
-
-            arg_tys
-        } else {
-            &[]
-        };
-
-        let guidance_for = |n: usize| match &arg_guidances {
-            None => None,
-            Some(guidances) => guidances.get(n).unwrap_or(&None).clone(),
-        };
-
-        exprs
-            .iter()
-            .enumerate()
-            .map(|(n, arg)| {
-                let guided_type = guidance_for(n);
-                let res_ws_expr =
-                    self.convert_call_arg(ctx, *arg, arg_tys.get(n).copied(), &guided_type);
-                res_ws_expr.map(|ws_expr| {
-                    ws_expr.map(|expr| self.coerce_borrow_guided(expr, *arg, &guided_type))
-                })
-            })
-            .collect()
-    }
-
     /// Translate a C expression into a Rust one, possibly collecting side-effecting statements
     /// to run before the expression.
     ///
@@ -4939,54 +4515,74 @@ impl<'c> Translation<'c> {
                 }
 
                 let mut val = mk().path_expr(vec![rustname]);
-
-                // If the variable is actually an `EnumConstant`, we need to add a cast to the
-                // expected integral type.
-                if let &CDeclKind::EnumConstant { .. } = decl {
-                    val = self.convert_cast_from_enum(qual_ty.ctype, val)?;
-                }
-
-                // If we are referring to a function and need its address, we
-                // need to cast it to fn() to ensure that it has a real address.
                 let mut set_unsafe = false;
-                if ctx.needs_address() {
-                    if let CDeclKind::Function { parameters, .. } = decl {
-                        let ty = self.convert_type(qual_ty.ctype)?;
-                        let actual_ty = self
-                            .type_converter
-                            .borrow_mut()
-                            .knr_function_type_with_parameters(
-                                &self.ast_context,
-                                qual_ty.ctype,
-                                parameters,
-                                &self.parsed_guidance.borrow(),
-                            )?;
-                        if let Some(actual_ty) = actual_ty {
-                            if actual_ty != ty {
-                                // If we're casting a concrete function to
-                                // a K&R function pointer type, use transmute
-                                self.import_type(qual_ty.ctype);
 
-                                val = transmute_expr(actual_ty, ty, val);
-                                set_unsafe = true;
-                            }
-                        } else {
-                            let decl_kind = &self.ast_context[decl_id].kind;
-                            let kind_with_declared_args =
-                                self.ast_context.fn_decl_ty_with_declared_args(decl_kind);
+                match decl {
+                    CDeclKind::EnumConstant { .. } => {
+                        // If the variable is actually an `EnumConstant`, we need to add a cast to
+                        // the expected integral type.
+                        val = self.convert_cast_from_enum(qual_ty.ctype, val)?;
+                    }
 
-                            if let Some(ty) = self
-                                .ast_context
-                                .type_for_kind(&kind_with_declared_args)
-                                .map(CQualTypeId::new)
-                            {
-                                let ty = self.convert_type(ty.ctype)?;
-                                val = mk().cast_expr(val, ty);
+                    CDeclKind::Function { parameters, .. } => {
+                        // If we are referring to a function and need its address, we
+                        // need to cast it to fn() to ensure that it has a real address.
+                        if ctx.needs_address() {
+                            let ty = self.convert_type(qual_ty.ctype)?;
+                            let actual_ty = self
+                                .type_converter
+                                .borrow_mut()
+                                .knr_function_type_with_parameters(
+                                    &self.ast_context,
+                                    qual_ty.ctype,
+                                    parameters,
+                                    &self.parsed_guidance.borrow(),
+                                )?;
+                            if let Some(actual_ty) = actual_ty {
+                                if actual_ty != ty {
+                                    // If we're casting a concrete function to
+                                    // a K&R function pointer type, use transmute
+                                    self.import_type(qual_ty.ctype);
+
+                                    val = transmute_expr(actual_ty, ty, val);
+                                    set_unsafe = true;
+                                }
                             } else {
-                                val = mk().cast_expr(val, ty);
+                                let decl_kind = &self.ast_context[decl_id].kind;
+                                let kind_with_declared_args =
+                                    self.ast_context.fn_decl_ty_with_declared_args(decl_kind);
+
+                                if let Some(ty) = self
+                                    .ast_context
+                                    .type_for_kind(&kind_with_declared_args)
+                                    .map(CQualTypeId::new)
+                                {
+                                    let ty = self.convert_type(ty.ctype)?;
+                                    val = mk().cast_expr(val, ty);
+                                } else {
+                                    val = mk().cast_expr(val, ty);
+                                }
                             }
                         }
                     }
+
+                    CDeclKind::Variable {
+                        has_static_duration,
+                        has_thread_duration,
+                        ..
+                    } => {
+                        // Accessing a static variable is unsafe.
+                        // In the current nightly, this applies also to taking a raw pointer,
+                        // but this requirement was removed in later versions of the
+                        // `raw_ref_op` feature.
+                        if (*has_static_duration || *has_thread_duration)
+                            && (self.tcfg.edition < Edition2024 || !ctx.needs_address())
+                        {
+                            set_unsafe = true;
+                        }
+                    }
+
+                    _ => {}
                 }
 
                 if let CTypeKind::VariableArray(..) =
@@ -5107,6 +4703,11 @@ impl<'c> Translation<'c> {
                 // A reference must be decayed if a bitcast is required. Const casts in
                 // LLVM 8 are now NoOp casts, so we need to include it as well.
                 match kind {
+                    CastKind::IntegralToBoolean
+                    | CastKind::FloatingToBoolean
+                    | CastKind::PointerToBoolean => {
+                        return self.convert_condition(ctx, true, expr);
+                    }
                     CastKind::BitCast | CastKind::PointerToIntegral | CastKind::NoOp => {
                         ctx.decay_ref = DecayRef::Yes
                     }
@@ -5118,66 +4719,74 @@ impl<'c> Translation<'c> {
                     _ => {}
                 }
 
-                let mut source_ty = self.ast_context[expr]
-                    .kind
-                    .get_qual_type()
-                    .ok_or_else(|| format_err!("bad source type"))?;
+                let expr_kind = &self.ast_context[expr].kind;
+                let target_ty = override_ty.unwrap_or(ty);
 
-                let val = if is_explicit {
-                    // If we're casting a function, look for its declared ty to use as a more
-                    // precise source type. The AST node's type will not preserve typedef arg types
-                    // but the function's declaration will.
-                    if let Some(func_decl) = self.ast_context.fn_declref_decl(expr) {
-                        let kind_with_declared_args =
-                            self.ast_context.fn_decl_ty_with_declared_args(func_decl);
-                        let func_ty = self
-                            .ast_context
-                            .type_for_kind(&kind_with_declared_args)
-                            .unwrap_or_else(|| {
-                                panic!("no type for kind {kind_with_declared_args:?}")
-                            });
-                        let func_ptr_ty = self
-                            .ast_context
-                            .type_for_kind(&CTypeKind::Pointer(CQualTypeId::new(func_ty)))
-                            .unwrap_or_else(|| {
-                                panic!("no type for kind {kind_with_declared_args:?}")
-                            });
+                // In general, if we are casting the result of an expression, then the inner
+                // expression should be translated to whatever type it normally would.
+                // But for literals, if we don't absolutely have to cast, we would rather the
+                // literal is translated according to the type we're expecting, and then we can
+                // skip the cast entirely.
+                if !is_explicit {
+                    let mut literal_expr_kind = expr_kind;
+                    let mut is_negated = false;
 
-                        source_ty = CQualTypeId::new(func_ptr_ty);
+                    if let &CExprKind::Unary(_, CUnOp::Negate, subexpr_id, _) = literal_expr_kind {
+                        literal_expr_kind = &self.ast_context[subexpr_id].kind;
+                        is_negated = true;
                     }
 
-                    let stmts = self.compute_variable_array_sizes(ctx, ty.ctype)?;
-                    let mut val = self.convert_expr(ctx, expr, None)?;
-                    val.prepend_stmts(stmts);
-                    val
-                } else {
-                    // In general, if we are casting the result of an expression, then the inner
-                    // expression should be translated to whatever type it normally would.
-                    // But for literals, if we don't absolutely have to cast, we would rather the
-                    // literal is translated according to the type we're expecting, and then we can
-                    // skip the cast entirely.
-                    if let (Some(ty), CExprKind::Literal(_ty, lit)) =
-                        (override_ty, &self.ast_context[expr].kind)
-                    {
-                        if self.literal_matches_ty(lit, ty) {
+                    if let CExprKind::Literal(_, lit) = literal_expr_kind {
+                        if self.literal_matches_ty(lit, target_ty, is_negated) {
                             return self.convert_expr_guided(
                                 ctx,
                                 expr,
-                                override_ty,
+                                Some(target_ty),
                                 ctx_guided_type,
                             );
                         }
                     }
+                }
 
-                    self.convert_expr_guided(ctx, expr, None, ctx_guided_type)?
-                };
+                let mut val = self.convert_expr_guided(ctx, expr, None, ctx_guided_type)?;
+
+                if is_explicit {
+                    let stmts = self.compute_variable_array_sizes(ctx, ty.ctype)?;
+                    val.prepend_stmts(stmts);
+                }
+
                 // Shuffle Vector "function" builtins will add a cast to the output of the
                 // builtin call which is unnecessary for translation purposes
                 if self.casting_simd_builtin_call(expr, is_explicit, kind) {
                     return Ok(val);
                 }
 
-                let target_ty = override_ty.unwrap_or(ty);
+                let source_ty = if let Some(func_decl) = self
+                    .ast_context
+                    .fn_declref_decl(expr)
+                    .filter(|_| is_explicit)
+                {
+                    // If we're casting a function, look for its declared ty to use as a more
+                    // precise source type. The AST node's type will not preserve typedef arg types
+                    // but the function's declaration will.
+                    let kind_with_declared_args =
+                        self.ast_context.fn_decl_ty_with_declared_args(func_decl);
+                    let func_ty = self
+                        .ast_context
+                        .type_for_kind(&kind_with_declared_args)
+                        .unwrap_or_else(|| panic!("no type for kind {kind_with_declared_args:?}"));
+                    let func_ptr_ty = self
+                        .ast_context
+                        .type_for_kind(&CTypeKind::Pointer(CQualTypeId::new(func_ty)))
+                        .unwrap_or_else(|| panic!("no type for kind {kind_with_declared_args:?}"));
+
+                    CQualTypeId::new(func_ptr_ty)
+                } else {
+                    self.ast_context[expr]
+                        .kind
+                        .get_qual_type()
+                        .ok_or_else(|| format_err!("bad source type"))?
+                };
 
                 self.convert_cast(
                     ctx,
@@ -5298,111 +4907,7 @@ impl<'c> Translation<'c> {
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             Call(call_expr_ty, func_id, ref args) => {
-                let fn_ty = self
-                    .ast_context
-                    .get_pointee_qual_type(
-                        self.ast_context[func_id].kind.get_type().ok_or_else(|| {
-                            format_err!("Invalid callee expression {:?}", func_id)
-                        })?,
-                    )
-                    .map(|ty| &self.ast_context.resolve_type(ty.ctype).kind);
-                let is_variadic = match fn_ty {
-                    Some(CTypeKind::Function(_, _, is_variadic, _, _)) => *is_variadic,
-                    _ => false,
-                };
-
-                let mut arg_tys = if let Some(CDeclKind::Function { parameters, .. }) =
-                    self.ast_context.fn_declref_decl(func_id)
-                {
-                    self.ast_context.tys_of_params(parameters)
-                } else {
-                    None
-                };
-
-                let func = match self.ast_context[func_id].kind {
-                    // Direct function call
-                    CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _)
-                    // Only a direct function call with pointer decay if the
-                    // callee is a declref
-                    if matches!(self.ast_context[fexp].kind, CExprKind::DeclRef(..)) =>
-                        {
-                            self.convert_expr(ctx.used(), fexp, None)?
-                        }
-
-                    // Builtin function call
-                    CExprKind::ImplicitCast(_, fexp, CastKind::BuiltinFnToFnPtr, _, _) => {
-                        return self.convert_builtin(ctx, fexp, args);
-                    }
-
-                    // Function pointer call
-                    _ => {
-                        let mut callee = self.convert_expr(ctx.used(), func_id, None)?;
-                        let make_fn_ty = |ret_ty: Box<Type>| {
-                            let ret_ty = match *ret_ty {
-                                Type::Tuple(TypeTuple { elems: ref v, .. }) if v.is_empty() => ReturnType::Default,
-                                _ => ReturnType::Type(Default::default(), ret_ty),
-                            };
-                            let bare_ty = (
-                                vec![mk().bare_arg(mk().infer_ty(), None::<Box<Ident>>); args.len()],
-                                None::<BareVariadic>,
-                                ret_ty
-                            );
-                            mk().barefn_ty(bare_ty)
-                        };
-                        match fn_ty {
-                            Some(CTypeKind::Function(ret_ty, _, _, _, false)) => {
-                                // K&R function pointer without arguments
-                                let ret_ty = self.convert_type(ret_ty.ctype)?;
-                                let target_ty = make_fn_ty(ret_ty);
-                                callee.set_unsafe();
-                                callee.map(|fn_ptr| {
-                                    let fn_ptr = unwrap_function_pointer(fn_ptr);
-                                    transmute_expr(mk().infer_ty(), target_ty, fn_ptr)
-                                })
-                            }
-                            None => {
-                                // We have to infer the return type from our expression type
-                                let ret_ty = self.convert_type(call_expr_ty.ctype)?;
-                                let target_ty = make_fn_ty(ret_ty);
-                                callee.set_unsafe();
-                                callee.map(|fn_ptr| {
-                                    transmute_expr(mk().infer_ty(), target_ty, fn_ptr)
-                                })
-                            }
-                            Some(CTypeKind::Function(_, ty_arg_tys, ..)) => {
-                                arg_tys = Some(ty_arg_tys.clone());
-                                // Normal function pointer
-                                callee.map(unwrap_function_pointer)
-                            }
-                            Some(_) => panic!("function pointer did not point to CTYpeKind::Function: {fn_ty:?}"),
-                        }
-                    }
-                };
-
-                let arg_guidances: Option<Vec<Option<tenjin::GuidedType>>> =
-                    self.get_callee_function_arg_guidances(func_id);
-
-                let call = func.and_then(|func| {
-                    // We want to decay refs only when function is variadic
-                    ctx.decay_ref = DecayRef::from(is_variadic);
-
-                    self.convert_call(
-                        call_expr_ty,
-                        func,
-                        ctx,
-                        args,
-                        arg_tys.as_deref(),
-                        override_ty,
-                        is_variadic,
-                        arg_guidances,
-                    )
-                })?;
-
-                self.convert_side_effects_expr(
-                    ctx,
-                    call,
-                    "Function call expression is not supposed to be used",
-                )
+                self.convert_function_call(ctx, func_id, args, call_expr_ty, override_ty)
             }
 
             Member(qual_ty, expr, decl, kind, lrvalue) => {
@@ -5411,43 +4916,7 @@ impl<'c> Translation<'c> {
 
             Paren(_, val) => self.convert_expr(ctx, val, override_ty),
 
-            CompoundLiteral(qty, val) => {
-                if !ctx.needs_address() || ctx.is_const {
-                    // consts have their intermediates' lifetimes extended.
-                    return self.convert_expr(ctx, val, override_ty);
-                }
-
-                // C compound literals are lvalues, but equivalent Rust expressions generally are not.
-                // So if an address is needed, store it in an intermediate variable first.
-                let fresh_name = self.renamer.borrow_mut().fresh();
-                let fresh_ty = self.convert_type(override_ty.unwrap_or(qty).ctype)?;
-
-                // Translate the expression to be assigned to the fresh variable.
-                // It will be assigned by value, so we don't need its address anymore.
-                let val = self.convert_expr(ctx.set_needs_address(false), val, override_ty)?;
-
-                val.and_then(|val| {
-                    let fresh_stmt = {
-                        let mutbl = if qty.qualifiers.is_const {
-                            Mutability::Immutable
-                        } else {
-                            Mutability::Mutable
-                        };
-
-                        let local = mk().local(
-                            mk().set_mutbl(mutbl).ident_pat(&fresh_name),
-                            Some(fresh_ty),
-                            Some(val),
-                        );
-                        mk().local_stmt(Box::new(local))
-                    };
-
-                    Ok(WithStmts::new(
-                        vec![fresh_stmt],
-                        mk().ident_expr(fresh_name),
-                    ))
-                })
-            }
+            CompoundLiteral(qty, val) => self.convert_compound_literal(ctx, qty, val, override_ty),
 
             InitList(ty, ref ids, opt_union_field_id, _) => {
                 let arr = self.convert_init_list(ctx, ty, ids, opt_union_field_id);
@@ -5572,29 +5041,6 @@ impl<'c> Translation<'c> {
             }
         };
         Ok(expr)
-    }
-
-    /// Wrapper around `convert_expr` for the arguments of a function call.
-    pub fn convert_call_arg(
-        &self,
-        ctx: ExprContext,
-        expr_id: CExprId,
-        override_ty: Option<CQualTypeId>,
-        guided_ty: &Option<tenjin::GuidedType>,
-    ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let mut val;
-
-        if (self.ast_context.index(expr_id).kind.get_qual_type())
-            .is_some_and(|qtype| self.ast_context.is_va_list(qtype.ctype))
-        {
-            // No `override_ty` to avoid unwanted casting.
-            val = self.convert_expr(ctx, expr_id, None)?;
-            val = val.map(|val| mk_va_list_copy(self.tcfg.edition, val));
-        } else {
-            val = self.convert_expr_guided(ctx, expr_id, override_ty, guided_ty)?;
-        }
-
-        Ok(val)
     }
 
     /// If `ctx` is unused, convert `expr` to a semi statement, otherwise return
@@ -5812,16 +5258,8 @@ impl<'c> Translation<'c> {
                     self.f128_cast_to(val, target_ty_kind)
                 } else if let &CTypeKind::Enum(enum_decl_id) = target_ty_kind {
                     // Casts targeting `enum` types...
-                    let expr =
-                        expr.ok_or_else(|| format_err!("Casts to enums require a C ExprId"))?;
                     val.result_map(|val| {
-                        self.convert_cast_to_enum(
-                            ctx,
-                            target_cty.ctype,
-                            enum_decl_id,
-                            Some(expr),
-                            val,
-                        )
+                        self.convert_cast_to_enum(ctx, target_cty.ctype, enum_decl_id, expr, val)
                     })
                 } else if target_ty_kind.is_floating_type() && source_ty_kind.is_bool() {
                     Ok(val.map(|val| {
@@ -5877,7 +5315,7 @@ impl<'c> Translation<'c> {
                         ));
                     }
                 }
-                Ok(WithStmts::new_val(self.null_ptr(ctx, target_cty.ctype)?))
+                Ok(WithStmts::new_val(self.null_ptr(target_cty.ctype)?))
             }
 
             CastKind::ToUnion => self.convert_cast_to_union(val, opt_field_id),
@@ -5885,11 +5323,7 @@ impl<'c> Translation<'c> {
             CastKind::IntegralToBoolean
             | CastKind::FloatingToBoolean
             | CastKind::PointerToBoolean => {
-                if let Some(expr) = expr {
-                    self.convert_condition(ctx, true, expr)
-                } else {
-                    val.result_map(|e| self.match_bool(ctx, true, source_cty.ctype, e))
-                }
+                val.result_map(|e| self.match_bool(ctx, true, source_cty.ctype, e))
             }
 
             CastKind::FloatingRealToComplex
@@ -6020,7 +5454,7 @@ impl<'c> Translation<'c> {
                 )),
             }
         } else if let &CTypeKind::Pointer(_) = resolved_ty {
-            self.null_ptr(ctx, resolved_ty_id).map(WithStmts::new_val)
+            self.null_ptr(resolved_ty_id).map(WithStmts::new_val)
         } else if let &CTypeKind::ConstantArray(elt, sz) = resolved_ty {
             let sz = mk().lit_expr(mk().int_unsuffixed_lit(sz as u128));
             Ok(self
@@ -6072,7 +5506,7 @@ impl<'c> Translation<'c> {
         log::debug!("deferring imports to save them for {name} in {func_name}");
         self.defer_imports();
 
-        let name_decl_id = match self.ast_context.index(type_id).kind {
+        let name_decl_id = match self.ast_context.resolve_type_no_typedef(type_id).kind {
             CTypeKind::Typedef(decl_id) => decl_id,
             _ => decl_id,
         };

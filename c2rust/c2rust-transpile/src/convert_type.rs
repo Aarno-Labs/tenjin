@@ -362,7 +362,7 @@ impl TypeConverter {
         &mut self,
         ctxt: &TypedAstContext,
         ctype: CTypeId,
-        params: &Vec<CParamId>,
+        params: &[CParamId],
         pg: &crate::translator::ParsedGuidance,
     ) -> TranslationResult<Option<Box<Type>>> {
         match ctxt.index(ctype).kind {
