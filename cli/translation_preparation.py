@@ -1302,9 +1302,49 @@ def run_preparation_passes(
         # In cases C and D, the modifications will prevent refolding, but it's
         # still fine to strip the suffix.
 
+        # For each uniquified static inline function (grouped by base name), verify the
+        # textual definitions in every preprocessed source file are identical after
+        # stripping the uniquification suffix. If they differ, the definitions were
+        # modified in divergent ways across files and refolding them would silently
+        # merge inconsistent versions; omit such names from un-uniquification below.
+        def strip_suffix(unique_name: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
+            return re.sub(r"_xjtr_\d+$", "", unique_name)
+
+        decls_by_base_name: dict[tenj_types.CIdentifier, list[c_refact.NamedDeclInfo]] = (
+            defaultdict(list)
+        )
+        for g_s in all_pgs_static_inline_funcs:
+            decls_by_base_name[strip_suffix(g_s.spelling)].append(g_s)
+
+        file_bytes_cache: dict[tenj_types.FilePathStr, bytes] = {}
+
+        def canonical_decl_text(g_s: c_refact.NamedDeclInfo) -> bytes:
+            assert g_s.file_path is not None
+            if g_s.file_path not in file_bytes_cache:
+                file_bytes_cache[g_s.file_path] = Path(g_s.file_path).read_bytes()
+            decl = file_bytes_cache[g_s.file_path][
+                g_s.decl_start_byte_offset : g_s.decl_end_byte_offset
+            ]
+            return decl.replace(
+                g_s.spelling.encode("utf-8"), strip_suffix(g_s.spelling).encode("utf-8")
+            )
+
+        modified_base_names: set[tenj_types.CIdentifier] = set()
+        for base_name, decls in decls_by_base_name.items():
+            if len(decls) < 2:
+                continue
+            if len({canonical_decl_text(d) for d in decls}) > 1:
+                modified_base_names.add(base_name)
+                print(
+                    f"TENJIN: NOTE: Skipping un-uniquification of static inline function "
+                    f"'{base_name}' due to differing definitions across source files."
+                )
+
         # sif = "suffixed inline function"
         sif_names_per_file: dict[tenj_types.FilePathStr, set[tenj_types.CIdentifier]] = {}
         for g_s in all_pgs_static_inline_funcs:
+            if strip_suffix(g_s.spelling) in modified_base_names:
+                continue
             assert g_s.file_path is not None, (
                 f"Expected file_path for static inline function: {g_s}"
             )
