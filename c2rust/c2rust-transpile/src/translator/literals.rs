@@ -83,10 +83,16 @@ impl Translation<'_> {
                     }
                 };
 
-                if matches!(*expr, Expr::Lit(syn::ExprLit { lit: Lit::Char(_), .. }))
-                      && guided_type
-                            .as_ref()
-                            .is_some_and(|g| tenjin::type_is_char(&g.parsed)) {
+                if matches!(
+                    *expr,
+                    Expr::Lit(syn::ExprLit {
+                        lit: Lit::Char(_),
+                        ..
+                    })
+                ) && guided_type
+                    .as_ref()
+                    .is_some_and(|g| tenjin::type_is_char(&g.parsed))
+                {
                     Ok(WithStmts::new_val(expr))
                 } else {
                     let type_rs = self.convert_type(ty.ctype)?;

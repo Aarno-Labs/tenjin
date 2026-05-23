@@ -4543,7 +4543,7 @@ impl<'c> Translation<'c> {
                                     &self.ast_context,
                                     qual_ty.ctype,
                                     parameters,
-                                &self.parsed_guidance.borrow(),
+                                    &self.parsed_guidance.borrow(),
                                 )?;
                             if let Some(actual_ty) = actual_ty {
                                 if actual_ty != ty {
@@ -4745,7 +4745,12 @@ impl<'c> Translation<'c> {
 
                     if let CExprKind::Literal(_, lit) = literal_expr_kind {
                         if self.literal_matches_ty(lit, target_ty, is_negated) {
-                            return self.convert_expr_guided(ctx, expr, Some(target_ty), ctx_guided_type);
+                            return self.convert_expr_guided(
+                                ctx,
+                                expr,
+                                Some(target_ty),
+                                ctx_guided_type,
+                            );
                         }
                     }
                 }

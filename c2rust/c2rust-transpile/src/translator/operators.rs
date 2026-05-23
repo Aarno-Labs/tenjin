@@ -394,7 +394,8 @@ impl Translation<'_> {
 
         if let Some(field_id) = bitfield_id {
             let rhs_expr = mk().cast_expr(rhs_translation.to_expr(), ty);
-            return self.convert_bitfield_assignment_op_with_rhs(ctx, op, lhs_id, rhs_expr, *field_id);
+            return self
+                .convert_bitfield_assignment_op_with_rhs(ctx, op, lhs_id, rhs_expr, *field_id);
         }
 
         let is_volatile = initial_lhs_type_id.qualifiers.is_volatile;
@@ -618,7 +619,7 @@ impl Translation<'_> {
                     }
                     _ => mk().binary_expr(bin_op, lhs, rhs),
                 };
-                
+
                 bool_to_int(expr)
             }
 
@@ -631,10 +632,9 @@ impl Translation<'_> {
             | CBinOp::ShiftRight
             | CBinOp::ShiftLeft => mk().binary_expr(BinOp::from(op), lhs, rhs),
 
-            CBinOp::Less
-            | CBinOp::Greater
-            | CBinOp::GreaterEqual
-            | CBinOp::LessEqual => bool_to_int(mk().binary_expr(BinOp::from(op), lhs, rhs)),
+            CBinOp::Less | CBinOp::Greater | CBinOp::GreaterEqual | CBinOp::LessEqual => {
+                bool_to_int(mk().binary_expr(BinOp::from(op), lhs, rhs))
+            }
 
             op => unimplemented!("Translation of binary operator {:?}", op),
         }))
