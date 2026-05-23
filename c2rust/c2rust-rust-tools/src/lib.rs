@@ -198,7 +198,7 @@ impl<'a> Rustc<'a> {
         } = self;
         let crate_name =
             crate_name.unwrap_or_else(|| rs_path.file_stem().unwrap().to_str().unwrap());
-        run_rustc(rs_path, edition, crate_name, expect_error, &imported_crates);
+        run_rustc(rs_path, edition, crate_name, expect_error, imported_crates);
     }
 }
 
