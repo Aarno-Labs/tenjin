@@ -3267,14 +3267,7 @@ impl<'c> Translation<'c> {
                 // XREF:static_var_nonmutbl
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
 
-                let fn_needs_abi_preservation =
-                    if let Some(api) = &self.parsed_guidance.borrow().public_api {
-                        api.contains(ident)
-                    } else {
-                        is_externally_visible
-                    };
-
-                let mut static_def = if fn_needs_abi_preservation {
+                let mut static_def = if is_externally_visible {
                     mk_linkage(false, new_name, ident, self.tcfg.edition)
                         .pub_()
                         .extern_("C")

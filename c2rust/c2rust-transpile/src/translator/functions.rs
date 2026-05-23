@@ -244,21 +244,38 @@ impl<'c> Translation<'c> {
                 let is_extern_inline =
                     is_inline && is_extern && !attrs.contains(&c_ast::Attribute::GnuInline);
 
+                let is_builtin_wrapper = name.starts_with("_xj_wrap");
+
                 // Only add linkage attributes if the function is `extern`
                 let mut mk_ = if is_main {
                     // Cross-check this function as if it was called `main`
                     // FIXME: pass in a vector of NestedMetaItem elements,
                     // but strings have to do for now
                     self.mk_cross_check(mk(), vec!["entry(djb2=\"main\")", "exit(djb2=\"main\")"])
+                } else if is_builtin_wrapper {
+                    mk()
                 } else if (is_global && !is_inline) || is_extern_inline {
-                    mk_linkage(false, new_name, name, self.tcfg.edition)
-                        .extern_("C")
-                        .pub_()
+                    mk_linkage(false, new_name, name, self.tcfg.edition).pub_()
                 } else if self.cur_file.get().is_some() {
-                    mk().extern_("C").pub_()
+                    mk().pub_()
                 } else {
-                    mk().extern_("C")
+                    mk()
                 };
+
+                // If we've been given guidance about what constitutes the public API of the
+                // code we're translating, we can use it to refine what functions are marked `extern`.
+                // Some common types like `String` and `Vec` are not FFI-safe.
+                let fn_needs_abi_preservation =
+                    if let Some(api) = &self.parsed_guidance.borrow().public_api {
+                        api.contains(name)
+                    } else {
+                        // By default, all non-static functions might be externally visible.
+                        !is_builtin_wrapper
+                    };
+
+                if fn_needs_abi_preservation && !is_main {
+                    mk_ = mk_.extern_("C");
+                }
 
                 // In Edition2024, `unsafe_op_in_unsafe_fn` is deny-by-default so we emit an allow pragma
                 // to silence warnings. Was this overridden by the `--deny_unsafe_op_in_unsafe_fn` flag?
@@ -564,11 +581,16 @@ impl<'c> Translation<'c> {
                 .get(&main_id)
                 .expect("Could not find main function in renamer");
 
-            let decl = mk().fn_decl("main", vec![], None, ReturnType::Default);
+            let exitcode = mk().path_ty(vec!["ExitCode"]);
+            let decl = mk().fn_decl(
+                "main",
+                vec![],
+                None,
+                ReturnType::Type(Default::default(), exitcode),
+            );
 
             let main_fn = mk().path_expr(vec![main_fn_name]);
 
-            let exit_fn = mk().abs_path_expr(vec!["std", "process", "exit"]);
             let args_fn = mk().abs_path_expr(vec!["std", "env", "args"]);
             let vars_fn = mk().abs_path_expr(vec!["std", "env", "vars"]);
 
@@ -687,15 +709,27 @@ impl<'c> Translation<'c> {
                     )),
                 }?;
                 let args = mk().ident_expr("args_ptrs");
-                let argc = mk().binary_expr(
+                let argc_expr = mk().binary_expr(
                     BinOp::Sub(Default::default()),
                     mk().method_call_expr(args.clone(), "len", no_args.clone()),
                     mk().lit_expr(mk().int_lit(1, "")),
                 );
                 let argv = mk().method_call_expr(args, "as_mut_ptr", no_args.clone());
 
-                main_args.push(mk().cast_expr(argc, argc_ty));
-                main_args.push(mk().cast_expr(argv, argv_ty));
+                stmts.push(mk().local_stmt(Box::new(mk().local(
+                    mk().ident_pat("argc"),
+                    None,
+                    Some(mk().cast_expr(argc_expr, argc_ty)),
+                ))));
+
+                stmts.push(mk().local_stmt(Box::new(mk().local(
+                    mk().ident_pat("argv"),
+                    None,
+                    Some(mk().cast_expr(argv, argv_ty)),
+                ))));
+
+                main_args.push(mk().ident_expr("argc"));
+                main_args.push(mk().ident_expr("argv"));
             }
 
             if n >= 3 {
@@ -804,22 +838,26 @@ impl<'c> Translation<'c> {
                 .into());
             };
 
+            self.with_cur_file_item_store(|item_store| {
+                item_store.add_use(true, vec!["std".into(), "process".into()], "ExitCode");
+            });
+
             if let CTypeKind::Void = ret {
                 let call_main = mk().call_expr(main_fn, main_args);
                 stmts.push(mk().expr_stmt(mk().unsafe_block_expr(vec![mk().expr_stmt(call_main)])));
 
-                let exit_arg = mk().lit_expr(mk().int_lit(0, "i32"));
-                let call_exit = mk().call_expr(exit_fn, vec![exit_arg]);
+                let exit_succ = mk().path_expr(vec!["ExitCode", "SUCCESS"]);
 
-                stmts.push(mk().semi_stmt(call_exit));
+                stmts.push(mk().expr_stmt(exit_succ));
             } else {
-                let call_main = mk().cast_expr(
-                    mk().call_expr(main_fn, main_args),
-                    mk().path_ty(vec!["i32"]),
-                );
+                let main_result_casted =
+                    mk().cast_expr(mk().call_expr(main_fn, main_args), mk().path_ty(vec!["u8"]));
 
-                let call_exit = mk().call_expr(exit_fn, vec![call_main]);
-                stmts.push(mk().expr_stmt(mk().unsafe_block_expr(vec![mk().expr_stmt(call_exit)])));
+                let exit_fn = mk().path_expr(vec!["ExitCode", "from"]);
+                let call_exit = mk().call_expr(exit_fn, vec![main_result_casted]);
+                let unsafe_block = vec![mk().expr_stmt(call_exit)];
+
+                stmts.push(mk().expr_stmt(mk().unsafe_block_expr(unsafe_block)));
             };
 
             let block = mk().block(stmts);

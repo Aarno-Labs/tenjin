@@ -1,4 +1,5 @@
 #![allow(
+    clippy::missing_safety_doc,
     dead_code,
     non_camel_case_types,
     non_snake_case,
@@ -103,8 +104,8 @@ unsafe fn main_0(
         println!("Error: [{:>}]", {
             std::ffi::CStr::from_ptr(
                 ({
-                    let __lift_2_3551_0 = _xj_local_errno;
-                    _xj_wrap_strerror_xjtr_0(&mut _xj_local_errno, __lift_2_3551_0)
+                    let __lift_2_3583_0 = _xj_local_errno;
+                    _xj_wrap_strerror_xjtr_0(&mut _xj_local_errno, __lift_2_3583_0)
                 }) as *const core::ffi::c_char,
             )
             .to_str()
