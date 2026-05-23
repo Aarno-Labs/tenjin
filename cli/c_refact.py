@@ -213,7 +213,42 @@ def preprocess_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir: P
     b._use_preprocessed_files = True
 
 
-def refold_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir_path: Path) -> None:
+@dataclass
+class ConsolidationRevert:
+    """A region in a TU's preprocessed .i file that pre_refold_consolidation
+    reverted from a "modified" version (introduced by earlier prep passes) back
+    to the original expanded header content, after stashing the modification in
+    the actual header file.
+
+    The intent is to let refolding fold the region back into an `#include` form,
+    so the included (modified) header carries the change into the .c file. When
+    refolding fails to produce the include, the un-modified expanded content
+    survives in the .c file and the modification is silently dropped. These
+    records let `refold_build` detect that and re-insert the modified text in
+    the residual refolded .c file.
+
+    `expanded_header_version` is the post-preprocessor `.i` form (macros fully
+    expanded). `original_header_version` is the pre-preprocessor `.h` form
+    (with the original macros, comments stripped). The refolder, even when it
+    can't refold to `#include`, partially restores macros, so the residual
+    refolded `.c` is closer to the `.h` form than to the expanded `.i` form.
+    The original form is therefore the right pattern to search for in `.c`.
+    """
+
+    modified_version: str
+    expanded_header_version: str
+    original_header_version: str
+    header_rel_path: str
+    quss: str
+    is_defn: bool
+
+
+def refold_build(
+    b: targets.BuildInfo,
+    t: targets.BuildTarget,
+    target_dir_path: Path,
+    consolidation_reverts_by_rel_tu: dict[str, list[ConsolidationRevert]] | None = None,
+) -> None:
     """
     For each TU in compdb, run clang-refold to produce .c files from modified .i files
     """
@@ -226,6 +261,7 @@ def refold_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir_path: 
         abs_src_path_base = abs_src_path.with_suffix("")
         c_path = abs_src_path_base.with_suffix(".c")
         refold_map_path = abs_src_path_base.with_suffix(".nolines.refoldmap.json")
+        edit_map_path = abs_src_path_base.with_suffix(".nolines.editmap.json")
 
         print("Refolding", abs_src_path, "to", c_path)
         print(cmd.get_command_parts())
@@ -240,10 +276,17 @@ def refold_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir_path: 
                 refold_map_path.as_posix(),
                 "-o",
                 str(c_path),
+                f"--emit-edit-map={edit_map_path.as_posix()}",
             ],
             check=True,
             cwd=cmd.directory,
         )
+
+        if consolidation_reverts_by_rel_tu:
+            rel_tu_path = abs_src_path.relative_to(target_dir_path).as_posix()
+            reverts = consolidation_reverts_by_rel_tu.get(rel_tu_path, [])
+            if reverts:
+                restore_dropped_consolidation_reverts(c_path, edit_map_path, reverts)
 
         if environ.get("XJ_REFOLD_CHECK"):
             crc_cp = hermetic.run(
@@ -268,6 +311,82 @@ def refold_build(b: targets.BuildInfo, t: targets.BuildTarget, target_dir_path: 
                 raise RuntimeError("clang-refold --check failed")
 
     b._use_preprocessed_files = False
+
+
+def restore_dropped_consolidation_reverts(
+    c_path: Path,
+    edit_map_path: Path,
+    reverts: list[ConsolidationRevert],
+) -> None:
+    """For each consolidation revert in this TU, check whether refolding folded
+    the reverted region into an `#include`. If not, the .c file holds the
+    un-modified expanded content and the modification was dropped — locate the
+    expanded content and replace it with the modified text.
+
+    Reverted regions don't appear in clang-refold's `--emit-edit-map` (they
+    match unmodified `.i` so they aren't "edits"), so direct mapping via the
+    edit-map isn't possible. The modified/expanded blocks are typically full
+    declarations/definitions and unique enough for safe textual matching.
+    `edit_map_path` is unused here but kept in the signature for future
+    extension when textual matching is too coarse.
+    """
+    del edit_map_path
+    if not c_path.exists():
+        return
+
+    content = c_path.read_text(encoding="utf-8")
+
+    restored = 0
+    skipped_ambiguous = 0
+    skipped_already_folded = 0
+    for revert in reverts:
+        if revert.modified_version == revert.expanded_header_version:
+            continue
+        # Refolding (even when it can't produce `#include`) restores macros,
+        # so prefer matching the original `.h` form first and fall back to the
+        # post-preprocessor `.i` form. Either of these found in the residual
+        # `.c` means refolding did not pull the modification through an
+        # include — splice the modified text in place.
+        candidates = [revert.original_header_version, revert.expanded_header_version]
+        chosen: str | None = None
+        chosen_count = 0
+        for candidate in candidates:
+            if not candidate:
+                continue
+            occ = content.count(candidate)
+            if occ == 1:
+                chosen = candidate
+                chosen_count = 1
+                break
+            if occ > 1 and chosen is None:
+                chosen = candidate
+                chosen_count = occ
+        if chosen is None:
+            skipped_already_folded += 1
+            continue
+        if chosen_count > 1:
+            print(
+                "refold restore: WARNING: match for",
+                revert.quss,
+                f"appears {chosen_count} times in",
+                c_path.name,
+                "- skipping to avoid ambiguous restoration",
+            )
+            skipped_ambiguous += 1
+            continue
+        content = content.replace(chosen, revert.modified_version, 1)
+        restored += 1
+        print(f"refold restore: restored {revert.quss} in {c_path.name}")
+
+    if restored or skipped_ambiguous:
+        print(
+            f"refold restore for {c_path.name}: restored={restored} "
+            f"skipped_ambiguous={skipped_ambiguous} "
+            f"already_folded_or_absent={skipped_already_folded} "
+            f"(total reverts={len(reverts)})"
+        )
+    if restored:
+        c_path.write_text(content, encoding="utf-8")
 
 
 @dataclass

@@ -706,6 +706,9 @@ class PrepPassResultStore:
         dict[QUSS, list[tuple[FilePathStr, int, int, FileContentsStr, QUSS_is_defn]]],
     ]
     build_info: BuildInfo
+    consolidation_reverts_by_rel_tu: dict[
+        RelativeFilePathStr, list[c_refact.ConsolidationRevert]
+    ] = dataclasses.field(default_factory=dict)
 
 
 def run_preparation_passes(
@@ -1414,8 +1417,11 @@ def run_preparation_passes(
 
         # Build a map from QUSS to the expected (original) source text from headers
         qd_to_header_src: dict[tuple[QUSS, bool], FileContentsStr] = {}
-        for header_items in store.items_defined_by_headers.values():
+        # Track the header that defines each QUSS, for post-refold restoration.
+        q_to_header_rel_path: dict[QUSS, RelativeFilePathStr] = {}
+        for rel_header_path_str, header_items in store.items_defined_by_headers.items():
             for q, hdr_details in header_items.items():
+                q_to_header_rel_path.setdefault(q, rel_header_path_str)
                 for start_offset, end_offset, source_text, _is_defn in hdr_details:
                     qd = (q, _is_defn)
                     qd_to_header_src[qd] = source_text
@@ -1665,6 +1671,17 @@ def run_preparation_passes(
                         length = end_offset - start_offset
                         rewriter.add_rewrite(
                             tu_file_path.as_posix(), start_offset, length, expanded_header_version
+                        )
+                        rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
+                        store.consolidation_reverts_by_rel_tu.setdefault(rel_tu_path, []).append(
+                            c_refact.ConsolidationRevert(
+                                modified_version=modified_version,
+                                expanded_header_version=expanded_header_version,
+                                original_header_version=qd_to_header_src.get(qd, ""),
+                                header_rel_path=q_to_header_rel_path.get(q, ""),
+                                quss=q,
+                                is_defn=qd[1],
+                            )
                         )
 
                 # Update the header with the modified version
@@ -2036,7 +2053,12 @@ def run_preparation_passes(
             print("TENJIN: NOTE: Skipping preprocessor refolding for multi-target codebase.")
             return
 
-        c_refact.refold_build(store.build_info, all_build_targets[0], current_codebase)
+        c_refact.refold_build(
+            store.build_info,
+            all_build_targets[0],
+            current_codebase,
+            consolidation_reverts_by_rel_tu=store.consolidation_reverts_by_rel_tu,
+        )
         # build_info now marked to use refolded files, for future steps
 
     preparation_passes: list[
