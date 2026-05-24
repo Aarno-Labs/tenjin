@@ -636,6 +636,26 @@ def want_10j_deps():
     )
 
 
+def cook_pkg_config_placeholders_within(target: Path) -> None:
+    """Note that `cook_pkg_config_within()` modified the `pkg-config` binary,
+    whereas this function modifies the `.pc` files.
+
+    See also `COMMENTARY(pkg-config-paths)`."""
+    for pc_file in target.rglob("*.pc"):
+        lib_dir = next((parent for parent in pc_file.parents if parent.name == "lib"), None)
+        if lib_dir is None:
+            continue
+
+        data = pc_file.read_text(encoding="utf-8")
+        if "/outputs" not in data:
+            continue
+
+        pc_file.write_text(
+            data.replace("/outputs", lib_dir.parent.resolve().as_posix()),
+            encoding="utf-8",
+        )
+
+
 def want_10j_more_deps():
     def provision_10j_more_deps_with(version: str, keyname: str):
         loweros = {"Linux": "linux", "Darwin": "macos"}[platform.system()]
@@ -664,9 +684,9 @@ def want_10j_more_deps():
         z3_pc = target / "lib" / "pkgconfig" / "z3.pc"
         if z3_pc.is_file():
             lines = z3_pc.read_text(encoding="utf-8").splitlines()
-            lines[0] = f"prefix={target}"
+            lines[0] = f"prefix={target.resolve()}"
             lines[1] = "exec_prefix=${prefix}"
-            z3_pc.write_text("\n".join(lines), encoding="utf-8")
+            z3_pc.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
         gmp_dir = hermetic.xj_gmp_root(HAVE.localdir)
         gmp_files_to_cook = [
@@ -676,8 +696,10 @@ def want_10j_more_deps():
         for f in gmp_files_to_cook:
             if f.is_file():
                 lines = f.read_text(encoding="utf-8").splitlines()
-                lines[0] = f"prefix={gmp_dir}"
-                f.write_text("\n".join(lines), encoding="utf-8")
+                lines[0] = f"prefix={gmp_dir.resolve()}"
+                f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        cook_pkg_config_placeholders_within(target)
 
         HAVE.note_we_have(keyname, specifier=version)
 
@@ -1532,6 +1554,7 @@ def provision_10j_deps_with(version: str, keyname: str):
             if target.is_dir():
                 shutil.rmtree(target)
             download_and_extract_tarball(url, target, ctx="(builddeps) ")
+            cook_pkg_config_placeholders_within(target)
             cook_pkg_config_within()
             cook_m4_within()
             cook_automake_and_autoconf_within()
