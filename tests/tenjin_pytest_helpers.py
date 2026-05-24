@@ -28,7 +28,7 @@ def clean_up_resultsdir(resultsdir: Path):
     # This can add up to dozens of gigabytes across all tests if left in place.
     for subdir in resultsdir.iterdir():
         if (subdir / "target").is_dir():
-            run_cargo_on_final(subdir, ["clean", "-q"])
+            run_cargo_on_final(subdir, [hermetic.tenjin_cargo_toolchain_specifier(), "clean"])
 
     for item in resultsdir.rglob("*.refoldmap.json"):
         if "expand_preprocessor" not in item.as_posix():
