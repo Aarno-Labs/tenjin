@@ -27,7 +27,7 @@ def tractor_tests_git_clone_for(case_dir: str) -> Path:
         # so the https URL won't work.
         return cached_git_clone_at_commit(
             "git@github.com:Aarno-Labs/DARPA-TRACTOR-Program__Test-Corpus.git",
-            "f4fa82f9472a1c5c0a6b8a42da0a262ccbb560ff",
+            "6edd4fa0c1b9fccf4812172ed41b73f56dd37925",
         )
     return cached_git_clone_at_commit(
         "https://github.com/DARPA-TRACTOR-Program/PUBLIC-Test-Corpus.git",
@@ -377,7 +377,7 @@ def eval_tractor_ta3_corpus_lib(
 
     run_cargo_on_final(
         candidate_resultsdir / "runner",
-        ["build"] + (["--release"] if profile == "release" else []),
+        ["build", *cando_runner_flags()] + (["--release"] if profile == "release" else []),
         capture_output=False,
     )
 
@@ -402,6 +402,12 @@ def eval_tractor_ta3_corpus_lib(
     clean_up_resultsdir(candidate_resultsdir)
 
     annotate_pytest_request_with_translation_notes(fixtures)
+
+
+def cando_runner_flags() -> list[str]:
+    # We pass `--ignore-rust-version` because the cando2 crate has
+    # an artificially high rust-version specified.
+    return ["--ignore-rust-version"]
 
 
 # ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗     ██╗    ██╗     ██╗██████╗ ███████╗
