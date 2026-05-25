@@ -15,6 +15,7 @@ from tenjin_pytest_helpers import (
     clean_up_resultsdir,
     run_cargo_on_final,
     run_tractor_test_vector,
+    tractor_case_released,
     TenjinFixtures,
 )
 import translation_preparation
@@ -22,7 +23,7 @@ import translation
 
 
 def tractor_tests_git_clone_for(case_dir: str) -> Path:
-    if case_dir.startswith("Public-Tests/B02_"):
+    if not tractor_case_released(case_dir):
         # Currently Battery 2 requires authentication to access,
         # so the https URL won't work.
         return cached_git_clone_at_commit(
@@ -391,8 +392,8 @@ def eval_tractor_ta3_corpus_lib(
             binary=candidate_resultsdir / "runner" / "target" / profile / bin_names[0],
             test_name=test_vector.stem,
             test_vector=test_vector,
-            verbose=True,
             cwd=candidate_resultsdir / "runner",
+            cando2_new_interface=not tractor_case_released(case_dir),
         )
         assert outcome.ok, (
             f"Library test vector {test_vector.stem} failed: {outcome.message}\n{test_vector}"
