@@ -26,7 +26,7 @@ def tractor_tests_git_clone_for(case_dir: str) -> Path:
         # Currently Battery 2 requires authentication to access,
         # so the https URL won't work.
         return cached_git_clone_at_commit(
-            "git@github.com:DARPA-TRACTOR-Program/Test-Corpus.git",
+            "git@github.com:Aarno-Labs/DARPA-TRACTOR-Program__Test-Corpus.git",
             "f4fa82f9472a1c5c0a6b8a42da0a262ccbb560ff",
         )
     return cached_git_clone_at_commit(
