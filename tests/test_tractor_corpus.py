@@ -345,8 +345,6 @@ def eval_tractor_ta3_corpus_lib(
     )
     runner_cargo_toml.write_text(runner_cargo_toml_contents, encoding="utf-8")
 
-    run_cargo_on_final(candidate_resultsdir / "runner", ["build"])
-
     profile = "release"
     translate_and_build_ta3_test(
         fixtures,
