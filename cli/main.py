@@ -564,6 +564,33 @@ if __name__ == "__main__":
                         cast(Literal["cc", "ld", "ar"], category), Path(run_as), sys.argv[4:]
                     )
                 )
+        if sys.argv[1] == "ta3-test-runner":
+            # N.B. the TA3 test runner uses `nix` and `docker`, which ends up duplicating
+            # most of Tenjin's dependencies, to the tune of about 7 GB.
+            #
+            # Common flags you might want:
+            #  --jobs 0: Run tests in parallel, using all available CPU cores.
+            #  --keep-going: Don't stop on first failure, show all test results.
+            #  --match <pattern>: Only run tests whose names match the given pattern.
+            #  --subset <pattern>: Only run tests whose paths match the given pattern.
+            #        Multiple --match flags are ORed together,
+            #        but --match and --subset are ANDed together.
+            #  --clean: Remove C build directories of selected tests.
+            #
+            # N.B. some the P01 tests are likely to fail due to stack size limits;
+            #      our pytest runner handles it more-or-less automatically, but the
+            #      TA3 test runner does not.
+            if len(sys.argv) < 3 or sys.argv[2] in ("--help", "-h"):
+                click.echo("Usage: 10j ta3-test-runner TEST_CORPUS_DIR [FLAGS...]", err=True)
+                sys.exit(1)
+            import ta3_test_runner as _ta3
+
+            try:
+                _ta3.run(Path(sys.argv[2]), sys.argv[3:])
+                sys.exit(0)
+            except UserFacingError as e:
+                click.echo(f"Error: {e}", err=True)
+                sys.exit(1)
         if sys.argv[1] == "covset-gen":
             ns, rest = parse_covset_gen_args(sys.argv[2:])
             try:
