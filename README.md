@@ -2,7 +2,7 @@
 
 A tool for translating C to Rust, building upon [c2rust](https://github.com/immunant/c2rust/).
 
-Status: embryonic
+Status: incomplete; in active development.
 
 ## Installation
 
@@ -27,3 +27,8 @@ need to be reformatted.
 
 * [User docs](docs/USE.md)
 * [Developer docs](docs/README.md)
+
+## Acknowledgements
+
+Development of Tenjin is being supported by the Defense Advanced Research Projects Agency
+(DARPA) under Agreement No. HR00112590129.
