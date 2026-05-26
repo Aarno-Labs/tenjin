@@ -31,6 +31,9 @@ def run(test_corpus: Path, flags: list[str]) -> None:
     if shutil.which("nix") is None:
         raise UserFacingError("nix not found in PATH")
 
+    skip_translation = "--skip-translation" in flags
+    flags = [f for f in flags if f != "--skip-translation"]
+
     if flags == ["--help"] or flags == ["-h"] or "--list" in flags or "--clean" in flags:
         _invoke_test_runner(test_corpus, flags)
         return
@@ -55,22 +58,35 @@ def run(test_corpus: Path, flags: list[str]) -> None:
 
         click.echo(f"Discovered {len(test_case_rel_paths)} test case(s)", err=True)
 
-        tenjin_root = repo_root.find_repo_root_dir_Path()
-        max_workers = _parse_jobs(flags)
+        if skip_translation:
+            untranslated = [
+                p
+                for p in test_case_rel_paths
+                if not (test_corpus / p / _TRANSLATED_RUST_DIR).exists()
+            ]
+            if len(untranslated) == len(test_case_rel_paths):
+                click.echo(
+                    f"No {_TRANSLATED_RUST_DIR} directories found; run without --skip-translation first.",
+                    err=True,
+                )
+                sys.exit(1)
+        else:
+            tenjin_root = repo_root.find_repo_root_dir_Path()
+            max_workers = _parse_jobs(flags)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_translate_case, rel_path, test_corpus, tenjin_root): rel_path
-                for rel_path in test_case_rel_paths
-            }
-            for future in concurrent.futures.as_completed(futures):
-                if future.result() is not None:
-                    failed_translations.append(futures[future])
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(_translate_case, rel_path, test_corpus, tenjin_root): rel_path
+                    for rel_path in test_case_rel_paths
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    if future.result() is not None:
+                        failed_translations.append(futures[future])
 
-        if failed_translations:
-            click.echo(f"\n{len(failed_translations)} translation(s) failed:", err=True)
-            for p in failed_translations:
-                click.echo(f"  {p}", err=True)
+            if failed_translations:
+                click.echo(f"\n{len(failed_translations)} translation(s) failed:", err=True)
+                for p in failed_translations:
+                    click.echo(f"  {p}", err=True)
 
     cp = _invoke_test_runner(test_corpus, flags)
     sys.exit(cp.returncode)
