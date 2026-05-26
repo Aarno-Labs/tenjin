@@ -15,12 +15,14 @@ import repo_root
 import provisioning
 
 
-def check_call_uv(args: Sequence[str | os.PathLike[str]], cwd: Path) -> None:
+def run_uv(
+    args: Sequence[str | os.PathLike[str]], cwd: Path, with_tenjin_deps=False, **kwargs
+) -> subprocess.CompletedProcess:
     # The args here should be kept in sync with the 10j script.
     localdir = repo_root.localdir()
     # XREF:WANT_UV_VERSION in cli/10j
     want_uv_version = "0.9.16"
-    run(
+    return run(
         [
             localdir / f"uv-{want_uv_version}",
             "--config-file",
@@ -28,9 +30,13 @@ def check_call_uv(args: Sequence[str | os.PathLike[str]], cwd: Path) -> None:
             *args,
         ],
         cwd=cwd,
-        check=True,
-        with_tenjin_deps=False,
+        with_tenjin_deps=with_tenjin_deps,
+        **kwargs,
     )
+
+
+def check_call_uv(args: Sequence[str | os.PathLike[str]], cwd: Path) -> None:
+    run_uv(args, cwd, check=True)
 
 
 def xj_build_deps(localdir: Path) -> Path:
@@ -243,14 +249,18 @@ def run(
 ) -> subprocess.CompletedProcess:
     common_helper_for_run(cmd, kwargs.get("cwd", None))
 
+    env = mk_env_for(
+        repo_root.localdir(),
+        with_tenjin_deps=with_tenjin_deps,
+        env_ext=env_ext,
+        **kwargs,
+    )
+    kwargs.pop("trim_VIRTUAL_ENV", None)
+
     return subprocess.run(
         cmd,
         check=check,
-        env=mk_env_for(
-            repo_root.localdir(),
-            with_tenjin_deps=with_tenjin_deps,
-            env_ext=env_ext,
-        ),
+        env=env,
         **kwargs,
     )
 

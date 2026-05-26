@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from subprocess import TimeoutExpired
+from subprocess import CompletedProcess, TimeoutExpired
 import tempfile
 import re
 from difflib import unified_diff
@@ -145,12 +145,194 @@ def difference(label: str, expected: str, actual: str, n: int = 1500) -> str:
     return diff[:n] + ("... [truncated]\n" if len(diff) > n else "")
 
 
+def _load_test_vector_spec(test_name: str, test_vector: Path) -> tuple[dict, TestOutcome | None]:
+    spec = json.loads(test_vector.read_text(encoding="utf-8"))
+
+    if "has_ub" in spec:
+        return spec, TestOutcome(
+            skipped=True,
+            ok=True,
+            name=test_name,
+            message=f"[test] {test_name}: Skipped (has_ub: {spec['has_ub']})",
+        )
+
+    return spec, None
+
+
+def _run_test_command(
+    cmd: list[str],
+    test_name: str,
+    cwd: Path | None = None,
+    stdin: str | None = None,
+    timeout: int = 30,
+) -> tuple[CompletedProcess | None, TestOutcome | None]:
+    try:
+        return (
+            hermetic.run(
+                cmd,
+                cwd=cwd,
+                input=stdin,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+            ),
+            None,
+        )
+    except TimeoutExpired:
+        return None, TestOutcome(
+            skipped=False,
+            ok=False,
+            name=test_name,
+            message=f"{test_name}: Command timed out after {timeout} seconds",
+        )
+    except Exception as e:
+        return None, TestOutcome(
+            skipped=False,
+            ok=False,
+            name=test_name,
+            message=f"{test_name}: Failed to execute: {e}",
+        )
+
+
+def _test_outcome_from_direct_result(
+    *,
+    test_name: str,
+    spec: dict,
+    result: CompletedProcess,
+    verbose: bool,
+) -> TestOutcome:
+    """Convert stdout/stderr/returncode into a TestOutcome."""
+    test_stdout = result.stdout or ""
+    test_stderr = result.stderr or ""
+
+    expected_rc = spec.get("rc", 0)
+    exp_out = spec.get("stdout", {"pattern": "", "is_regex": False})
+    exp_err = spec.get("stderr", {"pattern": "", "is_regex": False})
+
+    rc_ok = result.returncode == expected_rc
+    out_ok = (
+        regex_match(exp_out["pattern"], test_stdout)
+        if exp_out.get("is_regex", False)
+        else (test_stdout == exp_out["pattern"])
+    )
+    err_ok = (
+        regex_match(exp_err["pattern"], test_stderr)
+        if exp_err.get("is_regex", False)
+        else (test_stderr == exp_err["pattern"])
+    )
+
+    if rc_ok and out_ok and err_ok:
+        return TestOutcome(
+            skipped=False,
+            ok=True,
+            name=test_name,
+            message=f"[test] {test_name}: Passed",
+        )
+
+    reasons = []
+    if not out_ok:
+        reasons.append("stdout mismatch")
+    if not err_ok:
+        reasons.append("stderr mismatch")
+    if not rc_ok:
+        reasons.append("return code mismatch")
+    msg = f"{test_name}: " + ", ".join(reasons)
+
+    if verbose:
+        msg += "\n" + difference("stdout", exp_out["pattern"], test_stdout)
+        msg += "\n" + difference("stderr", exp_err["pattern"], test_stderr)
+        msg += f"\nexpected rc={expected_rc}, actual rc={result.returncode}\n"
+
+    return TestOutcome(
+        skipped=False,
+        ok=False,
+        name=test_name,
+        message=msg,
+    )
+
+
+def _test_outcome_from_cando2_v2_result(
+    *,
+    test_name: str,
+    test_vector: Path,
+    result: CompletedProcess,
+) -> TestOutcome:
+    """Convert a `cando2` runner JSON report into a TestOutcome.
+
+    This is the newer path for corpus library runners where `cando2` performs
+    the comparison internally and emits a per-vector JSON status report.
+    """
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        return TestOutcome(
+            skipped=False,
+            ok=False,
+            name=test_name,
+            message=(
+                f"{test_name}: cando2 produced an invalid JSON report: {e}\n"
+                f"stdout:\n{result.stdout}\n"
+                f"stderr:\n{result.stderr}"
+            ),
+        )
+
+    outcome = report.get(str(test_vector))
+    if outcome is None:
+        return TestOutcome(
+            skipped=False,
+            ok=False,
+            name=test_name,
+            message=(
+                f"{test_name}: cando2 report did not include {test_vector}.\n"
+                f"report keys: {sorted(report)}\n"
+                f"stderr:\n{result.stderr}"
+            ),
+        )
+
+    outcome_result = outcome.get("result", "<missing>")
+    if outcome_result in {"Pass", "Skip"}:
+        return TestOutcome(
+            skipped=outcome_result == "Skip",
+            ok=True,
+            name=test_name,
+            message=f"[test] {test_name}: {outcome_result}",
+        )
+
+    details = [f"{test_name}: cando2 reported {outcome_result}"]
+    if "diff" in outcome:
+        details.append(outcome["diff"])
+    output = outcome.get("output", {})
+    if output.get("stdout"):
+        details.append(f"stdout:\n{output['stdout']}")
+    if output.get("stderr"):
+        details.append(f"stderr:\n{output['stderr']}")
+    if result.stderr:
+        details.append(f"runner stderr:\n{result.stderr}")
+    details.append(f"exit code: {result.returncode}")
+
+    return TestOutcome(
+        skipped=False,
+        ok=False,
+        name=test_name,
+        message="\n".join(details),
+    )
+
+
+def tractor_case_released(case_path: str) -> bool:
+    if "Examples/" in case_path:
+        return False
+    if "Public-Tests/B02_" in case_path:
+        return False
+    return True
+
+
 def run_tractor_test_vector(
     binary: Path,
     test_name: str,
     test_vector: Path,
     verbose: bool = True,
     cwd: Path | None = None,
+    cando2_new_interface: bool = False,
 ) -> TestOutcome:
     """
     Execute a single test vector against the binary.
@@ -174,21 +356,17 @@ def run_tractor_test_vector(
         Result of the test execution
     """
 
-    spec = json.loads(test_vector.read_text(encoding="utf-8"))
+    spec, early_outcome = _load_test_vector_spec(test_name, test_vector)
+    if early_outcome is not None:
+        return early_outcome
 
-    # Skip tests marked with undefined behavior
-    if "has_ub" in spec:
-        return TestOutcome(
-            skipped=True,
-            ok=True,
-            name=test_name,
-            message=f"[test] {test_name}: Skipped (has_ub: {spec['has_ub']})",
-        )
+    is_lib_test = "lib_state_in" in spec
 
-    # Build command
-    if "lib_state_in" in spec:
-        # Libary tests pass the runner the path to the test vector JSON.
-        cmd = [str(binary), "lib", "-q", "-c", str(test_vector)]
+    if is_lib_test:
+        if cando2_new_interface:
+            cmd = [str(binary), "-l", "quiet", "-v", str(test_vector), "lib"]
+        else:
+            cmd = [str(binary), "lib", "-q", "-c", str(test_vector)]
     else:
         # Application tests: just run the binary with the given arguments and input
         argv_strs = [
@@ -196,80 +374,17 @@ def run_tractor_test_vector(
         ]  # TA3's JSON may have raw ints, not just strings
         cmd = [str(binary), *argv_strs]
 
-    stdin = spec.get("stdin", None)
-
-    try:
-        result = hermetic.run(
-            cmd,
-            cwd=cwd,
-            input=stdin,
-            text=True,
-            capture_output=True,
-            timeout=30,  # 30 second timeout
-        )
-    except TimeoutExpired:
-        return TestOutcome(
-            skipped=False,
-            ok=False,
-            name=test_name,
-            message=f"{test_name}: Command timed out after 30 seconds",
-        )
-    except Exception as e:
-        return TestOutcome(
-            skipped=False,
-            ok=False,
-            name=test_name,
-            message=f"{test_name}: Failed to execute: {e}",
-        )
-
-    # Extract results
-    test_stdout = result.stdout or ""
-    test_stderr = result.stderr or ""
-
-    # Build expectations
-    expected_rc = spec.get("rc", 0)
-    exp_out = spec.get("stdout", {"pattern": "", "is_regex": False})
-    exp_err = spec.get("stderr", {"pattern": "", "is_regex": False})
-
-    # Compare results
-    rc_ok = result.returncode == expected_rc
-    out_ok = (
-        regex_match(exp_out["pattern"], test_stdout)
-        if exp_out.get("is_regex", False)
-        else (test_stdout == exp_out["pattern"])
+    result, failed_outcome = _run_test_command(
+        cmd, test_name, cwd=cwd, stdin=spec.get("stdin", None)
     )
-    err_ok = (
-        regex_match(exp_err["pattern"], test_stderr)
-        if exp_err.get("is_regex", False)
-        else (test_stderr == exp_err["pattern"])
+    if failed_outcome is not None:
+        return failed_outcome
+    assert result is not None
+
+    if is_lib_test and cando2_new_interface:
+        return _test_outcome_from_cando2_v2_result(
+            test_name=test_name, test_vector=test_vector, result=result
+        )
+    return _test_outcome_from_direct_result(
+        test_name=test_name, spec=spec, result=result, verbose=verbose
     )
-
-    # Report results
-    if rc_ok and out_ok and err_ok:
-        return TestOutcome(
-            skipped=False,
-            ok=True,
-            name=test_name,
-            message=f"[test] {test_name}: Passed",
-        )
-    else:
-        reasons = []
-        if not out_ok:
-            reasons.append("stdout mismatch")
-        if not err_ok:
-            reasons.append("stderr mismatch")
-        if not rc_ok:
-            reasons.append("return code mismatch")
-        msg = f"{test_name}: " + ", ".join(reasons)
-
-        if verbose:
-            msg += "\n" + difference("stdout", exp_out["pattern"], test_stdout)
-            msg += "\n" + difference("stderr", exp_err["pattern"], test_stderr)
-            msg += f"\nexpected rc={expected_rc}, actual rc={result.returncode}\n"
-
-        return TestOutcome(
-            skipped=False,
-            ok=False,
-            name=test_name,
-            message=msg,
-        )
