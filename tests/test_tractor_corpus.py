@@ -992,7 +992,6 @@ def test_tractor_b1_synthetic_041_app(tenjin_fixtures: TenjinFixtures):
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
 
 
-@pytest.mark.skip(reason="we print hex floats without an explicit + sign")
 @pytest.mark.slow
 def test_tractor_b1_synthetic_042_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/042_float_union"

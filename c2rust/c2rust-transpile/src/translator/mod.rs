@@ -2045,10 +2045,10 @@ mod refactor_format {
                 CastType::Usize => mk().span(span).cast_expr(e, mk().ident_ty("usize")),
                 CastType::Float => mk().span(span).cast_expr(e, mk().ident_ty("f64")),
                 CastType::HexFloat => {
-                    // hexfloat2::HexFloat::from(e)
+                    // xj_hexfloat::HexFloat::from(e)
                     x.use_crate(ExternCrate::Hexfloat2);
                     mk().call_expr(
-                        mk().path_expr(vec!["hexfloat2", "HexFloat", "from"]),
+                        mk().path_expr(vec!["xj_hexfloat", "HexFloat", "from"]),
                         vec![e],
                     )
                 }
