@@ -15,6 +15,53 @@ def write_compile_commands_for_sources(codebase: Path, sources: list[Path]) -> N
     compilation_database.CompileCommands(commands).to_json_file(codebase / "compile_commands.json")
 
 
+def test_findfnptrdecls_marks_initialized_fnptr_vars_for_cross_tu_replication(root, tmp_codebase):
+    tmp_codebase.mkdir()
+    a_c = tmp_codebase / "a.c"
+    b_c = tmp_codebase / "b.c"
+
+    a_c.write_text(
+        "extern int (*dispatch)(int);\nint use_dispatch(void) { return dispatch(7); }\n",
+        encoding="utf-8",
+    )
+    b_c.write_text(
+        "int foo(int x) { return x + 1; }\nint (*dispatch)(int) = foo;\n",
+        encoding="utf-8",
+    )
+    write_compile_commands_for_sources(tmp_codebase, [a_c, b_c])
+
+    output = c_refact.run_xj_prepare_findfnptrdecls(
+        tmp_codebase,
+        nonmain_tissue_functions={"foo"},
+        all_function_names={"foo", "use_dispatch"},
+    )
+
+    modified_in_b = output["modified_fn_ptr_type_locs"].get(b_c.as_posix(), [])
+    assert modified_in_b, output
+    assert output["var_decl_fn_ptr_arg_lparen_locs"][a_c.as_posix()]["dispatch"] >= 0
+    assert output["var_decl_fn_ptr_arg_lparen_locs"][b_c.as_posix()]["dispatch"] >= 0
+
+    compdb = compilation_database.CompileCommands.from_json_file(
+        tmp_codebase / "compile_commands.json"
+    )
+    tus = c_refact.parse_project(create_xj_clang_index(), compdb)
+    equivalence_classes = c_refact_type_mod_replicator.collect_type_definitions(
+        list(tus.values()), output["var_decl_fn_ptr_arg_lparen_locs"]
+    )
+
+    b_lparen, _b_rparen = modified_in_b[0]
+    replicated = c_refact_type_mod_replicator.replicate_type_modifications(
+        {b_c.as_posix(): [(b_lparen + 1, 0, "struct XjGlobals *, ")]},
+        equivalence_classes,
+    )
+
+    a_rewrites = replicated.get(a_c.as_posix(), [])
+    assert any(
+        offset == output["var_decl_fn_ptr_arg_lparen_locs"][a_c.as_posix()]["dispatch"] + 1
+        for offset, _, _ in a_rewrites
+    ), replicated
+
+
 def test_findfnptrdecls_tracks_call_args_to_fnptr_params(root, tmp_codebase):
     tmp_codebase.mkdir()
     callbacks_c = tmp_codebase / "callbacks.c"
