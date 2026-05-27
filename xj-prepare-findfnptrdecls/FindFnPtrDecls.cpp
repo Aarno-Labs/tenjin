@@ -821,7 +821,13 @@ int main(int argc, const char **argv) {
   // parameter declaration acts like the LHS of an assignment.
   Finder.addMatcher(
       callExpr(forEachArgumentWithParam(
-          ignoringParenImpCasts(declRefExpr().bind("call_arg")),
+          expr(ignoringParenImpCasts(anyOf(
+              declRefExpr().bind("call_arg"),
+              unaryOperator(
+                  hasOperatorName("&"),
+                  hasUnaryOperand(ignoringParenImpCasts(
+                      declRefExpr().bind("call_arg"))))
+          ))),
           parmVarDecl(hasType(hasCanonicalType(
                                   pointerType(
                                       pointee(
