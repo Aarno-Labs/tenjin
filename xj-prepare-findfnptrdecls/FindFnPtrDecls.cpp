@@ -273,7 +273,7 @@ public:
     }
   }
 
-  void mark_modified_fn_ptr_decl(const DeclaratorDecl *DD) {
+  void add_fn_ptr_type_loc(const DeclaratorDecl *DD) {
     TypeSourceInfo *TSI = DD->getTypeSourceInfo();
     if (!TSI) {
       return;
@@ -285,7 +285,29 @@ public:
     }
 
     FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
-    ModifyingDeclIDs.insert(DD);
+  }
+
+  void mark_modified_fn_ptr_decl(const DeclaratorDecl *DD) {
+    if (auto *VD = dyn_cast<VarDecl>(DD)) {
+      for (const VarDecl *Redecl : VD->redecls()) {
+        if (Redecl->getType()->isFunctionPointerType()) {
+          add_fn_ptr_type_loc(Redecl);
+        }
+      }
+    } else {
+      add_fn_ptr_type_loc(DD);
+    }
+    ModifyingDeclIDs.insert(canonicalize_decl_for_matching(DD));
+  }
+
+  const DeclaratorDecl *canonicalize_decl_for_matching(const DeclaratorDecl *DD) const {
+    if (auto *VD = dyn_cast<VarDecl>(DD)) {
+      return VD->getCanonicalDecl();
+    }
+    if (auto *FD = dyn_cast<FunctionDecl>(DD)) {
+      return FD->getCanonicalDecl();
+    }
+    return DD;
   }
 
   bool try_find_fn_ptr_TL(TypeLoc TL, FunctionTypeLoc& FTL) {
@@ -344,7 +366,7 @@ public:
     collectMappedRangesByFile(byFile_ho_fnptr_args, FnPtrTypeOpenParens_PotentiallyMod);
 
     for (auto &dre_dd : UnmodFnOccurrences) {
-        if (ModifyingDeclIDs.count(dre_dd.second) > 0) {
+        if (ModifyingDeclIDs.count(canonicalize_decl_for_matching(dre_dd.second)) > 0) {
             auto F = SM->getFilename(dre_dd.first->getLocation());
             byFile_wrappers[F].push_back(
                     fmtJSONDictForUnmodFnOccWrapper(dre_dd));
