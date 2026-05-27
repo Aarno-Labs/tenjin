@@ -130,6 +130,63 @@ def test_findfnptrdecls_tracks_ampersand_call_args_to_fnptr_params(root, tmp_cod
     assert "bar_xjw(struct XjGlobals*, int x)" in wrapper["wrapper_defn"]
 
 
+def test_findfnptrdecls_tracks_ampersand_assignments_and_var_initializers(root, tmp_codebase):
+    tmp_codebase.mkdir()
+    callbacks_c = tmp_codebase / "callbacks.c"
+
+    source = (
+        "int foo(int x) { return x + 1; }\n"
+        "int bar(int x) { return x + 2; }\n"
+        "int (*fp)(int) = &foo;\n"
+        "void use(void) { fp = &bar; }\n"
+    )
+    callbacks_c.write_text(source, encoding="utf-8")
+    write_compile_commands_for_sources(tmp_codebase, [callbacks_c])
+
+    output = c_refact.run_xj_prepare_findfnptrdecls(
+        tmp_codebase,
+        nonmain_tissue_functions={"foo"},
+        all_function_names={"bar", "foo", "use"},
+    )
+
+    modified_in_file = output["modified_fn_ptr_type_locs"].get(callbacks_c.as_posix(), [])
+    assert len(modified_in_file) == 1, output
+    wrappers = output["unmod_fn_occ_wrappers"].get(callbacks_c.as_posix(), [])
+    assert len(wrappers) == 1, output
+    wrapper = wrappers[0]
+    assert wrapper["name"] == "bar"
+    assert wrapper["occ_offsets"] == [source.index("&bar") + 1]
+
+
+def test_findfnptrdecls_tracks_ampersand_init_list_entries(root, tmp_codebase):
+    tmp_codebase.mkdir()
+    callbacks_c = tmp_codebase / "callbacks.c"
+
+    source = (
+        "int foo(int x) { return x + 1; }\n"
+        "int bar(int x) { return x + 2; }\n"
+        "struct Holder { int (*cb)(int); };\n"
+        "struct Holder mod = { &foo };\n"
+        "struct Holder unmod = { &bar };\n"
+    )
+    callbacks_c.write_text(source, encoding="utf-8")
+    write_compile_commands_for_sources(tmp_codebase, [callbacks_c])
+
+    output = c_refact.run_xj_prepare_findfnptrdecls(
+        tmp_codebase,
+        nonmain_tissue_functions={"foo"},
+        all_function_names={"bar", "foo"},
+    )
+
+    modified_in_file = output["modified_fn_ptr_type_locs"].get(callbacks_c.as_posix(), [])
+    assert len(modified_in_file) == 1, output
+    wrappers = output["unmod_fn_occ_wrappers"].get(callbacks_c.as_posix(), [])
+    assert len(wrappers) == 1, output
+    wrapper = wrappers[0]
+    assert wrapper["name"] == "bar"
+    assert wrapper["occ_offsets"] == [source.index("&bar") + 1]
+
+
 def test_localize_mutable_globals_phase1_skips_direct_calls_to_nontissue_functions(
     root, tmp_codebase
 ):
