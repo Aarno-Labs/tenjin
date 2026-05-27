@@ -7,3 +7,7 @@
 - When finished with a task, run `./cli/10j pytest tests -n auto`. This takes about 60 seconds to run.
 - Results from `10j pytest` runs can be found in `/tmp/pytest-of-$USER/`
 - The `translation_metadata.json` file within an output resultsdir may have stdout/stderr captured from subcommands executed by Tenjin.
+- When making changes to clang tools like `xj-prepare-findfntprdecls`,
+  `xj-prepare-pointertransform`, etc, you can build them by running
+  `10j build-star` and run them from the built executables in
+  `_local/_build_findfnptrdecls`, etc.
