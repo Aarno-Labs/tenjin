@@ -116,6 +116,13 @@ public:
       }
     }
 
+    if (auto *VD = Result.Nodes.getNodeAs<VarDecl>("fn_ptr_var_with_init")) {
+      if (VD->getBeginLoc().isValid()) {
+        handle_fn_ptr_var_init(VD, Result);
+        return;
+      }
+    }
+
     if (auto *CE = Result.Nodes.getNodeAs<CallExpr>("called_fn_ptr_expr")) {
         if (auto* CFE = Result.Nodes.getNodeAs<Expr>("called_fn_expr")) {
           if (auto *CED = CFE->getReferencedDeclOfCallee()) {
@@ -273,6 +280,27 @@ public:
     }
   }
 
+  void handle_fn_ptr_var_init(const VarDecl *VD,
+                              const MatchFinder::MatchResult &Result) {
+    auto *rhs = Result.Nodes.getNodeAs<DeclRefExpr>("rhs");
+    if (!rhs || !VD->getType()->isFunctionPointerType()) {
+      return;
+    }
+
+    std::string rhs_name = rhs->getNameInfo().getName().getAsString();
+    bool was_mod_fn = is_modified_fn_name(rhs_name);
+    bool was_unmod_fn = is_unmodified_fn_name(rhs_name);
+    if (!was_mod_fn && !was_unmod_fn) {
+      return;
+    }
+
+    if (was_mod_fn) {
+      mark_modified_fn_ptr_decl(VD);
+    } else {
+      UnmodFnOccurrences.push_back(std::make_pair(rhs, VD));
+    }
+  }
+  
   void add_fn_ptr_type_loc(const DeclaratorDecl *DD) {
     TypeSourceInfo *TSI = DD->getTypeSourceInfo();
     if (!TSI) {
@@ -801,6 +829,18 @@ int main(int argc, const char **argv) {
                                       )
                                   ))))
               .bind("call_param"))),
+      &Callback
+  );
+
+  Finder.addMatcher(
+      varDecl(
+          hasType(hasCanonicalType(
+              pointerType(
+                  pointee(
+                      functionType()
+                  )))),
+          hasInitializer(expr(ignoringImpCasts(declRefExpr().bind("rhs")))))
+          .bind("fn_ptr_var_with_init"),
       &Callback
   );
 
