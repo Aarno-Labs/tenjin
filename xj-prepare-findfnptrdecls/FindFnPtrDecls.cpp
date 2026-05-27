@@ -190,24 +190,12 @@ public:
       }
       
       if (lhs_dd && lhs_dd->getType()->isFunctionPointerType()) {
-          // Get the TypeSourceInfo for better location tracking
-          if (TypeSourceInfo *TSI = lhs_dd->getTypeSourceInfo()) {
-            // We should have a PointerTypeLoc because lhs_dd was a function pointer type
-            if (PointerTypeLoc PTL = TSI->getTypeLoc().getAs<PointerTypeLoc>()) {
-              TypeLoc FuncTL = PTL.getPointeeLoc();
-
-              FunctionTypeLoc FTL;
-              if (try_find_fn_ptr_TL(FuncTL, FTL)) {
-                if (was_mod_fn) {
-                    FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
-                    ModifyingDeclIDs.insert(lhs_dd);
-                } else {
-                    // found a non-modified function occurrence; record its location
-                    // and the targeted declaration, so we can correlate in phase 2.
-                    UnmodFnOccurrences.push_back(std::make_pair(rhs, lhs_dd));
-                }
-              }
-            }
+          if (was_mod_fn) {
+              mark_modified_fn_ptr_decl(lhs_dd);
+          } else {
+              // found a non-modified function occurrence; record its location
+              // and the targeted declaration, so we can correlate in phase 2.
+              UnmodFnOccurrences.push_back(std::make_pair(rhs, lhs_dd));
           }
       }
     }
@@ -244,8 +232,7 @@ public:
           FunctionTypeLoc FTL;
           if (try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
               if (field_nums[i].dre_fn_was_mod) {
-                FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
-                ModifyingDeclIDs.insert(TargetField);
+                mark_modified_fn_ptr_decl(TargetField);
               } else {
                 // found a non-modified function occurrence; record its location
                 // and the targeted declaration, so we can correlate in phase 2.
@@ -279,28 +266,26 @@ public:
       return;
     }
 
-    TypeSourceInfo *TSI = param->getTypeSourceInfo();
+    if (was_mod_fn) {
+      mark_modified_fn_ptr_decl(param);
+    } else {
+      UnmodFnOccurrences.push_back(std::make_pair(arg_dre, param));
+    }
+  }
+
+  void mark_modified_fn_ptr_decl(const DeclaratorDecl *DD) {
+    TypeSourceInfo *TSI = DD->getTypeSourceInfo();
     if (!TSI) {
       return;
     }
 
-    PointerTypeLoc PTL = TSI->getTypeLoc().getAs<PointerTypeLoc>();
-    if (!PTL) {
-      return;
-    }
-
-    TypeLoc FuncTL = PTL.getPointeeLoc();
     FunctionTypeLoc FTL;
-    if (!try_find_fn_ptr_TL(FuncTL, FTL)) {
+    if (!try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
       return;
     }
 
-    if (was_mod_fn) {
-      FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
-      ModifyingDeclIDs.insert(param);
-    } else {
-      UnmodFnOccurrences.push_back(std::make_pair(arg_dre, param));
-    }
+    FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
+    ModifyingDeclIDs.insert(DD);
   }
 
   bool try_find_fn_ptr_TL(TypeLoc TL, FunctionTypeLoc& FTL) {
