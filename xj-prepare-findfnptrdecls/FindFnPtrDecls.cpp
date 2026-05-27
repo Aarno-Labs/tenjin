@@ -109,9 +109,9 @@ public:
       return;
     }
 
-    if (auto *arg_dre = Result.Nodes.getNodeAs<DeclRefExpr>("call_arg")) {
-      if (arg_dre->getBeginLoc().isValid()) {
-        handle_call_arg_to_fn_ptr_param(arg_dre, Result);
+    if (auto *arg_expr = Result.Nodes.getNodeAs<Expr>("call_arg_expr")) {
+      if (arg_expr->getBeginLoc().isValid()) {
+        handle_call_arg_to_fn_ptr_param(arg_expr, Result);
         return;
       }
     }
@@ -180,7 +180,12 @@ public:
 
   void handle_assign_to_decl(const Stmt *D,
                              const MatchFinder::MatchResult &Result) {
-    auto *rhs = Result.Nodes.getNodeAs<DeclRefExpr>("rhs");
+    auto *BO = dyn_cast<BinaryOperator>(D);
+    if (!BO) {
+      return;
+    }
+
+    auto *rhs = try_get_fn_value_declref(BO->getRHS());
     if (rhs && rhs->getBeginLoc().isValid()) {
       std::string rhs_name = rhs->getNameInfo().getName().getAsString();
       bool was_mod_fn = is_modified_fn_name(rhs_name);
@@ -213,8 +218,7 @@ public:
     SmallVector<InitListOccurrence> field_nums;
 
     for (unsigned i = 0; i < ILE->getNumInits(); ++i) {
-      const Expr *e = ILE->getInit(i)->IgnoreParenCasts();
-      if (const DeclRefExpr *dre = dyn_cast<DeclRefExpr>(e)) {
+      if (const DeclRefExpr *dre = try_get_fn_value_declref(ILE->getInit(i))) {
         std::string name = dre->getDecl()->getNameAsString();
         if (is_modified_fn_name(name)) {
           field_nums.push_back(InitListOccurrence { .idx = i, .dre = dre, .dre_fn_was_mod = true });
@@ -259,8 +263,13 @@ public:
   // Handles a function name being passed as an argument to a function-pointer
   // parameter. The parameter declaration is the targeted decl, mirroring how
   // member/declref assignment LHSes are treated.
-  void handle_call_arg_to_fn_ptr_param(const DeclRefExpr *arg_dre,
+  void handle_call_arg_to_fn_ptr_param(const Expr *arg_expr,
                                        const MatchFinder::MatchResult &Result) {
+    auto *arg_dre = try_get_fn_value_declref(arg_expr);
+    if (!arg_dre) {
+      return;
+    }
+
     std::string arg_name = arg_dre->getNameInfo().getName().getAsString();
     bool was_mod_fn = is_modified_fn_name(arg_name);
     bool was_unmod_fn = is_unmodified_fn_name(arg_name);
@@ -282,7 +291,7 @@ public:
 
   void handle_fn_ptr_var_init(const VarDecl *VD,
                               const MatchFinder::MatchResult &Result) {
-    auto *rhs = Result.Nodes.getNodeAs<DeclRefExpr>("rhs");
+    auto *rhs = try_get_fn_value_declref(VD->getInit());
     if (!rhs || !VD->getType()->isFunctionPointerType()) {
       return;
     }
@@ -299,6 +308,27 @@ public:
     } else {
       UnmodFnOccurrences.push_back(std::make_pair(rhs, VD));
     }
+  }
+
+  const DeclRefExpr *try_get_fn_value_declref(const Expr *E) const {
+    if (!E) {
+      return nullptr;
+    }
+
+    while (E) {
+      E = E->IgnoreParenImpCasts();
+      if (const auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        return DRE;
+      }
+      if (const auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+          E = UO->getSubExpr();
+          continue;
+        }
+      }
+      break;
+    }
+    return nullptr;
   }
   
   void add_fn_ptr_type_loc(const DeclaratorDecl *DD) {
@@ -791,8 +821,7 @@ int main(int argc, const char **argv) {
       binaryOperator(
           hasOperatorName("="),
           hasLHS(declRefExpr(hasDeclaration(declaratorDecl().bind("lhs_dcrr_decl")))
-                     .bind("lhs")),
-          hasRHS(expr(ignoringImpCasts(declRefExpr().bind("rhs")))))
+                     .bind("lhs")))
           .bind("assign_to_declrefexpr"),
       &Callback);
 
@@ -800,8 +829,7 @@ int main(int argc, const char **argv) {
       binaryOperator(
           hasOperatorName("="),
           hasLHS(memberExpr(member(valueDecl().bind("lhs_value_decl")))
-                     .bind("lhs")),
-          hasRHS(expr(ignoringImpCasts(declRefExpr().bind("rhs")))))
+                     .bind("lhs")))
           .bind("assign_to_member"),
       &Callback);
 
@@ -821,13 +849,7 @@ int main(int argc, const char **argv) {
   // parameter declaration acts like the LHS of an assignment.
   Finder.addMatcher(
       callExpr(forEachArgumentWithParam(
-          expr(ignoringParenImpCasts(anyOf(
-              declRefExpr().bind("call_arg"),
-              unaryOperator(
-                  hasOperatorName("&"),
-                  hasUnaryOperand(ignoringParenImpCasts(
-                      declRefExpr().bind("call_arg"))))
-          ))),
+          expr().bind("call_arg_expr"),
           parmVarDecl(hasType(hasCanonicalType(
                                   pointerType(
                                       pointee(
@@ -845,7 +867,7 @@ int main(int argc, const char **argv) {
                   pointee(
                       functionType()
                   )))),
-          hasInitializer(expr(ignoringImpCasts(declRefExpr().bind("rhs")))))
+          hasInitializer(expr()))
           .bind("fn_ptr_var_with_init"),
       &Callback
   );
@@ -866,7 +888,9 @@ int main(int argc, const char **argv) {
       &Callback
   );
 
-  Finder.addMatcher(initListExpr(has(expr(ignoringImpCasts(declRefExpr()))))
+  Finder.addMatcher(initListExpr(has(expr(ignoringParenImpCasts(anyOf(
+                            declRefExpr(),
+                            unaryOperator(hasOperatorName("&")))))))
                         .bind("init_list_expr"),
                     &Callback);
 
