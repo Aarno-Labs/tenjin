@@ -1554,3 +1554,9 @@ def test_tractor_b2_organic_qmath_app(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_organic_underhanded_c_luggage_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/underhanded_c_luggage"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_tu_linkage_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_synthetic/tu_linkage"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)

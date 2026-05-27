@@ -109,6 +109,20 @@ public:
       return;
     }
 
+    if (auto *arg_expr = Result.Nodes.getNodeAs<Expr>("call_arg_expr")) {
+      if (arg_expr->getBeginLoc().isValid()) {
+        handle_call_arg_to_fn_ptr_param(arg_expr, Result);
+        return;
+      }
+    }
+
+    if (auto *VD = Result.Nodes.getNodeAs<VarDecl>("fn_ptr_var_with_init")) {
+      if (VD->getBeginLoc().isValid()) {
+        handle_fn_ptr_var_init(VD, Result);
+        return;
+      }
+    }
+
     if (auto *CE = Result.Nodes.getNodeAs<CallExpr>("called_fn_ptr_expr")) {
         if (auto* CFE = Result.Nodes.getNodeAs<Expr>("called_fn_expr")) {
           if (auto *CED = CFE->getReferencedDeclOfCallee()) {
@@ -166,7 +180,12 @@ public:
 
   void handle_assign_to_decl(const Stmt *D,
                              const MatchFinder::MatchResult &Result) {
-    auto *rhs = Result.Nodes.getNodeAs<DeclRefExpr>("rhs");
+    auto *BO = dyn_cast<BinaryOperator>(D);
+    if (!BO) {
+      return;
+    }
+
+    auto *rhs = try_get_fn_value_declref(BO->getRHS());
     if (rhs && rhs->getBeginLoc().isValid()) {
       std::string rhs_name = rhs->getNameInfo().getName().getAsString();
       bool was_mod_fn = is_modified_fn_name(rhs_name);
@@ -183,24 +202,12 @@ public:
       }
       
       if (lhs_dd && lhs_dd->getType()->isFunctionPointerType()) {
-          // Get the TypeSourceInfo for better location tracking
-          if (TypeSourceInfo *TSI = lhs_dd->getTypeSourceInfo()) {
-            // We should have a PointerTypeLoc because lhs_dd was a function pointer type
-            if (PointerTypeLoc PTL = TSI->getTypeLoc().getAs<PointerTypeLoc>()) {
-              TypeLoc FuncTL = PTL.getPointeeLoc();
-
-              FunctionTypeLoc FTL;
-              if (try_find_fn_ptr_TL(FuncTL, FTL)) {
-                if (was_mod_fn) {
-                    FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
-                    ModifyingDeclIDs.insert(lhs_dd);
-                } else {
-                    // found a non-modified function occurrence; record its location
-                    // and the targeted declaration, so we can correlate in phase 2.
-                    UnmodFnOccurrences.push_back(std::make_pair(rhs, lhs_dd));
-                }
-              }
-            }
+          if (was_mod_fn) {
+              mark_modified_fn_ptr_decl(lhs_dd);
+          } else {
+              // found a non-modified function occurrence; record its location
+              // and the targeted declaration, so we can correlate in phase 2.
+              UnmodFnOccurrences.push_back(std::make_pair(rhs, lhs_dd));
           }
       }
     }
@@ -211,8 +218,7 @@ public:
     SmallVector<InitListOccurrence> field_nums;
 
     for (unsigned i = 0; i < ILE->getNumInits(); ++i) {
-      const Expr *e = ILE->getInit(i)->IgnoreParenCasts();
-      if (const DeclRefExpr *dre = dyn_cast<DeclRefExpr>(e)) {
+      if (const DeclRefExpr *dre = try_get_fn_value_declref(ILE->getInit(i))) {
         std::string name = dre->getDecl()->getNameAsString();
         if (is_modified_fn_name(name)) {
           field_nums.push_back(InitListOccurrence { .idx = i, .dre = dre, .dre_fn_was_mod = true });
@@ -237,8 +243,7 @@ public:
           FunctionTypeLoc FTL;
           if (try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
               if (field_nums[i].dre_fn_was_mod) {
-                FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
-                ModifyingDeclIDs.insert(TargetField);
+                mark_modified_fn_ptr_decl(TargetField);
               } else {
                 // found a non-modified function occurrence; record its location
                 // and the targeted declaration, so we can correlate in phase 2.
@@ -253,6 +258,114 @@ public:
         }
       }
     }
+  }
+
+  // Handles a function name being passed as an argument to a function-pointer
+  // parameter. The parameter declaration is the targeted decl, mirroring how
+  // member/declref assignment LHSes are treated.
+  void handle_call_arg_to_fn_ptr_param(const Expr *arg_expr,
+                                       const MatchFinder::MatchResult &Result) {
+    auto *arg_dre = try_get_fn_value_declref(arg_expr);
+    if (!arg_dre) {
+      return;
+    }
+
+    std::string arg_name = arg_dre->getNameInfo().getName().getAsString();
+    bool was_mod_fn = is_modified_fn_name(arg_name);
+    bool was_unmod_fn = is_unmodified_fn_name(arg_name);
+    if (!was_mod_fn && !was_unmod_fn) {
+      return;
+    }
+
+    auto *param = Result.Nodes.getNodeAs<ParmVarDecl>("call_param");
+    if (!param || !param->getType()->isFunctionPointerType()) {
+      return;
+    }
+
+    if (was_mod_fn) {
+      mark_modified_fn_ptr_decl(param);
+    } else {
+      UnmodFnOccurrences.push_back(std::make_pair(arg_dre, param));
+    }
+  }
+
+  void handle_fn_ptr_var_init(const VarDecl *VD,
+                              const MatchFinder::MatchResult &Result) {
+    auto *rhs = try_get_fn_value_declref(VD->getInit());
+    if (!rhs || !VD->getType()->isFunctionPointerType()) {
+      return;
+    }
+
+    std::string rhs_name = rhs->getNameInfo().getName().getAsString();
+    bool was_mod_fn = is_modified_fn_name(rhs_name);
+    bool was_unmod_fn = is_unmodified_fn_name(rhs_name);
+    if (!was_mod_fn && !was_unmod_fn) {
+      return;
+    }
+
+    if (was_mod_fn) {
+      mark_modified_fn_ptr_decl(VD);
+    } else {
+      UnmodFnOccurrences.push_back(std::make_pair(rhs, VD));
+    }
+  }
+
+  const DeclRefExpr *try_get_fn_value_declref(const Expr *E) const {
+    if (!E) {
+      return nullptr;
+    }
+
+    while (E) {
+      E = E->IgnoreParenImpCasts();
+      if (const auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        return DRE;
+      }
+      if (const auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->getOpcode() == UO_AddrOf) {
+          E = UO->getSubExpr();
+          continue;
+        }
+      }
+      break;
+    }
+    return nullptr;
+  }
+  
+  void add_fn_ptr_type_loc(const DeclaratorDecl *DD) {
+    TypeSourceInfo *TSI = DD->getTypeSourceInfo();
+    if (!TSI) {
+      return;
+    }
+
+    FunctionTypeLoc FTL;
+    if (!try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
+      return;
+    }
+
+    FnPtrTypeOpenParens[FTL.getLParenLoc()] = FTL.getRParenLoc();
+  }
+
+  void mark_modified_fn_ptr_decl(const DeclaratorDecl *DD) {
+    if (auto *VD = dyn_cast<VarDecl>(DD)) {
+      for (const VarDecl *Redecl : VD->redecls()) {
+        if (Redecl->getType()->isFunctionPointerType()) {
+          add_fn_ptr_type_loc(Redecl);
+        }
+      }
+    } else {
+      add_fn_ptr_type_loc(DD);
+    }
+    ModifyingDeclIDs.insert(canonicalize_decl_for_matching(DD));
+  }
+
+  const DeclaratorDecl *canonicalize_decl_for_matching(const DeclaratorDecl *DD) const {
+    if (auto *VD = dyn_cast<VarDecl>(DD)) {
+      return VD->getCanonicalDecl();
+    }
+    if (auto *FD = dyn_cast<FunctionDecl>(DD)) {
+      return FD->getCanonicalDecl();
+    }
+    return DD;
   }
 
   bool try_find_fn_ptr_TL(TypeLoc TL, FunctionTypeLoc& FTL) {
@@ -311,7 +424,7 @@ public:
     collectMappedRangesByFile(byFile_ho_fnptr_args, FnPtrTypeOpenParens_PotentiallyMod);
 
     for (auto &dre_dd : UnmodFnOccurrences) {
-        if (ModifyingDeclIDs.count(dre_dd.second) > 0) {
+        if (ModifyingDeclIDs.count(canonicalize_decl_for_matching(dre_dd.second)) > 0) {
             auto F = SM->getFilename(dre_dd.first->getLocation());
             byFile_wrappers[F].push_back(
                     fmtJSONDictForUnmodFnOccWrapper(dre_dd));
@@ -708,8 +821,7 @@ int main(int argc, const char **argv) {
       binaryOperator(
           hasOperatorName("="),
           hasLHS(declRefExpr(hasDeclaration(declaratorDecl().bind("lhs_dcrr_decl")))
-                     .bind("lhs")),
-          hasRHS(expr(ignoringImpCasts(declRefExpr().bind("rhs")))))
+                     .bind("lhs")))
           .bind("assign_to_declrefexpr"),
       &Callback);
 
@@ -717,8 +829,7 @@ int main(int argc, const char **argv) {
       binaryOperator(
           hasOperatorName("="),
           hasLHS(memberExpr(member(valueDecl().bind("lhs_value_decl")))
-                     .bind("lhs")),
-          hasRHS(expr(ignoringImpCasts(declRefExpr().bind("rhs")))))
+                     .bind("lhs")))
           .bind("assign_to_member"),
       &Callback);
 
@@ -731,6 +842,33 @@ int main(int argc, const char **argv) {
                                       )))
                                   ).bind("called_fn_expr"))
               ).bind("called_fn_ptr_expr"),
+      &Callback
+  );
+
+  // Function-name arguments passed to function-pointer parameters: the
+  // parameter declaration acts like the LHS of an assignment.
+  Finder.addMatcher(
+      callExpr(forEachArgumentWithParam(
+          expr().bind("call_arg_expr"),
+          parmVarDecl(hasType(hasCanonicalType(
+                                  pointerType(
+                                      pointee(
+                                          functionType()
+                                      )
+                                  ))))
+              .bind("call_param"))),
+      &Callback
+  );
+
+  Finder.addMatcher(
+      varDecl(
+          hasType(hasCanonicalType(
+              pointerType(
+                  pointee(
+                      functionType()
+                  )))),
+          hasInitializer(expr()))
+          .bind("fn_ptr_var_with_init"),
       &Callback
   );
 
@@ -750,7 +888,9 @@ int main(int argc, const char **argv) {
       &Callback
   );
 
-  Finder.addMatcher(initListExpr(has(expr(ignoringImpCasts(declRefExpr()))))
+  Finder.addMatcher(initListExpr(has(expr(ignoringParenImpCasts(anyOf(
+                            declRefExpr(),
+                            unaryOperator(hasOperatorName("&")))))))
                         .bind("init_list_expr"),
                     &Callback);
 

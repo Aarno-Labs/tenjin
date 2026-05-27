@@ -416,6 +416,34 @@ def collect_cursors_by_loc(
     return by_loc
 
 
+def unwrap_call_callee_expr(c: Cursor) -> Cursor:
+    while c.kind in (CursorKind.UNEXPOSED_EXPR, CursorKind.PAREN_EXPR):
+        children = list(c.get_children())
+        if len(children) != 1:
+            break
+        c = children[0]
+    return c
+
+
+def direct_call_callee_name(call_expr: Cursor) -> tenj_types.CIdentifier | None:
+    if call_expr.kind != CursorKind.CALL_EXPR:
+        return None
+
+    callee_expr = next(call_expr.get_children(), None)
+    if callee_expr is None:
+        return None
+
+    callee_expr = unwrap_call_callee_expr(callee_expr)
+    referenced_decl = callee_expr.referenced
+    if referenced_decl is None or referenced_decl.kind != CursorKind.FUNCTION_DECL:
+        return None
+
+    if callee_expr.type.kind not in (TypeKind.FUNCTIONPROTO, TypeKind.FUNCTIONNOPROTO):
+        return None
+
+    return referenced_decl.spelling
+
+
 def duplicates_within(lst: list[str]) -> set[str]:
     seen = set()
     duplicates = set()
@@ -640,6 +668,14 @@ def localize_mutable_globals_phase1(
             # We need to use libclang to find the exact offset
             found_call = False
             for cursor in call_expr_cursors_by_loc.get((line, col, i_file_path), []):
+                direct_callee = direct_call_callee_name(cursor)
+                if direct_callee is not None and direct_callee not in nonmain_tissue_functions:
+                    # Mixed call-graph components can include both direct calls to
+                    # non-tissue functions and indirect calls that do need wrappers.
+                    # Only the former are safe to leave unchanged here.
+                    found_call = True
+                    break
+
                 # Read file to find parenthesis
                 content = rewriter.get_content(i_file_path)
 
