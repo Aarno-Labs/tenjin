@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from clang.cindex import CursorKind  # type: ignore
+
 import c_refact
 import c_refact_type_mod_replicator
 import compilation_database
@@ -93,3 +95,88 @@ def test_findfnptrdecls_tracks_call_args_to_fnptr_params(root, tmp_codebase):
     assert wrapper["suffix"] == "_xjw"
     assert wrapper["occ_offsets"] == [source.index("apply(bar, 2)") + len("apply(")]
     assert "bar_xjw(struct XjGlobals*, int x)" in wrapper["wrapper_defn"]
+
+
+def test_localize_mutable_globals_phase1_skips_direct_calls_to_nontissue_functions(
+    root, tmp_codebase
+):
+    current_codebase = tmp_codebase
+    prev_codebase = tmp_codebase.parent / "prev_codebase"
+    current_codebase.mkdir()
+    prev_codebase.mkdir()
+
+    source = (
+        "int target(int x) { return x + 1; }\n"
+        "int tissue(int (*f)(int), int x) { return x ? f(x) : target(x); }\n"
+        "int caller(void) { return tissue(&target, ((target)(1))); }\n"
+    )
+    current_file = current_codebase / "sample.nolines.i"
+    prev_file = prev_codebase / "sample.nolines.i"
+    current_file.write_text(source, encoding="utf-8")
+    prev_file.write_text(source, encoding="utf-8")
+    write_compile_commands_for_sources(current_codebase, [current_file])
+
+    compdb = compilation_database.CompileCommands.from_json_file(
+        current_codebase / "compile_commands.json"
+    )
+    tus = c_refact.parse_project(create_xj_clang_index(), compdb)
+    call_exprs_by_loc = c_refact.collect_cursors_by_loc(tus, [CursorKind.CALL_EXPR])
+
+    direct_sites_by_name: dict[str, list[tuple[int, int]]] = {}
+    for (line, col, filepath), cursors in call_exprs_by_loc.items():
+        if filepath != current_file.as_posix():
+            continue
+        for cursor in cursors:
+            name = c_refact.direct_call_callee_name(cursor)
+            if name in {"target", "tissue"}:
+                direct_sites_by_name.setdefault(name, []).append((line, col))
+
+    direct_sites = {name: max(sites) for name, sites in direct_sites_by_name.items() if sites}
+
+    j = {
+        "mutated_globals": [],
+        "escaped_globals": [],
+        "call_graph_components": [
+            {
+                "call_sites": [
+                    {
+                        "line": direct_sites["tissue"][0],
+                        "col": direct_sites["tissue"][1],
+                        "p": "caller",
+                        "uf": "sample",
+                    },
+                    {
+                        "line": direct_sites["target"][0],
+                        "col": direct_sites["target"][1],
+                        "p": "caller",
+                        "uf": "sample",
+                    },
+                ],
+                "call_targets": ["<llvm-link>:tissue", "<llvm-link>:target"],
+                "all_mutable": True,
+            }
+        ],
+        "unique_filenames": {
+            "sample": {
+                "directory": prev_codebase.as_posix(),
+                "filename": "sample.nolines.i",
+            }
+        },
+        "mutable_global_tissue": {"tissue": ["tissue"]},
+        "global_initializer_references": {},
+    }
+
+    c_refact.localize_mutable_globals_phase1(
+        compdb=compdb,
+        j=j,
+        current_codebase=current_codebase,
+        prev=prev_codebase,
+        nonmain_tissue_functions={"tissue"},
+    )
+
+    rewritten = current_file.read_text(encoding="utf-8")
+    assert "int tissue(struct XjGlobals *xjg, int (*f)(int), int x)" in rewritten
+    assert "return tissue(((struct XjGlobals*)0), &target, ((target)(1)));" in rewritten
+    assert "target(((struct XjGlobals*)0), x)" not in rewritten
+    assert "target(((struct XjGlobals*)0), 1)" not in rewritten
+    assert "((target)(((struct XjGlobals*)0), 1))" not in rewritten
