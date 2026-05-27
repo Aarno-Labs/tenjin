@@ -668,6 +668,14 @@ def localize_mutable_globals_phase1(
             # We need to use libclang to find the exact offset
             found_call = False
             for cursor in call_expr_cursors_by_loc.get((line, col, i_file_path), []):
+                direct_callee = direct_call_callee_name(cursor)
+                if direct_callee is not None and direct_callee not in nonmain_tissue_functions:
+                    # Mixed call-graph components can include both direct calls to
+                    # non-tissue functions and indirect calls that do need wrappers.
+                    # Only the former are safe to leave unchanged here.
+                    found_call = True
+                    break
+
                 # Read file to find parenthesis
                 content = rewriter.get_content(i_file_path)
 
