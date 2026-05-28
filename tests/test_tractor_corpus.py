@@ -28,7 +28,7 @@ def tractor_tests_git_clone_for(case_dir: str) -> Path:
         # so the https URL won't work.
         return cached_git_clone_at_commit(
             "git@github.com:Aarno-Labs/DARPA-TRACTOR-Program__Test-Corpus.git",
-            "6edd4fa0c1b9fccf4812172ed41b73f56dd37925",
+            "e1777ab957f035d40eaf20586c157baca04437f5",
         )
     return cached_git_clone_at_commit(
         "https://github.com/DARPA-TRACTOR-Program/PUBLIC-Test-Corpus.git",
