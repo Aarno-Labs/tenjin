@@ -64,6 +64,57 @@ def test_findfnptrdecls_marks_initialized_fnptr_vars_for_cross_tu_replication(ro
     ), replicated
 
 
+def test_localize_mutable_globals_phase1_clones_typedef_backed_field_types(root, tmp_codebase):
+    current_codebase = tmp_codebase
+    prev_codebase = tmp_codebase.parent / "prev_codebase"
+    current_codebase.mkdir()
+    prev_codebase.mkdir()
+
+    shared_defs = "typedef int (*callback_t)(int);\nstruct Holder { callback_t cb; };\n"
+    a_source = shared_defs + "int foo(int x) { return x + 1; }\nstruct Holder holder = { foo };\n"
+    b_source = (
+        shared_defs + "extern struct Holder holder;\n" + "int use(void) { return holder.cb(7); }\n"
+    )
+    a_current = current_codebase / "a.c"
+    b_current = current_codebase / "b.c"
+    a_prev = prev_codebase / "a.c"
+    b_prev = prev_codebase / "b.c"
+    for path, source in (
+        (a_current, a_source),
+        (b_current, b_source),
+        (a_prev, a_source),
+        (b_prev, b_source),
+    ):
+        path.write_text(source, encoding="utf-8")
+    write_compile_commands_for_sources(current_codebase, [a_current, b_current])
+
+    c_refact.localize_mutable_globals_phase1(
+        compdb=compilation_database.CompileCommands.from_json_file(
+            current_codebase / "compile_commands.json"
+        ),
+        j={
+            "mutated_globals": [],
+            "escaped_globals": [],
+            "call_graph_components": [],
+            "unique_filenames": {},
+            "mutable_global_tissue": {"tissue": ["foo"]},
+            "global_initializer_references": {},
+        },
+        current_codebase=current_codebase,
+        prev=prev_codebase,
+        nonmain_tissue_functions={"foo"},
+    )
+
+    rewritten_a = a_current.read_text(encoding="utf-8")
+    rewritten_b = b_current.read_text(encoding="utf-8")
+
+    for rewritten in (rewritten_a, rewritten_b):
+        assert "typedef int (*callback_t)(int);" in rewritten
+        assert "typedef int (*callback_t_xjtp)(struct XjGlobals *, int);" in rewritten
+        assert "typedef int (*callback_t)(struct XjGlobals *, int);" not in rewritten
+        assert "struct Holder { callback_t_xjtp cb; };" in rewritten
+
+
 def test_findfnptrdecls_tracks_call_args_to_fnptr_params(root, tmp_codebase):
     tmp_codebase.mkdir()
     callbacks_c = tmp_codebase / "callbacks.c"

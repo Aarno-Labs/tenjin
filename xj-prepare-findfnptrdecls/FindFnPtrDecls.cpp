@@ -80,6 +80,12 @@ struct InitListOccurrence {
    bool dre_fn_was_mod; 
 };
 
+struct TypedefBackedFnPtrUseInfo {
+  std::string written_typedef_name;
+  SourceLocation written_name_loc;
+  std::string clone_source_typedef_name;
+};
+
 class FindFnPtrDeclsCallback : public MatchFinder::MatchCallback {
 public:
   FindFnPtrDeclsCallback(ExecutionContext &Context)
@@ -165,6 +171,20 @@ public:
               [SM->getFilename(VD->getLocation())]
               [VD->getNameAsString()] =
                   SM->getFileOffset(FTL.getLParenLoc());
+        }
+      }
+      return;
+    }
+
+    auto *TD = Result.Nodes.getNodeAs<TypedefDecl>("fn_ptr_typedef_decl");
+    if (TD && TD->getBeginLoc().isValid()) {
+      auto *TSI = TD->getTypeSourceInfo();
+      if (TSI) {
+        FunctionTypeLoc FTL;
+        if (try_find_direct_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
+          auto F = SM->getFilename(TD->getLocation());
+          byFile_fnptr_typedefdecls[F].push_back(
+              fmtJSONDictForFnPtrTypedefDecl(TD, FTL));
         }
       }
       return;
@@ -337,6 +357,14 @@ public:
       return;
     }
 
+    TypedefBackedFnPtrUseInfo typedef_use;
+    if (try_find_typedef_backed_fn_ptr_use(TSI->getTypeLoc(), typedef_use)) {
+      auto F = SM->getFilename(typedef_use.written_name_loc);
+      byFile_modified_typedef_uses[F].push_back(
+          fmtJSONDictForModifiedTypedefUse(typedef_use));
+      return;
+    }
+
     FunctionTypeLoc FTL;
     if (!try_find_fn_ptr_TL(TSI->getTypeLoc(), FTL)) {
       return;
@@ -395,6 +423,85 @@ public:
       if (TL.isNull())
         break; // defensive
     }
+    return false;
+  }
+
+  bool try_find_direct_fn_ptr_TL(TypeLoc TL, FunctionTypeLoc& FTL) {
+    while (1) {
+      if (TL.getAs<TypedefTypeLoc>()) {
+        break;
+      }
+
+      if (auto FPTL = TL.getAs<FunctionProtoTypeLoc>()) {
+        FTL = TL.getAs<FunctionTypeLoc>();
+        return true;
+      }
+      if (auto FNPL = TL.getAs<FunctionNoProtoTypeLoc>()) {
+        FTL = TL.getAs<FunctionTypeLoc>();
+        return true;
+      }
+
+      TL = TL.getNextTypeLoc();
+      if (TL.isNull())
+        break;
+    }
+    return false;
+  }
+
+  bool try_find_typedef_backed_fn_ptr_use(TypeLoc TL,
+                                          TypedefBackedFnPtrUseInfo &UseInfo) {
+    const TypedefNameDecl *WrittenTypedef = nullptr;
+    SourceLocation WrittenTypedefNameLoc;
+    const TypedefNameDecl *CloneSourceTypedef = nullptr;
+
+    while (1) {
+      if (auto TDTL = TL.getAs<TypedefTypeLoc>()) {
+        if (!WrittenTypedef) {
+          WrittenTypedef = TDTL.getTypedefNameDecl();
+          WrittenTypedefNameLoc = TDTL.getNameLoc();
+        }
+
+        if (const TypedefNameDecl *TD = TDTL.getTypedefNameDecl()) {
+          if (TypeSourceInfo *TSI = TD->getTypeSourceInfo()) {
+            FunctionTypeLoc DirectFTL;
+            if (try_find_direct_fn_ptr_TL(TSI->getTypeLoc(), DirectFTL)) {
+              CloneSourceTypedef = TD;
+            }
+            TL = TSI->getTypeLoc();
+            continue;
+          }
+        }
+        break;
+      }
+
+      if (auto FPTL = TL.getAs<FunctionProtoTypeLoc>()) {
+        if (!WrittenTypedef || !CloneSourceTypedef) {
+          return false;
+        }
+        UseInfo = TypedefBackedFnPtrUseInfo{
+            .written_typedef_name = WrittenTypedef->getNameAsString(),
+            .written_name_loc = WrittenTypedefNameLoc,
+            .clone_source_typedef_name = CloneSourceTypedef->getNameAsString(),
+        };
+        return true;
+      }
+      if (auto FNPL = TL.getAs<FunctionNoProtoTypeLoc>()) {
+        if (!WrittenTypedef || !CloneSourceTypedef) {
+          return false;
+        }
+        UseInfo = TypedefBackedFnPtrUseInfo{
+            .written_typedef_name = WrittenTypedef->getNameAsString(),
+            .written_name_loc = WrittenTypedefNameLoc,
+            .clone_source_typedef_name = CloneSourceTypedef->getNameAsString(),
+        };
+        return true;
+      }
+
+      TL = TL.getNextTypeLoc();
+      if (TL.isNull())
+        break;
+    }
+
     return false;
   }
 
@@ -524,6 +631,71 @@ public:
       return rv;
   }
 
+  std::string fmtJSONDictForModifiedTypedefUse(const TypedefBackedFnPtrUseInfo &UseInfo) {
+      std::string rv;
+      llvm::raw_string_ostream sout(rv);
+      sout << "{ \"written_typedef_name\": \"" << UseInfo.written_typedef_name << "\""
+           << ", \"use_offset\": " << SM->getFileOffset(UseInfo.written_name_loc)
+           << ", \"clone_source_typedef_name\": \"" << UseInfo.clone_source_typedef_name
+           << "\" }";
+      return rv;
+  }
+
+  std::string fmtJSONDictForFnPtrTypedefDecl(const TypedefDecl *TD,
+                                             const FunctionTypeLoc &FTL) {
+      std::string rv;
+      llvm::raw_string_ostream sout(rv);
+
+      SourceLocation post_loc =
+          Lexer::findLocationAfterToken(
+              TD->getEndLoc(),
+              tok::semi,
+              *SM,
+              Ctx->getLangOpts(),
+              /*SkipTrailingWhitespaceAndNewline=*/ false);
+      if (post_loc.isInvalid()) {
+          post_loc = TD->getEndLoc().getLocWithOffset(1);
+      }
+
+      sout << "{ \"name\": \"" << TD->getNameAsString() << "\""
+           << ", \"def_start_offset\": " << SM->getFileOffset(TD->getBeginLoc())
+           << ", \"decl_post_offset\": " << SM->getFileOffset(post_loc)
+           << ", \"name_offset\": " << SM->getFileOffset(TD->getLocation())
+           << ", \"lparen_offset\": " << SM->getFileOffset(FTL.getLParenLoc())
+           << ", \"rparen_offset\": " << SM->getFileOffset(FTL.getRParenLoc())
+           << " }";
+      return rv;
+  }
+
+  void emitJSONDictForPerFilePreformattedJsonStrs(
+      StringMap<SmallVector<std::string>> &byFileJsonStrs) {
+      llvm::outs() << "{" << "\n";
+      bool firstfile = true;
+      for (auto &[F, PreformattedJsonStrs] : byFileJsonStrs) {
+        if (!firstfile) {
+          llvm::outs() << ",\n";
+        } else {
+          firstfile = false;
+        }
+
+        llvm::outs() << "\"" << F << "\""
+                     << ":" << "\n"
+                     << "[";
+
+        bool first = true;
+        for (auto S : PreformattedJsonStrs) {
+          if (!first) {
+            llvm::outs() << ", ";
+          } else {
+            first = false;
+          }
+          llvm::outs() << S;
+        }
+        llvm::outs() << "]";
+      }
+      llvm::outs() << "}" << "\n";
+  }
+
   std::string fmtJSONDictForUnmodFnOccWrapper(std::pair<const DeclRefExpr*, const DeclaratorDecl*> p) {
       std::string rv;
       llvm::raw_string_ostream sout(rv);
@@ -566,31 +738,7 @@ public:
   //       "<FILEPATH_2>":[...], ... }
   // ```
   void emitJSONDictForUnmodFnOccWrappers() {
-      llvm::outs() << "{" << "\n";
-      bool firstfile = true;
-      for (auto &[F, PreformattedJsonStrs] : byFile_wrappers) {
-        if (!firstfile) {
-          llvm::outs() << ",\n";
-        } else {
-          firstfile = false;
-        }
-
-        llvm::outs() << "\"" << F << "\""
-                     << ":" << "\n"
-                     << "[";
-
-        bool first = true;
-        for (auto S : PreformattedJsonStrs) {
-          if (!first) {
-            llvm::outs() << ", ";
-          } else {
-            first = false;
-          }
-          llvm::outs() << S;
-        }
-        llvm::outs() << "]";
-      }
-      llvm::outs() << "}" << "\n";
+      emitJSONDictForPerFilePreformattedJsonStrs(byFile_wrappers);
   }
 
 
@@ -665,6 +813,14 @@ public:
       llvm::outs() << "}" << "\n";
   }
 
+  void emitJSONDictForModifiedTypedefUses() {
+      emitJSONDictForPerFilePreformattedJsonStrs(byFile_modified_typedef_uses);
+  }
+
+  void emitJSONDictForFnPtrTypedefDecls() {
+      emitJSONDictForPerFilePreformattedJsonStrs(byFile_fnptr_typedefdecls);
+  }
+
   void emitJSONListOfGlobalsWithoutInitializers() {
       llvm::outs() << "[";
       bool first = true;
@@ -719,6 +875,12 @@ private:
   // lparen location, and only support edits directly there.
   StringMap<StringMap<int>>
       byFile_fnptr_vardecls_lparen; // file -> varname -> offset of lparen
+
+  StringMap<SmallVector<std::string>>
+      byFile_modified_typedef_uses;
+
+  StringMap<SmallVector<std::string>>
+      byFile_fnptr_typedefdecls;
 
   StringMap<SmallVector<std::string>>
       byFile_wrappers;
@@ -884,6 +1046,18 @@ int main(int argc, const char **argv) {
   );
 
   Finder.addMatcher(
+      typedefDecl(
+          hasParent(translationUnitDecl()),
+          hasType(hasCanonicalType(
+              pointerType(
+                  pointee(
+                      functionType()
+                  )))))
+          .bind("fn_ptr_typedef_decl"),
+      &Callback
+  );
+
+  Finder.addMatcher(
       varDecl(hasGlobalStorage()).bind("global_var_decl"),
       &Callback
   );
@@ -907,6 +1081,12 @@ int main(int argc, const char **argv) {
   llvm::outs() << "{\n";
   llvm::outs() << "\"modified_fn_ptr_type_locs\": ";
   Callback.emitJSONDictForModifiedFnPtrTypeLocs();
+  llvm::outs() << ",\n";
+  llvm::outs() << "\"modified_fn_ptr_typedef_uses\": ";
+  Callback.emitJSONDictForModifiedTypedefUses();
+  llvm::outs() << ",\n";
+  llvm::outs() << "\"fn_ptr_typedef_decls\": ";
+  Callback.emitJSONDictForFnPtrTypedefDecls();
   llvm::outs() << ",\n";
   llvm::outs() << "\"unmod_fn_occ_wrappers\": ";
   Callback.emitJSONDictForUnmodFnOccWrappers();
