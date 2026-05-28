@@ -950,7 +950,6 @@ def test_tractor_b1_synthetic_032_app(tenjin_fixtures: TenjinFixtures):
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
 
 
-@pytest.mark.skip(reason="need to pull in fixes for bitfields from upstream c2rust")
 @pytest.mark.slow
 def test_tractor_b1_synthetic_033_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/033_bitfield"
