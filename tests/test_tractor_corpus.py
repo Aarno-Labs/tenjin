@@ -1569,6 +1569,12 @@ def test_tractor_b2_synthetic_pointer_comparison_ascii_art_app(tenjin_fixtures: 
 
 
 @pytest.mark.slow
+def test_tractor_b2_synthetic_static_vars_fpts_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_synthetic/static_vars_fpts"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_synthetic_strcmp_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/strcmp"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
