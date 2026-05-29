@@ -16,6 +16,7 @@ import repo_root
 import provisioning
 import hermetic
 import translation
+import translation_multi_config
 import cli_subcommands
 import covset
 from tenj_types import ResolvedPath, style_path, style_flag, UserFacingError
@@ -114,8 +115,27 @@ def cli():
     metavar="VAR=VALUE",
     help="Set a CMake cache variable (e.g. MY_OPTION=ON). May be specified multiple times.",
 )
+@click.option(
+    "--config",
+    default=None,
+    help="Path to configuration.json for multi-config translation. "
+         "Auto-detected as <codebase>/configuration.json if present.",
+)
+@click.option(
+    "--jobs",
+    default=1,
+    show_default=True,
+    help="Number of parallel translations when running multi-config mode.",
+)
+@click.option(
+    "--crat-merge",
+    "crat_merge",
+    default=None,
+    help="Path to the crat-merge binary (required when configuration.json is used).",
+)
 def translate(
-    codebase, resultsdir, cratename, guidance, buildcmd, reset_resultsdir, do_not_refactor, cmake_define
+    codebase, resultsdir, cratename, guidance, buildcmd, reset_resultsdir, do_not_refactor, cmake_define,
+    config, jobs, crat_merge,
 ):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
@@ -159,6 +179,44 @@ def translate(
             return p
         return Path(codebase) / p
 
+    resolved_do_not_refactor = [resolve_within_codebase(p) for p in do_not_refactor]
+
+    # Detect multi-config mode: explicit --config flag or auto-detected configuration.json
+    if config is not None:
+        config_path = Path(config)
+        if not config_path.exists():
+            click.echo(f"Error: --config path {config_path} does not exist.", err=True)
+            sys.exit(1)
+    else:
+        config_path = Path(codebase) / "configuration.json"
+        config_path = config_path if config_path.exists() else None
+
+    if config_path is not None:
+        if crat_merge is None:
+            click.echo(
+                "Error: --crat-merge is required when translating with a configuration.json.",
+                err=True,
+            )
+            sys.exit(1)
+        try:
+            translation_multi_config.do_translate_multi_config(
+                root,
+                Path(codebase),
+                resultsdir,
+                config_path,
+                cratename,
+                guidance,
+                resolved_do_not_refactor,
+                buildcmd,
+                list(cmake_define),
+                jobs,
+                Path(crat_merge),
+            )
+        except UserFacingError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        return
+
     try:
         translation.do_translate(
             root,
@@ -166,7 +224,7 @@ def translate(
             resultsdir,
             cratename,
             guidance,
-            [resolve_within_codebase(p) for p in do_not_refactor],
+            resolved_do_not_refactor,
             buildcmd,
             list(cmake_define),
         )
