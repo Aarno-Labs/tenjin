@@ -249,6 +249,14 @@ def build_rs():
 
 
 @cli.command()
+def build_star():
+    try:
+        cli_subcommands.do_build_star()
+    except subprocess.CalledProcessError:
+        sys.exit(1)
+
+
+@cli.command()
 def check_rs():
     try:
         cli_subcommands.do_check_rs()

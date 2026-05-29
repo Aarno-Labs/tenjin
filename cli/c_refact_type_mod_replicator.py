@@ -135,12 +135,17 @@ def replicate_type_modifications(
             ).append(defn)
 
     new_rewrites: dict[TranslationUnitPath, list[tuple[int, int, str]]] = {}
+    seen_rewrites: dict[TranslationUnitPath, set[tuple[int, int, str]]] = {}
+
+    def add_rewrite(filepath: TranslationUnitPath, rewrite: tuple[int, int, str]) -> None:
+        if rewrite in seen_rewrites.setdefault(filepath, set()):
+            return
+        seen_rewrites[filepath].add(rewrite)
+        new_rewrites.setdefault(filepath, []).append(rewrite)
 
     for filepath, file_rewrites in rewrites.items():
-        if filepath not in new_rewrites:
-            new_rewrites[filepath] = []
         for offset, length, replacement_text in file_rewrites:
-            new_rewrites[filepath].append((offset, length, replacement_text))
+            add_rewrite(filepath, (offset, length, replacement_text))
 
             # Check if this rewrite overlaps any type definitions
             for opaque_key, definitions_for_filepath_and_key in type_definitions_by_file.get(
@@ -174,11 +179,10 @@ def replicate_type_modifications(
                         # Compute corresponding offset in the other definition
                         relative_offset = rewrite_start - def_start
                         other_offset = other_defn.def_start + relative_offset
-                        new_rewrites.setdefault(other_defn.filepath, []).append((
-                            other_offset,
-                            length,
-                            replacement_text,
-                        ))
+                        add_rewrite(
+                            other_defn.filepath,
+                            (other_offset, length, replacement_text),
+                        )
     return new_rewrites
 
 
