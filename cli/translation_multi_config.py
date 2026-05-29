@@ -128,9 +128,7 @@ def workspace_without_members(cargo: dict) -> dict:
     return d
 
 
-def intra_ws_dep_keys(
-    cargo: dict, member_abs: Path, ws_abs_set: set[Path]
-) -> set[tuple[str, str]]:
+def intra_ws_dep_keys(cargo: dict, member_abs: Path, ws_abs_set: set[Path]) -> set[tuple[str, str]]:
     result: set[tuple[str, str]] = set()
     for section in DEP_SECTIONS:
         for dep_name, spec in cargo.get(section, {}).items():
@@ -384,8 +382,7 @@ def run_merge(
             member_map.setdefault(member_key, []).append((entry, member_abs))
 
     entry_to_ws_abs: dict[int, set[Path]] = {
-        id(entry): ws_abs
-        for entry, ws_abs in zip(inputs_entries, per_entry_ws_abs)
+        id(entry): ws_abs for entry, ws_abs in zip(inputs_entries, per_entry_ws_abs)
     }
 
     all_members = sorted(member_map)
@@ -426,9 +423,7 @@ def run_merge(
     if toolchain_contents:
         unique = set(toolchain_contents.values())
         if len(unique) > 1:
-            raise UserFacingError(
-                "rust-toolchain.toml files differ across workspace members"
-            )
+            raise UserFacingError("rust-toolchain.toml files differ across workspace members")
         canonical_toolchain = next(iter(unique))
         (merged_dir / "rust-toolchain.toml").write_text(canonical_toolchain)
         for member in toolchain_contents:

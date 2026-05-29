@@ -559,7 +559,9 @@ def run_preparation_passes(
 
     def prep_01_intercept_build(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         builddir = resultsdir / "_build_1"
-        compute_build_info_in(builddir, current_codebase, buildcmd, tracker, store.build_info, cmake_defines)
+        compute_build_info_in(
+            builddir, current_codebase, buildcmd, tracker, store.build_info, cmake_defines
+        )
 
         merged_defs = defaultdict(list)
 

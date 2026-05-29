@@ -119,7 +119,7 @@ def cli():
     "--config",
     default=None,
     help="Path to configuration.json for multi-config translation. "
-         "Auto-detected as <codebase>/configuration.json if present.",
+    "Auto-detected as <codebase>/configuration.json if present.",
 )
 @click.option(
     "--jobs",
@@ -134,8 +134,17 @@ def cli():
     help="Path to the crat-merge binary (required when configuration.json is used).",
 )
 def translate(
-    codebase, resultsdir, cratename, guidance, buildcmd, reset_resultsdir, do_not_refactor, cmake_define,
-    config, jobs, crat_merge,
+    codebase,
+    resultsdir,
+    cratename,
+    guidance,
+    buildcmd,
+    reset_resultsdir,
+    do_not_refactor,
+    cmake_define,
+    config,
+    jobs,
+    crat_merge,
 ):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
