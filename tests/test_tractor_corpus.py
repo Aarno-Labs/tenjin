@@ -28,7 +28,7 @@ def tractor_tests_git_clone_for(case_dir: str) -> Path:
         # so the https URL won't work.
         return cached_git_clone_at_commit(
             "git@github.com:Aarno-Labs/DARPA-TRACTOR-Program__Test-Corpus.git",
-            "6edd4fa0c1b9fccf4812172ed41b73f56dd37925",
+            "e1777ab957f035d40eaf20586c157baca04437f5",
         )
     return cached_git_clone_at_commit(
         "https://github.com/DARPA-TRACTOR-Program/PUBLIC-Test-Corpus.git",
@@ -950,7 +950,6 @@ def test_tractor_b1_synthetic_032_app(tenjin_fixtures: TenjinFixtures):
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
 
 
-@pytest.mark.skip(reason="need to pull in fixes for bitfields from upstream c2rust")
 @pytest.mark.slow
 def test_tractor_b1_synthetic_033_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/033_bitfield"
@@ -1345,6 +1344,12 @@ def test_tractor_b2_organic_gjk_lib(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
+def test_tractor_b2_organic_helxo_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/helxo_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_organic_hm_geti_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/hm_geti_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
@@ -1423,6 +1428,18 @@ def test_tractor_b2_organic_search_and_replace_lib(tenjin_fixtures: TenjinFixtur
 
 
 @pytest.mark.slow
+def test_tractor_b2_organic_sh_geti_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/sh_geti_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_sh_puts_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/sh_puts_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_organic_siphash_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/siphash_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
@@ -1431,6 +1448,24 @@ def test_tractor_b2_organic_siphash_lib(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow
 def test_tractor_b2_organic_spec_ray_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/spec_ray_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_str_dups_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/str_dups_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_str_put_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/str_put_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_organic_strdup_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_organic/strdup_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
 
 
@@ -1533,6 +1568,12 @@ def test_tractor_b2_synthetic_pointer_comparison_ascii_art_app(tenjin_fixtures: 
 
 
 @pytest.mark.slow
+def test_tractor_b2_synthetic_static_vars_fpts_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_synthetic/static_vars_fpts"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
 def test_tractor_b2_synthetic_strcmp_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/strcmp"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
@@ -1553,4 +1594,10 @@ def test_tractor_b2_organic_qmath_app(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow
 def test_tractor_b2_organic_underhanded_c_luggage_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/underhanded_c_luggage"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b2_synthetic_tu_linkage_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B02_synthetic/tu_linkage"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)

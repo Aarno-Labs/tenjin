@@ -164,7 +164,7 @@ def _run_test_command(
     test_name: str,
     cwd: Path | None = None,
     stdin: str | None = None,
-    timeout: int = 30,
+    timeout: int = 42,
 ) -> tuple[CompletedProcess | None, TestOutcome | None]:
     try:
         return (

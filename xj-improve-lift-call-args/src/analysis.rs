@@ -597,6 +597,21 @@ fn classify_expr(expr: &ast::Expr) -> (ExprForm, Option<Place>, String, Option<T
         ast::Expr::CallExpr(_) | ast::Expr::MethodCallExpr(_) => {
             (ExprForm::NestedCall, None, String::new(), None)
         }
+        ast::Expr::CastExpr(cast) => {
+            // For `&raw mut place as *mut T` and similar reference-to-raw-pointer
+            // casts, the cast result is Copy (no borrow lifetime escapes), but the
+            // inner `&`/`&mut`/`&raw mut` still imposes a borrow constraint on the
+            // place. Look through the cast to record that place so conflicts are
+            // detected. We keep form=Other so classify_lift chooses BindValue —
+            // binding the whole cast expression before the call is always safe.
+            if let Some(inner) = cast.expr()
+                && let ast::Expr::RefExpr(_) = &inner
+            {
+                let (_, place_opt, _, _) = classify_expr(&inner);
+                return (ExprForm::Other, place_opt, String::new(), None);
+            }
+            (ExprForm::Other, None, String::new(), None)
+        }
         _ => (ExprForm::Other, None, String::new(), None),
     }
 }
