@@ -16,6 +16,125 @@ from tenj_types import ResolvedPath, UserFacingError
 
 
 # ---------------------------------------------------------------------------
+# CMakePresets helpers
+# ---------------------------------------------------------------------------
+
+
+def _cmake_cache_var_str(raw_val: object) -> str:
+    """Extract the string value from a cacheVariable entry.
+
+    Handles both the simple string form ("fast") and the object form
+    ({"type": "STRING", "value": "fast"}).
+    """
+    if isinstance(raw_val, dict):
+        return str(raw_val.get("value", ""))
+    return str(raw_val)
+
+
+def _is_boolean_var(values: list) -> bool:
+    return bool(values) and all(isinstance(v, bool) for v in values)
+
+
+def load_cmake_presets(presets_path: Path) -> list[dict]:
+    """Parse CMakePresets.json.
+
+    Returns a list of non-hidden configurePresets, each as
+    {"name": str, "cacheVariables": {param: str_value, ...}} with
+    inheritance fully resolved.
+    """
+    with open(presets_path) as f:
+        data = json.load(f)
+
+    configure_presets: list[dict] = data.get("configurePresets", [])
+    preset_by_name: dict[str, dict] = {p["name"]: p for p in configure_presets}
+
+    def resolve_vars(preset: dict, seen: frozenset[str]) -> dict[str, str]:
+        name: str = preset["name"]
+        if name in seen:
+            raise UserFacingError(
+                f"Cyclic inheritance in CMakePresets.json at preset '{name}'"
+            )
+        seen = seen | {name}
+
+        merged: dict[str, str] = {}
+        inherits = preset.get("inherits", [])
+        if isinstance(inherits, str):
+            inherits = [inherits]
+        for parent_name in inherits:
+            if parent_name not in preset_by_name:
+                raise UserFacingError(
+                    f"CMakePresets.json preset '{name}' inherits unknown preset '{parent_name}'"
+                )
+            merged.update(resolve_vars(preset_by_name[parent_name], seen))
+
+        for k, v in preset.get("cacheVariables", {}).items():
+            merged[k] = _cmake_cache_var_str(v)
+
+        return merged
+
+    result = []
+    for preset in configure_presets:
+        if preset.get("hidden", False):
+            continue
+        result.append({"name": preset["name"], "cacheVariables": resolve_vars(preset, frozenset())})
+    return result
+
+
+def preset_to_features(preset_vars: dict[str, str], variables: dict) -> list[str]:
+    """Map a preset's resolved cacheVariables to the Rust feature names it enables.
+
+    Only variables present in *variables* (the configurable_variables from the
+    config file) are considered.  Boolean variables (all config values are Python
+    bools) map to either the bare param name (when the preset says ON/true) or
+    nothing (OFF/false).  Non-boolean variables map to ``{param}_{value}``.
+    """
+    features: list[str] = []
+    for param, values in variables.items():
+        if param not in preset_vars:
+            continue
+        cmake_val = preset_vars[param]
+        if _is_boolean_var(values):
+            if cmake_val.upper() in ("ON", "TRUE"):
+                features.append(param)
+        else:
+            features.append(f"{param}_{cmake_val}")
+    return features
+
+
+def emit_preset_features(merged_dir: Path, variables: dict, presets: list[dict]) -> None:
+    """Add one Cargo feature per preset to every member crate in the merged workspace.
+
+    Each preset feature lists only the feature deps that the member crate
+    actually defines, so members that don't use a particular configurable
+    variable won't reference a non-existent feature.
+    """
+    # Full candidate feature list per preset (across all variables)
+    preset_candidates: dict[str, list[str]] = {
+        p["name"]: preset_to_features(p["cacheVariables"], variables) for p in presets
+    }
+
+    click.echo(f"\nEmitting {len(preset_candidates)} preset feature(s) into merged Cargo.tomls:")
+    for name, feats in preset_candidates.items():
+        click.echo(f"  {name} = {feats}")
+
+    workspace_cargo = _load_cargo_toml(merged_dir / "Cargo.toml")
+    members: list[str] = workspace_cargo.get("workspace", {}).get("members", [])
+
+    for member in members:
+        member_cargo_path = merged_dir / member / "Cargo.toml"
+        if not member_cargo_path.exists():
+            continue
+        member_cargo = _load_cargo_toml(member_cargo_path)
+        existing_features: set[str] = set(member_cargo.get("features", {}).keys())
+        features: dict = member_cargo.setdefault("features", {})
+        for preset_name, all_deps in preset_candidates.items():
+            features[preset_name] = [d for d in all_deps if d in existing_features]
+        write_toml(member_cargo_path, member_cargo)
+
+    click.echo(f"Updated {len(members)} member Cargo.toml(s) with preset features.")
+
+
+# ---------------------------------------------------------------------------
 # Combo helpers
 # ---------------------------------------------------------------------------
 
@@ -453,8 +572,14 @@ def do_translate_multi_config(
     cmake_defines: list[str],
     jobs: int,
     crat_merge_bin: Path,
+    cmake_presets_path: Path | None = None,
 ):
     variables, combos = load_combinations(config_path)
+
+    presets: list[dict] = []
+    if cmake_presets_path is not None:
+        click.echo(f"Loading CMakePresets from {cmake_presets_path}")
+        presets = load_cmake_presets(cmake_presets_path)
     total = len(combos)
     click.echo(f"Found {total} configuration combinations from {config_path}")
 
@@ -494,3 +619,6 @@ def do_translate_multi_config(
     click.echo(f"\nMerging into {merged_dir}...")
     run_merge(inputs_entries, merged_dir, crat_merge_bin)
     click.echo(f"\nMerge complete: {merged_dir}")
+
+    if presets:
+        emit_preset_features(merged_dir, variables, presets)

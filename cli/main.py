@@ -133,6 +133,13 @@ def cli():
     default=None,
     help="Path to the crat-merge binary (required when configuration.json is used).",
 )
+@click.option(
+    "--cmake-presets",
+    "cmake_presets",
+    default=None,
+    help="Path to CMakePresets.json for emitting preset features after merge. "
+    "Auto-detected as <codebase>/CMakePresets.json if present.",
+)
 def translate(
     codebase,
     resultsdir,
@@ -145,6 +152,7 @@ def translate(
     config,
     jobs,
     crat_merge,
+    cmake_presets,
 ):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
@@ -207,6 +215,16 @@ def translate(
                 err=True,
             )
             sys.exit(1)
+
+        if cmake_presets is not None:
+            cmake_presets_path: Path | None = Path(cmake_presets)
+            if not cmake_presets_path.exists():
+                click.echo(f"Error: --cmake-presets path {cmake_presets_path} does not exist.", err=True)
+                sys.exit(1)
+        else:
+            candidate = Path(codebase) / "CMakePresets.json"
+            cmake_presets_path = candidate if candidate.exists() else None
+
         try:
             translation_multi_config.do_translate_multi_config(
                 root,
@@ -220,6 +238,7 @@ def translate(
                 list(cmake_define),
                 jobs,
                 Path(crat_merge),
+                cmake_presets_path,
             )
         except UserFacingError as e:
             click.echo(f"Error: {e}", err=True)
