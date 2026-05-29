@@ -220,6 +220,12 @@ def copy_codebase(pristine: Path, newdir: Path):
     else:
         copy_codebase_dir(pristine, newdir)
 
+        # Ensure we don't end up with large snapshot files, since
+        # we'll be copying the codebase multiple times and it adds up.
+        snapshot_dir = newdir / "_xj_snapshot"
+        if snapshot_dir.is_dir():
+            shutil.rmtree(snapshot_dir)
+
 
 def copy_codebase_dir(
     src: Path,

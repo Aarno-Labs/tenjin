@@ -6,6 +6,11 @@
 - After any change to Rust code, run `./cli/10j check-rs && 10j test-unit-rs`. This should take about 15 seconds to run.
 - When finished with a task, run `./cli/10j pytest tests -n auto`. This takes about 60 seconds to run.
 - Results from `10j pytest` runs can be found in `/tmp/pytest-of-$USER/`
+- Snapshot tests (in `tests/snapshotted/`) auto-update their stored
+snapshots on first run when output changes, and raise a failure to
+prompt inspection of the changes. If the diff (via `git` or `jj`) has
+the expected changes, it should be be kept, and subsequent runs of the
+snapshotted test will use the new snapshot.
 - The `translation_metadata.json` file within an output resultsdir may have stdout/stderr captured from subcommands executed by Tenjin.
 - When making changes to clang tools like `xj-prepare-findfntprdecls`,
   `xj-prepare-pointertransform`, etc, you can build them by running
