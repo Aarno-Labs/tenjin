@@ -3,21 +3,13 @@ import glob
 import json
 import shutil
 import subprocess
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import product
 from pathlib import Path
 
 import click
 
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib  # type: ignore
-    except ImportError:
-        print("Error: requires Python 3.11+ or 'tomli' package", file=sys.stderr)
-        sys.exit(1)
+import toml
 
 import translation
 from tenj_types import ResolvedPath, UserFacingError
@@ -110,8 +102,8 @@ DEP_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
 
 
 def _load_cargo_toml(path: Path) -> dict:
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+    with open(path, "r", encoding="utf-8") as f:
+        return toml.load(f)
 
 
 def resolve_members(workspace_root: Path, patterns: list[str]) -> dict[str, Path]:
