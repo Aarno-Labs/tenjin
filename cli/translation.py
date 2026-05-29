@@ -267,7 +267,13 @@ def do_translate_with_tracker(
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
     final_prepared_codebase, build_info = run_preparation_passes(
-        codebase, resultsdir, tracker, guidance, do_not_refactor_headers_within, buildcmd, cmake_defines
+        codebase,
+        resultsdir,
+        tracker,
+        guidance,
+        do_not_refactor_headers_within,
+        buildcmd,
+        cmake_defines,
     )
 
     c2rust_transpile_flags = [

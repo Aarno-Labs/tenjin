@@ -115,7 +115,14 @@ def cli():
     help="Set a CMake cache variable (e.g. MY_OPTION=ON). May be specified multiple times.",
 )
 def translate(
-    codebase, resultsdir, cratename, guidance, buildcmd, reset_resultsdir, do_not_refactor, cmake_define
+    codebase,
+    resultsdir,
+    cratename,
+    guidance,
+    buildcmd,
+    reset_resultsdir,
+    do_not_refactor,
+    cmake_define,
 ):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
