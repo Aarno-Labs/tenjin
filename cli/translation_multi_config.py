@@ -42,7 +42,7 @@ def load_cmake_presets(presets_path: Path) -> list[dict]:
     {"name": str, "cacheVariables": {param: str_value, ...}} with
     inheritance fully resolved.
     """
-    with open(presets_path) as f:
+    with open(presets_path, encoding="utf-8") as f:
         data = json.load(f)
 
     configure_presets: list[dict] = data.get("configurePresets", [])
@@ -51,9 +51,7 @@ def load_cmake_presets(presets_path: Path) -> list[dict]:
     def resolve_vars(preset: dict, seen: frozenset[str]) -> dict[str, str]:
         name: str = preset["name"]
         if name in seen:
-            raise UserFacingError(
-                f"Cyclic inheritance in CMakePresets.json at preset '{name}'"
-            )
+            raise UserFacingError(f"Cyclic inheritance in CMakePresets.json at preset '{name}'")
         seen = seen | {name}
 
         merged: dict[str, str] = {}
@@ -140,7 +138,7 @@ def emit_preset_features(merged_dir: Path, variables: dict, presets: list[dict])
 
 
 def load_combinations(config_path: Path) -> tuple[dict, list[dict]]:
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         data = json.load(f)
     variables = data["configurable_variables"]
     names = list(variables.keys())
@@ -351,7 +349,7 @@ def normalize_member_cargo_tomls(
                     if (candidate / "Cargo.toml").exists()
                     else None
                 )
-                dep_info[(section, dep_name)] = (spec["path"], ref)
+                dep_info[section, dep_name] = (spec["path"], ref)
                 break
 
     for _, member_abs in inputs:
@@ -394,9 +392,9 @@ def translate_one_combo(
             buildcmd,
             all_defines,
         )
-        return name, True, ""
     except Exception as e:
         return name, False, str(e)
+    return name, True, ""
 
 
 def run_all_combos(
@@ -524,12 +522,12 @@ def run_merge(
             member_input.append(sub)
 
         inputs_path = merged_dir / f"inputs_{member.replace('/', '__')}.json"
-        with open(inputs_path, "w") as f:
+        with open(inputs_path, "w", encoding="utf-8") as f:
             json.dump(member_input, f, indent=2)
 
         cmd = [str(crat_merge_bin), str(inputs_path), str(merged_dir)]
         click.echo(f"Merging member '{member}' ({len(member_input)} configs)...")
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, check=False)
         if result.returncode != 0:
             raise UserFacingError(f"crat-merge failed for member '{member}'")
 
@@ -611,7 +609,7 @@ def do_translate_multi_config(
     _staging_dir, inputs_entries = stage_finals(succeeded, resultsdir)
 
     inputs_json_path = resultsdir / "inputs.json"
-    with open(inputs_json_path, "w") as f:
+    with open(inputs_json_path, "w", encoding="utf-8") as f:
         json.dump(inputs_entries, f, indent=2)
     click.echo(f"Wrote {inputs_json_path}")
 
