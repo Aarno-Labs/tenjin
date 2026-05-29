@@ -193,6 +193,7 @@ def do_translate(
     guidance_path_or_literal: str,
     do_not_refactor_headers_within: list[ResolvedPath] = [],
     buildcmd: str | None = None,
+    cmake_defines: list[str] = [],
 ):
     """
     Translate a codebase from C to Rust.
@@ -237,6 +238,7 @@ def do_translate(
             tracker,
             do_not_refactor_headers_within,
             buildcmd,
+            cmake_defines,
         )
     finally:
         record = tracker.finalize()
@@ -259,12 +261,19 @@ def do_translate_with_tracker(
     tracker: ingest_tracking.TimingRepo,
     do_not_refactor_headers_within: list[ResolvedPath] = [],
     buildcmd: str | None = None,
+    cmake_defines: list[str] = [],
 ):
     skip_remainder_of_translation = False
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
     final_prepared_codebase, build_info = run_preparation_passes(
-        codebase, resultsdir, tracker, guidance, do_not_refactor_headers_within, buildcmd
+        codebase,
+        resultsdir,
+        tracker,
+        guidance,
+        do_not_refactor_headers_within,
+        buildcmd,
+        cmake_defines,
     )
 
     c2rust_transpile_flags = [
