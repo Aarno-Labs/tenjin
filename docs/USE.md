@@ -46,6 +46,8 @@ automatic improvements are not yet applied to workspaces.
     set the `XJ_SHOW_CMDS=1` environment variable.
 * For CMake projects, setting `XJ_CMAKE_PRESET=foo` will pass `--preset=foo`
     during configuration.
+* Also for CMake projects, passing `--cmake-define X=V` will set the cache variable
+  `X` to `V` during configuration. This may be passed multiple times.
 
 ## Guidance
 
