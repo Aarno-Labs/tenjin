@@ -2,6 +2,8 @@ import pytest
 
 pytest_plugins = "10j_pytest_fixtures"
 
+_INTERRUPTED_EXIT_CODE = int(pytest.ExitCode.INTERRUPTED)
+
 # Slow test management
 
 
@@ -17,6 +19,16 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if item.get_closest_marker("slow"):
                 item.add_marker(skip_slow)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_sessionfinish(session, exitstatus):
+    outcome = yield
+    if outcome.excinfo and issubclass(outcome.excinfo[0], KeyboardInterrupt):
+        # A user Ctrl-C can land again while xdist tears down workers, which otherwise
+        # turns an already-interrupted run into a second raw traceback during shutdown.
+        session.exitstatus = _INTERRUPTED_EXIT_CODE
+        outcome.force_result(None)
 
 
 # Pytest HTML report customization
