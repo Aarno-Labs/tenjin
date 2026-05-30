@@ -12,8 +12,8 @@ name = "assign"
 path = "lib.rs"
 crate-type = ["rlib"]
 [[bin]]
-path = "src/assign_nolines.rs"
-name = "assign_nolines"
+path = "src/assign.rs"
+name = "assign"
 [dependencies]
 
 
