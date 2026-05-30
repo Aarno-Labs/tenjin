@@ -775,7 +775,7 @@ def test_tractor_b1_organic_stereo_samples_lib(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_002_app(tenjin_fixtures: TenjinFixtures):
+def test_tractor_b1_synthetic_002_app_echo(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/002_stdin_echo"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
 
