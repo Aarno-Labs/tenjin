@@ -328,6 +328,18 @@ class BuildInfo:
             target = BuildTarget(key=target_output, type=target_type, stem_not_unique=target_stem)
             targets[target_output] = (target, link_cmd)
 
+        if not targets:
+            # A single-file non-executable build can legitimately intercept only compile
+            # commands. Surface those object files as the available targets.
+            for object_output, compile_cmd in intermediates.items():
+                target_stem = compute_target_stem(Path(object_output))
+                target = BuildTarget(
+                    key=object_output,
+                    type=TargetType.OBJECT,
+                    stem_not_unique=target_stem,
+                )
+                targets[object_output] = (target, compile_cmd)
+
         target_to_cmds: dict[
             BuildTargetKey, tuple[BuildTarget, list[targets_from_intercept.InterceptedCommand]]
         ] = {}
