@@ -14,7 +14,7 @@ def test_build_info_surfaces_compile_only_object_targets(tmp_path):
             "type": "cc",
             "directory": builddir.as_posix(),
             "arguments": [
-                "/home/brk/tenjin/_local/xj-llvm/bin/clang",
+                "clang",
                 "-c",
                 "-o",
                 "uses.o",
@@ -46,7 +46,7 @@ def test_build_info_does_not_surface_intermediate_objects_when_link_target_exist
             "type": "cc",
             "directory": builddir.as_posix(),
             "arguments": [
-                "/home/brk/tenjin/_local/xj-llvm/bin/clang",
+                "clang",
                 "-c",
                 "-o",
                 "main.o",
@@ -59,7 +59,7 @@ def test_build_info_does_not_surface_intermediate_objects_when_link_target_exist
             "type": "cc",
             "directory": builddir.as_posix(),
             "arguments": [
-                "/home/brk/tenjin/_local/xj-llvm/bin/clang",
+                "clang",
                 "-o",
                 "main.exe",
                 "main.o",
