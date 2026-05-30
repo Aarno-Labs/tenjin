@@ -102,6 +102,7 @@ def run_snapshotted(root: Path, src_dir: Path, cmd_args: list[str], tmp_resultsd
         cmd_args,
         check=False,
         capture_output=False,
+        env_ext={"XJ_EXTRA_PREPARATION_PASSES": "1"},
     )
 
     assert_translation_success(cp_ce, tmp_resultsdir)
