@@ -48,7 +48,7 @@ default_config = ["APP_MODE_fast", "BACKEND_alpha", "WORD_SIZE_32"]
 This is all achieved as follows:
 1. Given a configuration.json that enumerates the relevant cache variables, for each
    possible configuration Ci, run a 10j translation with results in results/Ci
-2. Normalize all resulting Cargo.toml files (crat-merge requires )
+2. Normalize all resulting Cargo.toml files (crat-merge requires identical Cargo.toml files in order to merge)
    - Add stub crates to account for conditionally enabled targets
    - Ensure same set of (workspace) dependencies are listed in the cargo files for each translation by referencing
      stub crates in configurations where targets are disabled
