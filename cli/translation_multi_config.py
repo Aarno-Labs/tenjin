@@ -525,9 +525,7 @@ def run_merge(
             json.dump(member_input, f, indent=2)
 
         click.echo(f"Merging member '{member}' ({len(member_input)} configs)...")
-        result = hermetic.run_crat_merge(
-            [str(inputs_path), str(merged_dir)]
-        )
+        result = hermetic.run_crat_merge([str(inputs_path), str(merged_dir)])
         if result.returncode != 0:
             raise UserFacingError(f"crat-merge failed for member '{member}'")
 
