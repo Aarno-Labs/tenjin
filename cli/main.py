@@ -192,6 +192,7 @@ def translate(
     resolved_do_not_refactor = [resolve_within_codebase(p) for p in do_not_refactor]
 
     # Detect multi-config mode: explicit --config flag or auto-detected configuration.json
+    config_path = None
     if tractor_ta3_configuration is not None:
         config_path = Path(tractor_ta3_configuration)
         if not config_path.exists():
@@ -206,6 +207,8 @@ def translate(
                     f"Error: --cmake-presets path {cmake_presets_path} does not exist.", err=True
                 )
                 sys.exit(1)
+        else:
+            cmake_presets_path = None
 
         try:
             translation_multi_config.do_translate_multi_config(
