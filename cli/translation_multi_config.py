@@ -1,4 +1,6 @@
 import copy
+from dataclasses import dataclass, field
+from dataclasses_json import dataclass_json
 import glob
 import json
 import shutil
@@ -16,7 +18,7 @@ from tenj_types import ResolvedPath, UserFacingError
 
 """
 This module implements configurability for translated rust codebases, i.e.
-given a C codebase that uses cmake + configuration.json that 
+given a C codebase that uses cmake + configuration.json that
 specifies a set of CMake Cache variables and their possible
 values in a project, the output rust project will contain
 cargo features that correspond to the cmake versions as follows:
@@ -59,6 +61,33 @@ This is all achieved as follows:
 # ---------------------------------------------------------------------------
 # CMakePresets helpers
 # ---------------------------------------------------------------------------
+@dataclass_json
+@dataclass
+class CMakePreset:
+    """Specification of CMake project preset"""
+
+    name: str
+    inherits: str | list[str]
+    cacheVariables: dict[str, str]
+    hidden: bool = False
+
+
+@dataclass_json
+@dataclass
+class CMakePresetRef:
+    """Reference to a CMake preset"""
+
+    name: str
+    configurePreset: str
+
+
+@dataclass_json
+@dataclass
+class CMakePresets:
+    """Specification of CMake project presets"""
+
+    configurePresets: list[CMakePreset] = field(default_factory=list)
+    buildPresets: list[CMakePresetRef] = field(default_factory=list)
 
 
 def _cmake_cache_var_str(raw_val: object) -> str:
@@ -84,19 +113,19 @@ def load_cmake_presets(presets_path: Path) -> list[dict]:
     inheritance fully resolved.
     """
     with open(presets_path, encoding="utf-8") as f:
-        data = json.load(f)
+        data = CMakePresets.from_dict(json.load(f))  # type:ignore
 
-    configure_presets: list[dict] = data.get("configurePresets", [])
-    preset_by_name: dict[str, dict] = {p["name"]: p for p in configure_presets}
+    configure_presets: list[CMakePreset] = data.configurePresets
+    preset_by_name: dict[str, CMakePreset] = {p.name: p for p in configure_presets}
 
-    def resolve_vars(preset: dict, seen: frozenset[str]) -> dict[str, str]:
-        name: str = preset["name"]
+    def resolve_vars(preset: CMakePreset, seen: frozenset[str]) -> dict[str, str]:
+        name: str = preset.name
         if name in seen:
             raise UserFacingError(f"Cyclic inheritance in CMakePresets.json at preset '{name}'")
         seen = seen | {name}
 
         merged: dict[str, str] = {}
-        inherits = preset.get("inherits", [])
+        inherits = preset.inherits
         if isinstance(inherits, str):
             inherits = [inherits]
         for parent_name in inherits:
@@ -106,16 +135,16 @@ def load_cmake_presets(presets_path: Path) -> list[dict]:
                 )
             merged.update(resolve_vars(preset_by_name[parent_name], seen))
 
-        for k, v in preset.get("cacheVariables", {}).items():
+        for k, v in preset.cacheVariables.items():
             merged[k] = _cmake_cache_var_str(v)
 
         return merged
 
     result = []
     for preset in configure_presets:
-        if preset.get("hidden", False):
+        if preset.hidden:
             continue
-        result.append({"name": preset["name"], "cacheVariables": resolve_vars(preset, frozenset())})
+        result.append({"name": preset.name, "cacheVariables": resolve_vars(preset, frozenset())})
     return result
 
 
@@ -176,12 +205,18 @@ def emit_preset_features(merged_dir: Path, variables: dict, presets: list[dict])
 # ---------------------------------------------------------------------------
 # Combo helpers
 # ---------------------------------------------------------------------------
+@dataclass_json
+@dataclass
+class Configuration:
+    """Specification of CMake project cache variables"""
+
+    configurable_variables: dict[str, list]
 
 
 def load_combinations(config_path: Path) -> tuple[dict, list[dict]]:
     with open(config_path, encoding="utf-8") as f:
-        data = json.load(f)
-    variables = data["configurable_variables"]
+        data = Configuration.from_dict(json.load(f))  # type:ignore
+    variables = data.configurable_variables
     names = list(variables.keys())
     value_lists = [variables[n] for n in names]
     combos = [dict(zip(names, values)) for values in product(*value_lists)]
