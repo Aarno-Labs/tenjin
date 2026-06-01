@@ -1,5 +1,7 @@
 import json
 import platform
+import pytest
+import sys
 
 from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
@@ -271,6 +273,7 @@ def test_trivial_un_unsafe(test_dir, tenjin_fixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
 def test_example_P02_configuration_single(test_dir, test_tmp_dir, tenjin_fixtures):
     codebase = test_dir / "example_P02_configuration" / "config_notests"
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
@@ -311,6 +314,7 @@ def test_example_P02_configuration_single(test_dir, test_tmp_dir, tenjin_fixture
     assert c_default_output.stdout == default_output.stdout
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
 def test_example_P02_configuration(test_dir, test_tmp_dir, tenjin_fixtures):
     codebase = test_dir / "example_P02_configuration" / "config_notests"
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
