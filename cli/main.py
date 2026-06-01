@@ -16,6 +16,7 @@ import repo_root
 import provisioning
 import hermetic
 import translation
+import translation_multi_config
 import cli_subcommands
 import covset
 from tenj_types import ResolvedPath, style_path, style_flag, UserFacingError
@@ -114,6 +115,25 @@ def cli():
     metavar="VAR=VALUE",
     help="Set a CMake cache variable (e.g. MY_OPTION=ON). May be specified multiple times.",
 )
+@click.option(
+    "--tractor-ta3-configuration",
+    default=None,
+    help="Path to configuration.json for multi-config translation. "
+    "Auto-detected as <codebase>/configuration.json if present.",
+)
+@click.option(
+    "--jobs",
+    default=1,
+    show_default=True,
+    help="Number of parallel translations when running multi-config mode.",
+)
+@click.option(
+    "--cmake-presets",
+    "cmake_presets",
+    default=None,
+    help="Path to CMakePresets.json for emitting preset features after merge. "
+    "Auto-detected as <codebase>/CMakePresets.json if present.",
+)
 def translate(
     codebase,
     resultsdir,
@@ -123,6 +143,9 @@ def translate(
     reset_resultsdir,
     do_not_refactor,
     cmake_define,
+    tractor_ta3_configuration,
+    jobs,
+    cmake_presets,
 ):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
@@ -166,6 +189,45 @@ def translate(
             return p
         return Path(codebase) / p
 
+    resolved_do_not_refactor = [resolve_within_codebase(p) for p in do_not_refactor]
+
+    config_path = None
+    if tractor_ta3_configuration is not None:
+        config_path = Path(tractor_ta3_configuration)
+        if not config_path.exists():
+            click.echo(f"Error: --config path {config_path} does not exist.", err=True)
+            sys.exit(1)
+
+    if config_path is not None:
+        if cmake_presets is not None:
+            cmake_presets_path: Path | None = Path(cmake_presets)
+            if not cmake_presets_path.exists():
+                click.echo(
+                    f"Error: --cmake-presets path {cmake_presets_path} does not exist.", err=True
+                )
+                sys.exit(1)
+        else:
+            cmake_presets_path = None
+
+        try:
+            translation_multi_config.do_translate_multi_config(
+                root,
+                Path(codebase),
+                resultsdir,
+                config_path,
+                cratename,
+                guidance,
+                resolved_do_not_refactor,
+                buildcmd,
+                list(cmake_define),
+                jobs,
+                cmake_presets_path,
+            )
+        except UserFacingError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        return
+
     try:
         translation.do_translate(
             root,
@@ -173,7 +235,7 @@ def translate(
             resultsdir,
             cratename,
             guidance,
-            [resolve_within_codebase(p) for p in do_not_refactor],
+            resolved_do_not_refactor,
             buildcmd,
             list(cmake_define),
         )
