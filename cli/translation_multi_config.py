@@ -14,6 +14,47 @@ import hermetic
 import translation
 from tenj_types import ResolvedPath, UserFacingError
 
+"""
+This module implements configurability for translated rust codebases, i.e.
+given a C codebase that uses cmake + configuration.json that 
+specifies a set of CMake Cache variables and their possible
+values in a project, the output rust project will contain
+cargo features that correspond to the cmake versions as follows:
+
+- a variable X with non-boolean values V1, V2, ... will result in a Cargo.toml
+  with features X_V1, X_V2, ...
+- a boolean-valued varialbe X will result in a single feature X
+
+Additionally, configurations in CMakePresets.json will result in additional features.
+For example, suppose CMakePresets.json contains the preset:
+
+ {
+    "name": "default",
+    "inherits": "base",
+    "cacheVariables": {
+        "APP_MODE":   "fast",
+        "BACKEND":    "alpha",
+        "WORD_SIZE":  "32",
+        "ENABLE_EXTRA": "OFF"
+    }
+}
+
+The rust project Cargo.toml will contain:
+
+default_config = ["APP_MODE_fast", "BACKEND_alpha", "WORD_SIZE_32"]
+
+This is all achieved as follows:
+1. Given a configuration.json that enumerates the relevant cache variables, for each
+   possible configuration Ci, run a 10j translation with results in results/Ci
+2. Normalize all resulting Cargo.toml files (crat-merge requires )
+   - Add stub crates to account for conditionally enabled targets
+   - Ensure same set of (workspace) dependencies are listed in the cargo files for each translation by referencing
+     stub crates in configurations where targets are disabled
+   - Ensure same set of workspace members in top level manifests by referencing stub crates
+3. Run crat-merge to merge all translations
+4. If given, add features corresponding to CMakePresets.json preset configurations
+"""
+
 
 # ---------------------------------------------------------------------------
 # CMakePresets helpers
