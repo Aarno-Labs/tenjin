@@ -1,0 +1,23 @@
+
+[package]
+name = "main"
+authors = ["C2Rust"]
+version = "0.0.0"
+publish = false
+edition = "2021"
+autobins = false
+
+[lib]
+name = "main"
+path = "lib.rs"
+crate-type = ["rlib"]
+[[bin]]
+path = "src/main.rs"
+name = "main"
+[dependencies]
+xj_ctime = "0.1.1"
+
+
+
+[profile.release]
+strip = "debuginfo"

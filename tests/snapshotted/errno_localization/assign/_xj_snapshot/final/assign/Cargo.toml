@@ -1,0 +1,22 @@
+
+[package]
+name = "assign"
+authors = ["C2Rust"]
+version = "0.0.0"
+publish = false
+edition = "2021"
+autobins = false
+
+[lib]
+name = "assign"
+path = "lib.rs"
+crate-type = ["rlib"]
+[[bin]]
+path = "src/assign.rs"
+name = "assign"
+[dependencies]
+
+
+
+[profile.release]
+strip = "debuginfo"

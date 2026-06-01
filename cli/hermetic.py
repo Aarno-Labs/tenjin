@@ -79,6 +79,10 @@ def xj_ast_grep_exe(localdir: Path) -> Path:
     return localdir / "ast-grep" / "ast-grep"
 
 
+def xj_crat(localdir: Path) -> Path:
+    return localdir / "xj-crat"
+
+
 def xj_prepare_findfnptrdecls_build_dir(localdir: Path) -> Path:
     return localdir / "_build_findfnptrdecls"
 
@@ -585,3 +589,17 @@ def run_chkc(
     else:
         cmd = ["chkc", *cmd]
     return run_shell_cmd(cmd, check=check, env_ext=env_ext, capture_output=capture_output)
+
+
+def run_crat_merge(
+    args: Sequence[str | os.PathLike[str]],
+    env_ext: dict | None = None,
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    localdir = repo_root.localdir()
+    crat_dir = xj_crat(localdir)
+    merged_env_ext = dict(env_ext or {})
+    crat_lib = str(crat_dir / "lib")
+    existing_ld = merged_env_ext.get("LD_LIBRARY_PATH", "")
+    merged_env_ext["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, [crat_lib, existing_ld]))
+    return run([crat_dir / "bin" / "crat-merge", *args], env_ext=merged_env_ext, **kwargs)

@@ -108,8 +108,21 @@ def cli():
     multiple=True,
     help="Directory paths to exclude from refactoring (can be specified multiple times).",
 )
+@click.option(
+    "--cmake-define",
+    multiple=True,
+    metavar="VAR=VALUE",
+    help="Set a CMake cache variable (e.g. MY_OPTION=ON). May be specified multiple times.",
+)
 def translate(
-    codebase, resultsdir, cratename, guidance, buildcmd, reset_resultsdir, do_not_refactor
+    codebase,
+    resultsdir,
+    cratename,
+    guidance,
+    buildcmd,
+    reset_resultsdir,
+    do_not_refactor,
+    cmake_define,
 ):
     root = repo_root.find_repo_root_dir_Path()
     cli_subcommands.do_build_star()
@@ -162,6 +175,7 @@ def translate(
             guidance,
             [resolve_within_codebase(p) for p in do_not_refactor],
             buildcmd,
+            list(cmake_define),
         )
     except UserFacingError as e:
         click.echo(f"Error: {e}", err=True)
@@ -230,6 +244,14 @@ def fmt_rs():
 def build_rs():
     try:
         cli_subcommands.do_build_rs(repo_root.find_repo_root_dir_Path())
+    except subprocess.CalledProcessError:
+        sys.exit(1)
+
+
+@cli.command()
+def build_star():
+    try:
+        cli_subcommands.do_build_star()
     except subprocess.CalledProcessError:
         sys.exit(1)
 
@@ -510,11 +532,11 @@ if __name__ == "__main__":
         if sys.argv[1] == "clang":
             sys.exit(hermetic.run_shell_cmd(sys.argv[1:]).returncode)
         if sys.argv[1] == "pytest":
-            cli_subcommands.do_build_star()  # Build once, before concurrent tests start
-            # When pytest executes from outside of the repo, e.g. because `10j` is on the PATH,
-            # it cannot find the repo root from the executing script or the cwd.
-            env_ext = {"XJ_REPO_ROOT_DIR": str(repo_root.find_repo_root_dir_Path())}
             try:
+                cli_subcommands.do_build_star()  # Build once, before concurrent tests start
+                # When pytest executes from outside of the repo, e.g. because `10j` is on the PATH,
+                # it cannot find the repo root from the executing script or the cwd.
+                env_ext = {"XJ_REPO_ROOT_DIR": str(repo_root.find_repo_root_dir_Path())}
                 sys.exit(hermetic.run_shell_cmd(sys.argv[1:], env_ext=env_ext).returncode)
             except KeyboardInterrupt:
                 sys.exit(130)  # Suppress traceback and use conventional exit code for Ctrl-C.

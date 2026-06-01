@@ -46,6 +46,7 @@ def compute_build_info_in(
     buildcmd: str | list[str] | None,
     tracker: ingest_tracking.TimingRepo,
     mut_build_info: BuildInfo,
+    cmake_defines: list[str] = [],
 ):
     """Builds the codebase in the given directory,
     intercepting compile and link commands.
@@ -92,6 +93,7 @@ def compute_build_info_in(
                 "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
                 f"-DCMAKE_C_COMPILER_LAUNCHER={cc_launcher}",
                 f"-DCMAKE_C_LINKER_LAUNCHER={ld_launcher}",
+                *[f"-D{d}" for d in cmake_defines],
                 *(["--preset", cmake_preset] if cmake_preset else []),
             ],
             check=True,
@@ -219,6 +221,12 @@ def copy_codebase(pristine: Path, newdir: Path):
             shutil.copy2(header, dest)
     else:
         copy_codebase_dir(pristine, newdir)
+
+        # Ensure we don't end up with large snapshot files, since
+        # we'll be copying the codebase multiple times and it adds up.
+        snapshot_dir = newdir / "_xj_snapshot"
+        if snapshot_dir.is_dir():
+            shutil.rmtree(snapshot_dir)
 
 
 def copy_codebase_dir(
@@ -543,6 +551,7 @@ def run_preparation_passes(
     guidance: dict,
     do_not_refactor_headers_within: list[ResolvedPath],
     buildcmd: str | None = None,
+    cmake_defines: list[str] = [],
 ) -> tuple[Path, BuildInfo]:
     """Returns the path to the final prepared codebase directory,
     along with information about the build structure."""
@@ -556,7 +565,9 @@ def run_preparation_passes(
 
     def prep_01_intercept_build(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         builddir = resultsdir / "_build_1"
-        compute_build_info_in(builddir, current_codebase, buildcmd, tracker, store.build_info)
+        compute_build_info_in(
+            builddir, current_codebase, buildcmd, tracker, store.build_info, cmake_defines
+        )
 
         merged_defs = defaultdict(list)
 

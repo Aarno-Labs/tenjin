@@ -24,6 +24,7 @@ WANT = {
     "10j-edition2024-rust-toolchain": "nightly-2026-03-03",
     "10j-reference-c2rust-tag": "3558805d0c94ce42b3efbce59e8cef784dcc78f4",
     "10j-ast-grep": "0.40.5",
+    "10j-crat": "crat-abba1c097",
 }
 
 XJ_GUIDANCE_FILENAME = "xj-guidance.json"

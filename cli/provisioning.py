@@ -251,6 +251,7 @@ def provision_desires(wanted: str):
     want_cmake()
     want_10j_more_deps()
     want_10j_ast_grep()
+    want_10j_crat()
 
     if wanted in ("all", "rust"):
         want_10j_rust_toolchains()
@@ -713,6 +714,21 @@ def want_10j_more_deps():
 
 def want_10j_ast_grep():
     want("10j-ast-grep", "ast-grep", "ast-grep", provision_10j_ast_grep_with)
+
+
+def want_10j_crat():
+    if not (platform.system() == "Linux" and machine_normalized() == "x86_64"):
+        return
+    want("10j-crat", "crat", "crat", provision_10j_crat_with)
+
+
+def provision_10j_crat_with(version: str, keyname: str):
+    url = f"https://github.com/brk/crat/releases/download/{version}/xj-crat_x86_64.tar.xz"
+    target = hermetic.xj_crat(HAVE.localdir)
+    if target.is_dir():
+        shutil.rmtree(target)
+    download_and_extract_tarball(url, target, ctx="(crat) ")
+    HAVE.note_we_have(keyname, specifier=version)
 
 
 def provision_10j_rust_toolchain_with(version: str, keyname: str):

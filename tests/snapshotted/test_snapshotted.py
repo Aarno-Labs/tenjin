@@ -44,7 +44,7 @@ def contents_of_non_ignored_files(dir: Path) -> dict[Path, str]:
 
 
 def diff_results_with_snapshot(root: Path, src_dir: Path, results_dir: Path):
-    snapshot_dir = src_dir / "snapshot"
+    snapshot_dir = src_dir / "_xj_snapshot"
     if not snapshot_dir.exists():
         snapshot_dir.mkdir()
 
@@ -102,6 +102,7 @@ def run_snapshotted(root: Path, src_dir: Path, cmd_args: list[str], tmp_resultsd
         cmd_args,
         check=False,
         capture_output=False,
+        env_ext={"XJ_EXTRA_PREPARATION_PASSES": "1"},
     )
 
     assert_translation_success(cp_ce, tmp_resultsdir)
