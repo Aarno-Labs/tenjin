@@ -373,8 +373,14 @@ def normalize_member_cargo_tomls(
     inputs: list[tuple[dict, Path]],
     per_entry_ws_abs: list[set[Path]],
 ):
+    """Normalize all the variants that feature member 'member' such that
+    member's Cargo.toml has the same set of dependencies and features
+    across variants
+    """
     cargo_tomls = [_load_cargo_toml(p / "Cargo.toml") for _, p in inputs]
 
+    # Set of (section, dependency) pairs where section is in DEP_SECTIONS and dependency is a
+    # workspace member
     all_intra_ws: set[tuple[str, str]] = set()
     for (_, member_abs), cargo, ws_abs in zip(inputs, cargo_tomls, per_entry_ws_abs):
         all_intra_ws |= intra_ws_dep_keys(cargo, member_abs, ws_abs)
@@ -382,6 +388,7 @@ def normalize_member_cargo_tomls(
     if not all_intra_ws:
         return
 
+    # Make sure the cargo files are the same outside of the bits we will be normalizing.
     stripped = [cargo_without_intra_ws(c, all_intra_ws) for c in cargo_tomls]
     canonical = json.dumps(stripped[0], sort_keys=True)
     for i, s in enumerate(stripped[1:], 1):
@@ -678,6 +685,8 @@ def do_translate_multi_config(
             click.echo(f"  {name}: {err}", err=True)
         raise UserFacingError(f"{len(failed)} configuration(s) failed to translate")
 
+    # Copy the result directories because we will be modifying
+    # the "final" Cargo.tomls
     click.echo("\nStaging final directories for merge...")
     _staging_dir, inputs_entries = stage_finals(succeeded, resultsdir)
 
