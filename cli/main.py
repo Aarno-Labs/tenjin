@@ -116,7 +116,7 @@ def cli():
     help="Set a CMake cache variable (e.g. MY_OPTION=ON). May be specified multiple times.",
 )
 @click.option(
-    "--config",
+    "--tractor-ta3-configuration",
     default=None,
     help="Path to configuration.json for multi-config translation. "
     "Auto-detected as <codebase>/configuration.json if present.",
@@ -149,7 +149,7 @@ def translate(
     reset_resultsdir,
     do_not_refactor,
     cmake_define,
-    config,
+    tractor_ta3_configuration,
     jobs,
     crat_merge,
     cmake_presets,
@@ -199,8 +199,8 @@ def translate(
     resolved_do_not_refactor = [resolve_within_codebase(p) for p in do_not_refactor]
 
     # Detect multi-config mode: explicit --config flag or auto-detected configuration.json
-    if config is not None:
-        config_path = Path(config)
+    if tractor_ta3_configuration is not None:
+        config_path = Path(tractor_ta3_configuration)
         if not config_path.exists():
             click.echo(f"Error: --config path {config_path} does not exist.", err=True)
             sys.exit(1)
