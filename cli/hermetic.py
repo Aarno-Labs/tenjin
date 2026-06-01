@@ -602,4 +602,5 @@ def run_crat_merge(
     crat_lib = str(crat_dir / "lib")
     existing_ld = merged_env_ext.get("LD_LIBRARY_PATH", "")
     merged_env_ext["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, [crat_lib, existing_ld]))
+    merged_env_ext["DIR"] = crat_lib
     return run([crat_dir / "bin" / "crat-merge", *args], env_ext=merged_env_ext, **kwargs)

@@ -2,7 +2,6 @@ import copy
 import glob
 import json
 import shutil
-import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import product
 from pathlib import Path
@@ -11,6 +10,7 @@ import click
 
 import toml
 
+import hermetic
 import translation
 from tenj_types import ResolvedPath, UserFacingError
 
@@ -467,7 +467,6 @@ def stage_finals(
 def run_merge(
     inputs_entries: list[dict],
     merged_dir: Path,
-    crat_merge_bin: Path,
 ):
     abs_dirs = [Path(e["dir"]).resolve() for e in inputs_entries]
 
@@ -525,9 +524,10 @@ def run_merge(
         with open(inputs_path, "w", encoding="utf-8") as f:
             json.dump(member_input, f, indent=2)
 
-        cmd = [str(crat_merge_bin), str(inputs_path), str(merged_dir)]
         click.echo(f"Merging member '{member}' ({len(member_input)} configs)...")
-        result = subprocess.run(cmd, check=False)
+        result = hermetic.run_crat_merge(
+            [str(inputs_path), str(merged_dir)]
+        )
         if result.returncode != 0:
             raise UserFacingError(f"crat-merge failed for member '{member}'")
 
@@ -569,7 +569,6 @@ def do_translate_multi_config(
     buildcmd: str | None,
     cmake_defines: list[str],
     jobs: int,
-    crat_merge_bin: Path,
     cmake_presets_path: Path | None = None,
 ):
     variables, combos = load_combinations(config_path)
@@ -615,7 +614,7 @@ def do_translate_multi_config(
 
     merged_dir = resultsdir / "merged"
     click.echo(f"\nMerging into {merged_dir}...")
-    run_merge(inputs_entries, merged_dir, crat_merge_bin)
+    run_merge(inputs_entries, merged_dir)
     click.echo(f"\nMerge complete: {merged_dir}")
 
     if presets:

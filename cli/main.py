@@ -128,12 +128,6 @@ def cli():
     help="Number of parallel translations when running multi-config mode.",
 )
 @click.option(
-    "--crat-merge",
-    "crat_merge",
-    default=None,
-    help="Path to the crat-merge binary (required when configuration.json is used).",
-)
-@click.option(
     "--cmake-presets",
     "cmake_presets",
     default=None,
@@ -151,7 +145,6 @@ def translate(
     cmake_define,
     tractor_ta3_configuration,
     jobs,
-    crat_merge,
     cmake_presets,
 ):
     root = repo_root.find_repo_root_dir_Path()
@@ -209,13 +202,6 @@ def translate(
         config_path = config_path if config_path.exists() else None
 
     if config_path is not None:
-        if crat_merge is None:
-            click.echo(
-                "Error: --crat-merge is required when translating with a configuration.json.",
-                err=True,
-            )
-            sys.exit(1)
-
         if cmake_presets is not None:
             cmake_presets_path: Path | None = Path(cmake_presets)
             if not cmake_presets_path.exists():
@@ -239,7 +225,6 @@ def translate(
                 buildcmd,
                 list(cmake_define),
                 jobs,
-                Path(crat_merge),
                 cmake_presets_path,
             )
         except UserFacingError as e:
