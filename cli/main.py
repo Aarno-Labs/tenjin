@@ -197,9 +197,6 @@ def translate(
         if not config_path.exists():
             click.echo(f"Error: --config path {config_path} does not exist.", err=True)
             sys.exit(1)
-    else:
-        config_path = Path(codebase) / "configuration.json"
-        config_path = config_path if config_path.exists() else None
 
     if config_path is not None:
         if cmake_presets is not None:
@@ -209,9 +206,6 @@ def translate(
                     f"Error: --cmake-presets path {cmake_presets_path} does not exist.", err=True
                 )
                 sys.exit(1)
-        else:
-            candidate = Path(codebase) / "CMakePresets.json"
-            cmake_presets_path = candidate if candidate.exists() else None
 
         try:
             translation_multi_config.do_translate_multi_config(
