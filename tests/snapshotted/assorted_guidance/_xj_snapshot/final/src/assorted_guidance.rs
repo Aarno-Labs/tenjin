@@ -31,11 +31,12 @@ pub struct PodGuided {
     pub a: ::core::ffi::c_int,
     pub b: ::core::ffi::c_int,
 }
-static static_int_nonmutbl: ::core::ffi::c_int = 0;
+static static_int_nonmutbl_xjtr_0: ::core::ffi::c_int = 0;
 #[no_mangle]
 pub unsafe fn use_global_ints() {
-    static static_local_nonmutbl: ::core::ffi::c_int = 0;
-    extern_int_unguided = 5 + extern_int_nonmutbl + static_int_nonmutbl + static_local_nonmutbl;
+    static static_local_nonmutbl_xjtr_0: ::core::ffi::c_int = 0;
+    extern_int_unguided =
+        5 + extern_int_nonmutbl + static_int_nonmutbl_xjtr_0 + static_local_nonmutbl_xjtr_0;
 }
 #[no_mangle]
 pub fn print_owned_String(mut ostr: String) {

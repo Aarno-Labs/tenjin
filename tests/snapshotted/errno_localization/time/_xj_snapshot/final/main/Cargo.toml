@@ -12,8 +12,8 @@ name = "main"
 path = "lib.rs"
 crate-type = ["rlib"]
 [[bin]]
-path = "src/main_nolines.rs"
-name = "main_nolines"
+path = "src/main.rs"
+name = "main"
 [dependencies]
 xj_ctime = "0.1.1"
 

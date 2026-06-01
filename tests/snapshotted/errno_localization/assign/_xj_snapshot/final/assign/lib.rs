@@ -4,5 +4,5 @@
 #![allow(non_upper_case_globals)]
 #![feature(raw_ref_op)]
 pub mod src {
-    pub mod bar_nolines;
+    pub mod bar;
 }
