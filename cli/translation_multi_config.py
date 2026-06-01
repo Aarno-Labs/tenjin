@@ -108,7 +108,7 @@ def emit_preset_features(merged_dir: Path, variables: dict, presets: list[dict])
     """
     # Full candidate feature list per preset (across all variables)
     preset_candidates: dict[str, list[str]] = {
-        p["name"]: preset_to_features(p["cacheVariables"], variables) for p in presets
+        p["name"] + "_config": preset_to_features(p["cacheVariables"], variables) for p in presets
     }
 
     click.echo(f"\nEmitting {len(preset_candidates)} preset feature(s) into merged Cargo.tomls:")
