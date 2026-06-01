@@ -25,7 +25,7 @@ cargo features that correspond to the cmake versions as follows:
 
 - a variable X with non-boolean values V1, V2, ... will result in a Cargo.toml
   with features X_V1, X_V2, ...
-- a boolean-valued varialbe X will result in a single feature X
+- a boolean-valued variable X will result in a single feature X
 
 Additionally, configurations in CMakePresets.json will result in additional features.
 For example, suppose CMakePresets.json contains the preset:
