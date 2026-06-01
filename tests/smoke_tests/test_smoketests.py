@@ -271,6 +271,46 @@ def test_trivial_un_unsafe(test_dir, tenjin_fixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+def test_example_P02_configuration_single(test_dir, test_tmp_dir, tenjin_fixtures):
+    codebase = test_dir / "example_P02_configuration" / "config_notests"
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    default_build_dir = test_tmp_dir / "build_default"
+    hermetic.run(
+        [
+            "cmake",
+            "-DAPP_MODE=fast",
+            "-DBACKEND=alpha",
+            "-DWORD_SIZE=32",
+            "-B",
+            str(default_build_dir),
+            "-S",
+            str(tmp_codebase),
+        ],
+        check=True,
+    )
+    hermetic.run(["cmake", "--build", str(default_build_dir)], check=True)
+    c_default_output = hermetic.run(
+        [str(default_build_dir / "test_case" / "skeleton")], capture_output=True
+    )
+
+    translation.do_translate(
+        tenjin_fixtures.root,
+        tmp_codebase,
+        tmp_resultsdir,
+        do_not_refactor_headers_within=[],
+        cratename="triplicated_exeonly",
+        guidance_path_or_literal="{}",
+        buildcmd="make",
+        cmake_defines=["APP_MODE=fast", "BACKEND=alpha", "WORD_SIZE=32"],
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    default_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
+
+    assert c_default_output.stdout == default_output.stdout
+
+
 def test_example_P02_configuration(test_dir, test_tmp_dir, tenjin_fixtures):
     codebase = test_dir / "example_P02_configuration" / "config_notests"
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
