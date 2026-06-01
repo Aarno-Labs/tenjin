@@ -1,0 +1,8 @@
+{
+  "configurable_variables": {
+    "APP_MODE": ["fast", "safe"],
+    "BACKEND": ["alpha", "beta"],
+    "WORD_SIZE": ["32", "64"],
+    "ENABLE_EXTRA": [true, false]
+  }
+}

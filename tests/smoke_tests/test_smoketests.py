@@ -10,6 +10,7 @@ import covset
 import hermetic
 import translation
 import translation_preparation
+import translation_multi_config
 
 
 def test_single_c_file(test_dir, test_tmp_dir, tenjin_fixtures):
@@ -268,3 +269,79 @@ def test_trivial_un_unsafe(test_dir, tenjin_fixtures):
 
     assert_final_had_no_unsafe_fns(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+def test_example_P02_configuration(test_dir, test_tmp_dir, tenjin_fixtures):
+    codebase = test_dir / "example_P02_configuration" / "config_notests"
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    config_path = tmp_codebase / "test_case" / "configuration.json"
+    # Run translation
+    translation_multi_config.do_translate_multi_config(
+        tenjin_fixtures.root,
+        tmp_codebase,
+        tmp_resultsdir,
+        config_path,
+        do_not_refactor=[],
+        cratename="triplicated_exeonly",
+        guidance_str="{}",
+        buildcmd="make",
+        cmake_defines=[],
+        jobs=8,
+        cmake_presets_path=None,
+    )
+
+    # Build C/Rust with "default" configuration, compare stdout
+    default_build_dir = test_tmp_dir / "build_default"
+    hermetic.run(
+        [
+            "cmake",
+            "-DAPP_MODE=fast",
+            "-DBACKEND=alpha",
+            "-DWORD_SIZE=32",
+            "-B",
+            str(default_build_dir),
+            "-S",
+            str(tmp_codebase),
+        ],
+        check=True,
+    )
+    hermetic.run(["cmake", "--build", str(default_build_dir)], check=True)
+    c_default_output = hermetic.run(
+        [str(default_build_dir / "test_case" / "skeleton")], capture_output=True
+    )
+    full_features = "APP_MODE_fast,BACKEND_alpha,WORD_SIZE_32"
+    run_cargo_on_final(tmp_resultsdir / "merged", ["build", "--features", full_features])
+    default_output = run_cargo_on_final(
+        tmp_resultsdir / "merged", ["run", "--features", full_features], capture_output=True
+    )
+    assert default_output.stdout == c_default_output.stdout
+
+    # Build C/Rust with "full" configuration, compare output
+    full_build_dir = test_tmp_dir / "full_build_dir"
+    hermetic.run(
+        [
+            "cmake",
+            "-DAPP_MODE=safe",
+            "-DBACKEND=beta",
+            "-DWORD_SIZE=64",
+            "-DENABLE_EXTRA=On",
+            "-B",
+            str(full_build_dir),
+            "-S",
+            str(tmp_codebase),
+        ],
+        check=True,
+    )
+    hermetic.run(["cmake", "--build", str(full_build_dir)], check=True)
+    c_full_output = hermetic.run(
+        [str(full_build_dir / "test_case" / "skeleton")], capture_output=True
+    )
+    full_features = "APP_MODE_safe,BACKEND_beta,WORD_SIZE_64,ENABLE_EXTRA"
+    run_cargo_on_final(tmp_resultsdir / "merged", ["build", "--features", full_features])
+    full_output = run_cargo_on_final(
+        tmp_resultsdir / "merged", ["run", "--features", full_features], capture_output=True
+    )
+
+    assert full_output.stdout == c_full_output.stdout
