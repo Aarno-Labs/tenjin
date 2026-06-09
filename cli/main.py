@@ -200,7 +200,7 @@ def translate(
 
     if config_path is not None:
         if cmake_presets is not None:
-            cmake_presets_path: Path | None = Path(cmake_presets)
+            cmake_presets_path = Path(cmake_presets)
             if not cmake_presets_path.exists():
                 click.echo(
                     f"Error: --cmake-presets path {cmake_presets_path} does not exist.", err=True
