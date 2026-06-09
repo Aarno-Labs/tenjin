@@ -76,9 +76,14 @@ def compute_build_info_in(
 
     buildcmds = codebase / ".xj-build-commands"
 
-    def remap_original_paths_to_builddir(s: str) -> str:
+    def remap_original_paths(s: str, dest: Path) -> str:
         # The build ran from `original_codebase`, so intercepted commands refer to
-        # it; rewrite those references to the (mirrored) `builddir` location.
+        # it; rewrite those references to the mirrored location `dest`, which holds
+        # the same files. `dest` differs by build style: an in-tree build's files
+        # (sources, generated files and artifacts) all live in `builddir`, whereas
+        # an out-of-source CMake build leaves sources in `dest=codebase` (our copy)
+        # and only build artifacts in `builddir` (referenced by absolute paths that
+        # don't carry the original-codebase prefix, so they are left untouched).
         if not build_in_original:
             return s
         assert original_codebase is not None
@@ -89,19 +94,19 @@ def compute_build_info_in(
         )
         for pref in prefixes:
             if pref and pref in s:
-                s = s.replace(pref, str(builddir))
+                s = s.replace(pref, str(dest))
         return s
 
-    def convert_intercepted_commands_to_build_info():
+    def convert_intercepted_commands_to_build_info(remap_dest: Path):
         entries = []
         for json_file in buildcmds.glob("*.json"):
             with open(json_file, "r", encoding="utf-8") as f:
                 entry = json.load(f)
                 # if entry["type"] != "cc":
                 #     continue  # FIXME
-                entry["directory"] = remap_original_paths_to_builddir(entry["directory"])
+                entry["directory"] = remap_original_paths(entry["directory"], remap_dest)
                 entry["arguments"] = [
-                    remap_original_paths_to_builddir(arg) for arg in entry["arguments"]
+                    remap_original_paths(arg, remap_dest) for arg in entry["arguments"]
                 ]
                 entries.append(entry)
         intercepted_commands = targets_from_intercept.convert_json_entries(entries)
@@ -177,7 +182,9 @@ def compute_build_info_in(
         if build_in_original:
             assert original_codebase is not None
             relocate_generated_files(original_codebase, pre_build_files, codebase, builddir)
-        convert_intercepted_commands_to_build_info()
+        # CMake builds out-of-source: sources stay in `codebase` (our copy), so
+        # original-codebase references are remapped there rather than to `builddir`.
+        convert_intercepted_commands_to_build_info(remap_dest=codebase)
         assert not mut_build_info.is_empty(), "Failed to intercept commands from CMake build"
         return
 
@@ -242,7 +249,9 @@ def compute_build_info_in(
         relocate_generated_files(original_codebase, pre_build_files, codebase, builddir)
     else:
         copy_new_source_files_back(codebase, builddir)
-    convert_intercepted_commands_to_build_info()
+    # The build ran in-tree, so all of its files (sources, generated files and
+    # artifacts) were relocated into `builddir`; remap original references there.
+    convert_intercepted_commands_to_build_info(remap_dest=builddir)
     assert not mut_build_info.is_empty(), "Failed to intercept commands from build"
 
 
@@ -843,7 +852,9 @@ def run_preparation_passes(
                 curr_dedup_path = current_codebase / stale_rel_dir / new_filename
 
                 # Copy the source file to the new file.
-                assert stale_abs_path.exists()
+                assert stale_abs_path.exists(), (
+                    f"Expected source file to duplicate not found: {stale_abs_path}"
+                )
                 shutil.copyfile(stale_abs_path, curr_dedup_path)
                 # Backfill because _CompileCommand_from_intercepted_command.update()
                 # will be looking for the file in the original location.
