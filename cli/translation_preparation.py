@@ -896,6 +896,13 @@ def run_preparation_passes(
     def prep_localize_mutable_globals(
         prev: Path, current_codebase: Path, store: PrepPassResultStore
     ):
+        xj_cclyzer_path = current_codebase / "xj-cclyzer.json"
+        if not xj_cclyzer_path.exists():
+            print(
+                "TENJIN: WARNING: Skipping localization of mutable globals because cclyzer++ results not found.\n"
+                "This likely means that the cclyzer++ analysis failed or was skipped.\n"
+            )
+            return
         # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
         # Preconditions for localizing mutable globals:
         # A. The project must consist of a single executable target, OR
@@ -915,9 +922,7 @@ def run_preparation_passes(
             # Case A
             compdb = store.build_info.compdb_for_target_within(all_targets[0].key, current_codebase)
 
-            c_refact.localize_mutable_globals(
-                current_codebase / "xj-cclyzer.json", compdb, prev, current_codebase
-            )
+            c_refact.localize_mutable_globals(xj_cclyzer_path, compdb, prev, current_codebase)
         else:
             # Case B
             print(
@@ -1030,7 +1035,9 @@ def run_preparation_passes(
             curr_compdb, bitcode_module_path, use_llvm14=True
         )
 
-        run_cc2json_or_cached(bitcode_module_path, current_codebase)
+        bitcode_is_small = bitcode_module_path.stat().st_size < 1 * 1024 * 1024
+        if bitcode_is_small or os.environ.get("XJ_FORCE_CCLYZERPP", "0") == "1":
+            run_cc2json_or_cached(bitcode_module_path, current_codebase)
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # For now, we restrict analysis to single-target projects,

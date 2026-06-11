@@ -1,6 +1,5 @@
 from pathlib import Path
 import shutil
-import os
 import platform
 
 import pytest
@@ -396,8 +395,9 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
         "lua",
     ]
 
-    # cclyzer takes 7+ hours to analyze Lua, ain't nobody got time for that.
-    os.environ["XJ_SKIP_CCLYZERPP"] = "1"
+    # Note that cclyzer++ currently does not run on this codebase due to two
+    # incidental restrictions: we don't run it on multi-target codebases (lua + liblua),
+    # and we don't run it on bitcode files as large as liblua's.
     translation.do_translate(
         tenjin_fixtures.root,
         tmp_codebase,
@@ -406,7 +406,6 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
         buildcmd=hermetic.shellize(buildcmd_args),
         guidance_path_or_literal="{}",
     )
-    del os.environ["XJ_SKIP_CCLYZERPP"]
 
     c_prog_output = hermetic.run(
         [str(tmp_resultsdir / "_build_1" / "lua"), "-v"], check=True, capture_output=True
