@@ -1457,11 +1457,12 @@ def cook_m4_within():
     def say(msg: str):
         sez(msg, ctx="(m4) ")
 
+    xj_build_deps = hermetic.xj_build_deps(HAVE.localdir)
     path_of_unusual_size = get_path_of_unusual_size()
     localedir = path_of_unusual_size + b"/share/locale"
     nullbyte = b"\0"
 
-    bindir = hermetic.xj_build_deps(HAVE.localdir) / "bin"
+    bindir = xj_build_deps / "bin"
 
     uncooked = bindir / "m4.uncooked"
     if not uncooked.is_file():
@@ -1491,7 +1492,7 @@ def cook_m4_within():
         data = replace_null_terminated_needle_in(
             data,
             localedir,
-            bytes(hermetic.xj_build_deps(HAVE.localdir) / "share" / "locale"),
+            bytes(xj_build_deps / "share" / "locale"),
         )
 
         # Write the modified data back to the file
@@ -1499,6 +1500,19 @@ def cook_m4_within():
         f.write(data)
         f.truncate()
     say("... done cooking m4.")
+
+    m4_path_placeholder = b"'/usr/bin/m4'"
+    cooked_m4_path = f"'{xj_build_deps / 'bin' / 'm4'}'".encode()
+    for companion_name in ["autom4te", "autoupdate"]:
+        companion_path = bindir / companion_name
+        if not companion_path.is_file():
+            continue
+
+        data = companion_path.read_bytes()
+        if m4_path_placeholder not in data:
+            continue
+
+        companion_path.write_bytes(data.replace(m4_path_placeholder, cooked_m4_path))
 
     assert path_of_unusual_size not in data, "Oops, m4 was left undercooked!"
 
