@@ -9,7 +9,7 @@ WANT = {
     "10j-cmake": "3.31.7",
     "10j-cargo-nextest": "0.9.136",
     "10j-bullseye-sysroot-extras": "rev-b578a0937",
-    "10j-build-deps": "rev-da7a64964",
+    "10j-build-deps": "rev-384966476",
     # Note that 10j-more-deps builds against a specific version of LLVM, so before
     # upgrading the major version of 10j-llvm, update 10j-more-deps first.
     "10j-more-deps": "rev-384966476",
