@@ -475,3 +475,135 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow
+def test_frobware__ts(tenjin_fixtures: TenjinFixtures):
+    import sys
+    if str(tenjin_fixtures.root) not in sys.path:
+        sys.path.insert(0, str(tenjin_fixtures.root))
+
+    import cli.translation as translation
+    import cli.translation_preparation as translation_preparation
+    import cli.hermetic as hermetic
+
+    """
+    # ─── HACK: THE DOUBLE-IMPORT SHIELD (Closure Bug Fixed) ───
+    # Factory functions guarantee the correct module/class is captured in scope,
+    # preventing Python's late-binding loop closure bug.
+    def apply_buildinfo_patch(cls_obj):
+        cls_obj._orig_pt = cls_obj._process_targets
+        def clean_pt(self, *args, **kwargs):
+            if hasattr(self, "_intercepted_commands"):
+                self._intercepted_commands = [
+                    c for c in self._intercepted_commands
+                    if not (
+                        "-E" in c.entry.get("arguments", [])
+                        and "/dev/null" in c.entry.get("arguments", [])
+                    )
+                ]
+            return cls_obj._orig_pt(self, *args, **kwargs)
+        cls_obj._process_targets = clean_pt
+
+    def apply_crefact_patch(mod_obj):
+        mod_obj._orig_gcs = mod_obj.get_call_sites_from_json
+        def clean_gcs(*args, **kwargs):
+            new_a = tuple(
+                {x for x in arg if x != 'signal_handler_xjtr_0'}
+                if isinstance(arg, set) else arg
+                for arg in args
+            )
+            new_kw = {
+                k: ({x for x in v if x != 'signal_handler_xjtr_0'}
+                    if isinstance(v, set) else v)
+                for k, v in kwargs.items()
+            }
+            return mod_obj._orig_gcs(*new_a, **new_kw)
+        mod_obj.get_call_sites_from_json = clean_gcs
+
+    for m in list(sys.modules.values()):
+        cls = getattr(m, "BuildInfo", None)
+        if (isinstance(cls, type) and hasattr(cls, "_process_targets")
+                and not hasattr(cls, "_orig_pt")):
+            apply_buildinfo_patch(cls)
+
+        if hasattr(m, "get_call_sites_from_json") and not hasattr(m, "_orig_gcs"):
+            apply_crefact_patch(m)
+    # ────────────────────────────────────────────────────
+    """
+
+    tmp_codebase = tenjin_fixtures.tmp_codebase
+    tmp_resultsdir = tenjin_fixtures.tmp_resultsdir
+
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/frobware/ts.git",
+        "c8c816953039c15856b0e34dae3f3a16b17dc6c4"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        tenjin_fixtures.root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="tenjinized",
+        buildcmd=hermetic.shellize(["make"]),
+        guidance_path_or_literal='{"assume_no_unknown_call_sites": ["signal_handler_xjtr_0"]}',
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow
+def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+
+    # 1. Clone using the "main" branch as originally defined
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/pkhuong/ppb.git", "main"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # 2. Tell the Makefile to build only the static picoscope example binary target.
+    # This avoids generating both shared and static object copies, preventing Tenjin collisions.
+    buildcmd_args = ["make", "CC=cc", "build/picoscope"]
+
+    # 3. Translate the codebase using Tenjin
+    translation.do_translate(
+        tenjin_fixtures.root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="pkhuong_ppb_picoscope",
+        buildcmd=hermetic.shellize(buildcmd_args),
+        guidance_path_or_literal="{}",
+    )
+
+    # 4. Generate original C program output to compare against.
+    # The Makefile outputs the compiled executable to 'build/picoscope'
+    c_prog_output = hermetic.run(
+        [str(tmp_resultsdir / "_build_1" / "build" / "picoscope")], check=False, capture_output=True
+    )
+
+    # 5. Build and run the translated Rust version
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    # Run the translated Rust executable
+    rs_prog_output = run_cargo_on_final(
+        tmp_resultsdir / "final", ["run", "--bin", "picoscope"], capture_output=True, check=False
+    )
+
+    # 6. Differential testing assertions
+    assert rs_prog_output.stdout == c_prog_output.stdout, (
+        f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
+    )
+    assert rs_prog_output.stderr == c_prog_output.stderr, (
+        f"Rust and C error output differed; Rust error was: {rs_prog_output.stderr!r}"
+    )
+    assert rs_prog_output.returncode == c_prog_output.returncode, (
+        f"Different exit codes; Rust got {rs_prog_output.returncode} vs C {c_prog_output.returncode}"
+    )
+
+    # 7. Clean up workspace
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
