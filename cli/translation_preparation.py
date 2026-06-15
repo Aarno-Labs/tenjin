@@ -5,7 +5,7 @@ import shutil
 import time
 from pathlib import Path
 from typing import Callable
-from subprocess import CompletedProcess
+from subprocess import CalledProcessError, CompletedProcess
 import hashlib
 from collections import defaultdict
 import dataclasses
@@ -38,6 +38,39 @@ import tenj_types
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     """Calculate elapsed time in milliseconds from nanoseconds."""
     return (end_ns - start_ns) / 1_000_000.0
+
+
+def run_modifying_subprocess_or_restore_prev(
+    prev: Path,
+    current_codebase: Path,
+    tool_name: str,
+    run_subprocess: Callable[[], CompletedProcess],
+) -> CompletedProcess:
+    """Run a mutating subprocess, restoring `prev` on subprocess failure."""
+
+    def restore_preparation_dir_from_prev():
+        """Replace `current_codebase` with the exact contents of `prev`."""
+        assert prev.is_dir(), f"Expected previous preparation output to be a directory: {prev}"
+        if current_codebase.exists():
+            shutil.rmtree(current_codebase)
+        shutil.copytree(prev, current_codebase)
+
+    try:
+        cp = run_subprocess()
+    except CalledProcessError as e:
+        restore_preparation_dir_from_prev()
+        click.echo(
+            f"TENJIN: WARNING: {tool_name} failed with return code {e.returncode}; restored previous contents."
+        )
+        return CompletedProcess(e.cmd, e.returncode, stdout=e.stdout, stderr=e.stderr)
+
+    if cp.returncode != 0:
+        restore_preparation_dir_from_prev()
+        click.echo(
+            f"TENJIN: WARNING: {tool_name} failed with return code {cp.returncode}; restored previous contents."
+        )
+
+    return cp
 
 
 def compute_build_info_in(
@@ -1683,21 +1716,31 @@ def run_preparation_passes(
             compdb_entries = json.load(f)
         source_files = [entry["file"] for entry in compdb_entries]
         xj_start = time.time()
-        cp = hermetic.run(
-            [
-                binary_path.as_posix(),
-                "--in-place",
-                "--on-demand",
-                "-p",
-                compdb_path.as_posix(),
-                *source_files,
-            ],
-            cwd=current_codebase,
-            check=True,
-            capture_output=True,
+        cp = run_modifying_subprocess_or_restore_prev(
+            prev,
+            current_codebase,
+            "xj-localize-errno",
+            lambda: hermetic.run(
+                [
+                    binary_path.as_posix(),
+                    "--in-place",
+                    "--on-demand",
+                    "-p",
+                    compdb_path.as_posix(),
+                    *source_files,
+                ],
+                cwd=current_codebase,
+                check=True,
+                capture_output=True,
+            ),
         )
         xj_elapsed = time.time() - xj_start
-        print(f"xj-localize-errno completed in {xj_elapsed:.1f} seconds")
+        if cp.returncode == 0:
+            print(f"xj-localize-errno completed in {xj_elapsed:.1f} seconds")
+        else:
+            print(
+                f"xj-localize-errno failed in {xj_elapsed:.1f} seconds; restored previous contents"
+            )
         print("xj-localize-errno stderr:")
         print(cp.stderr.decode("utf-8"))
         return cp
@@ -1730,24 +1773,34 @@ def run_preparation_passes(
         )
 
         xj_start = time.time()
-        cp = hermetic.run(
-            [
-                binary_path.as_posix(),
-                "--inplace",
-                "-p",
-                current_codebase.as_posix(),
-                "--extra-arg=-Wno-zero-length-array",
-                "--extra-arg=-Wno-implicit-int-conversion",
-                "--extra-arg=-Wno-unused-function",
-                f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
-                *source_files,
-            ],
-            cwd=current_codebase,
-            check=True,
-            capture_output=True,
+        cp = run_modifying_subprocess_or_restore_prev(
+            prev,
+            current_codebase,
+            "xj-prepare-unionbitcasts",
+            lambda: hermetic.run(
+                [
+                    binary_path.as_posix(),
+                    "--inplace",
+                    "-p",
+                    current_codebase.as_posix(),
+                    "--extra-arg=-Wno-zero-length-array",
+                    "--extra-arg=-Wno-implicit-int-conversion",
+                    "--extra-arg=-Wno-unused-function",
+                    f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+                    *source_files,
+                ],
+                cwd=current_codebase,
+                check=True,
+                capture_output=True,
+            ),
         )
         xj_elapsed = time.time() - xj_start
-        print(f"xj-prepare-unionbitcasts completed in {xj_elapsed:.1f} seconds")
+        if cp.returncode == 0:
+            print(f"xj-prepare-unionbitcasts completed in {xj_elapsed:.1f} seconds")
+        else:
+            print(
+                f"xj-prepare-unionbitcasts failed in {xj_elapsed:.1f} seconds; restored previous contents"
+            )
         print("xj-prepare-unionbitcasts stderr:")
         print(cp.stderr.decode("utf-8"))
         return cp
@@ -1779,24 +1832,34 @@ def run_preparation_passes(
         )
 
         xj_start = time.time()
-        cp = hermetic.run(
-            [
-                binary_path.as_posix(),
-                "--inplace",
-                "-p",
-                current_codebase.as_posix(),
-                "--extra-arg=-Wno-zero-length-array",
-                "--extra-arg=-Wno-implicit-int-conversion",
-                "--extra-arg=-Wno-unused-function",
-                f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
-                *source_files,
-            ],
-            cwd=current_codebase,
-            check=True,
-            capture_output=True,
+        cp = run_modifying_subprocess_or_restore_prev(
+            prev,
+            current_codebase,
+            "xj-prepare-pointertransform",
+            lambda: hermetic.run(
+                [
+                    binary_path.as_posix(),
+                    "--inplace",
+                    "-p",
+                    current_codebase.as_posix(),
+                    "--extra-arg=-Wno-zero-length-array",
+                    "--extra-arg=-Wno-implicit-int-conversion",
+                    "--extra-arg=-Wno-unused-function",
+                    f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+                    *source_files,
+                ],
+                cwd=current_codebase,
+                check=True,
+                capture_output=True,
+            ),
         )
         xj_elapsed = time.time() - xj_start
-        print(f"xj-prepare-pointertransform completed in {xj_elapsed:.1f} seconds")
+        if cp.returncode == 0:
+            print(f"xj-prepare-pointertransform completed in {xj_elapsed:.1f} seconds")
+        else:
+            print(
+                f"xj-prepare-pointertransform failed in {xj_elapsed:.1f} seconds; restored previous contents"
+            )
         print("xj-prepare-pointertransform stderr:")
         print(cp.stderr.decode("utf-8"))
         return cp
