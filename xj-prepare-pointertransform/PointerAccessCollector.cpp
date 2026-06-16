@@ -468,17 +468,35 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
     // ---- MemberExpr: p->field (arrow access) --------------------------
     if (const MemberExpr *ME = dyn_cast<MemberExpr>(Parent)) {
         if (ME->isArrow()) {
-            std::string field_name = ME->getMemberDecl()->getNameAsString();
+            // When `field` lives inside an anonymous struct/union (e.g.
+            // the `offset`/`data` union members of `grid_cell_entry`),
+            // Clang represents `gce->offset` as two chained MemberExprs
+            // sharing one source range: an inner node — always `ME`
+            // here, since its base is the tracked pointer — whose
+            // "member" is the anonymous aggregate itself (an unnamed
+            // FieldDecl, so getNameAsString() is ""), and an outer node
+            // for the real field ("offset"). Without resolving to the
+            // outer node, field_name comes back empty and the rewriter
+            // later turns "gce->offset" into a dangling "gce_index].".
+            const MemberExpr *RealME = ME;
+            const Stmt *Outer = skipTransparentParents(ME, Ctx);
+            if (const auto *AnonFD = dyn_cast<FieldDecl>(ME->getMemberDecl());
+                AnonFD && AnonFD->isAnonymousStructOrUnion()) {
+                if (const auto *OuterME = Outer ? dyn_cast<MemberExpr>(Outer) : nullptr) {
+                    RealME = OuterME;
+                    Outer = skipTransparentParents(OuterME, Ctx);
+                }
+            }
+            std::string field_name = RealME->getMemberDecl()->getNameAsString();
             // Read vs write: write if either an assignment LHS or an
             // increment/decrement target.
-            const Stmt *GP = skipTransparentParents(ME, Ctx);
             bool is_write = false;
-            if (GP) {
-                if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(GP)) {
-                    if (BO->isAssignmentOp() && BO->getLHS()->IgnoreParenImpCasts() == ME)
+            if (Outer) {
+                if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(Outer)) {
+                    if (BO->isAssignmentOp() && BO->getLHS()->IgnoreParenImpCasts() == RealME)
                         is_write = true;
                 }
-                if (const UnaryOperator *UO2 = dyn_cast<UnaryOperator>(GP)) {
+                if (const UnaryOperator *UO2 = dyn_cast<UnaryOperator>(Outer)) {
                     if (UO2->isIncrementDecrementOp())
                         is_write = true;
                 }
