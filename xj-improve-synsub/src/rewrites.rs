@@ -67,6 +67,44 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite `xj_astgrep_print("{:}", E as char)` into a direct stdout byte write.
+    pub fn rewrite_print_byte(&self, _symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(ref func) = *call.func else {
+            return None;
+        };
+        if !func.path.is_ident("xj_astgrep_print") || call.args.len() != 2 {
+            return None;
+        }
+
+        let Expr::Lit(fmt_lit) = &call.args[0] else {
+            return None;
+        };
+        if !matches!(&fmt_lit.lit, syn::Lit::Str(s) if s.value() == "{:}") {
+            return None;
+        }
+
+        let Expr::Cast(char_cast) = expr_strip_parens(&call.args[1]) else {
+            return None;
+        };
+        if !matches!(&*char_cast.ty, Type::Path(path) if path.path.is_ident("char")) {
+            return None;
+        }
+
+        let byte_expr = &char_cast.expr;
+        self.with_cur_file_item_store(|item_store| {
+            item_store.add_use(false, vec!["std".into(), "io".into()], "Write");
+        });
+
+        let replacement: Expr = syn::parse_quote! {
+            ::std::io::stdout().write_all(&[#byte_expr as u8])
+        };
+
+        Some((replacement, Depth::Limited(0)))
+    }
+
     pub fn rewrite_ctime_time(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else {
             return None;
