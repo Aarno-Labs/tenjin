@@ -475,3 +475,60 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow
+def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/pkhuong/ppb.git", "26a68330cc6265771aa159a520b6db4483e1586e"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    buildcmd_args = ["make", "CC=cc", "build/picoscope"]
+    translation.do_translate(
+        tenjin_fixtures.root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="ppb_picoscope",
+        buildcmd=hermetic.shellize(buildcmd_args),
+        guidance_path_or_literal="{}",
+    )
+
+    c_prog_output = hermetic.run(
+        [
+            "bash",
+            tmp_codebase / "test_picoscope.sh",
+            str(tmp_resultsdir / "_build_1" / "build" / "picoscope"),
+        ],
+        cwd=str(tmp_codebase),
+        check=False,
+        capture_output=True,
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    rs_prog_output = hermetic.run(
+        [
+            "bash",
+            tmp_codebase / "test_picoscope.sh",
+            str(tmp_resultsdir / "final" / "target" / "debug" / "picoscope"),
+        ],
+        cwd=str(tmp_codebase),
+        check=False,
+        capture_output=True,
+    )
+
+    assert rs_prog_output.stdout == c_prog_output.stdout, (
+        f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
+    )
+    assert rs_prog_output.stderr == c_prog_output.stderr, (
+        f"Rust and C error output differed; Rust error was: {rs_prog_output.stderr!r}"
+    )
+    assert rs_prog_output.returncode == c_prog_output.returncode, (
+        f"Different exit codes; Rust got {rs_prog_output.returncode} vs C {c_prog_output.returncode}"
+    )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
