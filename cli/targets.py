@@ -395,10 +395,18 @@ class BuildInfo:
         link_cmd_handling: LinkCommandHandling,
         extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None,
     ) -> compilation_database.CompileCommands:
-        exe_target_outputs = set(
-            c.output
+        # Keyed by file stem so they compare like-for-like against `candidate.stem`
+        # in `drop_lib_prefix`; raw outputs may carry directory prefixes (e.g.
+        # `../../driver`) or extensions that would never match a bare stem.
+        exe_commands = [
+            c
             for c in commands
             if c.output and not c.compile_only and compute_target_type(c) == TargetType.EXECUTABLE
+        ]
+        exe_target_outputs = set(Path(c.output).stem for c in exe_commands if c.output)
+        assert len(exe_target_outputs) == len(exe_commands), (
+            "Executable targets have colliding output stems, which would produce "
+            f"duplicate workspace members: {[c.output for c in exe_commands]}"
         )
         cc_cmds = [
             _CompileCommand_from_intercepted_command(
@@ -469,8 +477,10 @@ def _CompileCommand_from_intercepted_command(
         ):
             candidate = p.with_name(p.name[3:])
             if candidate.stem in exe_target_outputs:
-                # Rename the candidate to avoid conflicts with overlapping targets
-                return f"xjlib_{candidate.as_posix()}"
+                # Rename the candidate to avoid conflicts with overlapping targets.
+                # Prefix the basename (not the whole path) so the disambiguation
+                # survives c2rust deriving the crate name from the file stem.
+                return candidate.with_name(f"xjlib_{candidate.name}").as_posix()
             return candidate.as_posix()
         return name
 
