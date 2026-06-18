@@ -106,7 +106,7 @@ def test_hoist_embedded_tag_definitions_supported_and_skipped_cases(root, tmp_co
     sample_c.write_text(
         "struct Holder_Node { int collision; };\n"
         "struct Holder {\n"
-        "    struct Node { struct Node *next; } *head, *tail;\n"
+        "    struct Node { struct Node *next, *previous; } *head, *tail;\n"
         "    struct Node *again;\n"
         "    union Value { int i; float f; } v1, v2;\n"
         "    enum Kind { K_A, K_B } k1, k2;\n"
@@ -126,7 +126,7 @@ def test_hoist_embedded_tag_definitions_supported_and_skipped_cases(root, tmp_co
     c_refact_tag_hoister.apply_tag_hoisting_rewrites(tmp_codebase, hoist)
 
     rewritten = sample_c.read_text(encoding="utf-8")
-    assert "struct Holder_Node_xj1 { struct Holder_Node_xj1 *next; };" in rewritten
+    assert "struct Holder_Node_xj1 { struct Holder_Node_xj1 *next, *previous; };" in rewritten
     assert "struct Holder_Node_xj1 *head, *tail;" in rewritten
     assert "struct Holder_Node_xj1 *again;" in rewritten
     assert "union Holder_Value { int i; float f; };" in rewritten

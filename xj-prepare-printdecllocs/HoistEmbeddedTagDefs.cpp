@@ -328,6 +328,9 @@ public:
       unsigned E = SM->getFileOffset(Ref.Range.getEnd()) - BodyBegin;
       BodyRefOffsets.push_back({B, E});
     }
+    std::sort(BodyRefOffsets.begin(), BodyRefOffsets.end());
+    BodyRefOffsets.erase(std::unique(BodyRefOffsets.begin(), BodyRefOffsets.end()),
+                         BodyRefOffsets.end());
     std::sort(BodyRefOffsets.begin(), BodyRefOffsets.end(),
               [](auto A, auto B) { return A.first > B.first; });
 
