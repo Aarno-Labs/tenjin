@@ -32,6 +32,7 @@ fn main() -> Result<()> {
     let mut rw = Rewriter::new();
 
     rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
+    rw.add_expr_rewrite(Rewriter::rewrite_print_byte);
     rw.add_expr_rewrite(Rewriter::rewrite_strstr);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);

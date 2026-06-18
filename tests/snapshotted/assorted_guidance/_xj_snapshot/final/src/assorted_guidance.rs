@@ -1,4 +1,5 @@
 use ::bytemuck::{Pod, Zeroable};
+use std::io::Write;
 extern "C" {
 
     fn strlen(s: *const ::core::ffi::c_char) -> size_t;
@@ -232,15 +233,15 @@ pub fn guided_union_int_float_bitcast(mut ui: ::core::ffi::c_uint) -> ::core::ff
 }
 #[no_mangle]
 pub fn unguided_int_putchar(mut c: ::core::ffi::c_int) {
-    print!("{:}", c as u8 as char);
+    ::std::io::stdout().write_all(&[(c as u8)]);
 }
 #[no_mangle]
 pub fn guided_int_putchar(mut oc: char) {
-    print!("{:}", oc as u8 as char);
+    ::std::io::stdout().write_all(&[(oc as u8)]);
 }
 #[no_mangle]
 pub fn unguided_char_putchar(mut c: ::core::ffi::c_char) {
-    print!("{:}", c as ::core::ffi::c_int as u8 as char);
+    ::std::io::stdout().write_all(&[(c as ::core::ffi::c_int as u8)]);
 }
 #[no_mangle]
 pub fn use_pod_structs(mut png: PodNotGuided, mut pg: PodGuided) -> ::core::ffi::c_int {
