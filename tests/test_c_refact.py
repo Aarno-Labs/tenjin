@@ -4,11 +4,50 @@ import re
 from clang.cindex import CursorKind  # type: ignore
 
 import c_refact
+import c_refact_decl_splitter
 import c_refact_tag_hoister
 import c_refact_type_mod_replicator
 import compilation_database
 import targets
 from cindex_helpers import create_xj_clang_index
+
+
+def test_decl_splitter_skips_embedded_tag_definition_prefix(tmp_codebase):
+    tmp_codebase.mkdir()
+    source = (
+        "struct histindex {\n"
+        "\tstruct record {\n"
+        "\t\tunsigned int ptr, cnt;\n"
+        "\t\tstruct record *next;\n"
+        "\t} **records, /* an occurrence */\n"
+        "\t        **line_map;\n"
+        "};\n"
+    )
+    sample_c = tmp_codebase / "sample.c"
+    sample_c.write_text(source, encoding="utf-8")
+
+    start = source.index("struct record")
+    end = source.index(";\n", start)
+    c_refact_decl_splitter.apply_decl_splitting_rewrites(
+        tmp_codebase,
+        {
+            "edits": [
+                {
+                    "r": {"f": sample_c.as_posix(), "b": start, "e": end},
+                    "cat": "field",
+                    "prefix": (
+                        "struct record {\n"
+                        "\t\tunsigned int ptr, cnt;\n"
+                        "\t\tstruct record *next;\n"
+                        "\t} "
+                    ),
+                    "declarators": ["**records", " /* an occurrence */\n\t        **line_map"],
+                }
+            ]
+        },
+    )
+
+    assert sample_c.read_text(encoding="utf-8") == source
 
 
 def write_compile_commands_for_sources(codebase: Path, sources: list[Path]) -> None:

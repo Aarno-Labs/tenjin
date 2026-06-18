@@ -413,6 +413,11 @@ public:
         continue;
       }
 
+      if (prefixText.contains('{')) {
+        failedDecls["embedded_tag_definition_in_prefix"].push_back(Loc);
+        continue;
+      }
+
       if (prefixText.empty()) {
         failedDecls["empty_prefix"].push_back(Loc);
         continue;

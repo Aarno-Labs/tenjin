@@ -26,6 +26,11 @@ def apply_decl_splitting_rewrites(current_codebase: Path, j: XjLocateJoinedDecls
                 # global, field, and typedef declarations.
                 continue
 
+            if "{" in e["prefix"]:
+                # Duplicating a prefix with an embedded type definition would
+                # declare distinct tags or redefine a tag in the same scope.
+                continue
+
             srcfile = Path(r["f"])
             if not srcfile.is_absolute():
                 srcfile = current_codebase / srcfile
