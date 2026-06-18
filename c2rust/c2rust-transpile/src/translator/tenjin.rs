@@ -779,13 +779,14 @@ impl Translation<'_> {
         func: &Expr,
         args: &[Box<Expr>],
         cargs: &[CExprId],
-        _ctx: ExprContext,
+        ctx: ExprContext,
     ) -> RecognizedCallForm {
         if tenjin::expr_is_ident(func, "puts") && !args.is_empty() {
             return RecognizedCallForm::Puts;
         }
 
         if tenjin::expr_is_ident(func, "printf")
+            && ctx.is_unused()
             && !args.is_empty()
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[0]))
         {
@@ -793,6 +794,7 @@ impl Translation<'_> {
         }
 
         if tenjin::expr_is_ident(func, "snprintf")
+            && ctx.is_unused()
             && args.len() >= 3
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[2]))
             && self
@@ -810,6 +812,7 @@ impl Translation<'_> {
         }
 
         if tenjin::expr_is_ident(func, "sprintf")
+            && ctx.is_unused()
             && args.len() >= 2
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
             && self

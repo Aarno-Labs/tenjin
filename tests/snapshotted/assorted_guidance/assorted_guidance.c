@@ -312,3 +312,16 @@ int use_pod_structs(struct PodNotGuided png, struct PodGuided pg)
 {
     return png.a + pg.a + png.b + pg.b;
 }
+
+int printf_in_cond(const char* ostr)
+{
+    // Note that currently when we suppress print->println! conversion
+    // due to the return code being used, we also don't apply any value
+    // coercions to the arguments, so the guidance here will produce
+    // incorrect code (which will unfortunately not be caught due to
+    // the lenient nature of varargs in C).
+    if (printf("%s\n", ostr) < 0) {
+	    return 42;
+    }
+    return 0;
+}

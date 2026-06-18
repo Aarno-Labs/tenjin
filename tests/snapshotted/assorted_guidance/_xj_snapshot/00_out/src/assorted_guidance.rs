@@ -302,6 +302,13 @@ pub unsafe fn unguided_char_putchar(mut c: ::core::ffi::c_char) {
 pub unsafe fn use_pod_structs(mut png: PodNotGuided, mut pg: PodGuided) -> ::core::ffi::c_int {
     return png.a + pg.a + png.b + pg.b;
 }
+#[no_mangle]
+pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
+    if printf(b"%s\n\0".as_ptr() as *const ::core::ffi::c_char, ostr) < 0 as ::core::ffi::c_int {
+        return 42 as ::core::ffi::c_int;
+    }
+    return 0 as ::core::ffi::c_int;
+}
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
     if lim == Some(0) {
         return 0;
