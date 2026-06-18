@@ -20,6 +20,7 @@ import compilation_database
 import batching_rewriter
 import c_refact
 import c_refact_decl_splitter
+import c_refact_tag_hoister
 import c_refact_type_mod_replicator
 from c_refact_identify_mains import translation_unit_has_main
 import cindex_helpers
@@ -1209,6 +1210,12 @@ def run_preparation_passes(
         j = c_refact.run_xj_locate_joined_decls(current_codebase, store.build_info)
         c_refact_decl_splitter.apply_decl_splitting_rewrites(current_codebase, j)
 
+    def prep_hoist_embedded_tag_definitions(
+        prev: Path, current_codebase: Path, store: PrepPassResultStore
+    ):
+        j = c_refact.run_xj_hoist_embedded_tag_defs(current_codebase, store.build_info)
+        c_refact_tag_hoister.apply_tag_hoisting_rewrites(current_codebase, j)
+
     def prep_pre_refold_consolidation(
         prev: Path, current_codebase: Path, store: PrepPassResultStore
     ):
@@ -1881,6 +1888,7 @@ def run_preparation_passes(
         ("intercept_build", prep_01_intercept_build),
         ("build_coverage", prep_02_build_coverage),
         ("uniquify_built", prep_uniquify_built_files),
+        ("hoist_embedded_tag_definitions", prep_hoist_embedded_tag_definitions),
         ("split_joined_decls", prep_split_joined_decls),
         ("analyze_errno", prep_analyze_errno),
         ("expand_preprocessor", prep_expand_preprocessor),
