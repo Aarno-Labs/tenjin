@@ -352,7 +352,7 @@ components = ["rustfmt"]
 
     let dot_cargo_dir_path = build_dir.join(".cargo");
     let cargo_config_toml_path = dot_cargo_dir_path.join("config.toml");
-    std::fs::create_dir(&dot_cargo_dir_path).unwrap_or_else(|_| {
+    std::fs::create_dir_all(&dot_cargo_dir_path).unwrap_or_else(|_| {
         panic!(
             "couldn't create .cargo directory for rust toolchain config: {}",
             dot_cargo_dir_path.display()
