@@ -24,6 +24,7 @@ import vcs_helpers
 import static_measurements_rust
 from tenj_types import ResolvedPath, style_path, UserFacingError
 from c_refact_identify_mains import find_main_translation_units
+from fixup_rs_mod_collision import CrateRootNotFound, inject_tu_includes
 from translation_preparation import run_preparation_passes
 from translation_improvement import run_improvement_passes
 from constants import XJ_GUIDANCE_FILENAME
@@ -378,6 +379,11 @@ def do_translate_with_tracker(
 
     if not skip_remainder_of_translation:
         try:
+            with tracker.tracking("fixup-rs-mod-collision", output):
+                try:
+                    inject_tu_includes(output)
+                except CrateRootNotFound:
+                    pass
             run_improvement_passes(root, output, resultsdir, cratename, tracker)
         finally:
             tracker.mark_translation_finished()
