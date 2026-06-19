@@ -577,6 +577,19 @@ fn classify_expr(expr: &ast::Expr) -> (ExprForm, Option<Place>, String, Option<T
         }
         ast::Expr::RefExpr(r) => {
             let inner = r.expr();
+            let inner_place = inner.as_ref().and_then(place_for_expr);
+            // `&raw mut place` / `&raw const place` create a *raw pointer*, not
+            // a reference. Raw-pointer creation imposes no borrowck constraint
+            // on the place: `f(&raw mut x, x)` and even `f(&raw mut x, &mut x)`
+            // compile fine. Modeling it as a `&mut`/`&` borrow (as the non-raw
+            // arms below do) invents a conflict the compiler never raises and
+            // triggers a needless lift. So classify it like the
+            // `&raw mut place as *mut T` cast path: `form = Other` so the kind
+            // derives from the (Copy `*mut T`) expression type — a non-borrow
+            // `Read` of the place — which never conflicts with another read.
+            if r.raw_token().is_some() {
+                return (ExprForm::Other, inner_place, String::new(), None);
+            }
             let inner_text = inner
                 .as_ref()
                 .map(|e| e.syntax().text().to_string())
@@ -586,7 +599,6 @@ fn classify_expr(expr: &ast::Expr) -> (ExprForm, Option<Place>, String, Option<T
             // `func(&mut x, x)` produces no access for `&mut x` and the
             // conflict is missed. The borrow-kind itself comes from
             // `form` in walk_arg_expr.
-            let inner_place = inner.as_ref().and_then(place_for_expr);
             let form = if r.mut_token().is_some() {
                 ExprForm::MutBorrowOf
             } else {
@@ -1016,5 +1028,34 @@ fn f(p: usize) {
             insertion_for_call_containing(src, "p, 1").is_some(),
             "a call under a leading cast should still hoist",
         );
+    }
+}
+
+#[cfg(test)]
+mod classify_expr_tests {
+    use super::*;
+    use ra_ap_syntax::{Edition, ast};
+
+    fn classify(src: &str) -> ExprForm {
+        let expr = ast::Expr::parse(src, Edition::CURRENT).tree();
+        classify_expr(&expr).0
+    }
+
+    #[test]
+    fn raw_borrows_are_not_modeled_as_references() {
+        // `&raw mut`/`&raw const` create raw pointers, which impose no
+        // borrowck constraint. They must NOT classify as Mut/SharedBorrowOf,
+        // or `f(&raw mut x, x)` invents a borrow-vs-read conflict and lifts
+        // unnecessarily. They classify as `Other` (a plain Copy value).
+        assert_eq!(classify("&raw mut x"), ExprForm::Other);
+        assert_eq!(classify("&raw const x"), ExprForm::Other);
+    }
+
+    #[test]
+    fn real_references_still_classify_as_borrows() {
+        // Genuine `&`/`&mut` borrows must keep conflicting so real aliasing
+        // hazards are still lifted.
+        assert_eq!(classify("&mut x"), ExprForm::MutBorrowOf);
+        assert_eq!(classify("&x"), ExprForm::BorrowOf);
     }
 }
