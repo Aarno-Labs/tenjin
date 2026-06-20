@@ -40,14 +40,30 @@ def inject_tu_includes(
     dry_run: bool = False,
 ) -> list[Injection]:
     build_dir = Path(build_dir)
-    root = Path(crate_root) if crate_root is not None else _find_crate_root(build_dir)
+    roots = (
+        [(Path(crate_root), build_dir)]
+        if crate_root is not None
+        else list(_find_crate_roots(build_dir))
+    )
 
+    all_planned: list[Injection] = []
+    for root, module_dir in roots:
+        all_planned.extend(_inject_tu_includes_for_crate(root, module_dir, dry_run=dry_run))
+    return all_planned
+
+
+def _inject_tu_includes_for_crate(
+    root: Path,
+    module_dir: Path,
+    *,
+    dry_run: bool,
+) -> list[Injection]:
     data = root.read_bytes()
     tree = RUST_PARSER.parse(data)
 
     planned: list[Injection] = []
     for item in _iter_mod_items(tree.root_node, data, (), False):
-        candidate = build_dir.joinpath(*item.stack, f"{item.name}.rs")
+        candidate = module_dir.joinpath(*item.stack, f"{item.name}.rs")
         if not candidate.is_file():
             continue
         if _body_first_item_is_include(item.body, data):
@@ -75,6 +91,30 @@ def inject_tu_includes(
         root.write_bytes(data)
 
     return planned
+
+
+def _find_crate_roots(build_dir: Path) -> Iterator[tuple[Path, Path]]:
+    try:
+        root = _find_crate_root(build_dir)
+    except CrateRootNotFound:
+        pass
+    else:
+        yield root, build_dir
+        return
+
+    child_roots: list[tuple[Path, Path]] = []
+    for child in sorted(build_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            child_roots.append((_find_crate_root(child), child))
+        except CrateRootNotFound:
+            continue
+
+    if not child_roots:
+        raise CrateRootNotFound(f"Could not find lib.rs or c2rust-lib.rs in {build_dir}")
+
+    yield from child_roots
 
 
 def _find_crate_root(build_dir: Path) -> Path:

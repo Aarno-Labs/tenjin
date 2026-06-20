@@ -34,6 +34,48 @@ def test_injects_sibling_tu_as_first_inline_module_item(tmp_path: Path):
     assert 'include!("src/src/util/hash.rs");' in (tmp_path / "lib.rs").read_text(encoding="utf-8")
 
 
+def test_injects_child_crate_when_called_on_workspace_root(tmp_path: Path):
+    write(tmp_path / "Cargo.toml", '[workspace]\nmembers = ["driver", "xjlib_driver"]\n')
+    write(
+        tmp_path / "driver" / "lib.rs",
+        """pub use xjlib_driver;
+pub mod src {
+    pub mod cmd {
+        pub mod hash_object;
+    }
+}
+""",
+    )
+    write(tmp_path / "driver" / "src" / "cmd" / "hash_object.rs", "pub fn main() {}\n")
+    write(
+        tmp_path / "xjlib_driver" / "lib.rs",
+        """pub mod src {
+    pub mod src {
+        pub mod util {
+            pub mod hash {
+                pub mod builtin;
+            }
+        }
+    }
+}
+""",
+    )
+    write(
+        tmp_path / "xjlib_driver" / "src" / "src" / "util" / "hash.rs",
+        "pub fn loaded() {}\n",
+    )
+
+    planned = inject_tu_includes(tmp_path)
+
+    assert [(i.module_path, i.include_path, i.applied) for i in planned] == [
+        ("src::src::util::hash", "src/src/util/hash.rs", True)
+    ]
+    assert 'include!("src/src/util/hash.rs");' in (tmp_path / "xjlib_driver" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "include!" not in (tmp_path / "driver" / "lib.rs").read_text(encoding="utf-8")
+
+
 def test_ignores_bare_mod_and_inline_modules_without_sibling_file(tmp_path: Path):
     write(
         tmp_path / "lib.rs",
