@@ -2312,6 +2312,30 @@ impl Translation<'_> {
         }
         false
     }
+
+    /// Return `true` if `cexpr` (modulo enclosing casts/parens) is the base
+    /// operand of an array-subscript expression (`base[index]`), as opposed to
+    /// the index operand or some other position. Used to suppress the
+    /// slice-to-pointer (`as_ptr()`) decay on a guided-slice variable when it is
+    /// about to be subscripted: the subscript lowering indexes the slice
+    /// directly (`s[i]`) rather than the decayed pointer (`s.as_ptr()[i]`, which
+    /// does not compile).
+    pub fn wrapped_with_subscript_base(&self, mut cexpr: CExprId) -> bool {
+        while let Some(parent_id) = self.parent_expr_map.get(&cexpr) {
+            match self.ast_context[*parent_id].kind {
+                CExprKind::ArraySubscript(_, base, _index, _) => {
+                    return base == cexpr;
+                }
+                CExprKind::ImplicitCast(_, _, _, _, _)
+                | CExprKind::Paren(_, _)
+                | CExprKind::ExplicitCast(_, _, _, _, _) => {
+                    cexpr = *parent_id;
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
