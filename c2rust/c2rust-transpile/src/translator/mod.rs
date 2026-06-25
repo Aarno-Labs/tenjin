@@ -614,6 +614,10 @@ pub struct Translation<'c> {
     // Items indexed by file id of the source
     items: RefCell<IndexMap<FileId, ItemStore>>,
 
+    // Generated C-ABI export shims (XREF:ffi_export_wrapper), collected here so
+    // they can be emitted together inside a dedicated `_xj_ffi` submodule.
+    ffi_wrappers: RefCell<Vec<Box<Item>>>,
+
     // Mod names to try to stop collisions from happening
     mod_names: RefCell<IndexMap<String, PathBuf>>,
 
@@ -1387,6 +1391,21 @@ pub fn translate(
 
             // Add the items accumulated
             all_items.extend(items);
+
+            // XREF:ffi_export_wrapper
+            // Collect every generated C-ABI export shim into a single
+            // `pub mod _xj_ffi { ... }` at the crate root. Each shim calls its target
+            // via a `super::` path, so it does not matter that the shims no longer sit
+            // next to the functions they forward to. `use super::*` brings any types
+            // named in their signatures into scope.
+            let ffi_wrappers = t.ffi_wrappers.borrow_mut().drain(..).collect::<Vec<_>>();
+            if !ffi_wrappers.is_empty() {
+                let mut mod_items = vec![mk()
+                    .call_attr("allow", vec!["unused_imports"])
+                    .use_glob_item(vec!["super"])];
+                mod_items.extend(ffi_wrappers);
+                all_items.push(mk().pub_().mod_item("_xj_ffi", Some(mk().mod_(mod_items))));
+            }
 
             //s.print_remaining_comments();
             syn::File {
@@ -2590,6 +2609,7 @@ impl<'c> Translation<'c> {
             spans: HashMap::new(),
             sectioned_static_initializers: RefCell::new(Vec::new()),
             items: RefCell::new(items),
+            ffi_wrappers: RefCell::new(Vec::new()),
             mod_names: RefCell::new(IndexMap::new()),
             main_file,
             extern_crates: RefCell::new(IndexSet::new()),
