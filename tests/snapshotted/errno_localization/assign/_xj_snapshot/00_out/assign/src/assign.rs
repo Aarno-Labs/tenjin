@@ -58,12 +58,10 @@ pub struct _IO_FILE {
 pub type _IO_lock_t = ();
 pub type FILE = _IO_FILE;
 pub const EINVAL: ::core::ffi::c_int = 22 as ::core::ffi::c_int;
-#[no_mangle]
-pub unsafe extern "C" fn foo() -> ::core::ffi::c_int {
+pub unsafe fn foo() -> ::core::ffi::c_int {
     return 0 as ::core::ffi::c_int;
 }
-#[no_mangle]
-pub unsafe extern "C" fn doesnt_use_errno(mut f: *mut FILE) -> ::core::ffi::c_int {
+pub unsafe fn doesnt_use_errno(mut f: *mut FILE) -> ::core::ffi::c_int {
     fclose(f);
     return 0 as ::core::ffi::c_int;
 }
@@ -75,8 +73,7 @@ unsafe fn _xj_wrap_fclose_xjtr_0(
     *_xj_errno = *__errno_location();
     return ret;
 }
-#[no_mangle]
-pub unsafe extern "C" fn does_use_errno(mut f: *mut FILE) -> ::core::ffi::c_int {
+pub unsafe fn does_use_errno(mut f: *mut FILE) -> ::core::ffi::c_int {
     let mut _xj_local_errno: i32 = 0;
     let mut r = _xj_wrap_fclose_xjtr_0(&mut _xj_local_errno, f);
     if r < 0 as ::core::ffi::c_int {
@@ -112,4 +109,20 @@ pub fn main() -> ExitCode {
     let argc = (args_ptrs.len() - 1) as ::core::ffi::c_int;
     let argv = args_ptrs.as_mut_ptr() as *mut *mut ::core::ffi::c_char;
     unsafe { ExitCode::from(main_0(argc, argv) as u8) }
+}
+pub mod _xj_ffi {
+    #[allow(unused_imports)]
+    use super::*;
+    #[no_mangle]
+    pub unsafe extern "C" fn foo() -> ::core::ffi::c_int {
+        super::foo()
+    }
+    #[no_mangle]
+    pub unsafe extern "C" fn doesnt_use_errno(arg0: *mut FILE) -> ::core::ffi::c_int {
+        super::doesnt_use_errno(arg0)
+    }
+    #[no_mangle]
+    pub unsafe extern "C" fn does_use_errno(arg0: *mut FILE) -> ::core::ffi::c_int {
+        super::does_use_errno(arg0)
+    }
 }

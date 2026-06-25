@@ -129,6 +129,19 @@ def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> Comple
     return lift_cp
 
 
+def run_improve_relink(root: Path, args: list[str], dir: Path) -> CompletedProcess:
+    # Wire calls that go through `extern "C"` foreign declarations directly
+    # to the workspace module that exports the corresponding symbol,
+    # removing the now-redundant (unsafe) foreign declarations.
+    return run_built_workspace_binary(
+        root,
+        "xj-improve-relink",
+        "xj-improve-relink",
+        args,
+        dir,
+    )
+
+
 def quiet_cargo(args: list[str], cwd: Path, env_ext=None) -> CompletedProcess:
     cp = hermetic.run_cargo_on_translated_code(
         args, cwd=cwd, check=False, capture_output=True, env_ext=env_ext
@@ -957,6 +970,10 @@ def run_improvement_passes(
         (
             "lift-call-args",
             lambda root, dir: run_improve_lift_call_args(root, ["--modify-in-place"], dir),
+        ),
+        (
+            "relink",
+            lambda root, dir: run_improve_relink(root, ["--modify-in-place"], dir),
         ),
         ("fmt", run_cargo_fmt),
         ("fix", run_cargo_fix),
