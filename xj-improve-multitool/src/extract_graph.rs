@@ -137,16 +137,22 @@ impl GraphExtractionVisitor<'_> {
         let src_map = self.tcx.sess.source_map();
         if self.is_binary {
             // In a binary crate, most identifiers are dead if not explicitly referenced,
-            // but items marked `#[no_mangle]` could be referenced by a companion library crate.
+            // but items marked `#[no_mangle]` or `#[export_name = "..."]` could be
+            // referenced by a companion library crate. (The translator emits the latter
+            // for FFI export shims whose C name had to be renamed; see XREF:ffi_export_wrapper.)
             // If we remove such a referenced item, `cargo check` would pass but
             // `cargo build` would fail with missing symbol errors during linking.
             //
             // Eventually we should collect the set of actually-referenced symbols.
-            // For now, we conservatively retain all `#[no_mangle]` items.
+            // For now, we conservatively retain all `#[no_mangle]`/`#[export_name]` items.
             if let Ok(line_info) = src_map.lookup_line(item_span.lo())
                 && line_info.line > 0
                 && let Some(preceding_line) = line_info.sf.get_line(line_info.line - 1)
-                && preceding_line.trim_start().starts_with("#[no_mangle]")
+                && {
+                    let trimmed = preceding_line.trim_start();
+                    trimmed.starts_with("#[no_mangle]")
+                        || trimmed.starts_with("#[export_name")
+                }
             {
                 self.graf
                     .update_edge(GNode::VirtualRoot, GNode::Def(item_def), GEdge::Mentions);
