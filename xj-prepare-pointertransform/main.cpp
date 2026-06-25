@@ -38,6 +38,26 @@ int main(int argc, const char **argv) {
     g_inplace = InplaceOpt;
     g_verbose = VerboseOpt;
 
-    ClangTool Tool(OptionsParser.getCompilations(), OptionsParser.getSourcePathList());
-    return Tool.run(newFrontendActionFactory<PointerTransformAction>().get());
+    // Process each source file with its OWN ClangTool, and therefore a fresh
+    // FileManager, rather than one ClangTool over the whole source list.
+    //
+    // A single ClangTool shares one FileManager across every file in the run,
+    // and that FileManager caches each header's stat (size) on first read. In
+    // --inplace mode, EndSourceFileAction calls overwriteChangedFiles(), which
+    // rewrites shared headers on disk mid-run (e.g. util.h, which holds the
+    // GIT_INLINE functions that get index-transformed while processing the
+    // first .c file). A later translation unit that re-reads such a header then
+    // reads it against the stale cached size, violating MemoryBuffer's
+    // null-terminator invariant ("Buffer is not null terminated!") and aborting
+    // the whole process with SIGABRT. A per-file FileManager re-stats every
+    // header from its current on-disk contents, so no stale size leaks across
+    // files. (Per-file analyzer state is already reset in BeginSourceFileAction.)
+    int rc = 0;
+    for (const std::string &Source : OptionsParser.getSourcePathList()) {
+        ClangTool Tool(OptionsParser.getCompilations(), {Source});
+        int r = Tool.run(newFrontendActionFactory<PointerTransformAction>().get());
+        if (r != 0)
+            rc = r;
+    }
+    return rc;
 }
