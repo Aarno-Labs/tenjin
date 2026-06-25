@@ -28,6 +28,7 @@ def do_fmt_rs():
     hermetic.run_cargo_in(["fmt"], cwd=root / "c2rust", check=True)
     hermetic.run_cargo_in(["fmt"], cwd=root / "xj-improve-multitool", check=True)
     hermetic.run_cargo_in(["fmt"], cwd=root / "xj-improve-synsub", check=True)
+    hermetic.run_cargo_in(["fmt"], cwd=root / "xj-improve-relink", check=True)
     hermetic.run_cargo_in(["fmt"], cwd=root / "xj-improve-lift-call-args", check=True)
 
 
@@ -36,6 +37,7 @@ def do_check_rs_fmt():
     hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "c2rust", check=True)
     hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "xj-improve-multitool", check=True)
     hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "xj-improve-synsub", check=True)
+    hermetic.run_cargo_in(["fmt", "--", "--check"], cwd=root / "xj-improve-relink", check=True)
     hermetic.run_cargo_in(
         ["fmt", "--", "--check"], cwd=root / "xj-improve-lift-call-args", check=True
     )
@@ -57,6 +59,11 @@ def do_check_rs():
     hermetic.run_cargo_in(
         "clippy --locked --workspace".split(),
         cwd=root / "xj-improve-synsub",
+        check=True,
+    )
+    hermetic.run_cargo_in(
+        "clippy --locked --workspace".split(),
+        cwd=root / "xj-improve-relink",
         check=True,
     )
     hermetic.run_cargo_in(
@@ -84,6 +91,11 @@ def do_fix_rs():
     hermetic.run_cargo_in(
         "clippy --locked --fix --allow-no-vcs --workspace".split(),
         cwd=root / "xj-improve-synsub",
+        check=True,
+    )
+    hermetic.run_cargo_in(
+        "clippy --locked --fix --allow-no-vcs --workspace".split(),
+        cwd=root / "xj-improve-relink",
         check=True,
     )
     hermetic.run_cargo_in(
@@ -117,6 +129,12 @@ def do_build_rs(root: Path, capture_output: bool = False):
         capture_output=capture_output,
     )
     hermetic.run_cargo_in(
+        f"build {cargo_flags} --profile={cargo_profile_dev} --workspace".split(),
+        cwd=root / "xj-improve-relink",
+        check=True,
+        capture_output=capture_output,
+    )
+    hermetic.run_cargo_in(
         f"build {cargo_flags} --profile={cargo_profile_rel} --workspace".split(),
         cwd=root / "xj-improve-lift-call-args",
         check=True,
@@ -135,6 +153,11 @@ def do_test_unit_rs():
     hermetic.run_cargo_in(
         f"nextest run --locked {release_flag_dev}".split(),
         cwd=root / "xj-improve-synsub",
+        check=True,
+    )
+    hermetic.run_cargo_in(
+        f"nextest run --locked {release_flag_dev}".split(),
+        cwd=root / "xj-improve-relink",
         check=True,
     )
     hermetic.run_cargo_in(

@@ -233,7 +233,7 @@ def find_containing_vcs_dir(start_dir: Path) -> Path | None:
         # (in case of a colocated repository).
         for repo_dir in [".jj", ".git"]:
             potential_path = os.path.join(current_dir, repo_dir)
-            if os.path.isdir(potential_path):
+            if os.path.isdir(potential_path) or os.path.isfile(potential_path):
                 return Path(potential_path)
 
         # Move up one directory
