@@ -1864,6 +1864,65 @@ def run_preparation_passes(
         print(cp.stderr.decode("utf-8"))
         return cp
 
+    def prep_allocmotion(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        builddir = hermetic.xj_prepare_allocmotion_build_dir(repo_root.localdir())
+        assert builddir.exists(), (
+            f"Build directory {builddir} does not exist, should have been built already"
+        )
+
+        # Keep in sync with `xj-prepare-allocmotion/CMakeLists.txt`
+        binary_path = builddir / "xj-prepare-allocmotion"
+
+        compdb_path = current_codebase / "compile_commands.json"
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
+
+        with open(compdb_path, encoding="utf-8") as f:
+            compdb_entries = json.load(f)
+        source_files = [entry["file"] for entry in compdb_entries]
+
+        assert len(source_files) > 0, (
+            "No source files found in compilation database: " + compdb_path.as_posix()
+        )
+
+        xj_clang_resource_dir = (
+            hermetic.run(["clang", "-print-resource-dir"], capture_output=True, check=True)
+            .stdout.decode()
+            .strip()
+        )
+
+        xj_start = time.time()
+        cp = run_modifying_subprocess_or_restore_prev(
+            prev,
+            current_codebase,
+            "xj-prepare-allocmotion",
+            lambda: hermetic.run(
+                [
+                    binary_path.as_posix(),
+                    "--inplace",
+                    "-p",
+                    current_codebase.as_posix(),
+                    "--extra-arg=-Wno-zero-length-array",
+                    "--extra-arg=-Wno-implicit-int-conversion",
+                    "--extra-arg=-Wno-unused-function",
+                    f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+                    *source_files,
+                ],
+                cwd=current_codebase,
+                check=True,
+                capture_output=True,
+            ),
+        )
+        xj_elapsed = time.time() - xj_start
+        if cp.returncode == 0:
+            print(f"xj-prepare-allocmotion completed in {xj_elapsed:.1f} seconds")
+        else:
+            print(
+                f"xj-prepare-allocmotion failed in {xj_elapsed:.1f} seconds; restored previous contents"
+            )
+        print("xj-prepare-allocmotion stderr:")
+        print(cp.stderr.decode("utf-8"))
+        return cp
+
     def prep_refold_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
         all_build_targets = store.build_info.get_all_targets()
@@ -1886,6 +1945,10 @@ def run_preparation_passes(
         ("expand_preprocessor", prep_expand_preprocessor),
         ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
+        # alloc-motion runs before pointertransform and before cclyzer
+        # (appended below) so the rewritten allocations are seen by the
+        # pointer transform and reflected in the points-to analysis.
+        ("allocmotion", prep_allocmotion),
         ("pointertransform", prep_pointertransform),
         ("uniquify_statics", prep_uniquify_statics),
     ]
