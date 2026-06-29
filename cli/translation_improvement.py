@@ -9,7 +9,7 @@ import tempfile
 import graphlib
 from pathlib import Path
 from typing import Callable, Sequence
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, CalledProcessError
 
 import repo_root
 from tenj_types import ResolvedPath
@@ -171,6 +171,9 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path) -> 
     )
 
 
+type FindUnsafe2FnMetrics = dict[str, object]
+
+
 def run_un_unsafe_improvement(root: Path, dir: Path):
     """Iteratively remove unsafe blocks.
 
@@ -212,8 +215,6 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         UNSAFE = 1
         UNKNOWN = 2
 
-    type FindUnsafe2FnMetrics = dict[str, object]
-
     # `find-unsafe2` can see HIR-expanded implementation details, such as vec!
     # internals or dead union initializers left after earlier rewrites. A couple
     # of residual non-marker metrics are still cheap enough to let cargo decide.
@@ -248,11 +249,14 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                     metrics[fn_name] = fn_metrics
         return metrics
 
-    def load_find_unsafe2_fn_metrics() -> dict[str, FindUnsafe2FnMetrics]:
-        with tempfile.TemporaryDirectory() as find_unsafe2_dir:
-            json_dir = Path(find_unsafe2_dir)
-            run_find_unsafe2(json_dir)
-            return read_find_unsafe2_fn_metrics(json_dir)
+    def load_find_unsafe2_fn_metrics() -> dict[str, FindUnsafe2FnMetrics] | None:
+        try:
+            with tempfile.TemporaryDirectory() as find_unsafe2_dir:
+                json_dir = Path(find_unsafe2_dir)
+                run_find_unsafe2(json_dir)
+                return read_find_unsafe2_fn_metrics(json_dir)
+        except CalledProcessError:
+            return None
 
     find_unsafe2_metrics = load_find_unsafe2_fn_metrics()
 
@@ -389,7 +393,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         return None
 
     def find_metrics_for_fn_name(fn_name: str | None) -> FindUnsafe2FnMetrics | None:
-        if fn_name is None:
+        if fn_name is None or find_unsafe2_metrics is None:
             return None
         matches = [
             metrics
