@@ -45,6 +45,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -381,6 +382,46 @@ class FunctionProcessor {
         return Needs;
     }
 
+    // Fields whose very first access is an unconditional top-level write
+    // `x->f = e` (with RHS not reading f) can fold the temporary's declaration
+    // into that write (`Tf tmp = e;`) instead of a bare declaration at the
+    // alloc site plus a separate assignment. Returns the first-write LHS member
+    // exprs at which to emit the combined declaration.
+    std::set<const MemberExpr *>
+    fieldsToCombine(const VarDecl *X, const std::vector<const MemberExpr *> &Redirect,
+                    const std::set<const MemberExpr *> &AssignLHSMEs) {
+        std::map<const FieldDecl *, unsigned> FirstIdx;
+        for (const MemberExpr *ME : Redirect) {
+            const FieldDecl *FD = memberOf(ME);
+            if (!FD)
+                continue;
+            unsigned TI = topIndexOf(ME);
+            auto it = FirstIdx.find(FD);
+            if (it == FirstIdx.end() || TI < it->second)
+                FirstIdx[FD] = TI;
+        }
+
+        std::set<const MemberExpr *> Combine;
+        std::set<const FieldDecl *> Taken;
+        for (const MemberExpr *ME : Redirect) {
+            const FieldDecl *FD = memberOf(ME);
+            if (!FD || Taken.count(FD) || !AssignLHSMEs.count(ME))
+                continue;
+            unsigned TI = topIndexOf(ME);
+            if (TI != FirstIdx[FD])
+                continue; // not the earliest access to f
+            const auto *BO = dyn_cast<BinaryOperator>(TopStmts[TI]);
+            if (!BO || BO->getOpcode() != BO_Assign ||
+                BO->getLHS()->IgnoreParenImpCasts() != ME)
+                continue; // not an unconditional top-level `x->f = e`
+            if (readsField(BO->getRHS(), X, FD))
+                continue; // self-read: e reads f before storing
+            Combine.insert(ME);
+            Taken.insert(FD);
+        }
+        return Combine;
+    }
+
     void transformCandidate(const VarDecl *X, const Stmt *AllocStmt, unsigned AllocIdx,
                             bool DeclAtSite, bool IsCalloc) {
         const std::string XName = X->getName().str();
@@ -531,8 +572,10 @@ class FunctionProcessor {
         std::set<const FieldDecl *> NeedsZero =
             IsCalloc ? fieldsNeedingZero(X, Redirect, V.AssignLHSMEs)
                      : std::set<const FieldDecl *>{};
-        emitEdits(XName, Pointee, RD, AllocStmt, DeclAtSite, Redirect, NeedsZero, NullCheck,
-                  BoxTop);
+        std::set<const MemberExpr *> Combine =
+            fieldsToCombine(X, Redirect, V.AssignLHSMEs);
+        emitEdits(XName, Pointee, RD, AllocStmt, DeclAtSite, Redirect, NeedsZero, Combine,
+                  NullCheck, BoxTop);
         log("rewrote '" + XName + "' in struct allocation");
     }
 
@@ -591,7 +634,8 @@ class FunctionProcessor {
     void emitEdits(const std::string &XName, QualType Pointee, const RecordDecl *RD,
                    const Stmt *AllocStmt, bool DeclAtSite,
                    const std::vector<const MemberExpr *> &Redirect,
-                   const std::set<const FieldDecl *> &NeedsZero, const IfStmt *NullCheck,
+                   const std::set<const FieldDecl *> &NeedsZero,
+                   const std::set<const MemberExpr *> &Combine, const IfStmt *NullCheck,
                    const Stmt *BoxTop) {
         PrintingPolicy PP = Ctx.getPrintingPolicy();
         const std::string TypeName = Pointee.getAsString(PP);
@@ -599,38 +643,54 @@ class FunctionProcessor {
 
         ensureHelper();
 
-        // Fields touched before the box: these get a temporary.
-        std::set<const FieldDecl *> Accessed;
-        for (const MemberExpr *ME : Redirect)
-            if (const auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl()))
-                Accessed.insert(FD);
-
-        // 1. Replace the allocation with a temporary per accessed field. A
-        //    calloc-backed temp is zeroed only when the field may be read
-        //    before it is explicitly written (so the program relies on
-        //    calloc's zeroing); a field written before any read needs no
-        //    default.
-        std::string Temps;
-        for (const FieldDecl *FD : RD->fields()) {
-            if (!Accessed.count(FD))
-                continue;
+        // Renders the field's type as a declaration of the temporary, e.g.
+        // `int _xj_x_f` or `char *_xj_x_g`.
+        auto tempDecl = [&](const FieldDecl *FD) {
             std::string Decl;
             llvm::raw_string_ostream OS(Decl);
             FD->getType().print(OS, PP, tempName(XName, FD), /*Indentation=*/0);
             OS.flush();
-            Temps += Decl + (NeedsZero.count(FD) ? " = {0}" : "") + "; ";
+            return Decl;
+        };
+
+        // Fields touched before the box: these get a temporary. Those whose
+        // first access is an unconditional write (`Combine`) declare the
+        // temporary at that write instead of here.
+        std::set<const FieldDecl *> Accessed, Combined;
+        for (const MemberExpr *ME : Redirect)
+            if (const FieldDecl *FD = memberOf(ME)) {
+                Accessed.insert(FD);
+                if (Combine.count(ME))
+                    Combined.insert(FD);
+            }
+
+        // 1. Replace the allocation with a bare temporary per accessed field
+        //    (skipping combined fields). A calloc-backed temp is zeroed only
+        //    when the field may be read before it is explicitly written (so the
+        //    program relies on calloc's zeroing).
+        std::string Temps;
+        for (const FieldDecl *FD : RD->fields()) {
+            if (!Accessed.count(FD) || Combined.count(FD))
+                continue;
+            Temps += tempDecl(FD) + (NeedsZero.count(FD) ? " = {0}" : "") + "; ";
         }
         emitReplace(AllocStmt->getBeginLoc(),
                     CharSourceRange::getCharRange(AllocStmt->getBeginLoc(),
                                                   pastSemi(AllocStmt)),
                     Temps);
 
-        // 2. Redirect each `x->f` access to its temporary `_xj_x_f`.
-        for (const MemberExpr *ME : Redirect)
-            if (const auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl()))
-                emitReplace(ME->getBeginLoc(),
-                            CharSourceRange::getTokenRange(ME->getSourceRange()),
-                            tempName(XName, FD));
+        // 2. Redirect each `x->f` access to its temporary `_xj_x_f`. At a
+        //    combined first write, fold in the declaration: `x->f = e` becomes
+        //    `Tf _xj_x_f = e`.
+        for (const MemberExpr *ME : Redirect) {
+            const FieldDecl *FD = memberOf(ME);
+            if (!FD)
+                continue;
+            std::string Repl =
+                Combine.count(ME) ? tempDecl(FD) : tempName(XName, FD);
+            emitReplace(ME->getBeginLoc(),
+                        CharSourceRange::getTokenRange(ME->getSourceRange()), Repl);
+        }
 
         // 3. Delete the null-check, if any.
         if (NullCheck)
