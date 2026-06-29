@@ -275,6 +275,45 @@ class FunctionProcessor {
         return RD;
     }
 
+    // The alloc call backing an allocation statement (decl-at-site or assign).
+    const CallExpr *allocCallOf(const Stmt *AllocStmt) {
+        if (const auto *DS = dyn_cast<DeclStmt>(AllocStmt)) {
+            if (DS->isSingleDecl())
+                if (const auto *VD = dyn_cast<VarDecl>(DS->getSingleDecl()))
+                    return asAllocCall(VD->getInit());
+        } else if (const auto *BO = dyn_cast<BinaryOperator>(AllocStmt)) {
+            return asAllocCall(BO->getRHS());
+        }
+        return nullptr;
+    }
+
+    // Is `E` exactly `sizeof(T)` / `sizeof(*x)` for the element type, with no
+    // surrounding arithmetic (so it sizes one element, not an array)?
+    bool isSizeofElement(const Expr *E, QualType Pointee) {
+        const auto *U = dyn_cast<UnaryExprOrTypeTraitExpr>(E->IgnoreParenImpCasts());
+        if (!U || U->getKind() != UETT_SizeOf)
+            return false;
+        return Ctx.getCanonicalType(U->getTypeOfArgument()) ==
+               Ctx.getCanonicalType(Pointee);
+    }
+
+    // Does the call allocate exactly one `Pointee`? `malloc(sizeof T)` or
+    // `calloc(1, sizeof T)`. Anything else (an array allocation such as
+    // `calloc(n, sizeof T)` or `malloc(n * sizeof T)`, or an over-allocation)
+    // must not be boxed as a single struct.
+    bool allocatesSingle(const CallExpr *Call, QualType Pointee, bool IsCalloc) {
+        if (IsCalloc) {
+            if (Call->getNumArgs() < 2)
+                return false;
+            Expr::EvalResult R;
+            if (!Call->getArg(0)->EvaluateAsInt(R, Ctx) || !R.Val.isInt() ||
+                R.Val.getInt() != 1)
+                return false;
+            return isSizeofElement(Call->getArg(1), Pointee);
+        }
+        return Call->getNumArgs() >= 1 && isSizeofElement(Call->getArg(0), Pointee);
+    }
+
     const Stmt *enclosingTop(const Stmt *Needle) {
         for (const Stmt *Top : TopStmts)
             if (contains(Top, Needle))
@@ -349,6 +388,14 @@ class FunctionProcessor {
         const RecordDecl *RD = eligibleStruct(Pointee);
         if (!RD) {
             log("skip '" + XName + "': pointee is not a plain struct");
+            return;
+        }
+
+        // Only box a single-element allocation; an array allocation
+        // (`calloc(n, sizeof T)`, `malloc(n * sizeof T)`) must be left alone.
+        const CallExpr *Call = allocCallOf(AllocStmt);
+        if (!Call || !allocatesSingle(Call, Pointee, IsCalloc)) {
+            log("skip '" + XName + "': not a single-element allocation");
             return;
         }
 
