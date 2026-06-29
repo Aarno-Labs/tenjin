@@ -89,6 +89,20 @@ bool subtreeRefs(const Stmt *S, const VarDecl *V) {
     return false;
 }
 
+// Does the subtree read field `FD` of `X` (i.e. contain `X->FD`)? Used to tell
+// whether an assignment's RHS reads the field it is writing.
+bool readsField(const Stmt *S, const VarDecl *X, const FieldDecl *FD) {
+    if (!S)
+        return false;
+    if (const auto *ME = dyn_cast<MemberExpr>(S))
+        if (ME->isArrow() && isRefTo(ME->getBase(), X) && ME->getMemberDecl() == FD)
+            return true;
+    for (const Stmt *child : S->children())
+        if (readsField(child, X, FD))
+            return true;
+    return false;
+}
+
 // Does the subtree contain a label, goto, or computed goto? Such a statement
 // in the init region could let control flow skip the boxing or re-enter the
 // region, so we refuse to transform across it.
@@ -279,6 +293,55 @@ class FunctionProcessor {
         return Loc.isValid() && !Loc.isMacroID() && SM.isWrittenInMainFile(Loc);
     }
 
+    // Top-level field decl referenced by a `x->f` (or `x->f...`) access.
+    static const FieldDecl *memberOf(const MemberExpr *ME) {
+        return dyn_cast<FieldDecl>(ME->getMemberDecl());
+    }
+
+    // Which accessed fields need an explicit `= {0}` on their temporary: those
+    // that may be read before they are unconditionally, plainly written (so the
+    // program depends on calloc's zeroing). A field is exempt only if it has an
+    // unconditional top-level write `x->f = e` (whose RHS does not itself read
+    // f) that precedes every read of f.
+    std::set<const FieldDecl *>
+    fieldsNeedingZero(const VarDecl *X, const std::vector<const MemberExpr *> &Redirect,
+                      const std::set<const MemberExpr *> &AssignLHSMEs) {
+        std::set<const FieldDecl *> Fields;
+        for (const MemberExpr *ME : Redirect)
+            if (const FieldDecl *FD = memberOf(ME))
+                Fields.insert(FD);
+
+        std::set<const FieldDecl *> Needs;
+        for (const FieldDecl *FD : Fields) {
+            unsigned FirstRead = ~0u;
+            for (const MemberExpr *ME : Redirect) {
+                if (memberOf(ME) != FD || AssignLHSMEs.count(ME))
+                    continue; // a plain-write LHS is a store, not a read
+                FirstRead = std::min(FirstRead, topIndexOf(ME));
+            }
+            bool CleanWriteBefore = false;
+            for (const MemberExpr *ME : Redirect) {
+                if (memberOf(ME) != FD || !AssignLHSMEs.count(ME))
+                    continue;
+                unsigned TI = topIndexOf(ME);
+                const auto *BO = TI == ~0u ? nullptr
+                                           : dyn_cast<BinaryOperator>(TopStmts[TI]);
+                if (!BO || BO->getOpcode() != BO_Assign ||
+                    BO->getLHS()->IgnoreParenImpCasts() != ME)
+                    continue; // not an unconditional top-level `x->f = e`
+                if (readsField(BO->getRHS(), X, FD))
+                    continue; // self-read: e reads f before storing
+                if (TI < FirstRead) {
+                    CleanWriteBefore = true;
+                    break;
+                }
+            }
+            if (!CleanWriteBefore)
+                Needs.insert(FD);
+        }
+        return Needs;
+    }
+
     void transformCandidate(const VarDecl *X, const Stmt *AllocStmt, unsigned AllocIdx,
                             bool DeclAtSite, bool IsCalloc) {
         const std::string XName = X->getName().str();
@@ -418,7 +481,10 @@ class FunctionProcessor {
             return;
         }
 
-        emitEdits(XName, Pointee, RD, AllocStmt, DeclAtSite, IsCalloc, Redirect, NullCheck,
+        std::set<const FieldDecl *> NeedsZero =
+            IsCalloc ? fieldsNeedingZero(X, Redirect, V.AssignLHSMEs)
+                     : std::set<const FieldDecl *>{};
+        emitEdits(XName, Pointee, RD, AllocStmt, DeclAtSite, Redirect, NeedsZero, NullCheck,
                   BoxTop);
         log("rewrote '" + XName + "' in struct allocation");
     }
@@ -476,9 +542,10 @@ class FunctionProcessor {
     }
 
     void emitEdits(const std::string &XName, QualType Pointee, const RecordDecl *RD,
-                   const Stmt *AllocStmt, bool DeclAtSite, bool IsCalloc,
+                   const Stmt *AllocStmt, bool DeclAtSite,
                    const std::vector<const MemberExpr *> &Redirect,
-                   const IfStmt *NullCheck, const Stmt *BoxTop) {
+                   const std::set<const FieldDecl *> &NeedsZero, const IfStmt *NullCheck,
+                   const Stmt *BoxTop) {
         PrintingPolicy PP = Ctx.getPrintingPolicy();
         const std::string TypeName = Pointee.getAsString(PP);
         const std::string Stack = stackName(XName);
@@ -491,9 +558,11 @@ class FunctionProcessor {
             if (const auto *FD = dyn_cast<FieldDecl>(ME->getMemberDecl()))
                 Accessed.insert(FD);
 
-        // 1. Replace the allocation with a temporary per accessed field.
-        //    calloc-backed temps are zeroed so reads / compound-assigns of
-        //    not-yet-written fields see 0, matching calloc.
+        // 1. Replace the allocation with a temporary per accessed field. A
+        //    calloc-backed temp is zeroed only when the field may be read
+        //    before it is explicitly written (so the program relies on
+        //    calloc's zeroing); a field written before any read needs no
+        //    default.
         std::string Temps;
         for (const FieldDecl *FD : RD->fields()) {
             if (!Accessed.count(FD))
@@ -502,7 +571,7 @@ class FunctionProcessor {
             llvm::raw_string_ostream OS(Decl);
             FD->getType().print(OS, PP, tempName(XName, FD), /*Indentation=*/0);
             OS.flush();
-            Temps += Decl + (IsCalloc ? " = {0}" : "") + "; ";
+            Temps += Decl + (NeedsZero.count(FD) ? " = {0}" : "") + "; ";
         }
         emitReplace(AllocStmt->getBeginLoc(),
                     CharSourceRange::getCharRange(AllocStmt->getBeginLoc(),
