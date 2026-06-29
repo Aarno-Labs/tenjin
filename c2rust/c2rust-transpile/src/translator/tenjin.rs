@@ -1149,6 +1149,9 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1_starts_with(path, "__tenjin_bvm_") => {
                     self.recognize_preconversion_call_bitcastviamemcpy(ctx, cargs)
                 }
+                _ if tenjin::is_path_exactly_1_starts_with(path, "box__new_xjtr") => {
+                    self.recognize_preconversion_call_box_new(ctx, cargs)
+                }
                 _ => Ok(None),
             }
         } else {
@@ -1258,6 +1261,38 @@ impl Translation<'_> {
         }
 
         Ok(None)
+    }
+
+    /// `box__new_xjtr(&v, sizeof(v))` — the copy-into-heap helper emitted by
+    /// the alloc-motion preparation pass — becomes `Box::into_raw(Box::new(v))`.
+    /// The helper returns a raw pointer, so we wrap the boxed value back into a
+    /// `*mut T` with `Box::into_raw`, keeping the surrounding code well-typed.
+    /// The first argument is `&v`, rendered as a raw address-of behind a chain
+    /// of pointer casts (`&raw mut v as *mut T as *const c_void`); we strip the
+    /// casts and the address-of to recover `v` and drop the size argument.
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_box_new(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.is_empty() {
+            return Ok(None);
+        }
+        let arg0 = self.convert_expr(ctx.used(), cargs[0], None)?;
+        arg0.and_then(|arg0| {
+            let boxed_val: Box<Expr> = match tenjin::expr_strip_casts(&arg0) {
+                Expr::RawAddr(syn::ExprRawAddr { expr: inner, .. }) => inner.clone(),
+                Expr::Reference(syn::ExprReference { expr: inner, .. }) => inner.clone(),
+                other => Box::new(other.clone()),
+            };
+            let boxed = mk().call_expr(mk().path_expr(vec!["Box", "new"]), vec![boxed_val]);
+            Ok(WithStmts::new_val(mk().call_expr(
+                mk().path_expr(vec!["Box", "into_raw"]),
+                vec![boxed],
+            )))
+        })
+        .map(Some)
     }
 
     #[allow(clippy::borrowed_box)]

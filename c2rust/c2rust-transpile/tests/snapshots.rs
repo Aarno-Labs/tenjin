@@ -344,6 +344,11 @@ fn test_bitfields() {
 }
 
 #[test]
+fn test_box_new() {
+    transpile("box_new.c").run();
+}
+
+#[test]
 fn test_bool() {
     transpile("bool.c").run();
 }

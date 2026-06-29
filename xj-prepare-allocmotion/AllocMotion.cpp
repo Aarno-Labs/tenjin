@@ -12,7 +12,7 @@
 //     for (...) s->bits |= ...;                    for (...) _xj_s_stack.bits |= ...;
 //     s->count = first_bytes * 8;                  _xj_s_stack.count = first_bytes * 8;
 //     ... = cp_read_bits(s, 1);                    cp_state_t *s =
-//                                                      box__new(&_xj_s_stack, sizeof(_xj_s_stack));
+//                                                      box__new_xjtr(&_xj_s_stack, sizeof(_xj_s_stack));
 //                                                  ... = cp_read_bits(s, 1);
 //
 // Because the stack struct's fields ARE the per-field temporaries (accessed
@@ -656,7 +656,7 @@ class FunctionProcessor {
         std::string Indent(Col > 0 ? Col - 1 : 0, ' ');
         std::string Box = TypeName + " " + Stack + " = { " + Inits + " };\n" + Indent;
         Box += DeclAtSite ? (TypeName + " *" + XName + " = ") : (XName + " = ");
-        Box += "box__new(&" + Stack + ", sizeof(" + Stack + "));\n" + Indent;
+        Box += "box__new_xjtr(&" + Stack + ", sizeof(" + Stack + "));\n" + Indent;
         emitInsert(BoxTop->getBeginLoc(), Box, /*After=*/false);
     }
 
@@ -675,7 +675,7 @@ class FunctionProcessor {
             "#define XJ_BOX_NEW_DEFINED\n"
             "extern void *malloc(__SIZE_TYPE__);\n"
             "extern void *memcpy(void *, const void *, __SIZE_TYPE__);\n"
-            "static inline void *box__new(const void *_xj_from, __SIZE_TYPE__ _xj_size) {\n"
+            "static inline void *box__new_xjtr(const void *_xj_from, __SIZE_TYPE__ _xj_size) {\n"
             "    void *_xj_p = malloc(_xj_size);\n"
             "    if (_xj_p) memcpy(_xj_p, _xj_from, _xj_size);\n"
             "    return _xj_p;\n"
