@@ -665,12 +665,17 @@ class FunctionProcessor {
         if (HelperEmitted)
             return;
         HelperEmitted = true;
+        // Self-contained: no #include (the pass runs after preprocessor
+        // expansion, where injecting a header is unsafe). malloc/memcpy are
+        // forward-declared with the builtin size type; these declarations are
+        // compatible with the C library's, so they coexist with any the file
+        // already has.
         static const char *Helper =
             "#ifndef XJ_BOX_NEW_DEFINED\n"
             "#define XJ_BOX_NEW_DEFINED\n"
-            "#include <stdlib.h>\n"
-            "#include <string.h>\n"
-            "static inline void *box__new(const void *_xj_from, size_t _xj_size) {\n"
+            "extern void *malloc(__SIZE_TYPE__);\n"
+            "extern void *memcpy(void *, const void *, __SIZE_TYPE__);\n"
+            "static inline void *box__new(const void *_xj_from, __SIZE_TYPE__ _xj_size) {\n"
             "    void *_xj_p = malloc(_xj_size);\n"
             "    if (_xj_p) memcpy(_xj_p, _xj_from, _xj_size);\n"
             "    return _xj_p;\n"
