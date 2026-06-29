@@ -577,6 +577,19 @@ fn classify_expr(expr: &ast::Expr) -> (ExprForm, Option<Place>, String, Option<T
         }
         ast::Expr::RefExpr(r) => {
             let inner = r.expr();
+            let inner_place = inner.as_ref().and_then(place_for_expr);
+            // `&raw mut place` / `&raw const place` create a *raw pointer*, not
+            // a reference. Raw-pointer creation imposes no borrowck constraint
+            // on the place: `f(&raw mut x, x)` and even `f(&raw mut x, &mut x)`
+            // compile fine. Modeling it as a `&mut`/`&` borrow (as the non-raw
+            // arms below do) invents a conflict the compiler never raises and
+            // triggers a needless lift. So classify it like the
+            // `&raw mut place as *mut T` cast path: `form = Other` so the kind
+            // derives from the (Copy `*mut T`) expression type — a non-borrow
+            // `Read` of the place — which never conflicts with another read.
+            if r.raw_token().is_some() {
+                return (ExprForm::Other, inner_place, String::new(), None);
+            }
             let inner_text = inner
                 .as_ref()
                 .map(|e| e.syntax().text().to_string())
@@ -586,7 +599,6 @@ fn classify_expr(expr: &ast::Expr) -> (ExprForm, Option<Place>, String, Option<T
             // `func(&mut x, x)` produces no access for `&mut x` and the
             // conflict is missed. The borrow-kind itself comes from
             // `form` in walk_arg_expr.
-            let inner_place = inner.as_ref().and_then(place_for_expr);
             let form = if r.mut_token().is_some() {
                 ExprForm::MutBorrowOf
             } else {
@@ -877,9 +889,25 @@ pub fn file_source(host: &AnalysisHost, file_id: ra_ap_vfs::FileId) -> Result<St
 /// Find the statement-level insertion point for `let`-bindings inserted
 /// before `call_node`. Returns `None` when the call is in an expression-
 /// only context that requires `InsertSite::WrapInBlock`.
+///
+/// Hoisting a `let tmp = <subexpr>;` to before the enclosing statement is
+/// only sound when nothing is evaluated between the start of that statement
+/// and the call: otherwise we move the lifted subexpression's evaluation
+/// *ahead of* a sibling's side effects (or out of a short-circuited /
+/// conditional branch), which changes program semantics. Concretely, a call
+/// sitting in the right operand of `||` runs only after — and conditionally
+/// on — the left operand; hoisting a read of a place that the left operand
+/// mutates would capture the stale, pre-mutation value.
+///
+/// So we walk from the call up to the statement and only keep going past a
+/// parent when the call occupies that parent's *leading, unconditional*
+/// evaluation position. The moment we hit an ordering/conditionality
+/// boundary we return `None`, signalling the caller to wrap the call in a
+/// block (`{ let tmp = ...; <call> }`) at its original site, which preserves
+/// both evaluation order and conditionality.
 pub fn statement_insertion_point(call_node: &SyntaxNode) -> Option<ra_ap_syntax::TextSize> {
-    let mut cur = call_node.parent();
-    while let Some(p) = cur {
+    let mut child = call_node.clone();
+    while let Some(p) = child.parent() {
         match p.kind() {
             SyntaxKind::EXPR_STMT | SyntaxKind::LET_STMT => {
                 return Some(p.text_range().start());
@@ -887,9 +915,147 @@ pub fn statement_insertion_point(call_node: &SyntaxNode) -> Option<ra_ap_syntax:
             SyntaxKind::BLOCK_EXPR => {
                 return None;
             }
-            _ => {}
+            _ => {
+                if !child_is_leading_unconditional(&p, &child) {
+                    return None;
+                }
+            }
         }
-        cur = p.parent();
+        child = p;
     }
     None
+}
+
+/// Whether `child` occupies the position within `parent` that is evaluated
+/// first and unconditionally — i.e. nothing in `parent` runs before `child`,
+/// and `child` always runs whenever `parent` does. Unrecognized parents are
+/// treated conservatively as `false` (forcing a block wrap), since
+/// over-wrapping is always semantics-preserving while over-hoisting is not.
+fn child_is_leading_unconditional(parent: &SyntaxNode, child: &SyntaxNode) -> bool {
+    let is =
+        |e: Option<ast::Expr>| e.is_some_and(|e| e.syntax().text_range() == child.text_range());
+    match parent.kind() {
+        // Transparent wrappers: their sole operand evaluates first.
+        SyntaxKind::PAREN_EXPR => is(ast::ParenExpr::cast(parent.clone()).and_then(|e| e.expr())),
+        SyntaxKind::CAST_EXPR => is(ast::CastExpr::cast(parent.clone()).and_then(|e| e.expr())),
+        SyntaxKind::REF_EXPR => is(ast::RefExpr::cast(parent.clone()).and_then(|e| e.expr())),
+        SyntaxKind::PREFIX_EXPR => is(ast::PrefixExpr::cast(parent.clone()).and_then(|e| e.expr())),
+        // `a OP b` (including `&&` / `||`): only the left operand is leading
+        // and unconditional; the right runs after it and, for the logical
+        // operators, only conditionally.
+        SyntaxKind::BIN_EXPR => is(ast::BinExpr::cast(parent.clone()).and_then(|e| e.lhs())),
+        // `base[index]`: the base is evaluated before the index.
+        SyntaxKind::INDEX_EXPR => is(ast::IndexExpr::cast(parent.clone()).and_then(|e| e.base())),
+        // `recv.field`: the receiver evaluates first.
+        SyntaxKind::FIELD_EXPR => is(ast::FieldExpr::cast(parent.clone()).and_then(|e| e.expr())),
+        // `if <cond> { .. }`: the condition is evaluated first and
+        // unconditionally; the branches are conditional.
+        SyntaxKind::IF_EXPR => is(ast::IfExpr::cast(parent.clone()).and_then(|e| e.condition())),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod insertion_point_tests {
+    use super::*;
+    use ra_ap_syntax::{Edition, SourceFile};
+
+    /// Parse `src`, find the call to `git__add` whose argument list contains
+    /// `needle`, and return the statement insertion point for it.
+    fn insertion_for_call_containing(src: &str, needle: &str) -> Option<ra_ap_syntax::TextSize> {
+        let parse = SourceFile::parse(src, Edition::CURRENT);
+        let file = parse.tree();
+        let call = file
+            .syntax()
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::CALL_EXPR)
+            .find(|n| {
+                let t = n.text().to_string();
+                t.contains("git__add") && t.contains(needle)
+            })
+            .expect("call not found");
+        statement_insertion_point(&call)
+    }
+
+    #[test]
+    fn hoist_past_short_circuit_and_side_effect_wraps_in_block() {
+        // The xilca reproducer: the second `git__add` call reads `alloc_size`
+        // in the RHS of `||`, after the first call has written it via
+        // `&raw mut alloc_size`. Hoisting a `let` before the whole `if`
+        // would capture the stale value, so we must NOT return a statement
+        // insertion point — the caller wraps the call in a block instead.
+        let src = r#"
+fn f(alloc_size: usize, name_len: usize) {
+    if git__add(&raw mut alloc_size, 16, name_len) != 0
+        || git__add(&raw mut alloc_size, alloc_size, 1) != 0
+    {
+        return;
+    }
+}
+"#;
+        assert_eq!(
+            insertion_for_call_containing(src, "alloc_size, 1"),
+            None,
+            "call in the RHS of `||` must force a block wrap, not a hoist",
+        );
+    }
+
+    #[test]
+    fn call_that_is_the_statement_hoists() {
+        // A call sitting directly in statement position has nothing evaluated
+        // before it, so hoisting a `let` ahead of it is sound.
+        let src = r#"
+fn f(p: usize) {
+    git__add(&raw mut p, p, 1);
+}
+"#;
+        assert!(
+            insertion_for_call_containing(src, "p, 1").is_some(),
+            "a call in plain statement position should hoist",
+        );
+    }
+
+    #[test]
+    fn call_through_leading_cast_hoists() {
+        // `call as T;` in statement position: the call is the cast's operand,
+        // evaluated first and unconditionally, so hoisting remains sound.
+        let src = r#"
+fn f(p: usize) {
+    git__add(&raw mut p, p, 1) as i32;
+}
+"#;
+        assert!(
+            insertion_for_call_containing(src, "p, 1").is_some(),
+            "a call under a leading cast should still hoist",
+        );
+    }
+}
+
+#[cfg(test)]
+mod classify_expr_tests {
+    use super::*;
+    use ra_ap_syntax::{Edition, ast};
+
+    fn classify(src: &str) -> ExprForm {
+        let expr = ast::Expr::parse(src, Edition::CURRENT).tree();
+        classify_expr(&expr).0
+    }
+
+    #[test]
+    fn raw_borrows_are_not_modeled_as_references() {
+        // `&raw mut`/`&raw const` create raw pointers, which impose no
+        // borrowck constraint. They must NOT classify as Mut/SharedBorrowOf,
+        // or `f(&raw mut x, x)` invents a borrow-vs-read conflict and lifts
+        // unnecessarily. They classify as `Other` (a plain Copy value).
+        assert_eq!(classify("&raw mut x"), ExprForm::Other);
+        assert_eq!(classify("&raw const x"), ExprForm::Other);
+    }
+
+    #[test]
+    fn real_references_still_classify_as_borrows() {
+        // Genuine `&`/`&mut` borrows must keep conflicting so real aliasing
+        // hazards are still lifted.
+        assert_eq!(classify("&mut x"), ExprForm::MutBorrowOf);
+        assert_eq!(classify("&x"), ExprForm::BorrowOf);
+    }
 }

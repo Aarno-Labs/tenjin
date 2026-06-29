@@ -1010,6 +1010,90 @@ class XjLocateJoinedDeclsOutput(TypedDict):
     edits: list[XjLocateJoinedDeclsEdit]
 
 
+class XjHoistEmbeddedTagDefsLoc(TypedDict):
+    f: str
+    b: int
+    e: int
+
+
+class XjHoistEmbeddedTagDefsRefEdit(TypedDict):
+    r: XjHoistEmbeddedTagDefsLoc | None
+    text: str
+
+
+class XjHoistEmbeddedTagDefsEdit(TypedDict):
+    insert: XjHoistEmbeddedTagDefsLoc | None
+    insert_text: str
+    replace: XjHoistEmbeddedTagDefsLoc | None
+    replace_text: str
+    refs: list[XjHoistEmbeddedTagDefsRefEdit]
+
+
+class XjHoistEmbeddedTagDefsOutput(TypedDict):
+    edits: list[XjHoistEmbeddedTagDefsEdit]
+
+
+def run_xj_hoist_embedded_tag_defs(
+    current_codebase: Path,
+    build_info: targets.BuildInfo,
+) -> XjHoistEmbeddedTagDefsOutput:
+    builddir = hermetic.xj_prepare_locatejoineddecls_build_dir(repo_root.localdir())
+    assert builddir.exists(), (
+        f"Build directory {builddir} does not exist, should have been built already"
+    )
+
+    xj_clang_resource_dir = (
+        hermetic.run("clang -print-resource-dir", shell=True, capture_output=True)
+        .stdout.decode("utf-8")
+        .strip()
+    )
+
+    build_info.compdb_for_all_targets_within(current_codebase).to_json_file(
+        current_codebase / "compile_commands.json"
+    )
+
+    binary_path = builddir / "xj-hoist-embedded-tag-defs"
+    xj_find_start = time.time()
+    cp = hermetic.run(
+        [
+            binary_path.as_posix(),
+            "--extra-arg=-Wno-zero-length-array",
+            "--extra-arg=-Wno-implicit-int-conversion",
+            "--extra-arg=-Wno-unused-function",
+            "--executor=all-TUs",
+            "--execute-concurrency=1",
+            "--json-output-path=xj-hoist-embedded-tag-defs.json",
+            f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+            (current_codebase / "compile_commands.json").as_posix(),
+        ],
+        cwd=current_codebase,
+        check=True,
+        capture_output=True,
+    )
+    xj_find_elapsed = time.time() - xj_find_start
+    print(f"xj-hoist-embedded-tag-defs completed in {xj_find_elapsed:.1f} seconds")
+
+    print("xj-hoist-embedded-tag-defs stderr:")
+    print("==========================")
+    print(cp.stderr.decode("utf-8"))
+    print("==========================")
+
+    print("xj-hoist-embedded-tag-defs stdout:")
+    print("==========================")
+    print(cp.stdout.decode("utf-8"))
+    print("==========================")
+    try:
+        raw: XjHoistEmbeddedTagDefsOutput = json.load(
+            (current_codebase / "xj-hoist-embedded-tag-defs.json").open()
+        )
+    except:
+        print("Failed to parse xj-hoist-embedded-tag-defs output as JSON:")
+        print(cp.stdout.decode("utf-8"))
+        raise
+
+    return raw
+
+
 def run_xj_locate_joined_decls(
     current_codebase: Path,
     build_info: targets.BuildInfo,

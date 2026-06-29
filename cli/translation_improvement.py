@@ -1,6 +1,7 @@
 import os
 import enum
 import json
+import re
 
 import time
 import shutil
@@ -8,7 +9,7 @@ import tempfile
 import graphlib
 from pathlib import Path
 from typing import Callable, Sequence
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, CalledProcessError
 
 import repo_root
 from tenj_types import ResolvedPath
@@ -170,6 +171,9 @@ def run_improve_multitool(root: Path, tool: str, args: list[str], dir: Path) -> 
     )
 
 
+type FindUnsafe2FnMetrics = dict[str, object]
+
+
 def run_un_unsafe_improvement(root: Path, dir: Path):
     """Iteratively remove unsafe blocks.
 
@@ -179,17 +183,15 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
     the `unsafe` marker from the function signature, re-run cargo check,
     and roll back the edit if the check fails.
 
-    There are two potentially significant optimizations one can do
-    to reduce the number of times we run cargo check:
-    1. process_function_sccs() could operate on multiple independent
-       SCCs simultaneously.
-    2. When function F mentions G, and G is known to be unsafe,
-       we can assume F will also be judged unsafe by rustc.
-       This is merely an approximation, since F may merely
-       pass around G by address, for example, but in the common case
-       it will be correct, and it's probably worth doing
-       to unlock better scaling for larger crates. We are already tracking
-       `unsafe_status` but are not yet using it.
+    We also run `cargo find-unsafe2` to generate per-crate unsafe metrics.
+    Those metrics guide the speculative cargo checks: we subtract the function's
+    own `unsafe fn` marker and calls to callees known to be safe, then skip the
+    speculative cargo check only when the remaining metric count is clearly too
+    high to be worth probing. This keeps us from spending checks on obviously
+    unsafe functions while still allowing cargo to judge noisy borderline cases.
+
+    A remaining optimization would be for process_function_sccs() to operate on
+    multiple independent SCCs simultaneously.
     """
 
     if os.environ.get("XJ_SKIP_UNUNSAFE", "0") == "1":
@@ -213,6 +215,51 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         UNSAFE = 1
         UNKNOWN = 2
 
+    # `find-unsafe2` can see HIR-expanded implementation details, such as vec!
+    # internals or dead union initializers left after earlier rewrites. A couple
+    # of residual non-marker metrics are still cheap enough to let cargo decide.
+    max_unsafe_metric_obligations_to_probe = 2
+
+    def run_find_unsafe2(json_dir: Path) -> None:
+        hermetic.run_cargo_on_translated_code(
+            ["find-unsafe2"],
+            cwd=dir,
+            check=True,
+            capture_output=True,
+            env_ext={
+                "FIND_UNSAFE2_SRC_DIR": str(dir.resolve()),
+                "FIND_UNSAFE2_JSON_DIR": str(json_dir.resolve()),
+            },
+        )
+
+    def read_find_unsafe2_fn_metrics(json_dir: Path) -> dict[str, FindUnsafe2FnMetrics]:
+        metrics: dict[str, FindUnsafe2FnMetrics] = {}
+        for item in json_dir.iterdir():
+            if not (item.is_file() and item.suffix == ".json"):
+                continue
+            with item.open("rb") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                continue
+            fns = data.get("fns")
+            if not isinstance(fns, dict):
+                continue
+            for fn_name, fn_metrics in fns.items():
+                if isinstance(fn_name, str) and isinstance(fn_metrics, dict):
+                    metrics[fn_name] = fn_metrics
+        return metrics
+
+    def load_find_unsafe2_fn_metrics() -> dict[str, FindUnsafe2FnMetrics] | None:
+        try:
+            with tempfile.TemporaryDirectory() as find_unsafe2_dir:
+                json_dir = Path(find_unsafe2_dir)
+                run_find_unsafe2(json_dir)
+                return read_find_unsafe2_fn_metrics(json_dir)
+        except CalledProcessError:
+            return None
+
+    find_unsafe2_metrics = load_find_unsafe2_fn_metrics()
+
     def default_function_unsafe_status(has_unsafe_span: bool) -> FunctionUnsafeNecessity:
         """This reflect our understanding of the function's safety requirements.
         c2rust must mark all possibly-unsafe functions as `unsafe`, because
@@ -227,6 +274,9 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         node: int,
         unsafe_spans: list[ExplicitSpan | None],
         unsafe_status: list[FunctionUnsafeNecessity],
+        unsafe_metrics: list[FindUnsafe2FnMetrics | None],
+        fn_names: list[str | None],
+        callee_nodes_by_caller: dict[int, set[int]],
     ):
         unknown_status_spans = []
         fnids = cacg.nodes[node]
@@ -235,6 +285,20 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                 unknown_status_spans.append(unsafe_spans[fnid])
 
         if not unknown_status_spans:
+            return
+
+        if should_skip_ununsafe_attempt(
+            cacg,
+            node,
+            unsafe_spans,
+            unsafe_status,
+            unsafe_metrics,
+            fn_names,
+            callee_nodes_by_caller,
+        ):
+            for fnid in fnids:
+                if unsafe_status[fnid] == FunctionUnsafeNecessity.UNKNOWN:
+                    unsafe_status[fnid] = FunctionUnsafeNecessity.UNSAFE
             return
 
         rewriter = SpeculativeSpansEraser(
@@ -287,6 +351,9 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         ready_nodes: Sequence[int],
         unsafe_spans: list[ExplicitSpan | None],
         unsafe_status: list[FunctionUnsafeNecessity],
+        unsafe_metrics: list[FindUnsafe2FnMetrics | None],
+        fn_names: list[str | None],
+        callee_nodes_by_caller: dict[int, set[int]],
     ):
         # Each ready node is a strongly connected component (SCC)
         # in the call graph, which means that it is a set of functions
@@ -298,7 +365,107 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         # to map unexpected-unsafe-operation to the corresponding
         # function signature.
         for node in ready_nodes:
-            process_function_scc(cacg, node, unsafe_spans, unsafe_status)
+            process_function_scc(
+                cacg,
+                node,
+                unsafe_spans,
+                unsafe_status,
+                unsafe_metrics,
+                fn_names,
+                callee_nodes_by_caller,
+            )
+
+    def find_name_for_fn_sig(cacg: CondensedSpanGraph, fnspan: ExplicitSpan) -> str | None:
+        relpath = cacg.files[fnspan.fileid]
+        filepath = Path(dir / relpath)
+        assert filepath.is_file(), "Expected a file at the path: " + str(filepath)
+        contents = filepath.read_bytes()
+        snippet = contents[fnspan.lo : fnspan.hi]
+        assert fnspan.hi > fnspan.lo, "Expected a non-empty span: " + str(fnspan)
+        assert len(snippet) > 0, "Expected a non-empty snippet: " + snippet.decode(
+            "utf-8", errors="replace"
+        )
+        signature = snippet.split(b"{", maxsplit=1)[0].decode("utf-8", errors="replace")
+        if match := re.search(
+            r"\bfn\s+(r#[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)", signature
+        ):
+            return match.group(1).removeprefix("r#")
+        return None
+
+    def find_metrics_for_fn_name(fn_name: str | None) -> FindUnsafe2FnMetrics | None:
+        if fn_name is None or find_unsafe2_metrics is None:
+            return None
+        matches = [
+            metrics
+            for full_name, metrics in find_unsafe2_metrics.items()
+            if full_name == fn_name or full_name.endswith(f"::{fn_name}")
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def int_metric(metrics: FindUnsafe2FnMetrics, key: str) -> int:
+        value = metrics.get(key, 0)
+        return value if isinstance(value, int) else 0
+
+    def bool_metric(metrics: FindUnsafe2FnMetrics, key: str) -> bool:
+        return metrics.get(key, False) is True
+
+    def count_known_safe_callee_calls(
+        cacg: CondensedSpanGraph,
+        fnid: int,
+        fn_names: list[str | None],
+        safe_callee_nodes: set[int],
+    ) -> int:
+        fnspan = cacg.elts[fnid]
+        contents = Path(dir / cacg.files[fnspan.fileid]).read_bytes()
+        snippet = contents[fnspan.lo : fnspan.hi]
+        count = 0
+        for callee_node in safe_callee_nodes:
+            for callee_fnid in cacg.nodes[callee_node]:
+                callee_name = fn_names[callee_fnid]
+                if callee_name is None:
+                    continue
+                call_pattern = (
+                    rb"(?<![A-Za-z0-9_])" + re.escape(callee_name.encode("utf-8")) + rb"\s*\("
+                )
+                count += len(re.findall(call_pattern, snippet))
+        return count
+
+    def should_skip_ununsafe_attempt(
+        cacg: CondensedSpanGraph,
+        node: int,
+        unsafe_spans: list[ExplicitSpan | None],
+        unsafe_status: list[FunctionUnsafeNecessity],
+        unsafe_metrics: list[FindUnsafe2FnMetrics | None],
+        fn_names: list[str | None],
+        callee_nodes_by_caller: dict[int, set[int]],
+    ) -> bool:
+        safe_callee_nodes = {
+            callee
+            for callee in callee_nodes_by_caller.get(node, set())
+            if all(
+                unsafe_status[fnid] == FunctionUnsafeNecessity.SAFE for fnid in cacg.nodes[callee]
+            )
+        }
+
+        for fnid in cacg.nodes[node]:
+            metrics = unsafe_metrics[fnid]
+            if metrics is None:
+                continue
+
+            total_unsafe = int_metric(metrics, "total_unsafe")
+            unsafe_marker_count = int(bool_metric(metrics, "is_unsafe_fn"))
+            calls_unsafe = int_metric(metrics, "calls_unsafe")
+            safe_callee_calls = count_known_safe_callee_calls(
+                cacg, fnid, fn_names, safe_callee_nodes
+            )
+            adjusted_calls_unsafe = max(0, calls_unsafe - safe_callee_calls)
+            adjusted_total_unsafe = total_unsafe - calls_unsafe + adjusted_calls_unsafe
+            adjusted_non_marker_unsafe = max(0, adjusted_total_unsafe - unsafe_marker_count)
+            if adjusted_non_marker_unsafe > max_unsafe_metric_obligations_to_probe:
+                return True
+        return False
 
     def find_unsafe_span_for_fn_sig(
         fnspan: ExplicitSpan,
@@ -348,6 +515,8 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         # unsafe keyword for each function (if it exists).
         unsafe_spans = [find_unsafe_span_for_fn_sig(fnspan) for fnspan in cacg.elts]
         unsafe_status = [default_function_unsafe_status(span is not None) for span in unsafe_spans]
+        fn_names = [find_name_for_fn_sig(cacg, fnspan) for fnspan in cacg.elts]
+        unsafe_metrics = [find_metrics_for_fn_name(fn_name) for fn_name in fn_names]
 
         # print("fn spans:", cacg.elts)
         # print("unsafe spans:", unsafe_spans)
@@ -359,6 +528,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                 node_for_elt[elt] = nodeidx
 
         called_elts: set[int] = set()
+        callee_nodes_by_caller: dict[int, set[int]] = {}
 
         # Use graphlib to collect ready nodes in topological order
         # from the *reverse* of the call graph -- we want to process
@@ -370,6 +540,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             # which is already the reverse of the "conventional"
             # graph edge direction of src -> tgt / pred -> node.
             g.add(caller, callee)
+            callee_nodes_by_caller.setdefault(caller, set()).add(callee)
             called_elts = called_elts.union(cacg.nodes[callee])
 
         # For library crates, public API functions may not have internal
@@ -383,7 +554,15 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
         while g.is_active():
             ready_nodes = g.get_ready()
             if ready_nodes != (-1,):
-                process_function_sccs(cacg, ready_nodes, unsafe_spans, unsafe_status)
+                process_function_sccs(
+                    cacg,
+                    ready_nodes,
+                    unsafe_spans,
+                    unsafe_status,
+                    unsafe_metrics,
+                    fn_names,
+                    callee_nodes_by_caller,
+                )
             g.done(*ready_nodes)
 
     with tempfile.TemporaryDirectory() as cacgdir:

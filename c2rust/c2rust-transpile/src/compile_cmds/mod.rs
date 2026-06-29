@@ -92,12 +92,36 @@ pub struct LinkCmd {
     pub top_level: bool,
 }
 
+/// Lexically normalize a path, resolving `.` and `..` components without
+/// touching the filesystem (i.e. without following symlinks or requiring
+/// the path to exist). This is used to match link-command inputs against
+/// compile-command outputs: the same object file may be spelled differently
+/// (e.g. `CMakeFiles/util.dir/foo.c.o` vs `../util/CMakeFiles/util.dir/foo.c.o`)
+/// depending on the working directory of the command that references it.
+fn normalize_lexically(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = Vec::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir if matches!(out.last(), Some(Component::Normal(_))) => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out.iter().collect()
+}
+
 /// Convert a linear vector of `CompileCmd`s into a DAG of `LinkCmd`s and `CompileCmd`s
 fn build_link_commands(mut v: Vec<Rc<CompileCmd>>) -> Result<Vec<LinkCmd>, Error> {
+    // Map each compile command's output to its index, keyed on the resolved
+    // absolute path (output joined with the command's working directory and
+    // lexically normalized) so that references from other directories match.
     let mut output_map = HashMap::new();
     for (idx, ccmd) in v.iter().enumerate() {
         if let Some(ref output) = ccmd.output {
-            output_map.insert(output, idx);
+            output_map.insert(normalize_lexically(&ccmd.directory.join(output)), idx);
         }
     }
 
@@ -112,7 +136,10 @@ fn build_link_commands(mut v: Vec<Rc<CompileCmd>>) -> Result<Vec<LinkCmd>, Error
 
         lcmd.output = ccmd.output.clone();
         for inp in &lcmd.inputs {
-            if let Some(ccmd_idx) = output_map.get(&inp) {
+            // Resolve the input against the link command's working directory
+            // before looking it up, mirroring how `output_map` is keyed.
+            let key = normalize_lexically(&ccmd.directory.join(inp));
+            if let Some(ccmd_idx) = output_map.get(&key) {
                 let inp_ccmd = Rc::clone(&v[*ccmd_idx]);
                 lcmd.cmd_inputs.push(inp_ccmd);
                 seen_ccmds.insert(*ccmd_idx);
@@ -208,4 +235,132 @@ pub fn get_compile_commands(
     }
 
     Ok(lcmds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `bencode` string for a `LinkCmd` `file` field, of the shape
+    /// produced by the build-command interceptor (`/c2rust/link/<bencode>`).
+    fn link_file(inputs: &[&str], ty: &str) -> String {
+        // bencode dict, keys in sorted order: inputs, lib_dirs, libs, type
+        let mut s = String::from("d");
+        s.push_str("6:inputsl");
+        for inp in inputs {
+            s.push_str(&format!("{}:{}", inp.len(), inp));
+        }
+        s.push('e');
+        s.push_str("8:lib_dirsle");
+        s.push_str("4:libsle");
+        s.push_str(&format!("4:type{}:{}", ty.len(), ty));
+        s.push('e');
+        format!("/c2rust/link/{s}")
+    }
+
+    fn compile_cmd(directory: &str, file: &str, output: Option<&str>) -> Rc<CompileCmd> {
+        Rc::new(CompileCmd {
+            directory: PathBuf::from(directory),
+            file: PathBuf::from(file),
+            command: None,
+            arguments: vec![],
+            output: output.map(ToOwned::to_owned),
+        })
+    }
+
+    /// A link command whose working directory differs from the directory of
+    /// the compile command that produced one of its inputs. The input is
+    /// spelled relative to the link command's directory (`../util/...`), while
+    /// the compile command records its output relative to its own directory
+    /// (`CMakeFiles/...`). These must still be matched to the same object so
+    /// the module lands in the member crate rather than the top-level package.
+    #[test]
+    fn cross_directory_object_is_matched() {
+        let v = vec![
+            // util/foo.c.o, compiled in the util directory
+            compile_cmd(
+                "/build/src/util",
+                "/build/src/util/foo.c",
+                Some("CMakeFiles/util.dir/foo.c.o"),
+            ),
+            // libgit2/bar.c.o, compiled in the libgit2 directory
+            compile_cmd(
+                "/build/src/libgit2",
+                "/build/src/libgit2/bar.c",
+                Some("CMakeFiles/libgit2.dir/bar.c.o"),
+            ),
+            // The shared-library link command, run from the libgit2 directory,
+            // referencing the util object via a `../util/...` relative path.
+            compile_cmd(
+                "/build/src/libgit2",
+                &link_file(
+                    &[
+                        "../util/CMakeFiles/util.dir/foo.c.o",
+                        "CMakeFiles/libgit2.dir/bar.c.o",
+                    ],
+                    "shared",
+                ),
+                Some("../../libdriver.so"),
+            ),
+        ];
+
+        let lcmds = build_link_commands(v).unwrap();
+
+        // There should be exactly one link command and no synthetic top-level
+        // leftover crate: both objects were consumed by the shared library.
+        assert_eq!(lcmds.len(), 1, "unexpected leftover top-level crate");
+        let lcmd = &lcmds[0];
+        assert!(!lcmd.top_level);
+        assert_eq!(lcmd.r#type, LinkType::Shared);
+
+        let consumed: Vec<_> = lcmd
+            .cmd_inputs
+            .iter()
+            .map(|c| c.file.to_str().unwrap())
+            .collect();
+        assert!(
+            consumed.contains(&"/build/src/util/foo.c"),
+            "cross-directory util object was not matched: {consumed:?}"
+        );
+        assert!(consumed.contains(&"/build/src/libgit2/bar.c"));
+        assert_eq!(consumed.len(), 2);
+    }
+
+    /// An object that is genuinely not consumed by any link command should
+    /// still fall through to the synthetic top-level static crate.
+    #[test]
+    fn unconsumed_object_becomes_top_level_crate() {
+        let v = vec![
+            compile_cmd(
+                "/build/src/libgit2",
+                "/build/src/libgit2/bar.c",
+                Some("CMakeFiles/libgit2.dir/bar.c.o"),
+            ),
+            compile_cmd(
+                "/build/src/orphan",
+                "/build/src/orphan/orphan.c",
+                Some("CMakeFiles/orphan.dir/orphan.c.o"),
+            ),
+            compile_cmd(
+                "/build/src/libgit2",
+                &link_file(&["CMakeFiles/libgit2.dir/bar.c.o"], "shared"),
+                Some("../../libdriver.so"),
+            ),
+        ];
+
+        let lcmds = build_link_commands(v).unwrap();
+
+        assert_eq!(lcmds.len(), 2);
+        let top_level = lcmds
+            .iter()
+            .find(|l| l.top_level)
+            .expect("no top-level crate");
+        assert_eq!(top_level.r#type, LinkType::Static);
+        let orphan: Vec<_> = top_level
+            .cmd_inputs
+            .iter()
+            .map(|c| c.file.to_str().unwrap())
+            .collect();
+        assert_eq!(orphan, vec!["/build/src/orphan/orphan.c"]);
+    }
 }

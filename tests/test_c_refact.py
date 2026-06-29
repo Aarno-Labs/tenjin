@@ -1,11 +1,53 @@
 from pathlib import Path
+import re
 
 from clang.cindex import CursorKind  # type: ignore
 
 import c_refact
+import c_refact_decl_splitter
+import c_refact_tag_hoister
 import c_refact_type_mod_replicator
 import compilation_database
+import targets
 from cindex_helpers import create_xj_clang_index
+
+
+def test_decl_splitter_skips_embedded_tag_definition_prefix(tmp_codebase):
+    tmp_codebase.mkdir()
+    source = (
+        "struct histindex {\n"
+        "\tstruct record {\n"
+        "\t\tunsigned int ptr, cnt;\n"
+        "\t\tstruct record *next;\n"
+        "\t} **records, /* an occurrence */\n"
+        "\t        **line_map;\n"
+        "};\n"
+    )
+    sample_c = tmp_codebase / "sample.c"
+    sample_c.write_text(source, encoding="utf-8")
+
+    start = source.index("struct record")
+    end = source.index(";\n", start)
+    c_refact_decl_splitter.apply_decl_splitting_rewrites(
+        tmp_codebase,
+        {
+            "edits": [
+                {
+                    "r": {"f": sample_c.as_posix(), "b": start, "e": end},
+                    "cat": "field",
+                    "prefix": (
+                        "struct record {\n"
+                        "\t\tunsigned int ptr, cnt;\n"
+                        "\t\tstruct record *next;\n"
+                        "\t} "
+                    ),
+                    "declarators": ["**records", " /* an occurrence */\n\t        **line_map"],
+                }
+            ]
+        },
+    )
+
+    assert sample_c.read_text(encoding="utf-8") == source
 
 
 def write_compile_commands_for_sources(codebase: Path, sources: list[Path]) -> None:
@@ -15,6 +57,87 @@ def write_compile_commands_for_sources(codebase: Path, sources: list[Path]) -> N
             compilation_database.synthetic_compile_commands_for_c_file(source, codebase).commands
         )
     compilation_database.CompileCommands(commands).to_json_file(codebase / "compile_commands.json")
+
+
+def build_info_for_single_source(codebase: Path, source: Path) -> targets.BuildInfo:
+    build_info = targets.BuildInfo()
+    build_info.for_single_file(
+        source,
+        codebase,
+        targets.BuildTarget(
+            key=source.with_suffix(".o").name,
+            type=targets.TargetType.OBJECT,
+            stem_not_unique=source.stem,
+        ),
+    )
+    return build_info
+
+
+def test_hoist_embedded_tag_definitions_unblocks_histindex_split(root, tmp_codebase):
+    tmp_codebase.mkdir()
+    sample_c = tmp_codebase / "sample.c"
+    sample_c.write_text(
+        "struct histindex {\n"
+        "    struct record {\n"
+        "        unsigned int ptr, cnt;\n"
+        "        struct record *next;\n"
+        "    } **records, **line_map;\n"
+        "};\n",
+        encoding="utf-8",
+    )
+
+    build_info = build_info_for_single_source(tmp_codebase, sample_c)
+    hoist = c_refact.run_xj_hoist_embedded_tag_defs(tmp_codebase, build_info)
+    c_refact_tag_hoister.apply_tag_hoisting_rewrites(tmp_codebase, hoist)
+    split = c_refact.run_xj_locate_joined_decls(tmp_codebase, build_info)
+    c_refact_decl_splitter.apply_decl_splitting_rewrites(tmp_codebase, split)
+
+    rewritten = sample_c.read_text(encoding="utf-8")
+    assert "struct histindex_record {" in rewritten
+    assert "struct histindex_record *next;" in rewritten
+    assert "struct histindex {\n    struct histindex_record **records;" in rewritten
+    assert "struct histindex_record  **line_map;" in rewritten
+    assert "struct record {" not in rewritten
+
+
+def test_hoist_embedded_tag_definitions_supported_and_skipped_cases(root, tmp_codebase):
+    tmp_codebase.mkdir()
+    sample_c = tmp_codebase / "sample.c"
+    sample_c.write_text(
+        "struct Holder_Node { int collision; };\n"
+        "struct Holder {\n"
+        "    struct Node { struct Node *next, *previous; } *head, *tail;\n"
+        "    struct Node *again;\n"
+        "    union Value { int i; float f; } v1, v2;\n"
+        "    enum Kind { K_A, K_B } k1, k2;\n"
+        "};\n"
+        "typedef struct { int x; } AliasA, AliasB;\n"
+        "#define EMBEDDED(name) struct Macro { int x; } name##_1, name##_2\n"
+        "struct MacroHolder { EMBEDDED(m); };\n"
+        "int fn(void) {\n"
+        "    struct Local { int x; } l1, l2;\n"
+        "    return l1.x + l2.x;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    build_info = build_info_for_single_source(tmp_codebase, sample_c)
+    hoist = c_refact.run_xj_hoist_embedded_tag_defs(tmp_codebase, build_info)
+    c_refact_tag_hoister.apply_tag_hoisting_rewrites(tmp_codebase, hoist)
+
+    rewritten = sample_c.read_text(encoding="utf-8")
+    assert "struct Holder_Node_xj1 { struct Holder_Node_xj1 *next, *previous; };" in rewritten
+    assert "struct Holder_Node_xj1 *head, *tail;" in rewritten
+    assert "struct Holder_Node_xj1 *again;" in rewritten
+    assert "union Holder_Value { int i; float f; };" in rewritten
+    assert "union Holder_Value v1, v2;" in rewritten
+    assert "enum Holder_Kind { K_A, K_B };" in rewritten
+    assert "enum Holder_Kind k1, k2;" in rewritten
+    assert re.search(r"struct xj_anon_struct_[0-9a-f]+ \{ int x; \};", rewritten)
+    assert re.search(r"typedef struct xj_anon_struct_[0-9a-f]+ AliasA, AliasB;", rewritten)
+    assert "struct Macro { int x; } name##_1, name##_2" in rewritten
+    assert re.search(r"struct xj_Local_[0-9a-f]+ \{ int x; \};", rewritten)
+    assert re.search(r"struct xj_Local_[0-9a-f]+ l1, l2;", rewritten)
 
 
 def test_findfnptrdecls_marks_initialized_fnptr_vars_for_cross_tu_replication(root, tmp_codebase):

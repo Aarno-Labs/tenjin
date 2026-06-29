@@ -12,7 +12,7 @@ WANT = {
     "10j-build-deps": "rev-384966476",
     # Note that 10j-more-deps builds against a specific version of LLVM, so before
     # upgrading the major version of 10j-llvm, update 10j-more-deps first.
-    "10j-more-deps": "rev-384966476",
+    "10j-more-deps": "rev-b34f2ca1b",
     "10j-codehawk": "7e01d90290c01f40e572ffee1f79a9d663f3ab7a",
     "10j-codehawk-c": "76556e4d12a6f01f6da2bbf9a8c6f02624e70f04",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.
@@ -22,6 +22,7 @@ WANT = {
     "10j-edition2021-rust-toolchain": "nightly-2025-05-18",
     # Keep in sync with the version in `c2rust/c2rust-rust-tools/src/lib.rs`.
     "10j-edition2024-rust-toolchain": "nightly-2026-03-03",
+    "10j-find_unsafe2-rust-toolchain": "nightly-2026-05-11",
     "10j-reference-c2rust-tag": "3558805d0c94ce42b3efbce59e8cef784dcc78f4",
     "10j-ast-grep": "0.40.5",
     "10j-crat": "crat-f598249c3",

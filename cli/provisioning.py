@@ -380,6 +380,7 @@ def want_10j_rust_toolchains():
     want("10j-xj-default-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
     want("10j-edition2021-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
     want("10j-edition2024-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
+    want("10j-find_unsafe2-rust-toolchain", "rust", "Rust", provision_10j_rust_toolchain_with)
 
 
 def want_10j_cargo_nextest():
