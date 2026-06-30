@@ -75,7 +75,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
     Stmt *Body = FD->getBody();
 
     std::string ptr_name = PtrVar->getNameAsString();
-    std::string index_name = ptr_name + "_index";
+    std::string index_name = ptr_name + "_index_xj";
     std::string base_array = safeBase(candidate.base_array_text);
     std::string original_base_array = candidate.base_array_text; // before any RustSlice rewrite
 
@@ -906,7 +906,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // ---- AssignFromAllowedFunc: s = strchr(s, c) -> s_index = strchr_index(base, s_index, c) ----
         case PointerAccessKind::AssignFromAllowedFunc: {
             std::string func_name = access.offset_text;  // stored in offset_text field
-            std::string wrapper_name = func_name + "_index";
+            std::string wrapper_name = func_name + "_index_xj";
 
             // Re-walk the original call's args using the now-known base.
             // The collector recorded operand_text at collect time, when
@@ -995,13 +995,13 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
                 std::string wrapper;
                 if (func_name == "strchr") {
-                    wrapper = "static int strchr_index(const char *base, int start, int c) {\n"
+                    wrapper = "static int strchr_index_xj(const char *base, int start, int c) {\n"
                               "    const char *result = strchr(base + start, c);\n"
                               "    if (!result) return -1;\n"
                               "    return (int)(result - base);\n"
                               "}\n\n";
                 } else if (func_name == "strstr") {
-                    wrapper = "static int strstr_index(const char *base, int start, const char *needle) {\n"
+                    wrapper = "static int strstr_index_xj(const char *base, int start, const char *needle) {\n"
                               "    const char *result = strstr(base + start, needle);\n"
                               "    if (!result) return -1;\n"
                               "    return (int)(result - base);\n"
@@ -1167,7 +1167,7 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
     const LangOptions &LO = Ctx.getLangOpts();
 
     std::string ptr_name = PtrVar->getNameAsString();
-    std::string index_name = ptr_name + "_index";
+    std::string index_name = ptr_name + "_index_xj";
     std::string base_array = safeBase(candidate.base_array_text);
 
     std::vector<Edit> edits;
@@ -1545,7 +1545,7 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
 
         case PointerAccessKind::AssignFromAllowedFunc: {
             std::string func_name = access.offset_text;
-            std::string wrapper_name = func_name + "_index";
+            std::string wrapper_name = func_name + "_index_xj";
             std::string other_args = access.operand_text;
 
             const Stmt *P = findParent(access.expr);
