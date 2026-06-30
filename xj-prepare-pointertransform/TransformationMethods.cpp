@@ -376,6 +376,16 @@ bool FunctionAccessAnalyzer::generateTransformation(
         base_array = ptr_name;
     }
 
+    // When the pointer variable is itself retained as the base array (a
+    // parameter used as its own base), the offset index starts at 0 and only
+    // ever advances, so its -1 sentinel never models a NULL pointer. The
+    // pointer's null-ness still lives in the retained pointer variable, so
+    // NULL tests (!p, p == NULL, p = NULL, if (p)) must stay on the original
+    // pointer rather than be rewritten against the index. (The -1 sentinel
+    // only encodes NULL in the full-replacement case where the pointer
+    // variable is removed and the index becomes the whole pointer value.)
+    bool ptr_retained = candidate.is_parameter && (base_array == ptr_name);
+
     // ---- Step 2: rewrite each access ---------------------------------
     // One case per PointerAccessKind. Each case looks up the relevant
     // AST nodes from the access record, builds the replacement text,
@@ -728,6 +738,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         // ---- Assign null: p = NULL -> p_index = -1 ----
         case PointerAccessKind::AssignNull: {
+            // Retained pointer: `p = NULL` keeps acting on the live pointer.
+            if (ptr_retained) break;
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
             if (!BO) break;
@@ -810,6 +822,11 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // ---- Comparison expr: p < arr+n -> p_index < n ----
         case PointerAccessKind::ComparisonNull:
         case PointerAccessKind::ComparisonExpr: {
+            // Retained pointer: `p == NULL` / `p != NULL` keeps testing the
+            // live pointer. (ComparisonExpr is still an index comparison and
+            // is rewritten as usual.)
+            if (ptr_retained && access.kind == PointerAccessKind::ComparisonNull)
+                break;
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
             if (!BO) break;
@@ -835,6 +852,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         // ---- Bool true: if (p), p && ... -> p_index != -1 ----
         case PointerAccessKind::BoolTrue: {
+            // Retained pointer: `if (p)` keeps testing the live pointer.
+            if (ptr_retained) break;
             // Replace just the pointer DRE (source range = the pointer name token)
             SourceLocation StartLoc = access.expr->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -852,6 +871,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         // ---- Bool false: !p -> p_index == -1 ----
         case PointerAccessKind::BoolFalse: {
+            // Retained pointer: `!p` keeps testing the live pointer.
+            if (ptr_retained) break;
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
             if (!UO) break;
