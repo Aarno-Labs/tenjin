@@ -9,19 +9,19 @@ import hermetic
 
 
 def vcs_diff(path: Path) -> bytes:
-    vcs_dir = find_containing_vcs_dir(path)
-    if vcs_dir is None:
+    vcs_path = find_containing_vcs_path(path)
+    if vcs_path is None:
         raise RuntimeError(f"No containing .jj or .git directory found for path {path}")
-    if vcs_dir.name == ".jj":
+    if vcs_path.name == ".jj":
         return hermetic.check_output(
             ["jj", "diff", "--git", "--no-pager", "--quiet", path.as_posix()],
-            cwd=vcs_root(vcs_dir),
+            cwd=vcs_root(vcs_path),
         )
     else:
-        assert vcs_dir.name == ".git"
+        assert vcs_path.name == ".git"
         return hermetic.check_output(
             ["git", "diff", path.as_posix()],
-            cwd=vcs_root(vcs_dir),
+            cwd=vcs_root(vcs_path),
         )
 
 
@@ -47,11 +47,11 @@ class WorkingCopyStatus:
     commit: str | None = None
 
 
-def vcs_working_copy_status(vcs_dir: Path, origin_remote: str = "origin") -> WorkingCopyStatus:
-    if vcs_dir.name == ".git":
-        return git_working_copy_status(vcs_root(vcs_dir), origin_remote)
-    assert vcs_dir.name == ".jj", "Expected .jj or .git directory"
-    return jj_working_copy_status(vcs_root(vcs_dir), origin_remote)
+def vcs_working_copy_status(vcs_path: Path, origin_remote: str = "origin") -> WorkingCopyStatus:
+    if vcs_path.name == ".git":
+        return git_working_copy_status(vcs_root(vcs_path), origin_remote)
+    assert vcs_path.name == ".jj", "Expected .jj or .git file"
+    return jj_working_copy_status(vcs_root(vcs_path), origin_remote)
 
 
 def jj_working_copy_status(vcs_root: Path, origin_remote: str = "origin") -> WorkingCopyStatus:
@@ -211,15 +211,15 @@ def git_working_copy_status(vcs_root: Path, origin_remote: str = "origin") -> Wo
     )
 
 
-def vcs_root(vcs_dir: Path) -> Path:
-    return vcs_dir.parent
+def vcs_root(vcs_path: Path) -> Path:
+    return vcs_path.parent
 
 
-def find_containing_vcs_dir(start_dir: Path) -> Path | None:
+def find_containing_vcs_path(start_dir: Path) -> Path | None:
     """
     Walk up from the specified directory towards the filesystem root, looking
-    for directories named '.jj' or '.git' and return the full path of the first
-    such directory found, or None if no such directory was found.
+    for directories/files named '.jj' or '.git' and return the full path of the first
+    such file found, or None if no such file was found.
     """
     if start_dir is None:
         start_dir = os.getcwd()
@@ -231,9 +231,10 @@ def find_containing_vcs_dir(start_dir: Path) -> Path | None:
     while True:
         # Check for .jj or .git in the current directory, preferring .jj
         # (in case of a colocated repository).
+        # .git can be a file (not a directory) when working in a worktree
         for repo_dir in [".jj", ".git"]:
             potential_path = os.path.join(current_dir, repo_dir)
-            if os.path.isdir(potential_path):
+            if os.path.exists(potential_path):
                 return Path(potential_path)
 
         # Move up one directory
