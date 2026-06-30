@@ -40,26 +40,26 @@ def stub_ingestion_record(
     This is used to initialize the ingestion record before the actual translation.
     """
 
-    codebase_vcs_dir = vcs_helpers.find_containing_vcs_dir(codebase)
+    codebase_vcs_path = vcs_helpers.find_containing_vcs_path(codebase)
     ingested_codebase = None
 
-    if codebase_vcs_dir is not None:
-        codebase_wcs = vcs_helpers.vcs_working_copy_status(codebase_vcs_dir)
+    if codebase_vcs_path is not None:
+        codebase_wcs = vcs_helpers.vcs_working_copy_status(codebase_vcs_path)
         if codebase_wcs.origin is not None and codebase_wcs.commit is not None:
             codebase_relative_path = codebase
             if codebase_relative_path.is_absolute():
                 codebase_relative_path = codebase.relative_to(
-                    vcs_helpers.vcs_root(codebase_vcs_dir)
+                    vcs_helpers.vcs_root(codebase_vcs_path)
                 )
             ingested_codebase = ingest.IngestedCodebase(
                 git_repo_url=codebase_wcs.origin,
                 git_commit=codebase_wcs.commit,
                 relative_path=str(codebase_relative_path),
             )
-    tenjin_vcs_dir = vcs_helpers.find_containing_vcs_dir(find_repo_root_dir_Path())
-    assert tenjin_vcs_dir is not None, "No VCS directory found for Tenjin?!?!"
+    tenjin_vcs_path = vcs_helpers.find_containing_vcs_path(find_repo_root_dir_Path())
+    assert tenjin_vcs_path is not None, "No VCS directory found for Tenjin?!?!"
 
-    tenjin_wcs = vcs_helpers.vcs_working_copy_status(tenjin_vcs_dir)
+    tenjin_wcs = vcs_helpers.vcs_working_copy_status(tenjin_vcs_path)
 
     assert tenjin_wcs.origin is not None, "Tenjin working copy has no origin URL?!?"
     assert tenjin_wcs.commit is not None, "Tenjin working copy has no commit hash?!?"
