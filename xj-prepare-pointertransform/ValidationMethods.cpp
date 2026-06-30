@@ -260,6 +260,8 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
                 std::function<bool(const std::string &)> baseContains;
                 std::string mutated_lhs;
                 bool mutated = false;
+                std::string escaped_text;
+                bool addr_escaped = false;
 
                 BaseMutationFinder(const SourceManager &SM,
                                    const LangOptions &LO,
@@ -291,6 +293,24 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
                     }
                 }
 
+                // `&base` (the base expression, or an lvalue it depends
+                // on) means the base may be reseated indirectly — e.g.
+                // `esc(&buffer)` can change `buffer` with no visible
+                // assignment. Since the rewriter re-evaluates the base's
+                // text at each access, such a hidden mutation makes the
+                // rewritten accesses read the wrong location. Treat it
+                // like a direct base mutation and reject.
+                void checkAddrOf(const Expr *E) {
+                    if (!E || addr_escaped) return;
+                    if (refsTrackedPtr(E)) return;  // &p: the per-pointer
+                                                    // AddressOf check handles it
+                    std::string txt = getSourceText(E, SM, LO);
+                    if (baseContains(txt)) {
+                        escaped_text = txt;
+                        addr_escaped = true;
+                    }
+                }
+
                 bool VisitBinaryOperator(BinaryOperator *BO) {
                     if (!BO->isAssignmentOp())
                         return true;
@@ -299,6 +319,10 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
                 }
 
                 bool VisitUnaryOperator(UnaryOperator *UO) {
+                    if (UO->getOpcode() == UO_AddrOf) {
+                        checkAddrOf(UO->getSubExpr()->IgnoreParenImpCasts());
+                        return !addr_escaped && !mutated;
+                    }
                     if (!UO->isIncrementDecrementOp())
                         return true;
                     check(UO->getSubExpr()->IgnoreParenImpCasts());
@@ -312,6 +336,12 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
                 error = "Base expression '" + base_text +
                         "' depends on '" + finder.mutated_lhs +
                         "', which is mutated within the function";
+                return false;
+            }
+            if (finder.addr_escaped) {
+                error = "Base expression '" + base_text +
+                        "' has its address taken via '&" + finder.escaped_text +
+                        "', so it may be mutated indirectly within the function";
                 return false;
             }
         }
