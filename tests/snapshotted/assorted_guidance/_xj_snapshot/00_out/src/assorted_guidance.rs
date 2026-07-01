@@ -191,7 +191,7 @@ pub unsafe fn guided_1d_slice(
     mut index: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
     let mut x2: &[::core::ffi::c_int] = &x.as_ptr()[3 as usize..];
-    return x.as_ptr()[index as usize];
+    return x[index as usize];
 }
 #[no_mangle]
 pub unsafe fn guided_2d_slice(
@@ -199,7 +199,7 @@ pub unsafe fn guided_2d_slice(
     mut i: ::core::ffi::c_int,
     mut j: ::core::ffi::c_int,
 ) -> ::core::ffi::c_int {
-    return x2d.as_ptr()[i as usize][j as usize];
+    return x2d[i as usize][j as usize];
 }
 #[no_mangle]
 pub unsafe fn guided_1d_vec(
