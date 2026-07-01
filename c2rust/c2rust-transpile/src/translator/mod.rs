@@ -4597,6 +4597,7 @@ impl<'c> Translation<'c> {
                 {
                     if (var_guided_type.is_slice_ref() || var_guided_type.is_array_ref())
                         && !self.wrapped_with_array_decay(expr_id)
+                        && !self.wrapped_with_subscript_base(expr_id)
                     {
                         let method = if var_guided_type.is_exclusive_borrow() {
                             "as_mut_ptr"

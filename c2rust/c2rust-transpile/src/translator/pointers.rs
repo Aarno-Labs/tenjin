@@ -435,9 +435,18 @@ impl<'c> Translation<'c> {
                     }
                 })
             } else {
-                // LHS must be ref decayed for the offset method call's self param
                 let c_lhs = Some(lhs);
-                let lhs = self.convert_expr(ctx.used().decay_ref(), lhs, None)?;
+                // If the LHS is guided to a slice, convert it *without* decaying to a
+                // raw pointer, so the subscript below indexes the slice directly
+                // (`s[i]`). Decaying first yields `s.as_ptr()[i]`, which does not
+                // compile (cannot index a raw pointer). Otherwise the LHS must be
+                // ref-decayed for the `.offset()` method call's self param.
+                let lhs_ctx = if self.can_subscript(lhs) {
+                    ctx.used()
+                } else {
+                    ctx.used().decay_ref()
+                };
+                let lhs = self.convert_expr(lhs_ctx, lhs, None)?;
                 lhs.and_then(|lhs| {
                     // stmts.extend(lhs.stmts_mut());
                     // is_unsafe = is_unsafe || lhs.is_unsafe();
