@@ -1277,6 +1277,18 @@ def speculatively_fix_higher_order_fn_ptr_types(
                 )
 
 
+def cursor_extent_contains(outer: Cursor, inner: Cursor) -> bool:
+    outer_file = outer.location.file
+    inner_file = inner.location.file
+    if outer_file is None or inner_file is None:
+        return False
+    return (
+        outer_file.name == inner_file.name
+        and outer.extent.start.offset <= inner.extent.start.offset
+        and inner.extent.end.offset <= outer.extent.end.offset
+    )
+
+
 def localize_mutable_globals(
     json_path: Path,
     compdb: compilation_database.CompileCommands,
@@ -1951,6 +1963,18 @@ def localize_mutable_globals(
                 #     print(f"    Will emit typedef: {type_name}")
                 # else:
                 #     print(f"    Skipping typedef (already in scope): {type_name}")
+
+            # Avoid emitting duplicate struct/union definitions for things
+            # appearing within typedefs.
+            typedef_cursors_to_emit = tuple(types_to_emit_typedefs.values())
+            types_to_emit_structs = {
+                type_name: decl_cursor
+                for type_name, decl_cursor in types_to_emit_structs.items()
+                if not any(
+                    cursor_extent_contains(typedef_cursor, decl_cursor)
+                    for typedef_cursor in typedef_cursors_to_emit
+                )
+            }
 
             # Build type definitions to insert before main()
             type_defs_lines: list[str] = []

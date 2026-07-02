@@ -73,6 +73,48 @@ def build_info_for_single_source(codebase: Path, source: Path) -> targets.BuildI
     return build_info
 
 
+def test_cursor_extent_contains_typedef_embedded_struct_definition(tmp_codebase):
+    tmp_codebase.mkdir()
+    sample_c = tmp_codebase / "sample.c"
+    sample_c.write_text(
+        "typedef struct Payload { int value; } PayloadAlias;\n"
+        "struct Standalone { int value; };\n"
+        "PayloadAlias payload;\n"
+        "struct Standalone standalone;\n",
+        encoding="utf-8",
+    )
+    write_compile_commands_for_sources(tmp_codebase, [sample_c])
+
+    compdb = compilation_database.CompileCommands.from_json_file(
+        tmp_codebase / "compile_commands.json"
+    )
+    tus = c_refact.parse_project(create_xj_clang_index(), compdb)
+    cursors = list(next(iter(tus.values())).cursor.walk_preorder())
+
+    typedef_cursor = next(
+        cursor
+        for cursor in cursors
+        if cursor.kind == CursorKind.TYPEDEF_DECL and cursor.spelling == "PayloadAlias"
+    )
+    payload_cursor = next(
+        cursor
+        for cursor in cursors
+        if cursor.kind == CursorKind.STRUCT_DECL
+        and cursor.spelling == "Payload"
+        and cursor.is_definition()
+    )
+    standalone_cursor = next(
+        cursor
+        for cursor in cursors
+        if cursor.kind == CursorKind.STRUCT_DECL
+        and cursor.spelling == "Standalone"
+        and cursor.is_definition()
+    )
+
+    assert c_refact.cursor_extent_contains(typedef_cursor, payload_cursor)
+    assert not c_refact.cursor_extent_contains(typedef_cursor, standalone_cursor)
+
+
 def test_hoist_embedded_tag_definitions_unblocks_histindex_split(root, tmp_codebase):
     tmp_codebase.mkdir()
     sample_c = tmp_codebase / "sample.c"
