@@ -12,6 +12,7 @@ class TranslationFlags:
     cratename: str
     cmake_defines: list[str]
     do_not_refactor_headers_within: list[ResolvedPath]
+    prebuildcmd: str | None
     buildcmd: str | None
 
     @classmethod
@@ -21,6 +22,7 @@ class TranslationFlags:
         codebase: Path,
         resultsdir: Path,
         cratename: str = "tenjinized",
+        prebuildcmd: str | None = None,
         buildcmd: str | None = None,
     ) -> "TranslationFlags":
         return cls(
@@ -30,6 +32,7 @@ class TranslationFlags:
             cratename=cratename,
             cmake_defines=[],
             do_not_refactor_headers_within=[],
+            prebuildcmd=prebuildcmd,
             buildcmd=buildcmd,
         )
 
@@ -41,5 +44,6 @@ class TranslationFlags:
             cratename=self.cratename,
             cmake_defines=cmake_defines,
             do_not_refactor_headers_within=self.do_not_refactor_headers_within,
+            prebuildcmd=self.prebuildcmd,
             buildcmd=self.buildcmd,
         )

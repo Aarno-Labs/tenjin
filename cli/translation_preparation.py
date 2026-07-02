@@ -78,6 +78,7 @@ def run_modifying_subprocess_or_restore_prev(
 def compute_build_info_in(
     builddir: Path,
     codebase: Path,
+    prebuildcmd: str | list[str] | None,
     buildcmd: str | list[str] | None,
     tracker: ingest_tracking.TimingRepo,
     mut_build_info: BuildInfo,
@@ -262,6 +263,13 @@ def compute_build_info_in(
     shutil.copytree(codebase, builddir, dirs_exist_ok=True)
 
     click.secho(f"((( Building via `{buildcmd}`", fg="cyan", bold=True)
+    if prebuildcmd is not None:
+        cp = hermetic.run(
+            prebuildcmd,
+            cwd=build_cwd,
+            shell=isinstance(buildcmd, str),
+            check=True,
+        )
     cp = hermetic.run(
         buildcmd,
         cwd=build_cwd,
@@ -729,6 +737,7 @@ def run_preparation_passes(
         compute_build_info_in(
             builddir,
             current_codebase,
+            translation_flags.prebuildcmd,
             translation_flags.buildcmd,
             tracker,
             store.build_info,

@@ -101,6 +101,10 @@ def cli():
     help="Build command (for in-tree build), will be run via `intercept-build`.",
 )
 @click.option(
+    "--prebuildcmd",
+    help="Command to run before the build itself (e.g. `./configure`)",
+)
+@click.option(
     "--reset-resultsdir",
     help="If the results directory already exists, delete its contents.",
     is_flag=True,
@@ -141,6 +145,7 @@ def translate(
     cratename,
     guidance,
     buildcmd,
+    prebuildcmd,
     reset_resultsdir,
     do_not_refactor,
     cmake_define,
@@ -199,6 +204,7 @@ def translate(
         cratename,
         list(cmake_define),
         resolved_do_not_refactor,
+        prebuildcmd,
         buildcmd,
     )
 
