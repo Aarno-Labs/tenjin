@@ -14,7 +14,7 @@ import toml
 
 import hermetic
 import translation
-from tenj_types import ResolvedPath, UserFacingError
+from tenj_types import UserFacingError
 
 """
 This module implements configurability for translated rust codebases, i.e.
@@ -450,30 +450,19 @@ def normalize_member_cargo_tomls(
 
 
 def translate_one_combo(
-    combo: dict,
-    root: Path,
-    codebase: Path,
-    base_resultsdir: Path,
-    cratename: str,
+    translation_flags: translation.TranslationFlags,
     guidance_str: str,
-    do_not_refactor: list[ResolvedPath],
-    buildcmd: str | None,
-    base_cmake_defines: list[str],
+    combo: dict,
 ) -> tuple[str, bool, str]:
     name = combo_dirname(combo)
-    combo_resultsdir = base_resultsdir / name
+    combo_resultsdir = translation_flags.resultsdir / name
     combo_defines = [f"{k}={cmake_value(v)}" for k, v in combo.items()]
-    all_defines = list(base_cmake_defines) + combo_defines
+    all_defines = list(translation_flags.cmake_defines) + combo_defines
+    combo_flags = translation_flags.for_combo(combo_resultsdir, all_defines)
     try:
         translation.do_translate(
-            root,
-            codebase,
-            combo_resultsdir,
-            cratename,
+            combo_flags,
             guidance_str,
-            do_not_refactor,
-            buildcmd,
-            all_defines,
         )
     except Exception as e:
         return name, False, str(e)
@@ -481,31 +470,19 @@ def translate_one_combo(
 
 
 def run_all_combos(
-    combos: list[dict],
-    root: Path,
-    codebase: Path,
-    base_resultsdir: Path,
-    cratename: str,
+    translation_flags: translation.TranslationFlags,
     guidance_str: str,
-    do_not_refactor: list[ResolvedPath],
-    buildcmd: str | None,
-    base_cmake_defines: list[str],
     jobs: int,
+    combos: list[dict],
 ) -> list[tuple[str, bool, str]]:
     results: list[tuple[str, bool, str]] = []
     with ThreadPoolExecutor(max_workers=jobs) as executor:
         futures = {
             executor.submit(
                 translate_one_combo,
-                combo,
-                root,
-                codebase,
-                base_resultsdir,
-                cratename,
+                translation_flags,
                 guidance_str,
-                do_not_refactor,
-                buildcmd,
-                base_cmake_defines,
+                combo,
             ): combo
             for combo in combos
         }
@@ -640,15 +617,9 @@ def run_merge(
 
 
 def do_translate_multi_config(
-    root: Path,
-    codebase: Path,
-    resultsdir: Path,
+    translation_flags: translation.TranslationFlags,
     config_path: Path,
-    cratename: str,
     guidance_str: str,
-    do_not_refactor: list[ResolvedPath],
-    buildcmd: str | None,
-    cmake_defines: list[str],
     jobs: int,
     cmake_presets_path: Path | None = None,
 ):
@@ -662,16 +633,10 @@ def do_translate_multi_config(
     click.echo(f"Found {total} configuration combinations from {config_path}")
 
     results = run_all_combos(
-        combos,
-        root,
-        codebase,
-        resultsdir,
-        cratename,
+        translation_flags,
         guidance_str,
-        do_not_refactor,
-        buildcmd,
-        cmake_defines,
         jobs,
+        combos,
     )
 
     combo_by_name = {combo_dirname(combo): combo for combo in combos}
@@ -688,6 +653,7 @@ def do_translate_multi_config(
     # Copy the result directories because we will be modifying
     # the "final" Cargo.tomls
     click.echo("\nStaging final directories for merge...")
+    resultsdir = translation_flags.resultsdir
     _staging_dir, inputs_entries = stage_finals(succeeded, resultsdir)
 
     inputs_json_path = resultsdir / "inputs.json"

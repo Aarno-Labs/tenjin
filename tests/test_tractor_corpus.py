@@ -19,6 +19,7 @@ from tenjin_pytest_helpers import (
     TenjinFixtures,
 )
 import translation_preparation
+import translation_types
 import translation
 
 
@@ -135,10 +136,12 @@ def translate_and_build_ta3_test(
         )
 
     translation.do_translate(
-        fixtures.root,
-        fixtures.tmp_codebase / "test_case",
-        resultsdir,
-        cratename,
+        translation_types.TranslationFlags.simple(
+            fixtures.root,
+            fixtures.tmp_codebase / "test_case",
+            resultsdir,
+            cratename,
+        ),
         guidance_path_or_literal=guidance,
     )
 

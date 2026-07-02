@@ -7,6 +7,7 @@ from tenjin_pytest_helpers import (
 )
 import translation
 import translation_preparation
+from translation_types import TranslationFlags
 
 
 def single_file_check_translation(
@@ -15,10 +16,12 @@ def single_file_check_translation(
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     translation_preparation.copy_codebase(test_dir / dir / filename, tmp_codebase)
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename=dir,
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            tmp_codebase,
+            tmp_resultsdir,
+            cratename=dir,
+        ),
         guidance_path_or_literal=guidance,
     )
 
