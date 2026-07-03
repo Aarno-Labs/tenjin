@@ -47,11 +47,7 @@ pub fn print_owned_String(mut ostr: String) {
 }
 #[no_mangle]
 pub unsafe fn print_unguided_ptr(mut ptr: *const ::core::ffi::c_char) {
-    println!("{:>}", {
-        std::ffi::CStr::from_ptr(ptr as *const core::ffi::c_char)
-            .to_str()
-            .unwrap()
-    },);
+    println!("{:>}", { xj_str_from_ptr(ptr as *const core::ffi::c_char) });
 }
 #[no_mangle]
 pub fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
@@ -255,6 +251,13 @@ pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
         return 42;
     }
     0
+}
+unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
+    if ptr.is_null() {
+        "(null)"
+    } else {
+        core::ffi::CStr::from_ptr(ptr).to_str().unwrap()
+    }
 }
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
     if lim == Some(0) {

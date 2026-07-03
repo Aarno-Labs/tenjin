@@ -612,48 +612,26 @@ impl Rewriter {
 
     /// Rewrite code like
     ///   ```ignore
-    ///     std::ffi::CStr::from_ptr((if COND { THN } else { ELS })
-    ///          as *const core::ffi::c_char)
-    ///             .to_str()
-    ///             .unwrap()
+    ///     xj_str_from_ptr((if COND { THN } else { ELS }) as *const core::ffi::c_char)
     /// ```
-    /// to distribute the from_ptr() over the if, so long as at least one of
+    /// to distribute xj_str_from_ptr() over the if, so long as at least one of
     /// THN and ELS is a byte string literal with valid UTF-8 text.
     pub fn rewrite_cstr_ctor_over_if(
         &self,
         _symbols: &SymbolTable,
         expr: &Expr,
     ) -> Option<(Expr, Depth)> {
-        let Expr::MethodCall(method_call) = expr else {
+        let Expr::Call(str_from_ptr_call) = expr else {
             return None;
         };
-        if method_call.method != "unwrap" || !method_call.args.is_empty() {
+        let Expr::Path(ref func) = *str_from_ptr_call.func else {
+            return None;
+        };
+        if !func.path.is_ident("xj_str_from_ptr") || str_from_ptr_call.args.len() != 1 {
             return None;
         }
 
-        let Expr::MethodCall(to_str_call) = &*method_call.receiver else {
-            return None;
-        };
-        if to_str_call.method != "to_str" || !to_str_call.args.is_empty() {
-            return None;
-        }
-        let Expr::Call(from_ptr_call) = &*to_str_call.receiver else {
-            return None;
-        };
-        let Expr::Path(ref func) = *from_ptr_call.func else {
-            return None;
-        };
-        if func
-            .path
-            .segments
-            .last()
-            .is_none_or(|seg| seg.ident != "from_ptr")
-            || from_ptr_call.args.len() != 1
-        {
-            return None;
-        }
-
-        let arg = &from_ptr_call.args[0];
+        let arg = &str_from_ptr_call.args[0];
         let Expr::Cast(cast) = expr_strip_parens(arg) else {
             return None;
         };
@@ -679,13 +657,13 @@ impl Rewriter {
         let then_expr = if let Some(lit) = mb_then_lit {
             *lit
         } else {
-            syn::parse_quote! { std::ffi::CStr::from_ptr( #then_expr_full as *const core::ffi::c_char ).to_str().unwrap() }
+            syn::parse_quote! { xj_str_from_ptr( #then_expr_full as *const core::ffi::c_char ) }
         };
 
         let else_expr = if let Some(lit) = mb_else_lit {
             *lit
         } else {
-            syn::parse_quote! { std::ffi::CStr::from_ptr( #else_expr_full as *const core::ffi::c_char ).to_str().unwrap() }
+            syn::parse_quote! { xj_str_from_ptr( #else_expr_full as *const core::ffi::c_char ) }
         };
 
         let cond = &if_expr.cond;
