@@ -117,17 +117,20 @@ impl<'c> Translation<'c> {
         self.with_scope(|| {
             let mut args: Vec<FnArg> = vec![];
             // Forwarding parameters / call arguments used to build the optional
-            // `_xj_ffi` export wrapper (XREF:ffi_export_wrapper).
+            // `xj_ffi` export wrapper (XREF:ffi_export_wrapper).
             let mut ffi_wrapper_args: Vec<FnArg> = vec![];
             let mut ffi_wrapper_call_args: Vec<Box<Expr>> = vec![];
+            let mut has_guided_type = false;
 
             // handle regular (non-variadic) arguments
-            for (arg_idx, &(decl_id, ref var, typ)) in arguments.iter().enumerate() {
+            for &(decl_id, ref var, typ) in arguments.iter() {
                 // XREF:fn_parameter_guided
                 let guided_type = self
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
+                // Only generate wrappers if we have a guided type
+                has_guided_type = has_guided_type | guided_type.is_some();
                 // XREF:guided_mutbl_fn_param
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedFunctionParam { ty, mutbl } =
@@ -157,12 +160,13 @@ impl<'c> Translation<'c> {
                     mk().set_mutbl(mutbl).ident_pat(new_var)
                 };
 
-                // Collect a forwarding parameter for the FFI export wrapper
-                // (XREF:ffi_export_wrapper). Each wrapper parameter gets a fresh
-                // name so it can be passed straight through to the real function.
-                let fwd_name = format!("arg{}", arg_idx);
-                ffi_wrapper_args.push(mk().arg(ty.clone(), mk().ident_pat(fwd_name.clone())));
-                ffi_wrapper_call_args.push(mk().path_expr(vec![fwd_name]));
+                let original_type = self.convert_type(typ.ctype)?;
+                let strategy = self
+                    .parsed_guidance
+                    .borrow()
+                    .query_ffi_in_conversion(name, var);
+                ffi_wrapper_args.push(mk().arg(original_type, mk().ident_pat(var.clone())));
+                ffi_wrapper_call_args.push(strategy.marshal(mk().path_expr(vec![var])));
 
                 args.push(mk().arg(ty, pat))
             }
@@ -184,9 +188,8 @@ impl<'c> Translation<'c> {
             };
 
             let ret = self.convert_function_return_type(name, return_type)?;
-            // Cloned for the optional FFI export wrapper (XREF:ffi_export_wrapper),
-            // which mirrors the real function's signature.
-            let ffi_wrapper_ret = ret.clone();
+            let ffi_wrapper_ret = self.convert_return_type(return_type)?;
+            has_guided_type = has_guided_type | (ret != ffi_wrapper_ret);
 
             let decl = mk().fn_decl(new_name, args, variadic, ret);
 
@@ -280,7 +283,7 @@ impl<'c> Translation<'c> {
                 // Rather than placing `extern "C"` + `#[no_mangle]`/`#[export_name]`
                 // directly on the translated function, we keep the function itself a
                 // plain Rust `fn` and emit a separate C-ABI shim (collected into a
-                // dedicated `_xj_ffi` submodule during final assembly) that exports the
+                // dedicated `xj_ffi` submodule during final assembly) that exports the
                 // original symbol and forwards to the real function. This lets the real
                 // function's signature evolve away from the C ABI while still exposing
                 // the expected symbol. Variadic functions can't be forwarded this way,
@@ -289,7 +292,8 @@ impl<'c> Translation<'c> {
                     && fn_needs_abi_preservation
                     && !is_main
                     && !is_builtin_wrapper
-                    && !is_variadic;
+                    && !is_variadic
+                    && has_guided_type;
 
                 // Only add linkage attributes if the function is `extern`
                 let mut mk_ = if is_main {
@@ -300,7 +304,7 @@ impl<'c> Translation<'c> {
                 } else if is_builtin_wrapper {
                     mk()
                 } else if needs_ffi_wrapper {
-                    // The exported C symbol is provided by the `_xj_ffi` shim emitted
+                    // The exported C symbol is provided by the `xj_ffi` shim emitted
                     // below, so the function itself is just a (public) Rust fn.
                     mk().pub_()
                 } else if is_exported_symbol {
@@ -360,27 +364,20 @@ impl<'c> Translation<'c> {
 
                 if needs_ffi_wrapper {
                     // XREF:ffi_export_wrapper
-                    // Emit the C-ABI export shim into the dedicated `_xj_ffi` submodule
-                    // (assembled at the crate root during final assembly). Because the
-                    // shim lives in its own module, it can reuse the original function's
-                    // name without clashing with the real function (now a plain Rust
-                    // `fn`), so it carries the usual linkage attributes via `mk_linkage`:
-                    // `#[no_mangle]` in the common case, or `#[export_name = "<name>"]`
-                    // when the C name had to be renamed to a legal Rust identifier. The
-                    // body forwards to the real function via a `super::` path: the shim
-                    // lives in `_xj_ffi`, a direct child of the crate root, where the
-                    // real function is defined (default layout) or re-exported
-                    // (`reorganize_definitions` layout). An explicit path is required
-                    // because the shim reuses the original name, so a bare call would
-                    // resolve to the shim itself (the `use super::*` glob is shadowed by
-                    // the local item) and recurse.
+                    // #[no_mangle]
+                    // fn foo(...) -> r {
+                    //   super::foo(*ffi_wrapper_call_args)
+                    // }
                     let wrapper_decl =
                         mk().fn_decl(new_name, ffi_wrapper_args, None, ffi_wrapper_ret);
                     let wrapper_call = mk().call_expr(
                         mk().path_expr(vec!["super", new_name]),
                         ffi_wrapper_call_args,
                     );
-                    let wrapper_block = mk().block(vec![mk().expr_stmt(wrapper_call)]);
+                    let output_conversion =
+                        self.parsed_guidance.borrow().query_ffi_out_conversion(name);
+                    let convert_output = output_conversion.marshal(wrapper_call);
+                    let wrapper_block = mk().block(vec![mk().expr_stmt(convert_output)]);
                     let wrapper_item = mk_linkage(false, new_name, name, self.tcfg.edition)
                         .pub_()
                         .extern_("C")

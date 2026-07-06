@@ -67,6 +67,57 @@ impl GuidedType {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FFIInConversion {
+    Id,
+    ViaCStr,
+    SliceWithLen(bool, String),
+}
+
+impl FFIInConversion {
+    pub fn marshal(&self, e: Box<Expr>) -> Box<Expr> {
+        match self {
+            FFIInConversion::Id => e,
+            FFIInConversion::ViaCStr => {
+                let cstr = mk().call_expr(
+                    mk().abs_path_expr(vec!["std", "ffi", "CStr", "from_ptr"]),
+                    vec![e],
+                );
+                mk().method_call_expr(cstr, mk().path_segment("to_bytes_with_nul"), vec![])
+            }
+            FFIInConversion::SliceWithLen(is_mut, ref len) => {
+                let from_raw = if *is_mut {
+                    "from_raw_parts_mut"
+                } else {
+                    "from_raw_parts"
+                };
+                let function_path = mk().abs_path_expr(vec!["std", "slice", from_raw]);
+                let len =
+                    mk().cast_expr(mk().path_expr(vec![len]), mk().path_ty(mk().path("usize")));
+                mk().call_expr(function_path, vec![e, len])
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FFIOutConversion {
+    Id,
+    FromSlice(bool),
+}
+
+impl FFIOutConversion {
+    pub fn marshal(&self, e: Box<Expr>) -> Box<Expr> {
+        match self {
+            FFIOutConversion::Id => e,
+            FFIOutConversion::FromSlice(is_mut) => {
+                let ptr_method = if *is_mut { "as_mut_ptr" } else { "as_ptr" };
+                mk().method_call_expr(e, mk().path_segment(ptr_method), vec![])
+            }
+        }
+    }
+}
+
 pub fn is_known_size_1_type(ty: &Type) -> bool {
     match ty {
         Type::Path(path) => path.qself.is_none() && is_known_size_1_path(&path.path),

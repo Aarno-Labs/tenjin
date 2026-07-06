@@ -16,6 +16,7 @@ use itertools::Itertools;
 use log::{error, trace, warn};
 use proc_macro2::{Punct, Spacing::*, Span, TokenStream, TokenTree};
 use quote::TokenStreamExt;
+use serde_json::Map;
 use syn::spanned::Spanned as _;
 use syn::{
     AttrStyle, BareVariadic, BinOp, Block, Expr, ExprBinary, ExprBlock, ExprBreak, ExprCast,
@@ -32,7 +33,7 @@ use crate::rust_ast::item_store::ItemStore;
 use crate::rust_ast::set_span::SetSpan;
 use crate::rust_ast::{pos_to_span, SpanExt};
 use crate::translator::named_references::NamedReference;
-use crate::translator::tenjin::GuidedType;
+use crate::translator::tenjin::{FFIInConversion, FFIOutConversion, GuidedType};
 use crate::translator::variadic::{mk_va_list_copy, mk_va_list_ty};
 use c2rust_ast_builder::{mk, properties::*, Builder};
 use c2rust_ast_printer::pprust;
@@ -336,6 +337,55 @@ fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
     })
 }
 
+fn parse_ffi_in_conversion(v: &serde_json::Value) -> Option<FFIInConversion> {
+    if let Some(obj) = v.as_object() {
+        return obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .and_then(|n| match n {
+                "id" => Some(FFIInConversion::Id),
+                "via-cstr" => Some(FFIInConversion::ViaCStr),
+                "slice-with-length" => {
+                    let is_mut = obj.get("mut").and_then(|it| it.as_bool()).unwrap_or(false);
+                    obj.get("length")
+                        .and_then(|it| it.as_str())
+                        .map(|a| FFIInConversion::SliceWithLen(is_mut, a.to_string()))
+                }
+                _ => None,
+            });
+    } else if let Some(n) = v.as_str() {
+        return match n {
+            "id" => Some(FFIInConversion::Id),
+            "via-cstr" => Some(FFIInConversion::ViaCStr),
+            _ => None,
+        };
+    }
+    None
+}
+
+fn parse_ffi_out_conversion(v: &serde_json::Value) -> Option<FFIOutConversion> {
+    if let Some(obj) = v.as_object() {
+        obj.get("name")
+            .and_then(|it| it.as_str())
+            .and_then(|n| match n {
+                "id" => Some(FFIOutConversion::Id),
+                "from-slice" => {
+                    let m = obj.get("mut").and_then(|it| it.as_bool()).unwrap_or(false);
+                    Some(FFIOutConversion::FromSlice(m))
+                }
+                _ => None,
+            })
+    } else if let Some(n) = v.as_str() {
+        match n {
+            "id" => Some(FFIOutConversion::Id),
+            "from-slice" => Some(FFIOutConversion::FromSlice(false)),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
 pub struct ParsedGuidance {
     pub _raw: serde_json::Value,
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
@@ -347,6 +397,10 @@ pub struct ParsedGuidance {
     pub pod_types: HashSet<String>,
     pub no_math_errno: bool,
     pub public_api: Option<HashSet<String>>,
+    /// function -> (argument -> conversion)
+    pub ffi_in_conversion: HashMap<String, HashMap<String, FFIInConversion>>,
+    /// function -> conversion (only return value)
+    pub ffi_out_conversion: HashMap<String, FFIOutConversion>,
 }
 
 impl ParsedGuidance {
@@ -485,6 +539,27 @@ impl ParsedGuidance {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let mut ffi_in_conversion = HashMap::new();
+        let mut ffi_out_conversion = HashMap::new();
+        if let Some(strategies) = raw.get("ffi").and_then(|it| it.as_object()) {
+            for (func, conv) in strategies {
+                for (arg, strategy) in conv.as_object().unwrap_or(&Map::new()) {
+                    if arg == "$ret" {
+                        if let Some(strategy) = parse_ffi_out_conversion(strategy) {
+                            ffi_out_conversion.insert(func.clone(), strategy);
+                        }
+                    } else {
+                        if let Some(strategy) = parse_ffi_in_conversion(strategy) {
+                            let e = ffi_in_conversion
+                                .entry(func.clone())
+                                .or_insert(HashMap::default());
+                            e.insert(arg.clone(), strategy);
+                        }
+                    }
+                }
+            }
+        }
+
         ParsedGuidance {
             _raw: raw,
             declspecs_of_type,
@@ -496,7 +571,24 @@ impl ParsedGuidance {
             pod_types,
             no_math_errno,
             public_api,
+            ffi_in_conversion,
+            ffi_out_conversion,
         }
+    }
+
+    pub fn query_ffi_in_conversion(&self, fn_name: &str, arg_name: &str) -> FFIInConversion {
+        self.ffi_in_conversion
+            .get(fn_name)
+            .and_then(|it| it.get(arg_name))
+            .unwrap_or(&FFIInConversion::Id)
+            .clone()
+    }
+
+    pub fn query_ffi_out_conversion(&self, fn_name: &str) -> FFIOutConversion {
+        self.ffi_out_conversion
+            .get(fn_name)
+            .unwrap_or(&FFIOutConversion::Id)
+            .clone()
     }
 
     pub fn query_decl_type(&mut self, t: &Translation, id: CDeclId) -> Option<tenjin::GuidedType> {
@@ -1394,7 +1486,7 @@ pub fn translate(
 
             // XREF:ffi_export_wrapper
             // Collect every generated C-ABI export shim into a single
-            // `pub mod _xj_ffi { ... }` at the crate root. Each shim calls its target
+            // `pub mod xj_ffi { ... }` at the crate root. Each shim calls its target
             // via a `super::` path, so it does not matter that the shims no longer sit
             // next to the functions they forward to. `use super::*` brings any types
             // named in their signatures into scope.
@@ -1404,7 +1496,7 @@ pub fn translate(
                     .call_attr("allow", vec!["unused_imports"])
                     .use_glob_item(vec!["super"])];
                 mod_items.extend(ffi_wrappers);
-                all_items.push(mk().pub_().mod_item("_xj_ffi", Some(mk().mod_(mod_items))));
+                all_items.push(mk().pub_().mod_item("xj_ffi", Some(mk().mod_(mod_items))));
             }
 
             //s.print_remaining_comments();
@@ -3483,18 +3575,10 @@ impl<'c> Translation<'c> {
         Ok(stmts)
     }
 
-    fn convert_function_return_type(
+    fn convert_return_type(
         &self,
-        name: &str,
         return_type: Option<CQualTypeId>,
     ) -> TranslationResult<ReturnType> {
-        if let Some(guided_type) = self.parsed_guidance.borrow().query_fn_return_type(name) {
-            // XREF:guided_ret_type
-            return Ok(ReturnType::Type(
-                Default::default(),
-                Box::new(guided_type.parsed),
-            ));
-        }
         let ret = match return_type {
             Some(return_type) => self.convert_type(return_type.ctype)?,
             None => mk().never_ty(),
@@ -3510,6 +3594,21 @@ impl<'c> Translation<'c> {
         } else {
             Ok(ReturnType::Type(Default::default(), ret))
         }
+    }
+
+    fn convert_function_return_type(
+        &self,
+        name: &str,
+        return_type: Option<CQualTypeId>,
+    ) -> TranslationResult<ReturnType> {
+        if let Some(guided_type) = self.parsed_guidance.borrow().query_fn_return_type(name) {
+            // XREF:guided_ret_type
+            return Ok(ReturnType::Type(
+                Default::default(),
+                Box::new(guided_type.parsed),
+            ));
+        }
+        self.convert_return_type(return_type)
     }
 
     fn convert_block_with_scope(
