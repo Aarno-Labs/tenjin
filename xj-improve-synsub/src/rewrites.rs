@@ -391,6 +391,36 @@ impl Rewriter {
         }
     }
 
+
+    // Rewrite `let x: &[T] = y.as_ptr()`  to let x = y
+    pub fn rewrite_decayed_array_assign(
+        &self,
+        symbols: &SymbolTable,
+        stmt: &Stmt,
+    ) -> Option<(Stmt, Depth)> {
+        match stmt {
+            Stmt::Local(syn::Local {
+                pat: p @ Pat::Type(syn::PatType { ty, .. }),
+                init: Some(syn::LocalInit { expr, .. }),
+                ..
+            }) => {
+                if let Some(decayed) = Self::peek_array_decay_coercion(&expr, symbols) {
+                    if sliceable_type_elt_is(ty, |_| true) {
+                        let stmt = syn::parse_quote! {
+                            let #p = #decayed;
+                        };
+                        Some((stmt, Depth::Limited(0)))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Rewrite `printf(x.offset(e))` into `io::stdout().write_all(x[e..].as_u8_slice())`
     pub fn rewrite_printf_with_lone_offset_fmt(
         &self,
