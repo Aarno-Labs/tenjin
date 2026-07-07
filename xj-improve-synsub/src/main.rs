@@ -35,6 +35,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_print_byte);
     rw.add_expr_rewrite(Rewriter::rewrite_strstr);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
+    rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_deref);
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
     rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
     rw.add_expr_rewrite(Rewriter::rewrite_printf_with_lone_offset_fmt);

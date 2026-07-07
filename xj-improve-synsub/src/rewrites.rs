@@ -1,7 +1,9 @@
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::{Expr, ExprCast, ExprLit, ExprPath, LitByteStr, LitInt, Pat, Path, Stmt, Type};
+use syn::{
+    Expr, ExprCast, ExprLit, ExprPath, ExprUnary, LitByteStr, LitInt, Pat, Path, Stmt, Type,
+};
 
 use crate::{Depth, Rewriter, SymbolTable};
 
@@ -391,6 +393,28 @@ impl Rewriter {
         }
     }
 
+    /// Rewrite `*e1.as_ptr()` into `e1[0]`
+    pub fn rewrite_decayed_array_deref(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Unary(ExprUnary {
+            op: syn::UnOp::Deref(_),
+            expr,
+            ..
+        }) = expr
+        else {
+            return None;
+        };
+        if let Some(expr) = Self::peek_array_decay_coercion(expr, symbols) {
+            let rewrite: Expr = syn::parse_quote! {
+                #expr[0]
+            };
+            return Some((rewrite, Depth::Limited(0)));
+        }
+        None
+    }
 
     // Rewrite `let x: &[T] = y.as_ptr()`  to let x = y
     pub fn rewrite_decayed_array_assign(
