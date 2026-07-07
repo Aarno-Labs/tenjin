@@ -89,6 +89,12 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "foo": "u8"
             }
         })
+    } else if c_path.ends_with("tenjin_slices.c") {
+        serde_json::json!({
+            "vars_of_type" : {
+                "&[u8]" : "inc:x"
+            }
+        })
     } else {
         serde_json::json!({})
     }
@@ -527,6 +533,11 @@ fn test_sigign() {
 #[test]
 fn test_typedefidx() {
     transpile("typedefidx.c").os_specific(true).run();
+}
+
+#[test]
+fn test_tenjin_slices() {
+    transpile("tenjin_slices.c").run();
 }
 
 #[test]
