@@ -577,13 +577,15 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                 remove_unsafe_blocks(cacg)
 
 
-def hacky_whiteout_first_occurrence_within_first_n_bytes(contents: str, needle: str, n: int) -> str:
+def hacky_whiteout_first_occurrence_within_first_n_bytes(
+    contents: bytes, needle: bytes, n: int
+) -> bytes:
     # Find the first occurrence of the needle within the first n bytes
     first_n_bytes = contents[:n]
     start_idx = first_n_bytes.find(needle)
     if start_idx == -1:
         return contents  # No occurrence found, return original contents
-    return contents[:start_idx] + (" " * len(needle)) + contents[start_idx + len(needle) :]
+    return contents[:start_idx] + (b" " * len(needle)) + contents[start_idx + len(needle) :]
 
 
 def run_trim_allows(root: Path, dir: Path):
@@ -596,24 +598,24 @@ def run_trim_allows(root: Path, dir: Path):
         return
 
     things_to_trim = [
-        "  dead_code,",
-        "  mutable_transmutes,",
-        "  unused_assignments,",
-        "  unused_mut,",
-        "  unused_mut",
-        "#![feature(extern_types)]",
-        "#![allow(dead_code)]",
-        "#![allow(unused_mut)]",
-        "#![allow(mutable_transmutes)]",
-        "#![allow(unused_assignments)]",
+        b"  dead_code,",
+        b"  mutable_transmutes,",
+        b"  unused_assignments,",
+        b"  unused_mut,",
+        b"  unused_mut",
+        b"#![feature(extern_types)]",
+        b"#![allow(dead_code)]",
+        b"#![allow(unused_mut)]",
+        b"#![allow(mutable_transmutes)]",
+        b"#![allow(unused_assignments)]",
     ]
 
-    def rough_parse_inner_attributes_len(rs_file_content: str) -> int:
+    def rough_parse_inner_attributes_len(rs_file_content: bytes) -> int:
         """Estimate the length of the inner attribute prefix in a Rust file."""
         lines = rs_file_content.splitlines()
         prelude_len = 0
         for line in lines:
-            if line.startswith("#![") or line.startswith("    ") or line.startswith(")]"):
+            if line.startswith(b"#![") or line.startswith(b"    ") or line.startswith(b")]"):
                 prelude_len += len(line) + 1
             else:
                 break
@@ -628,7 +630,7 @@ def run_trim_allows(root: Path, dir: Path):
 
         for thing in things_to_trim:
 
-            def whiteout_first_thing(contents: str) -> str:
+            def whiteout_first_thing(contents: bytes) -> bytes:
                 return hacky_whiteout_first_occurrence_within_first_n_bytes(
                     contents, thing, prelude_len
                 )
@@ -816,16 +818,16 @@ def run_trivial_numeric_casts_improvement(root: Path, dir: Path) -> None:
 
             rewriter = rewriters[file_name]
 
-            def create_replacer(span_to_replace):
-                def replacer(content: str) -> str:
+            def create_replacer(span_to_replace: dict):
+                def replacer(content: bytes) -> bytes:
                     start = span_to_replace["byte_start"]
                     end = span_to_replace["byte_end"]
                     original_snippet = content[start:end]
 
-                    as_index = original_snippet.find(" as ")
+                    as_index = original_snippet.find(b" as ")
                     if as_index != -1:
                         value_part = original_snippet[:as_index]
-                        padding = " " * (len(original_snippet) - len(value_part))
+                        padding = b" " * (len(original_snippet) - len(value_part))
                         new_snippet = value_part + padding
                         return content[:start] + new_snippet + content[end:]
                     return content
