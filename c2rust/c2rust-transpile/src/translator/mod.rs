@@ -4715,6 +4715,10 @@ impl<'c> Translation<'c> {
                     .query_decl_type(self, decl_id)
                 {
                     if (var_guided_type.is_slice_ref() || var_guided_type.is_array_ref())
+                        && ctx_guided_type
+                            .as_ref()
+                            .map(|t| !(t.is_slice_ref() || t.is_array_ref()))
+                            .unwrap_or(true)
                         && !self.wrapped_with_array_decay(expr_id)
                         && !self.wrapped_with_subscript_base(expr_id)
                     {
