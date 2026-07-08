@@ -252,6 +252,10 @@ pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
     }
     0
 }
+#[no_mangle]
+pub fn peek_slice(mut rsu8: &[u8]) {
+    let mut v = rsu8[0];
+}
 unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
     if ptr.is_null() {
         "(null)"
