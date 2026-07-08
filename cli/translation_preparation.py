@@ -155,7 +155,8 @@ def compute_build_info_in(
 
     cc_ld_intercept_dir = repo_root.find_repo_root_dir_Path() / "cli" / "sh" / "cc-ld-intercept"
 
-    if provided_cmakelists.exists() and not provided_compdb.exists():
+    can_build_via_cmake = provided_cmakelists.exists() and not provided_compdb.exists()
+    if can_build_via_cmake and not buildcmd:
         # If we have a CMakeLists.txt, we can generate the compile_commands.json.
         # We configure from `source_root` (the original input codebase, when
         # available) so the build is driven from there rather than from our copy.
