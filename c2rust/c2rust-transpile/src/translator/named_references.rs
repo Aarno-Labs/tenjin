@@ -107,7 +107,15 @@ impl Translation<'_> {
             .get_qual_type()
             .ok_or_else(|| format_err!("bad reference type"))?;
         let read = |write| self.read(reference_ty, write);
-        let reference = self.convert_expr(ctx.used(), reference, Some(reference_ty))?;
+        // Pass in the expression's guided type here as the context - we really just want
+        // an expression corresponding to whatever the guided type is
+        // (this avoids the temptation to coerce to some other type)
+        let ctx_guided_type = self
+            .parsed_guidance
+            .borrow_mut()
+            .query_expr_type(self, reference);
+        let reference =
+            self.convert_expr_guided(ctx.used(), reference, Some(reference_ty), &ctx_guided_type)?;
         reference.and_then(|reference| {
             if !uses_read && is_lvalue(&reference) {
                 Ok(WithStmts::new_val(NamedReference {
