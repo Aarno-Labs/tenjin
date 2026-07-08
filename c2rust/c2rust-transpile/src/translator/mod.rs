@@ -4602,11 +4602,14 @@ impl<'c> Translation<'c> {
                     .borrow_mut()
                     .query_decl_type(self, decl_id)
                 {
-                    if (var_guided_type.is_slice_ref() || var_guided_type.is_array_ref())
-                        && ctx_guided_type
-                            .as_ref()
-                            .map(|t| !(t.is_slice_ref() || t.is_array_ref()))
-                            .unwrap_or(true)
+                    let context_is_slice_or_array = ctx_guided_type
+                        .as_ref()
+                        .map(|t| t.is_slice_or_array_ref())
+                        .unwrap_or(false);
+
+                    // If the context expects a slice/array ref, do not coerce
+                    if var_guided_type.is_slice_or_array_ref()
+                        && !context_is_slice_or_array
                         && !self.wrapped_with_array_decay(expr_id)
                         && !self.wrapped_with_subscript_base(expr_id)
                     {
