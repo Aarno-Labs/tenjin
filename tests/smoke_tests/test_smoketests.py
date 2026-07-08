@@ -13,6 +13,7 @@ import hermetic
 import translation
 import translation_preparation
 import translation_multi_config
+from translation_types import TranslationFlags
 
 
 def test_single_c_file(test_dir, test_tmp_dir, tenjin_fixtures):
@@ -33,10 +34,12 @@ def test_single_c_file(test_dir, test_tmp_dir, tenjin_fixtures):
     }"""
 
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="single_c_file",
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            tmp_codebase,
+            tmp_resultsdir,
+            cratename="single_c_file",
+        ),
         guidance_path_or_literal=guidance,
     )
 
@@ -140,10 +143,12 @@ def test_cmake_lone_exe(test_dir, test_tmp_dir, tenjin_fixtures):
 
     # Run translation
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename=codebase.name,
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            tmp_codebase,
+            tmp_resultsdir,
+            cratename=codebase.name,
+        ),
         guidance_path_or_literal="{}",
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
@@ -176,11 +181,13 @@ def test_exe_dylibs(test_dir, test_tmp_dir, tenjin_fixtures):
 
     # Run translation
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename=codebase.name,
-        buildcmd="make",
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            tmp_codebase,
+            tmp_resultsdir,
+            cratename=codebase.name,
+            buildcmd="make",
+        ),
         guidance_path_or_literal="{}",
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
@@ -203,12 +210,14 @@ def test_triplicated_compilation(test_dir, tenjin_fixtures):
     codebase = test_dir / "triplicated_exeonly"
     # Run translation
     translation.do_translate(
-        tenjin_fixtures.root,
-        codebase,
-        tmp_resultsdir,
-        cratename="triplicated_exeonly",
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            codebase,
+            tmp_resultsdir,
+            cratename="triplicated_exeonly",
+            buildcmd="make",
+        ),
         guidance_path_or_literal="{}",
-        buildcmd="make",
     )
 
     # Build the C program
@@ -262,10 +271,12 @@ def test_trivial_un_unsafe(test_dir, tenjin_fixtures):
     codebase = test_dir / "trivial_un_unsafe"
     translation_preparation.copy_codebase(codebase, tmp_codebase)
     translation.do_translate(
-        tenjin_fixtures.root,
-        codebase,
-        tmp_resultsdir,
-        cratename="safe",
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            codebase,
+            tmp_resultsdir,
+            cratename="safe",
+        ),
         guidance_path_or_literal='{ "public_api" : [] }',
     )
 
@@ -298,14 +309,17 @@ def test_example_P02_configuration_single(test_dir, test_tmp_dir, tenjin_fixture
     )
 
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        do_not_refactor_headers_within=[],
-        cratename="example_P02_configuration_single",
+        TranslationFlags(
+            tenjin_fixtures.root,
+            tmp_codebase,
+            tmp_resultsdir,
+            do_not_refactor_headers_within=[],
+            cratename="example_P02_configuration_single",
+            prebuildcmd=None,
+            buildcmd="make",
+            cmake_defines=["APP_MODE=fast", "BACKEND=alpha", "WORD_SIZE=32"],
+        ),
         guidance_path_or_literal="{}",
-        buildcmd="make",
-        cmake_defines=["APP_MODE=fast", "BACKEND=alpha", "WORD_SIZE=32"],
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
     default_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
@@ -323,15 +337,15 @@ def test_example_P02_configuration(test_dir, test_tmp_dir, tenjin_fixtures):
     config_path = tmp_codebase / "test_case" / "configuration.json"
     # Run translation
     translation_multi_config.do_translate_multi_config(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            tmp_codebase,
+            tmp_resultsdir,
+            cratename="example_P02_configuration",
+            buildcmd="make",
+        ),
         config_path,
-        do_not_refactor=[],
-        cratename="example_P02_configuration",
         guidance_str="{}",
-        buildcmd="make",
-        cmake_defines=[],
         jobs=8,
         cmake_presets_path=None,
     )

@@ -12,6 +12,7 @@ from tenjin_pytest_helpers import (
     TenjinFixtures,
 )
 import translation_preparation
+import translation_types
 import translation
 import hermetic
 
@@ -38,10 +39,12 @@ def test_nhjschulz_cfsm(tenjin_fixtures: TenjinFixtures):
     )
     translation_preparation.copy_codebase(codebase, tmp_codebase)
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="nhjschulz_cfsm",
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="nhjschulz_cfsm",
+        ),
         guidance_path_or_literal="{}",
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
@@ -69,11 +72,13 @@ def test_marc_q__libbmp(tenjin_fixtures: TenjinFixtures):
     )
     translation_preparation.copy_codebase(codebase, tmp_codebase)
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="marc_q_libbmp",
-        buildcmd="make -C test CC=cc",
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="marc_q_libbmp",
+            buildcmd="make -C test CC=cc",
+        ),
         guidance_path_or_literal="{}",
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
@@ -120,11 +125,13 @@ def test_rupertwh__bmplib(tenjin_fixtures: TenjinFixtures):
     hermetic.run(["ninja", "-C", "builddir", "huffman-codes.h"], cwd=str(tmp_codebase), check=True)
 
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="rupertwh_bmplib",
-        buildcmd="ninja -C builddir",
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="rupertwh_bmplib",
+            buildcmd="ninja -C builddir",
+        ),
         guidance_path_or_literal="{}",
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
@@ -258,11 +265,13 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
 
     # Run translation
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="sbase_cal",
-        buildcmd=hermetic.shellize(buildcmd_args),
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="sbase_cal",
+            buildcmd=hermetic.shellize(buildcmd_args),
+        ),
         guidance_path_or_literal="{}",
     )
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
@@ -286,13 +295,13 @@ def test_Old_Man_Programmer__tree_2_3_2(tenjin_fixtures: TenjinFixtures):
         "3f3077dbd87fc89396c8dc74fcf7920ec8b0c7d5",
     )
     translation_preparation.copy_codebase(codebase, tmp_codebase)
-    buildcmd_args = ["make"]
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="tenjinized",
-        buildcmd=hermetic.shellize(buildcmd_args),
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make",
+        ),
         guidance_path_or_literal="{}",
     )
 
@@ -327,14 +336,13 @@ def test_url_h_aka_urlparser(
     )
 
     translation_preparation.copy_codebase(codebase, tmp_codebase)
-    buildcmd_args = ["make", "url-test"]
-
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="tenjinized",
-        buildcmd=hermetic.shellize(buildcmd_args),
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make url-test",
+        ),
         guidance_path_or_literal="{}",
     )
 
@@ -399,11 +407,12 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
     # incidental restrictions: we don't run it on multi-target codebases (lua + liblua),
     # and we don't run it on bitcode files as large as liblua's.
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="tenjinized",
-        buildcmd=hermetic.shellize(buildcmd_args),
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd=hermetic.shellize(buildcmd_args),
+        ),
         guidance_path_or_literal="{}",
     )
 
@@ -439,11 +448,12 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
     with tenjin_fixtures.monkeypatch.context() as _m:
         # m.setenv("XJ_EXTRA_PREPARATION_PASSES", "1")
         translation.do_translate(
-            tenjin_fixtures.root,
-            tmp_codebase,
-            tmp_resultsdir,
-            cratename="tenjinized",
-            buildcmd="make -f Makefile.pure_cli",
+            translation_types.TranslationFlags.simple(
+                root=tenjin_fixtures.root,
+                codebase=tmp_codebase,
+                resultsdir=tmp_resultsdir,
+                buildcmd="make -f Makefile.pure_cli",
+            ),
             guidance_path_or_literal="{}",
         )
 
@@ -485,14 +495,14 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
         "https://github.com/pkhuong/ppb.git", "26a68330cc6265771aa159a520b6db4483e1586e"
     )
     translation_preparation.copy_codebase(codebase, tmp_codebase)
-
-    buildcmd_args = ["make", "CC=cc", "build/picoscope"]
     translation.do_translate(
-        tenjin_fixtures.root,
-        tmp_codebase,
-        tmp_resultsdir,
-        cratename="ppb_picoscope",
-        buildcmd=hermetic.shellize(buildcmd_args),
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="ppb_picoscope",
+            buildcmd="make CC=cc build/picoscope",
+        ),
         guidance_path_or_literal="{}",
     )
 

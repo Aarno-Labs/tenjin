@@ -21,10 +21,11 @@ For other build systems, there is a `--buildcmd` flag which can, for example,
 invoke `make` on a particular target, or using a particular Makefile.
 Tenjin will record what files are built and linked,
 so as to generate a corresponding Rust project structure.
+
 Because configuration steps often probe host system properties by
 compiling and linking synthetic test programs that should not be translated
 to Rust, it's usually a mistake to pass `./configure && make` as the
-buildcmd. Instead, run the configure step (`10j exec ./configure`) separately.
+buildcmd. Instead, pass `--prebuildcmd="./configure"`.
 
 Currently, Tenjin requires that the codebase being translated live in a
 Git or jj repository, with a remote named `origin`. Information about the

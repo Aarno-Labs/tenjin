@@ -20,6 +20,7 @@ import translation_multi_config
 import cli_subcommands
 import covset
 from tenj_types import ResolvedPath, style_path, style_flag, UserFacingError
+from translation_types import TranslationFlags
 
 
 def do_check_repo_file_sizes() -> bool:
@@ -100,6 +101,10 @@ def cli():
     help="Build command (for in-tree build), will be run via `intercept-build`.",
 )
 @click.option(
+    "--prebuildcmd",
+    help="Command to run before the build itself (e.g. `./configure`)",
+)
+@click.option(
     "--reset-resultsdir",
     help="If the results directory already exists, delete its contents.",
     is_flag=True,
@@ -140,6 +145,7 @@ def translate(
     cratename,
     guidance,
     buildcmd,
+    prebuildcmd,
     reset_resultsdir,
     do_not_refactor,
     cmake_define,
@@ -191,6 +197,17 @@ def translate(
 
     resolved_do_not_refactor = [resolve_within_codebase(p) for p in do_not_refactor]
 
+    translation_flags = TranslationFlags(
+        root,
+        Path(codebase),
+        resultsdir,
+        cratename,
+        list(cmake_define),
+        resolved_do_not_refactor,
+        prebuildcmd,
+        buildcmd,
+    )
+
     config_path = None
     if tractor_ta3_configuration is not None:
         config_path = Path(tractor_ta3_configuration)
@@ -211,15 +228,9 @@ def translate(
 
         try:
             translation_multi_config.do_translate_multi_config(
-                root,
-                Path(codebase),
-                resultsdir,
+                translation_flags,
                 config_path,
-                cratename,
                 guidance,
-                resolved_do_not_refactor,
-                buildcmd,
-                list(cmake_define),
                 jobs,
                 cmake_presets_path,
             )
@@ -230,14 +241,8 @@ def translate(
 
     try:
         translation.do_translate(
-            root,
-            Path(codebase),
-            resultsdir,
-            cratename,
+            translation_flags,
             guidance,
-            resolved_do_not_refactor,
-            buildcmd,
-            list(cmake_define),
         )
     except UserFacingError as e:
         click.echo(f"Error: {e}", err=True)

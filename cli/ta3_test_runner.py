@@ -12,6 +12,7 @@ import click
 import hermetic
 import repo_root
 import translation
+from translation_types import TranslationFlags
 from tenj_types import UserFacingError
 
 _C_TEST_CASE_DIR = "test_case"
@@ -123,7 +124,9 @@ def _translate_case(rel_path: str, test_corpus: Path, tenjin_root: Path) -> Exce
 
     click.echo(f"Translating {rel_path} ...", err=True)
     try:
-        translation.do_translate(tenjin_root, c_source_dir, work_dir, "tenjinized", "{}")
+        translation.do_translate(
+            TranslationFlags.simple(tenjin_root, c_source_dir, work_dir, "tenjinized"), "{}"
+        )
         _change_binary_name(work_dir / "final", new_name="driver")
         # The test runner expects Cargo.toml directly in translated_rust/.
         # do_translate places the final project in resultsdir/final/, so we

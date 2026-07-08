@@ -32,8 +32,9 @@ import targets_from_intercept
 from targets import BuildInfo, TargetType
 from caching_file_contents import CachingFileContents
 from constants import WANT, XJ_GUIDANCE_FILENAME
-from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr, ResolvedPath
+from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr
 import tenj_types
+from translation_types import TranslationFlags
 
 
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
@@ -77,6 +78,7 @@ def run_modifying_subprocess_or_restore_prev(
 def compute_build_info_in(
     builddir: Path,
     codebase: Path,
+    prebuildcmd: str | list[str] | None,
     buildcmd: str | list[str] | None,
     tracker: ingest_tracking.TimingRepo,
     mut_build_info: BuildInfo,
@@ -261,6 +263,13 @@ def compute_build_info_in(
     shutil.copytree(codebase, builddir, dirs_exist_ok=True)
 
     click.secho(f"((( Building via `{buildcmd}`", fg="cyan", bold=True)
+    if prebuildcmd is not None:
+        cp = hermetic.run(
+            prebuildcmd,
+            cwd=build_cwd,
+            shell=isinstance(buildcmd, str),
+            check=True,
+        )
     cp = hermetic.run(
         buildcmd,
         cwd=build_cwd,
@@ -699,16 +708,14 @@ class PrepPassResultStore:
 
 
 def run_preparation_passes(
-    original_codebase: Path,
-    resultsdir: Path,
-    tracker: ingest_tracking.TimingRepo,
+    translation_flags: TranslationFlags,
     guidance: dict,
-    do_not_refactor_headers_within: list[ResolvedPath],
-    buildcmd: str | None = None,
-    cmake_defines: list[str] = [],
+    tracker: ingest_tracking.TimingRepo,
 ) -> tuple[Path, BuildInfo]:
     """Returns the path to the final prepared codebase directory,
     along with information about the build structure."""
+    original_codebase = translation_flags.codebase
+    resultsdir = translation_flags.resultsdir
 
     # Normalize to an absolute path so it can serve as a build working directory
     # and match the (absolute, resolved) directories recorded by intercepted commands.
@@ -717,7 +724,10 @@ def run_preparation_passes(
 
     def can_refactor_header(p: Path) -> bool:
         rp = p.resolve()
-        return not any(rp.is_relative_to(excluded) for excluded in do_not_refactor_headers_within)
+        return not any(
+            rp.is_relative_to(excluded)
+            for excluded in translation_flags.do_not_refactor_headers_within
+        )
 
     def prep_00_copy_pristine_codebase(pristine: Path, newdir: Path, store: PrepPassResultStore):
         copy_codebase(pristine, newdir)
@@ -727,10 +737,11 @@ def run_preparation_passes(
         compute_build_info_in(
             builddir,
             current_codebase,
-            buildcmd,
+            translation_flags.prebuildcmd,
+            translation_flags.buildcmd,
             tracker,
             store.build_info,
-            cmake_defines,
+            translation_flags.cmake_defines,
             original_codebase=original_codebase,
         )
 
