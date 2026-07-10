@@ -1,7 +1,9 @@
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::{Expr, ExprCast, ExprLit, ExprPath, LitByteStr, LitInt, Pat, Path, Stmt, Type};
+use syn::{
+    Expr, ExprCast, ExprLit, ExprPath, ExprUnary, LitByteStr, LitInt, Pat, Path, Stmt, Type,
+};
 
 use crate::{Depth, Rewriter, SymbolTable};
 
@@ -389,6 +391,34 @@ impl Rewriter {
         } else {
             None
         }
+    }
+
+    /// Rewrite `*e.as_ptr()/*e` into `e[0]`
+    pub fn rewrite_decayed_array_deref(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Unary(ExprUnary {
+            op: syn::UnOp::Deref(_),
+            expr,
+            ..
+        }) = expr
+        else {
+            return None;
+        };
+        if let Some(expr) = Self::peek_array_decay_coercion(expr, symbols) {
+            let rewrite: Expr = syn::parse_quote! {
+                #expr[0]
+            };
+            return Some((rewrite, Depth::Limited(0)));
+        } else if is_indexable_typed(expr, symbols) {
+            let rewrite: Expr = syn::parse_quote! {
+                #expr[0]
+            };
+            return Some((rewrite, Depth::Limited(0)));
+        }
+        None
     }
 
     /// Rewrite `printf(x.offset(e))` into `io::stdout().write_all(x[e..].as_u8_slice())`
@@ -1168,6 +1198,11 @@ fn expr_ident_type<'a>(expr: &Expr, symbols: &'a SymbolTable) -> Option<&'a syn:
 
 fn is_array_typed(expr: &Expr, symbols: &SymbolTable) -> bool {
     matches!(expr_ident_type(expr, symbols), Some(ty) if is_array_type(ty))
+}
+
+fn is_indexable_typed(expr: &Expr, symbols: &SymbolTable) -> bool {
+    matches!(expr_ident_type(expr, symbols), 
+      Some(ty) if sliceable_type_elt_is(ty, |_| true))
 }
 
 fn is_array_type(ty: &syn::Type) -> bool {
