@@ -717,6 +717,13 @@ def want_10j_more_deps():
 
         cook_pkg_config_placeholders_within(target)
 
+        for tgt_path in [target / "bin" / "libtoolize", target / "lib" / "libltdl.la"]:
+            data = tgt_path.read_text(encoding="utf-8")
+            tgt_path.write_text(
+                data.replace("/outputs", target.resolve().as_posix()),
+                encoding="utf-8",
+            )
+
         if (target / "lib" / "libpng16.la-e").is_file():
             shutil.copyfile(target / "lib" / "libpng16.la", target / "lib" / "libpng16.la-e")
 
