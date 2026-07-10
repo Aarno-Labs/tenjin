@@ -393,7 +393,7 @@ impl Rewriter {
         }
     }
 
-    /// Rewrite `*e1.as_ptr()` into `e1[0]`
+    /// Rewrite `*e.as_ptr()/*e` into `e[0]`
     pub fn rewrite_decayed_array_deref(
         &self,
         symbols: &SymbolTable,
@@ -408,6 +408,11 @@ impl Rewriter {
             return None;
         };
         if let Some(expr) = Self::peek_array_decay_coercion(expr, symbols) {
+            let rewrite: Expr = syn::parse_quote! {
+                #expr[0]
+            };
+            return Some((rewrite, Depth::Limited(0)));
+        } else if is_indexable_typed(expr, symbols) {
             let rewrite: Expr = syn::parse_quote! {
                 #expr[0]
             };
@@ -1244,6 +1249,11 @@ fn expr_ident_type<'a>(expr: &Expr, symbols: &'a SymbolTable) -> Option<&'a syn:
 
 fn is_array_typed(expr: &Expr, symbols: &SymbolTable) -> bool {
     matches!(expr_ident_type(expr, symbols), Some(ty) if is_array_type(ty))
+}
+
+fn is_indexable_typed(expr: &Expr, symbols: &SymbolTable) -> bool {
+    matches!(expr_ident_type(expr, symbols), 
+      Some(ty) if sliceable_type_elt_is(ty, |_| true))
 }
 
 fn is_array_type(ty: &syn::Type) -> bool {
