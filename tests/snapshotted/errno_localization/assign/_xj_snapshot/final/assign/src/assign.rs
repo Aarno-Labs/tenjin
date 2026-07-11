@@ -16,8 +16,10 @@ extern "C" {
     pub type _IO_codecvt;
     pub type _IO_marker;
     fn fclose(__stream: *mut FILE) -> ::core::ffi::c_int;
+
     fn bar() -> ::core::ffi::c_int;
     fn __errno_location() -> *mut ::core::ffi::c_int;
+    fn strerror(__errnum: ::core::ffi::c_int) -> *mut ::core::ffi::c_char;
 }
 pub type size_t = usize;
 pub type __off_t = ::core::ffi::c_long;
@@ -84,6 +86,14 @@ pub unsafe extern "C" fn does_use_errno(mut f: *mut FILE) -> ::core::ffi::c_int 
     }
     0
 }
+unsafe fn _xj_wrap_strerror_xjtr_0(
+    mut _xj_errno: &mut i32,
+    mut __errnum: ::core::ffi::c_int,
+) -> *mut ::core::ffi::c_char {
+    let mut ret = strerror(__errnum);
+    *_xj_errno = *__errno_location();
+    ret
+}
 unsafe fn main_0(
     mut argc: ::core::ffi::c_int,
     mut argv: *mut *mut ::core::ffi::c_char,
@@ -92,6 +102,14 @@ unsafe fn main_0(
     foo();
     _xj_local_errno = 0;
     if _xj_local_errno == EINVAL {
+        println!("Error: [{:>}]", {
+            xj_str_from_ptr(
+                ({
+                    let __lift_2_3602_0 = _xj_local_errno;
+                    _xj_wrap_strerror_xjtr_0(&mut _xj_local_errno, __lift_2_3602_0)
+                }) as *const core::ffi::c_char,
+            )
+        },);
         bar();
     }
     0
@@ -112,4 +130,11 @@ pub fn main() -> ExitCode {
     let argc = (args_ptrs.len() - 1) as ::core::ffi::c_int;
     let argv = args_ptrs.as_mut_ptr() as *mut *mut ::core::ffi::c_char;
     unsafe { ExitCode::from(main_0(argc, argv) as u8) }
+}
+unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
+    if ptr.is_null() {
+        "(null)"
+    } else {
+        core::ffi::CStr::from_ptr(ptr).to_str().unwrap()
+    }
 }

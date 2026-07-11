@@ -244,7 +244,7 @@ pub unsafe fn struct_guided_ptr_with_guided_members(mut gm_ptr: &mut StructWithM
     *gm_ptr.uptr.offset(0 as isize) = 42 as ::core::ffi::c_uchar;
     gm_ptr.zu8 = 43 as ::core::ffi::c_uchar;
 }
-unsafe fn __tenjin_bvm_167_7_float_to_unsigned_int_xjtr_0(
+unsafe fn __tenjin_bvm_158_7_float_to_unsigned_int_xjtr_0(
     mut x: ::core::ffi::c_float,
     mut out: *mut ::core::ffi::c_uint,
 ) {
@@ -263,7 +263,7 @@ pub unsafe fn guided_union_float_int_bitcast(mut f: ::core::ffi::c_float) -> ::c
     __tenjin_tmp_out_u = __tenjin_tmp_in_u.to_bits() as ::core::ffi::c_uint;
     return __tenjin_tmp_out_u;
 }
-unsafe fn __tenjin_bvm_167_7_unsigned_int_to_float_xjtr_0(
+unsafe fn __tenjin_bvm_158_7_unsigned_int_to_float_xjtr_0(
     mut x: ::core::ffi::c_uint,
     mut out: *mut ::core::ffi::c_float,
 ) {

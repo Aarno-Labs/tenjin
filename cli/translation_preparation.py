@@ -1,5 +1,6 @@
 import os
 import platform
+import re
 import json
 import shutil
 import time
@@ -705,6 +706,9 @@ class PrepPassResultStore:
         dict[QUSS, list[tuple[FilePathStr, int, int, FileContentsStr, QUSS_is_defn]]],
     ]
     build_info: BuildInfo
+    consolidation_data_by_rel_tu: dict[RelativeFilePathStr, c_refact.ConsolidationRevertContext] = (
+        dataclasses.field(default_factory=dict)
+    )
 
 
 def run_preparation_passes(
@@ -1085,6 +1089,11 @@ def run_preparation_passes(
             run_cc2json_or_cached(bitcode_module_path, current_codebase)
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        """The purpose of this pass is to rename static globals to have unique names,
+        so that subsequent analysis and refactorings can rely on the property that different
+        declarations have different names (that is: a name refers to at most one declaration,
+        across the whole project).
+        """
         # For now, we restrict analysis to single-target projects,
         # although this is not a fundamental limitation.
         all_build_targets = store.build_info.get_all_targets()
@@ -1217,6 +1226,147 @@ def run_preparation_passes(
                 check=True,
             )
 
+    def prep_un_uniquify_static_inline_fns(
+        prev: Path, current_codebase: Path, store: PrepPassResultStore
+    ):
+        """Once analysis and general rewriting is done, we can (and should) remove the
+        uniquification suffixes from static inline functions, both to restore readability
+        and to avoid interfering with subsequent refolding.
+        """
+        # For now, we restrict analysis to single-target projects,
+        # although this is not a fundamental limitation.
+        all_build_targets = store.build_info.get_all_targets()
+        if len(all_build_targets) != 1:
+            print("TENJIN: NOTE: Skipping static-un-uniquification for multi-target codebase.")
+            return
+
+        compdb = store.build_info.compdb_for_target_within(
+            all_build_targets[0].key, current_codebase
+        )
+
+        all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
+            compdb, statics_only=True
+        )
+
+        def is_unique_name(name: tenj_types.CIdentifier) -> bool:
+            return "_xjtr_" in name and name[-1].isdigit()
+
+        def is_static_inline_function(cursor: Cursor) -> bool:
+            """Note that all cursors returned by `compute_globals_and_statics_for_project`
+            are either static or global, so we don't need to check for static-ness separately."""
+            if cursor.kind != CursorKind.FUNCTION_DECL:
+                return False
+            for token in cursor.get_tokens():
+                if token.spelling == cursor.spelling:
+                    break  # didn't see `inline` before the function name.
+                if token.spelling in (
+                    "inline",
+                    "__inline",
+                    "__inline__",
+                    "__always_inline__",
+                    "always_inline",
+                ):
+                    return True
+            return False
+
+        all_pgs_static_inline_funcs = [
+            c_refact.mk_NamedDeclInfo(c) for c in all_pgs_cursors if is_static_inline_function(c)
+        ]
+
+        for g_s in all_pgs_static_inline_funcs:
+            assert is_unique_name(g_s.spelling), (
+                f"Expected unique name for static inline function: {g_s.spelling}"
+            )
+
+        # We can safely strip the suffix as far as C is concerned; that's how the code
+        # was originally. And we already apply guidance by ignoring uniquification suffixes.
+        #
+        # Note the difference between regular static variables and static inline functions:
+        # two static variables can have the same name but refer to different entities,
+        # which the uniquification suffixes disambiguate. But two static inline functions
+        # with the same name are conceptually not distinct entities at all, so we don't
+        # lose any disambguating power by stripping the suffixes from static inline fns.
+        #
+        # If no modifications were made, stripping the suffix will avoid an unnecessary
+        # barrier to refolding. By assumption, all instantiations of a given static inline
+        # function should be modified in the same way, since there is conceptually a single
+        # definition.
+        #
+        # There are four modification cases to consider:
+        #   (A) no modifications
+        #   (B) all copies modified identically
+        #   (C) a subset of copies modified, but all modified identically
+        #   (D) some copies modified in different ways
+        #
+        # In case A, we should strip the suffix to enable refolding.
+        # In case B, we should consolidate the definition back into the header
+        # (which will strip the suffix and the modifications from the .i file).
+        #
+        # In cases C and D, the modifications will prevent refolding, but it's
+        # still fine to strip the suffix.
+
+        # For each uniquified static inline function (grouped by base name), verify the
+        # textual definitions in every preprocessed source file are identical after
+        # stripping the uniquification suffix. If they differ, the definitions were
+        # modified in divergent ways across files and refolding them would silently
+        # merge inconsistent versions; omit such names from un-uniquification below.
+        def strip_suffix(unique_name: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
+            return re.sub(r"_xjtr_\d+$", "", unique_name)
+
+        decls_by_base_name: dict[tenj_types.CIdentifier, list[c_refact.NamedDeclInfo]] = (
+            defaultdict(list)
+        )
+        for g_s in all_pgs_static_inline_funcs:
+            decls_by_base_name[strip_suffix(g_s.spelling)].append(g_s)
+
+        file_bytes_cache: dict[tenj_types.FilePathStr, bytes] = {}
+
+        def canonical_decl_text(g_s: c_refact.NamedDeclInfo) -> bytes:
+            assert g_s.file_path is not None
+            if g_s.file_path not in file_bytes_cache:
+                file_bytes_cache[g_s.file_path] = Path(g_s.file_path).read_bytes()
+            decl = file_bytes_cache[g_s.file_path][
+                g_s.decl_start_byte_offset : g_s.decl_end_byte_offset
+            ]
+            return decl.replace(
+                g_s.spelling.encode("utf-8"), strip_suffix(g_s.spelling).encode("utf-8")
+            )
+
+        modified_base_names: set[tenj_types.CIdentifier] = set()
+        for base_name, decls in decls_by_base_name.items():
+            if len(decls) < 2:
+                continue
+            if len({canonical_decl_text(d) for d in decls}) > 1:
+                modified_base_names.add(base_name)
+                print(
+                    f"TENJIN: NOTE: Skipping un-uniquification of static inline function "
+                    f"'{base_name}' due to differing definitions across source files."
+                )
+
+        # sif = "suffixed inline function"
+        sif_names_per_file: dict[tenj_types.FilePathStr, set[tenj_types.CIdentifier]] = {}
+        for g_s in all_pgs_static_inline_funcs:
+            if strip_suffix(g_s.spelling) in modified_base_names:
+                continue
+            assert g_s.file_path is not None, (
+                f"Expected file_path for static inline function: {g_s}"
+            )
+            sif_names_per_file.setdefault(g_s.file_path, set()).add(g_s.spelling)
+        # Organized by file to enable subsequent per-file rewriting.
+
+        for srcfile, sif_names in sif_names_per_file.items():
+            contents = Path(srcfile).read_text(encoding="utf-8")
+            # NOTE: Simple textual replacement like this could theoretically produce
+            # incorrect output if a string literal contained a suffix like `_xjtr_1`,
+            # but we'll grow that complexity as needed.
+            #
+            # Sort by length descending to avoid replacing a shorter name that is a
+            # prefix of a longer one (e.g. `foo_xjtr_1` before `foo_xjtr_10`).
+            for unique_name in sorted(sif_names, key=len, reverse=True):
+                base_name = re.sub(r"_xjtr_\d+$", "", unique_name)
+                contents = contents.replace(unique_name, base_name)
+            Path(srcfile).write_text(contents, encoding="utf-8")
+
     def prep_split_joined_decls(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         j = c_refact.run_xj_locate_joined_decls(current_codebase, store.build_info)
         c_refact_decl_splitter.apply_decl_splitting_rewrites(current_codebase, j)
@@ -1267,8 +1417,11 @@ def run_preparation_passes(
 
         # Build a map from QUSS to the expected (original) source text from headers
         qd_to_header_src: dict[tuple[QUSS, bool], FileContentsStr] = {}
-        for header_items in store.items_defined_by_headers.values():
+        # Track the header that defines each QUSS, for post-refold restoration.
+        q_to_header_rel_path: dict[QUSS, RelativeFilePathStr] = {}
+        for rel_header_path_str, header_items in store.items_defined_by_headers.items():
             for q, hdr_details in header_items.items():
+                q_to_header_rel_path.setdefault(q, rel_header_path_str)
                 for start_offset, end_offset, source_text, _is_defn in hdr_details:
                     qd = (q, _is_defn)
                     qd_to_header_src[qd] = source_text
@@ -1438,6 +1591,19 @@ def run_preparation_passes(
 
                             tus_modifying_decls.setdefault(qd, set()).add(tu_path)
 
+        # Reverts populated inside the BatchingRewriter block. Collected here
+        # because each TU's `all_i_rewrites` (needed for offset translation in
+        # the refold-time restoration) is only known after the rewriter has
+        # finished collecting rewrites.
+        consolidation_reverts_collected: dict[
+            RelativeFilePathStr, list[c_refact.ConsolidationRevert]
+        ] = {}
+        # Map TU absolute paths to their relative paths so we can key by the
+        # relative path when snapshotting rewrites after the block exits.
+        rel_tu_path_by_abs: dict[str, RelativeFilePathStr] = {
+            tu_path: Path(tu_path).relative_to(current_codebase).as_posix() for tu_path in tus
+        }
+
         with batching_rewriter.BatchingRewriter() as rewriter:
             # Remove the forward declaration of 'struct XjGlobals' from the
             # start of each TU when it doesn't seem to be needed.
@@ -1518,6 +1684,19 @@ def run_preparation_passes(
                         length = end_offset - start_offset
                         rewriter.add_rewrite(
                             tu_file_path.as_posix(), start_offset, length, expanded_header_version
+                        )
+                        rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
+                        consolidation_reverts_collected.setdefault(rel_tu_path, []).append(
+                            c_refact.ConsolidationRevert(
+                                modified_version=modified_version,
+                                expanded_header_version=expanded_header_version,
+                                original_header_version=qd_to_header_src.get(qd, ""),
+                                header_rel_path=q_to_header_rel_path.get(q, ""),
+                                quss=q,
+                                is_defn=qd[1],
+                                pre_rewrite_i_start=start_offset,
+                                pre_rewrite_i_length=length,
+                            )
                         )
 
                 # Update the header with the modified version
@@ -1601,6 +1780,31 @@ def run_preparation_passes(
                             tu_file_contents[start_include_block:end_include_block].decode("utf-8"),
                         )
                         break
+
+            # Snapshot rewrites per TU `.i` while the rewriter still holds the
+            # collected (not-yet-applied) list. `get_rewrites` doesn't clear
+            # the dict, but reading here makes the dependency explicit.
+            rewrites_snapshot = rewriter.get_rewrites(reverse=False)
+
+        # `with` block has applied rewrites. Build per-TU contexts that pair
+        # each TU's consolidation reverts with the full list of rewrites the
+        # BatchingRewriter applied to its `.i` (needed at refold time to
+        # translate pre-rewrite revert offsets into post-rewrite ones).
+        abs_by_rel: dict[RelativeFilePathStr, str] = {
+            rel: abs_ for abs_, rel in rel_tu_path_by_abs.items()
+        }
+        for rel_tu_path, reverts in consolidation_reverts_collected.items():
+            abs_tu_path = abs_by_rel.get(rel_tu_path)
+            if abs_tu_path is None:
+                continue
+            applied_for_tu = rewrites_snapshot.get(abs_tu_path, [])
+            all_i_rewrites = [
+                (start, length, len(replacement)) for (start, length, replacement) in applied_for_tu
+            ]
+            store.consolidation_data_by_rel_tu[rel_tu_path] = c_refact.ConsolidationRevertContext(
+                reverts=reverts,
+                all_i_rewrites=all_i_rewrites,
+            )
 
     def prep_expand_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
@@ -1889,7 +2093,12 @@ def run_preparation_passes(
             print("TENJIN: NOTE: Skipping preprocessor refolding for multi-target codebase.")
             return
 
-        c_refact.refold_build(store.build_info, all_build_targets[0], current_codebase)
+        c_refact.refold_build(
+            store.build_info,
+            all_build_targets[0],
+            current_codebase,
+            consolidation_data_by_rel_tu=store.consolidation_data_by_rel_tu,
+        )
         # build_info now marked to use refolded files, for future steps
 
     preparation_passes: list[
@@ -1918,7 +2127,11 @@ def run_preparation_passes(
             ("localize_mutable_globals", prep_localize_mutable_globals),
         ])
 
-    if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") == "1":
+    preparation_passes.append(
+        ("prep_un_uniquify_static_inline_fns", prep_un_uniquify_static_inline_fns),
+    )
+
+    if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") != "0":
         preparation_passes.extend([
             # Refolding and pre-refolding should always go together.
             # They are separate steps to allow inspection of the intermediate codebase.
