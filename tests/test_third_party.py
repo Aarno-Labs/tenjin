@@ -446,7 +446,7 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
     translation_preparation.copy_codebase(codebase, tmp_codebase)
 
     with tenjin_fixtures.monkeypatch.context() as _m:
-        # m.setenv("XJ_EXTRA_PREPARATION_PASSES", "1")
+        _m.setenv("XJ_EXTRA_PREPARATION_PASSES", "0")
         translation.do_translate(
             translation_types.TranslationFlags.simple(
                 root=tenjin_fixtures.root,

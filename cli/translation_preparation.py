@@ -2131,7 +2131,7 @@ def run_preparation_passes(
         ("prep_un_uniquify_static_inline_fns", prep_un_uniquify_static_inline_fns),
     )
 
-    if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") == "1":
+    if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") != "0":
         preparation_passes.extend([
             # Refolding and pre-refolding should always go together.
             # They are separate steps to allow inspection of the intermediate codebase.

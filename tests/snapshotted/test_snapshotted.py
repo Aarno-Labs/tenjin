@@ -98,12 +98,7 @@ def assert_translation_success(cp_ce: CompletedProcess, resultsdir: Path):
 
 
 def run_snapshotted(root: Path, src_dir: Path, cmd_args: list[str], tmp_resultsdir: Path):
-    cp_ce = hermetic.run(
-        cmd_args,
-        check=False,
-        capture_output=False,
-        env_ext={"XJ_EXTRA_PREPARATION_PASSES": "1"},
-    )
+    cp_ce = hermetic.run(cmd_args, check=False, capture_output=False)
 
     assert_translation_success(cp_ce, tmp_resultsdir)
     diff_results_with_snapshot(root, src_dir, tmp_resultsdir)

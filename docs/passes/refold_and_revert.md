@@ -397,6 +397,6 @@ exists to enable.
   its tokens match the modified `.i`. Enabling `XJ_REFOLD_CHECK=1` runs it
   after every refold for paranoia; restoration runs *before* the check so
   that the check sees the post-restoration `.c`.
-- Refolding and restoration only run when `XJ_EXTRA_PREPARATION_PASSES=1`;
+- Refolding and restoration run unless `XJ_EXTRA_PREPARATION_PASSES=0`;
   outside that mode the `.i` files are fed directly to downstream tools and
   there is no `.c` reconstruction step.
