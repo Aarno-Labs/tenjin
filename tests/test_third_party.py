@@ -445,17 +445,15 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
     )
     translation_preparation.copy_codebase(codebase, tmp_codebase)
 
-    with tenjin_fixtures.monkeypatch.context() as _m:
-        _m.setenv("XJ_EXTRA_PREPARATION_PASSES", "0")
-        translation.do_translate(
-            translation_types.TranslationFlags.simple(
-                root=tenjin_fixtures.root,
-                codebase=tmp_codebase,
-                resultsdir=tmp_resultsdir,
-                buildcmd="make -f Makefile.pure_cli",
-            ),
-            guidance_path_or_literal="{}",
-        )
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make -f Makefile.pure_cli",
+        ),
+        guidance_path_or_literal="{}",
+    )
 
     shutil.copytree(tmp_codebase / "tests", tmp_resultsdir / "final" / "tests")
 
