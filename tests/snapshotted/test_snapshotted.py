@@ -120,10 +120,6 @@ def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
 
 
 def test_pointer_param_reseat(root: Path, test_dir: Path, tmp_resultsdir: Path):
-    # A parameter pointer conditionally reseated to a local buffer must
-    # not be rewritten to an index off the parameter (that would drop the
-    # reseat and dereference NULL). The pointer-to-index transform rejects
-    # it; this snapshot pins the resulting translation.
     src_dir = test_dir / "pointer_param_reseat"
     cmd_args = [
         (root / "cli" / "10j").as_posix(),

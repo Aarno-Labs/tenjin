@@ -24,13 +24,18 @@
 //   "(short *) buf" -> "((short *) buf)"  ([] binds tighter than a cast)
 //
 // If neither hazard applies, the original text is returned unchanged.
-static std::string safeBase(const std::string &base) {
-    if (base.empty()) return base;
+static std::string safeBase(const std::string &base)
+{
+    if (base.empty())
+        return base;
 
     int depth = 0;
-    for (char c : base) {
-        if (c == '(' || c == '[') depth++;
-        else if (c == ')' || c == ']') depth--;
+    for (char c : base)
+    {
+        if (c == '(' || c == '[')
+            depth++;
+        else if (c == ')' || c == ']')
+            depth--;
         else if (depth == 0 && (c == '+' || c == '-'))
             return "(" + base + ")";
     }
@@ -38,14 +43,20 @@ static std::string safeBase(const std::string &base) {
     // Cast detection: if the first paren group ends before the end of
     // the string, what follows is the cast target — and [] would bind
     // to it instead of the whole cast.
-    if (base[0] == '(') {
+    if (base[0] == '(')
+    {
         int d = 0;
-        for (size_t i = 0; i < base.size(); i++) {
-            if (base[i] == '(') d++;
-            else if (base[i] == ')') {
+        for (size_t i = 0; i < base.size(); i++)
+        {
+            if (base[i] == '(')
+                d++;
+            else if (base[i] == ')')
+            {
                 d--;
-                if (d == 0 && i + 1 < base.size()) {
-                    for (size_t j = i + 1; j < base.size(); j++) {
+                if (d == 0 && i + 1 < base.size())
+                {
+                    for (size_t j = i + 1; j < base.size(); j++)
+                    {
                         if (!isspace((unsigned char)base[j]))
                             return "(" + base + ")";
                     }
@@ -68,7 +79,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
     const VarDecl *PtrVar,
     PointerCandidate &candidate,
     std::vector<PointerAccess> &accesses,
-    ASTContext &Ctx) {
+    ASTContext &Ctx)
+{
 
     SourceManager &SM = Ctx.getSourceManager();
     const LangOptions &LO = Ctx.getLangOpts();
@@ -85,13 +97,16 @@ bool FunctionAccessAnalyzer::generateTransformation(
     // lookback adjustment if any).
     {
         auto rs_check = g_transformed_functions.find(FD->getCanonicalDecl());
-        if (rs_check != g_transformed_functions.end()) {
+        if (rs_check != g_transformed_functions.end())
+        {
             const RustSliceInfo &rs = rs_check->second;
             if (rs.base_param_index >= 0 &&
-                (int)FD->getNumParams() > rs.base_param_index) {
+                (int)FD->getNumParams() > rs.base_param_index)
+            {
                 const ParmVarDecl *base_pd =
                     FD->getParamDecl(rs.base_param_index);
-                if (base_pd->getNameAsString() == base_array) {
+                if (base_pd->getNameAsString() == base_array)
+                {
                     if (rs.lookback > 0)
                         base_array = rs.slice_param_name + ".ptr + " +
                                      std::to_string(rs.lookback);
@@ -117,11 +132,14 @@ bool FunctionAccessAnalyzer::generateTransformation(
     RustSliceInfo slice_info;
 
     if (g_transformed_functions.count(FD->getCanonicalDecl()) &&
-        !candidate.is_parameter && FD->getNumParams() > 0) {
+        !candidate.is_parameter && FD->getNumParams() > 0)
+    {
         // Check if original base_array matches a function parameter
-        for (unsigned i = 0; i < FD->getNumParams(); i++) {
+        for (unsigned i = 0; i < FD->getNumParams(); i++)
+        {
             const ParmVarDecl *P = FD->getParamDecl(i);
-            if (P->getNameAsString() == original_base_array && P->getType()->isPointerType()) {
+            if (P->getNameAsString() == original_base_array && P->getType()->isPointerType())
+            {
                 slice_info.base_param_index = i;
                 QualType pointeeType = P->getType()->getPointeeType();
                 slice_info.pointee_type = pointeeType.getUnqualifiedType().getAsString();
@@ -129,20 +147,26 @@ bool FunctionAccessAnalyzer::generateTransformation(
             }
         }
 
-        if (slice_info.base_param_index >= 0) {
+        if (slice_info.base_param_index >= 0)
+        {
             // Find the length source from ComparisonExpr accesses
-            for (const auto &access : accesses) {
-                if (access.kind == PointerAccessKind::ComparisonExpr) {
+            for (const auto &access : accesses)
+            {
+                if (access.kind == PointerAccessKind::ComparisonExpr)
+                {
                     std::string op_text = access.operand_text;
 
                     // Case 1: pointer pair "(end - base)"
                     std::string pair_suffix = " - " + original_base_array + ")";
                     if (op_text.size() > pair_suffix.size() &&
                         op_text.front() == '(' &&
-                        op_text.substr(op_text.size() - pair_suffix.size()) == pair_suffix) {
+                        op_text.substr(op_text.size() - pair_suffix.size()) == pair_suffix)
+                    {
                         std::string end_name = op_text.substr(1, op_text.size() - pair_suffix.size() - 1);
-                        for (unsigned i = 0; i < FD->getNumParams(); i++) {
-                            if (FD->getParamDecl(i)->getNameAsString() == end_name) {
+                        for (unsigned i = 0; i < FD->getNumParams(); i++)
+                        {
+                            if (FD->getParamDecl(i)->getNameAsString() == end_name)
+                            {
                                 slice_info.end_param_index = i;
                                 is_rust_slice = true;
                                 break;
@@ -150,10 +174,13 @@ bool FunctionAccessAnalyzer::generateTransformation(
                         }
                     }
                     // Case 2: simple param name (e.g., "n")
-                    else {
-                        for (unsigned i = 0; i < FD->getNumParams(); i++) {
+                    else
+                    {
+                        for (unsigned i = 0; i < FD->getNumParams(); i++)
+                        {
                             if (FD->getParamDecl(i)->getNameAsString() == op_text &&
-                                !FD->getParamDecl(i)->getType()->isPointerType()) {
+                                !FD->getParamDecl(i)->getType()->isPointerType())
+                            {
                                 slice_info.len_param_index = i;
                                 is_rust_slice = true;
                                 break;
@@ -165,7 +192,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
             }
         }
 
-        if (is_rust_slice) {
+        if (is_rust_slice)
+        {
             slice_info.slice_param_name = "arr";
             slice_info.slice_type = makeSliceTypeName(slice_info.pointee_type);
             slice_info.lookback = -candidate.min_relative_offset;
@@ -187,8 +215,10 @@ bool FunctionAccessAnalyzer::generateTransformation(
             // *(p + lookahead).
             base_array = slice_info.slice_param_name + ".ptr";
 
-            for (auto &access : accesses) {
-                if (access.kind == PointerAccessKind::ComparisonExpr) {
+            for (auto &access : accesses)
+            {
+                if (access.kind == PointerAccessKind::ComparisonExpr)
+                {
                     int adjustment = slice_info.lookahead;
                     if (slice_info.inclusive_end)
                         adjustment += 1;
@@ -213,9 +243,11 @@ bool FunctionAccessAnalyzer::generateTransformation(
     // to the appropriate integer form: 0 for InitArray, n for
     // InitArrayOffset, -1 for InitNull). Parameter pointers are
     // handled separately in the signature-rewrite paths.
-    if (!candidate.is_parameter) {
+    if (!candidate.is_parameter)
+    {
         const DeclStmt *DS = findDeclStmtForVar(PtrVar, Body);
-        if (!DS) {
+        if (!DS)
+        {
             if (VERBOSE)
                 llvm::outs() << "[Error] Could not find DeclStmt for " << ptr_name << "\n";
             return false;
@@ -224,8 +256,10 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // Build the replacement declaration
         std::string init_value;
         bool found_init = false;
-        for (const auto &access : accesses) {
-            switch (access.kind) {
+        for (const auto &access : accesses)
+        {
+            switch (access.kind)
+            {
             case PointerAccessKind::InitNull:
                 init_value = "-1";
                 found_init = true;
@@ -241,7 +275,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
             default:
                 break;
             }
-            if (found_init) break;
+            if (found_init)
+                break;
         }
 
         if (!found_init)
@@ -251,9 +286,11 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // e.g., "(hi - lo) / 2" → "arr.len / 2"
         {
             auto tf_it = g_transformed_functions.find(FD->getCanonicalDecl());
-            if (tf_it != g_transformed_functions.end()) {
+            if (tf_it != g_transformed_functions.end())
+            {
                 const RustSliceInfo &rs = tf_it->second;
-                if (rs.base_param_index >= 0 && rs.end_param_index >= 0) {
+                if (rs.base_param_index >= 0 && rs.end_param_index >= 0)
+                {
                     std::string base_name = FD->getParamDecl(rs.base_param_index)->getNameAsString();
                     std::string end_name = FD->getParamDecl(rs.end_param_index)->getNameAsString();
                     std::string slice = rs.slice_param_name;
@@ -264,15 +301,19 @@ bool FunctionAccessAnalyzer::generateTransformation(
                     if (rs.inclusive_end)
                         sub_repl = "(" + slice + ".len - 1)";
                     size_t pos = init_value.find(sub_pat);
-                    while (pos != std::string::npos) {
+                    while (pos != std::string::npos)
+                    {
                         // Check if surrounded by parens that can be removed
                         bool has_parens = pos > 0 && init_value[pos - 1] == '(' &&
-                                         pos + sub_pat.size() < init_value.size() &&
-                                         init_value[pos + sub_pat.size()] == ')';
-                        if (has_parens) {
+                                          pos + sub_pat.size() < init_value.size() &&
+                                          init_value[pos + sub_pat.size()] == ')';
+                        if (has_parens)
+                        {
                             init_value.replace(pos - 1, sub_pat.size() + 2, sub_repl);
                             pos = init_value.find(sub_pat, pos);
-                        } else {
+                        }
+                        else
+                        {
                             init_value.replace(pos, sub_pat.size(), sub_repl);
                             pos = init_value.find(sub_pat, pos + sub_repl.size());
                         }
@@ -282,17 +323,22 @@ bool FunctionAccessAnalyzer::generateTransformation(
                     // base_param → slice.ptr (should not normally remain after sub pattern)
                     // end_param → slice.len
                     auto replaceWord = [](std::string &s, const std::string &word,
-                                          const std::string &replacement) {
+                                          const std::string &replacement)
+                    {
                         size_t pos = 0;
-                        while ((pos = s.find(word, pos)) != std::string::npos) {
+                        while ((pos = s.find(word, pos)) != std::string::npos)
+                        {
                             // Check word boundaries
-                            bool before_ok = (pos == 0 || !isalnum(s[pos-1]) && s[pos-1] != '_');
+                            bool before_ok = (pos == 0 || !isalnum(s[pos - 1]) && s[pos - 1] != '_');
                             bool after_ok = (pos + word.size() >= s.size() ||
-                                            (!isalnum(s[pos + word.size()]) && s[pos + word.size()] != '_'));
-                            if (before_ok && after_ok) {
+                                             (!isalnum(s[pos + word.size()]) && s[pos + word.size()] != '_'));
+                            if (before_ok && after_ok)
+                            {
                                 s.replace(pos, word.size(), replacement);
                                 pos += replacement.size();
-                            } else {
+                            }
+                            else
+                            {
                                 pos += word.size();
                             }
                         }
@@ -304,7 +350,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // Adjust init value for lookback
-        if (is_rust_slice && slice_info.lookback > 0) {
+        if (is_rust_slice && slice_info.lookback > 0)
+        {
             if (init_value == "0")
                 init_value = std::to_string(slice_info.lookback);
             else
@@ -314,9 +361,11 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // Check if this DeclStmt has multiple declarators
         bool multi_decl = false;
         int decl_count = 0;
-        for (const Decl *D : DS->decls()) {
+        for (const Decl *D : DS->decls())
+        {
             decl_count++;
-            if (decl_count > 1) {
+            if (decl_count > 1)
+            {
                 multi_decl = true;
                 break;
             }
@@ -324,7 +373,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         std::string replacement = "int " + index_name + " = " + init_value + ";";
 
-        if (multi_decl) {
+        if (multi_decl)
+        {
             // Multi-declarator: keep the DeclStmt intact (PtrVar becomes unused)
             // and insert the index declaration on a new line after it
             SourceLocation DeclEnd = DS->getEndLoc();
@@ -336,7 +386,9 @@ bool FunctionAccessAnalyzer::generateTransformation(
             e.start = DeclEnd;
             e.text = "\n" + indent + replacement;
             edits.push_back(e);
-        } else {
+        }
+        else
+        {
             SourceLocation DeclStart = DS->getBeginLoc();
             SourceLocation DeclEnd = Lexer::getLocForEndOfToken(
                 DS->getEndLoc(), 0, SM, LO);
@@ -349,12 +401,14 @@ bool FunctionAccessAnalyzer::generateTransformation(
             e.text = replacement;
             edits.push_back(e);
         }
-
-    } else {
+    }
+    else
+    {
         // Parameter: insert index variable at top of function body
         // Keep the parameter itself, add int p_index = 0; after opening brace
         const CompoundStmt *CS = dyn_cast<CompoundStmt>(Body);
-        if (!CS) {
+        if (!CS)
+        {
             if (VERBOSE)
                 llvm::outs() << "[Error] Function body is not a CompoundStmt\n";
             return false;
@@ -371,15 +425,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
         e.text = insertion;
         edits.push_back(e);
 
-        // For parameters, the base array is the parameter name itself
-        // Accesses become param[param_index] style. A collected base
-        // that isn't empty and isn't the parameter itself means the
-        // parameter was reseated to a distinct array;
-        // validatePointerCandidate must have rejected that already
-        // (dropping the reseat here would silently miscompile, see the
-        // matching check in ValidationMethods.cpp). We check the
-        // original collected text rather than base_array, which the
-        // RustSlice rewrites above may legitimately have retargeted.
+        // The transformation assumes that the base array of a parameter is the parameter itself
         assert((candidate.base_array_text.empty() ||
                 candidate.base_array_text == ptr_name) &&
                "parameter base override would discard a live distinct base");
@@ -402,27 +448,33 @@ bool FunctionAccessAnalyzer::generateTransformation(
     // and pushes an Edit covering the right source range. Init kinds
     // were already handled by the declaration rewrite above and are
     // skipped here.
-    for (const auto &access : accesses) {
+    for (const auto &access : accesses)
+    {
         if (access.kind == PointerAccessKind::InitNull ||
             access.kind == PointerAccessKind::InitArray ||
             access.kind == PointerAccessKind::InitArrayOffset)
             continue;
 
-        auto findParent = [&](const Expr *E) -> const Stmt * {
+        auto findParent = [&](const Expr *E) -> const Stmt *
+        {
             return skipTransparentParents(E, Ctx);
         };
-        auto findGrandParent = [&](const Stmt *P) -> const Stmt * {
+        auto findGrandParent = [&](const Stmt *P) -> const Stmt *
+        {
             return skipTransparentParents(P, Ctx);
         };
 
-        switch (access.kind) {
+        switch (access.kind)
+        {
 
         // ---- Dereference: *p -> arr[p_index] ----
         case PointerAccessKind::Deref:
-        case PointerAccessKind::DerefWrite: {
+        case PointerAccessKind::DerefWrite:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO) break;
+            if (!UO)
+                break;
 
             SourceLocation StarLoc = UO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -439,13 +491,16 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Deref with post-increment: *p++ -> arr[p_index++] ----
-        case PointerAccessKind::DerefPostInc: {
+        case PointerAccessKind::DerefPostInc:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *IncOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!IncOp) break;
+            if (!IncOp)
+                break;
             const Stmt *GP = findGrandParent(IncOp);
             const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp) break;
+            if (!DerefOp)
+                break;
 
             SourceLocation StartLoc = DerefOp->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -462,13 +517,16 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Deref with pre-increment: *++p -> arr[++p_index] ----
-        case PointerAccessKind::DerefPreInc: {
+        case PointerAccessKind::DerefPreInc:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *IncOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!IncOp) break;
+            if (!IncOp)
+                break;
             const Stmt *GP = findGrandParent(IncOp);
             const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp) break;
+            if (!DerefOp)
+                break;
 
             SourceLocation StartLoc = DerefOp->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -485,13 +543,16 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Deref with post-decrement: *p-- -> arr[p_index--] ----
-        case PointerAccessKind::DerefPostDec: {
+        case PointerAccessKind::DerefPostDec:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *DecOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!DecOp) break;
+            if (!DecOp)
+                break;
             const Stmt *GP = findGrandParent(DecOp);
             const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp) break;
+            if (!DerefOp)
+                break;
 
             SourceLocation StartLoc = DerefOp->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -508,13 +569,16 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Deref with pre-decrement: *--p -> arr[--p_index] ----
-        case PointerAccessKind::DerefPreDec: {
+        case PointerAccessKind::DerefPreDec:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *DecOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!DecOp) break;
+            if (!DecOp)
+                break;
             const Stmt *GP = findGrandParent(DecOp);
             const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp) break;
+            if (!DerefOp)
+                break;
 
             SourceLocation StartLoc = DerefOp->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -532,11 +596,14 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         // ---- Deref with offset: *(p + expr) -> arr[p_index + expr] ----
         case PointerAccessKind::DerefOffset:
-        case PointerAccessKind::DerefOffsetWrite: {
+        case PointerAccessKind::DerefOffsetWrite:
+        {
             // enclosing_stmt holds the UO_Deref node
             const UnaryOperator *DerefUO = access.enclosing_stmt
-                ? dyn_cast<UnaryOperator>(access.enclosing_stmt) : nullptr;
-            if (!DerefUO) break;
+                                               ? dyn_cast<UnaryOperator>(access.enclosing_stmt)
+                                               : nullptr;
+            if (!DerefUO)
+                break;
 
             SourceLocation StartLoc = DerefUO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -555,10 +622,12 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         // ---- Arrow access: p->field -> arr[p_index].field ----
         case PointerAccessKind::ArrowAccess:
-        case PointerAccessKind::ArrowWrite: {
+        case PointerAccessKind::ArrowWrite:
+        {
             const Stmt *P = findParent(access.expr);
             const MemberExpr *ME = P ? dyn_cast<MemberExpr>(P) : nullptr;
-            if (!ME) break;
+            if (!ME)
+                break;
 
             SourceLocation StartLoc = ME->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -576,19 +645,24 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         // ---- Subscript: p[i] -> arr[p_index + i] ----
         case PointerAccessKind::Subscript:
-        case PointerAccessKind::SubscriptWrite: {
+        case PointerAccessKind::SubscriptWrite:
+        {
             const Stmt *P = findParent(access.expr);
             const ArraySubscriptExpr *ASE = P ? dyn_cast<ArraySubscriptExpr>(P) : nullptr;
-            if (!ASE) break;
+            if (!ASE)
+                break;
 
             SourceLocation StartLoc = ASE->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
                 ASE->getEndLoc(), 0, SM, LO);
 
             std::string index_expr;
-            if (access.subscript_text == "0") {
+            if (access.subscript_text == "0")
+            {
                 index_expr = index_name;
-            } else {
+            }
+            else
+            {
                 index_expr = index_name + " + " + access.subscript_text;
             }
 
@@ -622,20 +696,27 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // an integer where a `char *` was expected. c2rust then cast
         // the int to a pointer, producing literal addresses like 0x4
         // and SIGSEGV'ing on dereference.
-        case PointerAccessKind::Increment: {
+        case PointerAccessKind::Increment:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO) break;
+            if (!UO)
+                break;
 
             bool wrap = false;
             const Stmt *GP = findGrandParent(UO);
-            if (GP) {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP)) {
+            if (GP)
+            {
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
+                {
                     wrap = true;
-                } else if (const auto *BO = dyn_cast<BinaryOperator>(GP)) {
+                }
+                else if (const auto *BO = dyn_cast<BinaryOperator>(GP))
+                {
                     if (BO->isAssignmentOp() &&
                         BO->getRHS()->IgnoreParenImpCasts() == UO &&
-                        BO->getLHS()->getType()->isPointerType()) {
+                        BO->getLHS()->getType()->isPointerType())
+                    {
                         wrap = true;
                     }
                 }
@@ -648,12 +729,12 @@ bool FunctionAccessAnalyzer::generateTransformation(
             std::string replacement;
             if (UO->getOpcode() == UO_PostInc)
                 replacement = wrap
-                    ? ("(" + base_array + " + " + index_name + "++)")
-                    : (index_name + "++");
+                                  ? ("(" + base_array + " + " + index_name + "++)")
+                                  : (index_name + "++");
             else // UO_PreInc
                 replacement = wrap
-                    ? ("(" + base_array + " + ++" + index_name + ")")
-                    : ("++" + index_name);
+                                  ? ("(" + base_array + " + ++" + index_name + ")")
+                                  : ("++" + index_name);
 
             Edit e;
             e.type = Edit::Replace;
@@ -667,20 +748,27 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         // ---- Standalone decrement: p-- -> p_index-- ----
         // Same context-aware wrapping as Increment above; see comment there.
-        case PointerAccessKind::Decrement: {
+        case PointerAccessKind::Decrement:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO) break;
+            if (!UO)
+                break;
 
             bool wrap = false;
             const Stmt *GP = findGrandParent(UO);
-            if (GP) {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP)) {
+            if (GP)
+            {
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
+                {
                     wrap = true;
-                } else if (const auto *BO = dyn_cast<BinaryOperator>(GP)) {
+                }
+                else if (const auto *BO = dyn_cast<BinaryOperator>(GP))
+                {
                     if (BO->isAssignmentOp() &&
                         BO->getRHS()->IgnoreParenImpCasts() == UO &&
-                        BO->getLHS()->getType()->isPointerType()) {
+                        BO->getLHS()->getType()->isPointerType())
+                    {
                         wrap = true;
                     }
                 }
@@ -693,12 +781,12 @@ bool FunctionAccessAnalyzer::generateTransformation(
             std::string replacement;
             if (UO->getOpcode() == UO_PostDec)
                 replacement = wrap
-                    ? ("(" + base_array + " + " + index_name + "--)")
-                    : (index_name + "--");
+                                  ? ("(" + base_array + " + " + index_name + "--)")
+                                  : (index_name + "--");
             else // UO_PreDec
                 replacement = wrap
-                    ? ("(" + base_array + " + --" + index_name + ")")
-                    : ("--" + index_name);
+                                  ? ("(" + base_array + " + --" + index_name + ")")
+                                  : ("--" + index_name);
 
             Edit e;
             e.type = Edit::Replace;
@@ -711,7 +799,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Plus assign: p += n -> p_index += n ----
-        case PointerAccessKind::PlusAssign: {
+        case PointerAccessKind::PlusAssign:
+        {
             // Replace just the LHS identifier (p -> p_index), leaving
             // the += and RHS intact so inner edits (e.g., function args)
             // don't overlap with this edit.
@@ -730,7 +819,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Minus assign: p -= n -> p_index -= n ----
-        case PointerAccessKind::MinusAssign: {
+        case PointerAccessKind::MinusAssign:
+        {
             // Replace just the LHS identifier, same as PlusAssign.
             SourceLocation StartLoc = access.expr->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -747,12 +837,15 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Assign null: p = NULL -> p_index = -1 ----
-        case PointerAccessKind::AssignNull: {
+        case PointerAccessKind::AssignNull:
+        {
             // Retained pointer: `p = NULL` keeps acting on the live pointer.
-            if (ptr_retained) break;
+            if (ptr_retained)
+                break;
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
 
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -769,10 +862,12 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Assign &arr[i]: p = &arr[i] -> p_index = i ----
-        case PointerAccessKind::AssignAddrOf: {
+        case PointerAccessKind::AssignAddrOf:
+        {
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
 
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -789,10 +884,12 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Assign arr: p = arr -> p_index = 0 ----
-        case PointerAccessKind::AssignArray: {
+        case PointerAccessKind::AssignArray:
+        {
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
 
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -809,10 +906,12 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Assign arr + offset: p = arr + off -> p_index = off ----
-        case PointerAccessKind::AssignArrayOffset: {
+        case PointerAccessKind::AssignArrayOffset:
+        {
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
 
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -831,7 +930,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // ---- Comparison null: p == NULL -> p_index == -1 ----
         // ---- Comparison expr: p < arr+n -> p_index < n ----
         case PointerAccessKind::ComparisonNull:
-        case PointerAccessKind::ComparisonExpr: {
+        case PointerAccessKind::ComparisonExpr:
+        {
             // Retained pointer: `p == NULL` / `p != NULL` keeps testing the
             // live pointer. (ComparisonExpr is still an index comparison and
             // is rewritten as usual.)
@@ -839,7 +939,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
                 break;
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
 
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -861,9 +962,11 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Bool true: if (p), p && ... -> p_index != -1 ----
-        case PointerAccessKind::BoolTrue: {
+        case PointerAccessKind::BoolTrue:
+        {
             // Retained pointer: `if (p)` keeps testing the live pointer.
-            if (ptr_retained) break;
+            if (ptr_retained)
+                break;
             // Replace just the pointer DRE (source range = the pointer name token)
             SourceLocation StartLoc = access.expr->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -880,12 +983,15 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- Bool false: !p -> p_index == -1 ----
-        case PointerAccessKind::BoolFalse: {
+        case PointerAccessKind::BoolFalse:
+        {
             // Retained pointer: `!p` keeps testing the live pointer.
-            if (ptr_retained) break;
+            if (ptr_retained)
+                break;
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO) break;
+            if (!UO)
+                break;
 
             SourceLocation StartLoc = UO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -902,15 +1008,19 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- PassedToAllowedFunc: sscanf(p, ...) -> sscanf(base + p_index, ...) ----
-        case PointerAccessKind::PassedToAllowedFunc: {
+        case PointerAccessKind::PassedToAllowedFunc:
+        {
             // Check if this same CallExpr is already covered by an AssignFromAllowedFunc
             // (e.g., s = strchr(s, c) — the assignment handler covers the whole call)
             const CallExpr *CE = dyn_cast<CallExpr>(access.enclosing_stmt);
-            if (CE) {
+            if (CE)
+            {
                 bool covered = false;
-                for (const auto &other : accesses) {
+                for (const auto &other : accesses)
+                {
                     if (other.kind == PointerAccessKind::AssignFromAllowedFunc &&
-                        other.enclosing_stmt == CE) {
+                        other.enclosing_stmt == CE)
+                    {
                         covered = true;
                         break;
                     }
@@ -935,8 +1045,9 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- AssignFromAllowedFunc: s = strchr(s, c) -> s_index = strchr_index(base, s_index, c) ----
-        case PointerAccessKind::AssignFromAllowedFunc: {
-            std::string func_name = access.offset_text;  // stored in offset_text field
+        case PointerAccessKind::AssignFromAllowedFunc:
+        {
+            std::string func_name = access.offset_text; // stored in offset_text field
             std::string wrapper_name = func_name + "_index_xj";
 
             // Re-walk the original call's args using the now-known base.
@@ -950,13 +1061,17 @@ bool FunctionAccessAnalyzer::generateTransformation(
             // arg and a "too many arguments to function call" C error.
             std::string other_args;
             const CallExpr *CE = dyn_cast_or_null<CallExpr>(access.enclosing_stmt);
-            if (CE) {
-                for (unsigned i = 0; i < CE->getNumArgs(); i++) {
+            if (CE)
+            {
+                for (unsigned i = 0; i < CE->getNumArgs(); i++)
+                {
                     const Expr *Arg = CE->getArg(i)->IgnoreParenImpCasts();
-                    if (const DeclRefExpr *ArgDRE = dyn_cast<DeclRefExpr>(Arg)) {
+                    if (const DeclRefExpr *ArgDRE = dyn_cast<DeclRefExpr>(Arg))
+                    {
                         if (ArgDRE->getDecl() == PtrVar)
                             continue; // already passed as `start`
-                        if (const VarDecl *AVD = dyn_cast<VarDecl>(ArgDRE->getDecl())) {
+                        if (const VarDecl *AVD = dyn_cast<VarDecl>(ArgDRE->getDecl()))
+                        {
                             if (AVD->getNameAsString() == candidate.base_array_text)
                                 continue; // already passed as `base`
                         }
@@ -965,17 +1080,21 @@ bool FunctionAccessAnalyzer::generateTransformation(
                     if (!candidate.base_array_text.empty() &&
                         arg_text == candidate.base_array_text)
                         continue; // text-level fallback
-                    if (!other_args.empty()) other_args += ", ";
+                    if (!other_args.empty())
+                        other_args += ", ";
                     other_args += arg_text;
                 }
-            } else {
+            }
+            else
+            {
                 other_args = access.operand_text; // fallback
             }
 
             // Find the enclosing assignment: p = func(...)
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
 
             // Build replacement: p_index = func_index(base, p_index, other_args)
             std::string replacement = index_name + " = " + wrapper_name + "(" +
@@ -989,13 +1108,16 @@ bool FunctionAccessAnalyzer::generateTransformation(
             // In that case, append >= 0
             bool in_bool_context = false;
             const Stmt *AssignParent = skipTransparentParents(BO, Ctx);
-            if (AssignParent) {
+            if (AssignParent)
+            {
                 if (isa<IfStmt>(AssignParent) || isa<WhileStmt>(AssignParent) ||
-                    isa<ForStmt>(AssignParent) || isa<DoStmt>(AssignParent)) {
+                    isa<ForStmt>(AssignParent) || isa<DoStmt>(AssignParent))
+                {
                     in_bool_context = true;
                 }
                 // Also check for logical operators: (s = strchr(...)) && ...
-                if (const BinaryOperator *LogBO = dyn_cast<BinaryOperator>(AssignParent)) {
+                if (const BinaryOperator *LogBO = dyn_cast<BinaryOperator>(AssignParent))
+                {
                     if (LogBO->getOpcode() == BO_LAnd || LogBO->getOpcode() == BO_LOr)
                         in_bool_context = true;
                 }
@@ -1017,7 +1139,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
             edits.push_back(e);
 
             // Emit wrapper function if not already emitted
-            if (g_emitted_wrappers.find(wrapper_name) == g_emitted_wrappers.end()) {
+            if (g_emitted_wrappers.find(wrapper_name) == g_emitted_wrappers.end())
+            {
                 g_emitted_wrappers.insert(wrapper_name);
 
                 // Get the pointee type from the pointer
@@ -1025,13 +1148,16 @@ bool FunctionAccessAnalyzer::generateTransformation(
                 std::string type_str = pointeeType.getAsString();
 
                 std::string wrapper;
-                if (func_name == "strchr") {
+                if (func_name == "strchr")
+                {
                     wrapper = "static int strchr_index_xj(const char *base, int start, int c) {\n"
                               "    const char *result = strchr(base + start, c);\n"
                               "    if (!result) return -1;\n"
                               "    return (int)(result - base);\n"
                               "}\n\n";
-                } else if (func_name == "strstr") {
+                }
+                else if (func_name == "strstr")
+                {
                     wrapper = "static int strstr_index_xj(const char *base, int start, const char *needle) {\n"
                               "    const char *result = strstr(base + start, needle);\n"
                               "    if (!result) return -1;\n"
@@ -1039,7 +1165,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
                               "}\n\n";
                 }
 
-                if (!wrapper.empty()) {
+                if (!wrapper.empty())
+                {
                     // Insert wrapper before the function definition
                     SourceLocation FuncStart = FD->getBeginLoc();
                     Edit we;
@@ -1055,12 +1182,16 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         // ---- PassedToFunc: func(p) -> func(base + p_index) ----
         // Skip if the callee is a transformed function (handled by rewriteCallSites)
-        case PointerAccessKind::PassedToFunc: {
+        case PointerAccessKind::PassedToFunc:
+        {
             // Check if the callee is in g_transformed_functions
             bool callee_transformed = false;
-            if (access.enclosing_stmt) {
-                if (const CallExpr *CE = dyn_cast<CallExpr>(access.enclosing_stmt)) {
-                    if (const FunctionDecl *Callee = CE->getDirectCallee()) {
+            if (access.enclosing_stmt)
+            {
+                if (const CallExpr *CE = dyn_cast<CallExpr>(access.enclosing_stmt))
+                {
+                    if (const FunctionDecl *Callee = CE->getDirectCallee())
+                    {
                         if (g_transformed_functions.count(Callee->getCanonicalDecl()))
                             callee_transformed = true;
                     }
@@ -1084,7 +1215,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         // ---- ReturnPtr: return p -> return index or base + index ----
-        case PointerAccessKind::ReturnPtr: {
+        case PointerAccessKind::ReturnPtr:
+        {
             SourceLocation StartLoc = access.expr->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
                 access.expr->getEndLoc(), 0, SM, LO);
@@ -1113,7 +1245,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
     // For root-RustSlice functions, replace the entire parameter list
     // with `slice_type slice_param_name, <other params>` and, if
     // detection saw `return p`, also retype the return as int.
-    if (is_rust_slice) {
+    if (is_rust_slice)
+    {
         // The typedef itself is emitted later by emitTypedefs().
         {
             auto tf_it = g_transformed_functions.find(FD->getCanonicalDecl());
@@ -1122,10 +1255,14 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
 
         std::string new_params = slice_info.slice_type + " " + slice_info.slice_param_name;
-        for (unsigned i = 0; i < FD->getNumParams(); i++) {
-            if ((int)i == slice_info.base_param_index) continue;
-            if ((int)i == slice_info.end_param_index) continue;
-            if ((int)i == slice_info.len_param_index) continue;
+        for (unsigned i = 0; i < FD->getNumParams(); i++)
+        {
+            if ((int)i == slice_info.base_param_index)
+                continue;
+            if ((int)i == slice_info.end_param_index)
+                continue;
+            if ((int)i == slice_info.len_param_index)
+                continue;
             const ParmVarDecl *P = FD->getParamDecl(i);
             new_params += ", " + P->getType().getAsString() + " " + P->getNameAsString();
         }
@@ -1149,7 +1286,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
             if (tf_it != g_transformed_functions.end())
                 slice_info.return_type_changed = tf_it->second.return_type_changed;
         }
-        if (slice_info.return_type_changed) {
+        if (slice_info.return_type_changed)
+        {
             SourceLocation RetStart = FD->getBeginLoc();
             SourceLocation FuncNameLoc = FD->getLocation();
             Edit ret_edit;
@@ -1162,7 +1300,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
         }
     }
 
-    if (edits.empty()) {
+    if (edits.empty())
+    {
         if (VERBOSE)
             llvm::outs() << "[Warning] No edits generated for " << ptr_name << "\n";
         return false;
@@ -1170,8 +1309,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
     if (VERBOSE)
         llvm::outs() << "[Transform] Applying " << edits.size() << " edits for "
-                      << ptr_name << " -> " << index_name
-                      << " (base: " << base_array << ")\n";
+                     << ptr_name << " -> " << index_name
+                     << " (base: " << base_array << ")\n";
 
     applyEdits(edits, SM);
     return true;
@@ -1192,7 +1331,8 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
     const VarDecl *PtrVar,
     PointerCandidate &candidate,
     std::vector<PointerAccess> &accesses,
-    ASTContext &Ctx) {
+    ASTContext &Ctx)
+{
 
     SourceManager &SM = Ctx.getSourceManager();
     const LangOptions &LO = Ctx.getLangOpts();
@@ -1209,14 +1349,20 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
 
     // Determine init value from the first init access
     std::string init_value = "0";
-    for (const auto &access : accesses) {
-        if (access.kind == PointerAccessKind::InitNull) {
+    for (const auto &access : accesses)
+    {
+        if (access.kind == PointerAccessKind::InitNull)
+        {
             init_value = "-1";
             break;
-        } else if (access.kind == PointerAccessKind::InitArray) {
+        }
+        else if (access.kind == PointerAccessKind::InitArray)
+        {
             init_value = "0";
             break;
-        } else if (access.kind == PointerAccessKind::InitArrayOffset) {
+        }
+        else if (access.kind == PointerAccessKind::InitArrayOffset)
+        {
             init_value = access.offset_text;
             break;
         }
@@ -1245,26 +1391,32 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
     // Step 2: Replace all accesses (same logic as local pointer transformation)
     // ========================================================================
 
-    for (const auto &access : accesses) {
+    for (const auto &access : accesses)
+    {
         if (access.kind == PointerAccessKind::InitNull ||
             access.kind == PointerAccessKind::InitArray ||
             access.kind == PointerAccessKind::InitArrayOffset)
             continue;
 
-        auto findParent = [&](const Expr *E) -> const Stmt * {
+        auto findParent = [&](const Expr *E) -> const Stmt *
+        {
             return skipTransparentParents(E, Ctx);
         };
-        auto findGrandParent = [&](const Stmt *P) -> const Stmt * {
+        auto findGrandParent = [&](const Stmt *P) -> const Stmt *
+        {
             return skipTransparentParents(P, Ctx);
         };
 
-        switch (access.kind) {
+        switch (access.kind)
+        {
 
         case PointerAccessKind::Deref:
-        case PointerAccessKind::DerefWrite: {
+        case PointerAccessKind::DerefWrite:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO) break;
+            if (!UO)
+                break;
             SourceLocation StartLoc = UO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(UO->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1273,13 +1425,16 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::DerefPostInc: {
+        case PointerAccessKind::DerefPostInc:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *IncOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!IncOp) break;
+            if (!IncOp)
+                break;
             const Stmt *GP = findGrandParent(IncOp);
             const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp) break;
+            if (!DerefOp)
+                break;
             SourceLocation StartLoc = DerefOp->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(DerefOp->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1288,13 +1443,16 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::DerefPreInc: {
+        case PointerAccessKind::DerefPreInc:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *IncOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!IncOp) break;
+            if (!IncOp)
+                break;
             const Stmt *GP = findGrandParent(IncOp);
             const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp) break;
+            if (!DerefOp)
+                break;
             SourceLocation StartLoc = DerefOp->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(DerefOp->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1303,13 +1461,16 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::DerefPostDec: {
+        case PointerAccessKind::DerefPostDec:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *DecOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!DecOp) break;
+            if (!DecOp)
+                break;
             const Stmt *GP = findGrandParent(DecOp);
             const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp) break;
+            if (!DerefOp)
+                break;
             SourceLocation StartLoc = DerefOp->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(DerefOp->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1318,13 +1479,16 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::DerefPreDec: {
+        case PointerAccessKind::DerefPreDec:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *DecOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!DecOp) break;
+            if (!DecOp)
+                break;
             const Stmt *GP = findGrandParent(DecOp);
             const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp) break;
+            if (!DerefOp)
+                break;
             SourceLocation StartLoc = DerefOp->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(DerefOp->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1334,10 +1498,13 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
         }
 
         case PointerAccessKind::DerefOffset:
-        case PointerAccessKind::DerefOffsetWrite: {
+        case PointerAccessKind::DerefOffsetWrite:
+        {
             const UnaryOperator *DerefUO = access.enclosing_stmt
-                ? dyn_cast<UnaryOperator>(access.enclosing_stmt) : nullptr;
-            if (!DerefUO) break;
+                                               ? dyn_cast<UnaryOperator>(access.enclosing_stmt)
+                                               : nullptr;
+            if (!DerefUO)
+                break;
             SourceLocation StartLoc = DerefUO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
                 DerefUO->getEndLoc(), 0, SM, LO);
@@ -1348,10 +1515,12 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
         }
 
         case PointerAccessKind::ArrowAccess:
-        case PointerAccessKind::ArrowWrite: {
+        case PointerAccessKind::ArrowWrite:
+        {
             const Stmt *P = findParent(access.expr);
             const MemberExpr *ME = P ? dyn_cast<MemberExpr>(P) : nullptr;
-            if (!ME) break;
+            if (!ME)
+                break;
             SourceLocation StartLoc = ME->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(ME->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1361,24 +1530,29 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
         }
 
         case PointerAccessKind::Subscript:
-        case PointerAccessKind::SubscriptWrite: {
+        case PointerAccessKind::SubscriptWrite:
+        {
             const Stmt *P = findParent(access.expr);
             const ArraySubscriptExpr *ASE = P ? dyn_cast<ArraySubscriptExpr>(P) : nullptr;
-            if (!ASE) break;
+            if (!ASE)
+                break;
             SourceLocation StartLoc = ASE->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(ASE->getEndLoc(), 0, SM, LO);
             std::string index_expr = (access.subscript_text == "0")
-                ? index_name : index_name + " + " + access.subscript_text;
+                                         ? index_name
+                                         : index_name + " + " + access.subscript_text;
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
                              StartLoc, EndLoc,
                              base_array + "[" + index_expr + "]"});
             break;
         }
 
-        case PointerAccessKind::Increment: {
+        case PointerAccessKind::Increment:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO) break;
+            if (!UO)
+                break;
             // See the longer comment on the Increment case in the
             // earlier transformer pass: when the result of `++p`/`p++`
             // is consumed as a pointer (call arg, return, assignment
@@ -1386,13 +1560,18 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             // the value type stays a pointer.
             bool wrap = false;
             const Stmt *GP = findGrandParent(UO);
-            if (GP) {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP)) {
+            if (GP)
+            {
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
+                {
                     wrap = true;
-                } else if (const auto *BO = dyn_cast<BinaryOperator>(GP)) {
+                }
+                else if (const auto *BO = dyn_cast<BinaryOperator>(GP))
+                {
                     if (BO->isAssignmentOp() &&
                         BO->getRHS()->IgnoreParenImpCasts() == UO &&
-                        BO->getLHS()->getType()->isPointerType()) {
+                        BO->getLHS()->getType()->isPointerType())
+                    {
                         wrap = true;
                     }
                 }
@@ -1402,30 +1581,37 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             std::string repl;
             if (UO->getOpcode() == UO_PostInc)
                 repl = wrap
-                    ? ("(" + base_array + " + " + index_name + "++)")
-                    : (index_name + "++");
+                           ? ("(" + base_array + " + " + index_name + "++)")
+                           : (index_name + "++");
             else
                 repl = wrap
-                    ? ("(" + base_array + " + ++" + index_name + ")")
-                    : ("++" + index_name);
+                           ? ("(" + base_array + " + ++" + index_name + ")")
+                           : ("++" + index_name);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
                              StartLoc, EndLoc, repl});
             break;
         }
 
-        case PointerAccessKind::Decrement: {
+        case PointerAccessKind::Decrement:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO) break;
+            if (!UO)
+                break;
             bool wrap = false;
             const Stmt *GP = findGrandParent(UO);
-            if (GP) {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP)) {
+            if (GP)
+            {
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
+                {
                     wrap = true;
-                } else if (const auto *BO = dyn_cast<BinaryOperator>(GP)) {
+                }
+                else if (const auto *BO = dyn_cast<BinaryOperator>(GP))
+                {
                     if (BO->isAssignmentOp() &&
                         BO->getRHS()->IgnoreParenImpCasts() == UO &&
-                        BO->getLHS()->getType()->isPointerType()) {
+                        BO->getLHS()->getType()->isPointerType())
+                    {
                         wrap = true;
                     }
                 }
@@ -1435,18 +1621,19 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             std::string repl;
             if (UO->getOpcode() == UO_PostDec)
                 repl = wrap
-                    ? ("(" + base_array + " + " + index_name + "--)")
-                    : (index_name + "--");
+                           ? ("(" + base_array + " + " + index_name + "--)")
+                           : (index_name + "--");
             else
                 repl = wrap
-                    ? ("(" + base_array + " + --" + index_name + ")")
-                    : ("--" + index_name);
+                           ? ("(" + base_array + " + --" + index_name + ")")
+                           : ("--" + index_name);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
                              StartLoc, EndLoc, repl});
             break;
         }
 
-        case PointerAccessKind::PlusAssign: {
+        case PointerAccessKind::PlusAssign:
+        {
             SourceLocation StartLoc = access.expr->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(access.expr->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1454,7 +1641,8 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::MinusAssign: {
+        case PointerAccessKind::MinusAssign:
+        {
             SourceLocation StartLoc = access.expr->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(access.expr->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1462,10 +1650,12 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::AssignNull: {
+        case PointerAccessKind::AssignNull:
+        {
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1474,10 +1664,12 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::AssignAddrOf: {
+        case PointerAccessKind::AssignAddrOf:
+        {
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1486,10 +1678,12 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::AssignArray: {
+        case PointerAccessKind::AssignArray:
+        {
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1498,10 +1692,12 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::AssignArrayOffset: {
+        case PointerAccessKind::AssignArrayOffset:
+        {
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
@@ -1511,10 +1707,12 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
         }
 
         case PointerAccessKind::ComparisonNull:
-        case PointerAccessKind::ComparisonExpr: {
+        case PointerAccessKind::ComparisonExpr:
+        {
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
             if (!access.field_name.empty())
@@ -1528,7 +1726,8 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::BoolTrue: {
+        case PointerAccessKind::BoolTrue:
+        {
             SourceLocation StartLoc = access.expr->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
                 access.expr->getEndLoc(), 0, SM, LO);
@@ -1538,10 +1737,12 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::BoolFalse: {
+        case PointerAccessKind::BoolFalse:
+        {
             const Stmt *P = findParent(access.expr);
             const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO) break;
+            if (!UO)
+                break;
             SourceLocation StartLoc = UO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
                 UO->getEndLoc(), 0, SM, LO);
@@ -1551,13 +1752,17 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::PassedToAllowedFunc: {
+        case PointerAccessKind::PassedToAllowedFunc:
+        {
             const CallExpr *CE = dyn_cast<CallExpr>(access.enclosing_stmt);
-            if (CE) {
+            if (CE)
+            {
                 bool covered = false;
-                for (const auto &other : accesses) {
+                for (const auto &other : accesses)
+                {
                     if (other.kind == PointerAccessKind::AssignFromAllowedFunc &&
-                        other.enclosing_stmt == CE) {
+                        other.enclosing_stmt == CE)
+                    {
                         covered = true;
                         break;
                     }
@@ -1574,14 +1779,16 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::AssignFromAllowedFunc: {
+        case PointerAccessKind::AssignFromAllowedFunc:
+        {
             std::string func_name = access.offset_text;
             std::string wrapper_name = func_name + "_index_xj";
             std::string other_args = access.operand_text;
 
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) break;
+            if (!BO)
+                break;
 
             std::string replacement = index_name + " = " + wrapper_name + "(" +
                                       base_array + ", " + index_name;
@@ -1591,11 +1798,13 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
 
             bool in_bool_context = false;
             const Stmt *AssignParent = skipTransparentParents(BO, Ctx);
-            if (AssignParent) {
+            if (AssignParent)
+            {
                 if (isa<IfStmt>(AssignParent) || isa<WhileStmt>(AssignParent) ||
                     isa<ForStmt>(AssignParent) || isa<DoStmt>(AssignParent))
                     in_bool_context = true;
-                if (const BinaryOperator *LogBO = dyn_cast<BinaryOperator>(AssignParent)) {
+                if (const BinaryOperator *LogBO = dyn_cast<BinaryOperator>(AssignParent))
+                {
                     if (LogBO->getOpcode() == BO_LAnd || LogBO->getOpcode() == BO_LOr)
                         in_bool_context = true;
                 }
@@ -1613,7 +1822,8 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::PassedToFunc: {
+        case PointerAccessKind::PassedToFunc:
+        {
             SourceLocation StartLoc = access.expr->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
                 access.expr->getEndLoc(), 0, SM, LO);
@@ -1623,7 +1833,8 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             break;
         }
 
-        case PointerAccessKind::ReturnPtr: {
+        case PointerAccessKind::ReturnPtr:
+        {
             SourceLocation StartLoc = access.expr->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
                 access.expr->getEndLoc(), 0, SM, LO);
@@ -1638,7 +1849,8 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
         }
     }
 
-    if (edits.empty()) {
+    if (edits.empty())
+    {
         if (VERBOSE)
             llvm::outs() << "[Warning] No edits generated for global " << ptr_name << "\n";
         return false;
@@ -1646,8 +1858,8 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
 
     if (VERBOSE)
         llvm::outs() << "[Transform] Applying " << edits.size()
-                      << " edits for global " << ptr_name << " -> " << index_name
-                      << " (base: " << base_array << ")\n";
+                     << " edits for global " << ptr_name << " -> " << index_name
+                     << " (base: " << base_array << ")\n";
 
     applyEdits(edits, SM);
     return true;
@@ -1670,7 +1882,8 @@ bool FunctionAccessAnalyzer::generateSingletonTransformation(
     const FunctionDecl *FD,
     const RustSliceInfo &slice_info,
     FunctionAnalysis &analysis,
-    ASTContext &Ctx) {
+    ASTContext &Ctx)
+{
 
     SourceManager &SM = Ctx.getSourceManager();
     const LangOptions &LO = Ctx.getLangOpts();
@@ -1679,7 +1892,8 @@ bool FunctionAccessAnalyzer::generateSingletonTransformation(
     std::string arr_name = slice_info.slice_param_name;
 
     // Walk every dereference of a singleton param and rewrite it.
-    for (int pi : slice_info.singleton_param_indices) {
+    for (int pi : slice_info.singleton_param_indices)
+    {
         const ParmVarDecl *P = FD->getParamDecl(pi);
         auto acc_it = analysis.accesses.find(P);
         if (acc_it == analysis.accesses.end())
@@ -1687,17 +1901,22 @@ bool FunctionAccessAnalyzer::generateSingletonTransformation(
 
         std::string param_name = P->getNameAsString();
 
-        for (const auto &access : acc_it->second) {
-            auto findParent = [&](const Expr *E) -> const Stmt * {
+        for (const auto &access : acc_it->second)
+        {
+            auto findParent = [&](const Expr *E) -> const Stmt *
+            {
                 return skipTransparentParents(E, Ctx);
             };
 
-            switch (access.kind) {
+            switch (access.kind)
+            {
             case PointerAccessKind::Deref:
-            case PointerAccessKind::DerefWrite: {
+            case PointerAccessKind::DerefWrite:
+            {
                 const Stmt *Par = findParent(access.expr);
                 const UnaryOperator *UO = Par ? dyn_cast<UnaryOperator>(Par) : nullptr;
-                if (!UO) break;
+                if (!UO)
+                    break;
 
                 SourceLocation StartLoc = UO->getBeginLoc();
                 SourceLocation EndLoc = Lexer::getLocForEndOfToken(
@@ -1722,13 +1941,17 @@ bool FunctionAccessAnalyzer::generateSingletonTransformation(
     // singleton T* for an int with the same name, leave other params
     // alone. The typedef is emitted later by emitTypedefs().
     std::string new_params = slice_info.slice_type + " " + arr_name;
-    for (unsigned i = 0; i < FD->getNumParams(); i++) {
+    for (unsigned i = 0; i < FD->getNumParams(); i++)
+    {
         const ParmVarDecl *P = FD->getParamDecl(i);
         if (std::find(slice_info.singleton_param_indices.begin(),
                       slice_info.singleton_param_indices.end(),
-                      (int)i) != slice_info.singleton_param_indices.end()) {
+                      (int)i) != slice_info.singleton_param_indices.end())
+        {
             new_params += ", int " + P->getNameAsString();
-        } else {
+        }
+        else
+        {
             new_params += ", " + P->getType().getAsString() + " " + P->getNameAsString();
         }
     }
@@ -1751,7 +1974,7 @@ bool FunctionAccessAnalyzer::generateSingletonTransformation(
 
     if (VERBOSE)
         llvm::outs() << "[Transform] Applying " << edits.size()
-                      << " singleton edits for " << FD->getNameAsString() << "\n";
+                     << " singleton edits for " << FD->getNameAsString() << "\n";
 
     applyEdits(edits, SM);
     return true;
@@ -1775,7 +1998,8 @@ bool FunctionAccessAnalyzer::generateSingletonTransformation(
 bool FunctionAccessAnalyzer::generatePointerPairTransformation(
     const FunctionDecl *FD,
     FunctionAnalysis &analysis,
-    ASTContext &Ctx) {
+    ASTContext &Ctx)
+{
 
     SourceManager &SM = Ctx.getSourceManager();
     const LangOptions &LO = Ctx.getLangOpts();
@@ -1784,14 +2008,19 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
     int base_idx = -1, end_idx = -1;
     std::string pointee_type;
 
-    for (unsigned i = 0; i < FD->getNumParams(); i++) {
+    for (unsigned i = 0; i < FD->getNumParams(); i++)
+    {
         const ParmVarDecl *P = FD->getParamDecl(i);
-        if (P->getType()->isPointerType()) {
+        if (P->getType()->isPointerType())
+        {
             QualType pt = P->getType()->getPointeeType();
-            if (base_idx < 0) {
+            if (base_idx < 0)
+            {
                 base_idx = i;
                 pointee_type = pt.getUnqualifiedType().getAsString();
-            } else if (end_idx < 0) {
+            }
+            else if (end_idx < 0)
+            {
                 end_idx = i;
             }
         }
@@ -1806,10 +2035,13 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
     const ParmVarDecl *EndParam = FD->getParamDecl(end_idx);
     bool inclusive_end = false;
     auto end_it = analysis.accesses.find(EndParam);
-    if (end_it != analysis.accesses.end()) {
-        for (const auto &acc : end_it->second) {
+    if (end_it != analysis.accesses.end())
+    {
+        for (const auto &acc : end_it->second)
+        {
             if (acc.kind == PointerAccessKind::Deref ||
-                acc.kind == PointerAccessKind::DerefWrite) {
+                acc.kind == PointerAccessKind::DerefWrite)
+            {
                 inclusive_end = true;
                 break;
             }
@@ -1821,14 +2053,15 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
 
     auto tf_it = g_transformed_functions.find(FD->getCanonicalDecl());
     bool return_changed = tf_it != g_transformed_functions.end() &&
-                           tf_it->second.return_type_changed;
+                          tf_it->second.return_type_changed;
 
     std::vector<Edit> edits;
 
     // Replace the parameter list. The typedef is emitted separately
     // by emitTypedefs().
     std::string new_params = slice_type + " " + arr_name;
-    for (unsigned i = 0; i < FD->getNumParams(); i++) {
+    for (unsigned i = 0; i < FD->getNumParams(); i++)
+    {
         if ((int)i == base_idx || (int)i == end_idx)
             continue;
         const ParmVarDecl *P = FD->getParamDecl(i);
@@ -1848,7 +2081,8 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
     sig.text = new_params;
     edits.push_back(sig);
 
-    if (return_changed) {
+    if (return_changed)
+    {
         SourceLocation RetStart = FD->getBeginLoc();
         SourceLocation FuncNameLoc = FD->getLocation();
         Edit ret_edit;
@@ -1866,7 +2100,7 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
     // pass below doesn't try to touch it again.
     m_edited_ranges.clear();
     m_edited_ranges.push_back({SM.getFileOffset(FirstParamLoc),
-                                SM.getFileOffset(LastParamEnd)});
+                               SM.getFileOffset(LastParamEnd)});
 
     // Hunt for locals that take their value from a callee whose
     // return type was rewritten to int. Those locals stop being
@@ -1874,7 +2108,8 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
     // `int p = partition(arr)` — so we mark them in g_index_return_vars
     // and skip them in the normal local-pointer rewrite below.
     std::set<const VarDecl *> skip_vars;
-    for (auto &[PtrVar, accesses] : analysis.accesses) {
+    for (auto &[PtrVar, accesses] : analysis.accesses)
+    {
         auto &candidate = analysis.tracked_pointers[PtrVar];
         if (candidate.is_parameter)
             continue;
@@ -1882,16 +2117,21 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
             continue;
 
         // Check if initialized from a call to a return-type-changed function
-        if (PtrVar->hasInit()) {
+        if (PtrVar->hasInit())
+        {
             const Expr *Init = PtrVar->getInit()->IgnoreImpCasts();
-            if (const CallExpr *CE = dyn_cast<CallExpr>(Init)) {
-                if (const FunctionDecl *Callee = CE->getDirectCallee()) {
+            if (const CallExpr *CE = dyn_cast<CallExpr>(Init))
+            {
+                if (const FunctionDecl *Callee = CE->getDirectCallee())
+                {
                     auto ci = g_transformed_functions.find(Callee->getCanonicalDecl());
                     if (ci != g_transformed_functions.end() &&
-                        ci->second.return_type_changed) {
+                        ci->second.return_type_changed)
+                    {
                         // Change declaration: int *p → int p
                         const DeclStmt *DS = findDeclStmtForVar(PtrVar, FD->getBody());
-                        if (DS) {
+                        if (DS)
+                        {
                             SourceLocation TypeStart = DS->getBeginLoc();
                             SourceLocation NameEnd = Lexer::getLocForEndOfToken(
                                 PtrVar->getLocation(), 0, SM, LO);
@@ -1912,7 +2152,8 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
         }
     }
 
-    for (auto &[PtrVar, accesses] : analysis.accesses) {
+    for (auto &[PtrVar, accesses] : analysis.accesses)
+    {
         auto &candidate = analysis.tracked_pointers[PtrVar];
         if (candidate.is_parameter)
             continue;
@@ -1920,7 +2161,8 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
             continue;
 
         if (candidate.base_array_text ==
-            FD->getParamDecl(base_idx)->getNameAsString()) {
+            FD->getParamDecl(base_idx)->getNameAsString())
+        {
             candidate.base_array_text = arr_name + ".ptr";
         }
 
@@ -1932,9 +2174,11 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
             bool incl = (tf_it != g_transformed_functions.end())
                             ? tf_it->second.inclusive_end
                             : inclusive_end;
-            for (auto &acc : accesses) {
+            for (auto &acc : accesses)
+            {
                 if (acc.kind == PointerAccessKind::ComparisonExpr &&
-                    acc.operand_text == sub_pat) {
+                    acc.operand_text == sub_pat)
+                {
                     int adj = candidate.max_relative_offset;
                     if (incl)
                         adj += 1;
@@ -1957,7 +2201,8 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
     // approach missed (e.g., when NULL is undefined and Clang drops AST nodes)
     {
         auto tf_it = g_transformed_functions.find(FD->getCanonicalDecl());
-        if (tf_it != g_transformed_functions.end()) {
+        if (tf_it != g_transformed_functions.end())
+        {
             const RustSliceInfo &rs = tf_it->second;
             std::string base_name = FD->getParamDecl(base_idx)->getNameAsString();
             std::string end_name = FD->getParamDecl(end_idx)->getNameAsString();
@@ -1970,34 +2215,46 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
             // Get the current rewritten text
             const RewriteBuffer *RB = TheRewriter.getRewriteBufferFor(
                 SM.getFileID(BodyStart));
-            if (RB) {
+            if (RB)
+            {
                 std::string rewritten = std::string(RB->begin(), RB->end());
                 // Only look at the body region (approximately)
                 // Find remaining param names that need replacement
                 auto replaceInRewriter = [&](const std::string &param,
-                                              const std::string &replacement) {
+                                             const std::string &replacement)
+                {
                     // Scan the original source for the param name, check if
                     // the rewriter still has it at that position
                     StringRef origBuf = SM.getBufferData(SM.getFileID(BodyStart));
                     size_t pos = bodyStartOff;
-                    while (pos < bodyEndOff) {
+                    while (pos < bodyEndOff)
+                    {
                         pos = origBuf.find(param, pos);
-                        if (pos == StringRef::npos || pos >= bodyEndOff) break;
+                        if (pos == StringRef::npos || pos >= bodyEndOff)
+                            break;
                         // Word boundary check
                         bool before_ok = (pos == 0 ||
-                            (!isalnum(origBuf[pos-1]) && origBuf[pos-1] != '_'));
+                                          (!isalnum(origBuf[pos - 1]) && origBuf[pos - 1] != '_'));
                         bool after_ok = (pos + param.size() >= origBuf.size() ||
-                            (!isalnum(origBuf[pos + param.size()]) &&
-                             origBuf[pos + param.size()] != '_'));
-                        if (before_ok && after_ok) {
+                                         (!isalnum(origBuf[pos + param.size()]) &&
+                                          origBuf[pos + param.size()] != '_'));
+                        if (before_ok && after_ok)
+                        {
                             // Check if this offset is NOT in m_edited_ranges
                             bool in_edited = false;
-                            for (auto &[rs, re] : m_edited_ranges) {
-                                if (pos >= rs && pos < re) { in_edited = true; break; }
+                            for (auto &[rs, re] : m_edited_ranges)
+                            {
+                                if (pos >= rs && pos < re)
+                                {
+                                    in_edited = true;
+                                    break;
+                                }
                             }
-                            if (!in_edited) {
+                            if (!in_edited)
+                            {
                                 SourceLocation loc = SM.getLocForStartOfFile(
-                                    SM.getFileID(BodyStart)).getLocWithOffset(pos);
+                                                           SM.getFileID(BodyStart))
+                                                         .getLocWithOffset(pos);
                                 TheRewriter.ReplaceText(loc, param.size(), replacement);
                             }
                         }
@@ -2008,18 +2265,27 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
                 // First handle comparison patterns between params
                 // e.g., "lo > hi" → "arr.len == 0", "start >= end" → "arr.len <= 0"
                 auto replaceComparisonInRewriter = [&](const std::string &lhs,
-                    const std::string &rhs, const std::string &replacement) {
+                                                       const std::string &rhs, const std::string &replacement)
+                {
                     StringRef origBuf = SM.getBufferData(SM.getFileID(BodyStart));
                     // Search for patterns like "lhs > rhs", "lhs >= rhs", etc.
-                    for (const char *op : {" > ", " >= ", " < ", " <= ", " == ", " != "}) {
+                    for (const char *op : {" > ", " >= ", " < ", " <= ", " == ", " != "})
+                    {
                         std::string pat = lhs + op + rhs;
                         size_t pos = bodyStartOff;
-                        while ((pos = origBuf.find(pat, pos)) != StringRef::npos && pos < bodyEndOff) {
+                        while ((pos = origBuf.find(pat, pos)) != StringRef::npos && pos < bodyEndOff)
+                        {
                             bool in_edited = false;
-                            for (auto &[rs_s, rs_e] : m_edited_ranges) {
-                                if (pos >= rs_s && pos < rs_e) { in_edited = true; break; }
+                            for (auto &[rs_s, rs_e] : m_edited_ranges)
+                            {
+                                if (pos >= rs_s && pos < rs_e)
+                                {
+                                    in_edited = true;
+                                    break;
+                                }
                             }
-                            if (!in_edited) {
+                            if (!in_edited)
+                            {
                                 // Determine replacement comparison
                                 std::string cmp_repl;
                                 std::string threshold = rs.inclusive_end ? "1" : "0";
@@ -2027,25 +2293,41 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
                                 std::string op_str(op);
                                 // Trim spaces
                                 op_str = op_str.substr(1, op_str.size() - 2);
-                                if (lhs_is_base) {
+                                if (lhs_is_base)
+                                {
                                     // base > end → len < threshold
-                                    if (op_str == ">") cmp_repl = rs.slice_param_name + ".len < " + threshold;
-                                    else if (op_str == ">=") cmp_repl = rs.slice_param_name + ".len <= " + threshold;
-                                    else if (op_str == "<") cmp_repl = rs.slice_param_name + ".len > " + threshold;
-                                    else if (op_str == "<=") cmp_repl = rs.slice_param_name + ".len >= " + threshold;
-                                    else if (op_str == "==") cmp_repl = rs.slice_param_name + ".len == 0";
-                                    else cmp_repl = rs.slice_param_name + ".len != 0";
-                                } else {
+                                    if (op_str == ">")
+                                        cmp_repl = rs.slice_param_name + ".len < " + threshold;
+                                    else if (op_str == ">=")
+                                        cmp_repl = rs.slice_param_name + ".len <= " + threshold;
+                                    else if (op_str == "<")
+                                        cmp_repl = rs.slice_param_name + ".len > " + threshold;
+                                    else if (op_str == "<=")
+                                        cmp_repl = rs.slice_param_name + ".len >= " + threshold;
+                                    else if (op_str == "==")
+                                        cmp_repl = rs.slice_param_name + ".len == 0";
+                                    else
+                                        cmp_repl = rs.slice_param_name + ".len != 0";
+                                }
+                                else
+                                {
                                     // end > base → len > threshold
-                                    if (op_str == ">") cmp_repl = rs.slice_param_name + ".len > " + threshold;
-                                    else if (op_str == ">=") cmp_repl = rs.slice_param_name + ".len >= " + threshold;
-                                    else if (op_str == "<") cmp_repl = rs.slice_param_name + ".len < " + threshold;
-                                    else if (op_str == "<=") cmp_repl = rs.slice_param_name + ".len <= " + threshold;
-                                    else if (op_str == "==") cmp_repl = rs.slice_param_name + ".len == 0";
-                                    else cmp_repl = rs.slice_param_name + ".len != 0";
+                                    if (op_str == ">")
+                                        cmp_repl = rs.slice_param_name + ".len > " + threshold;
+                                    else if (op_str == ">=")
+                                        cmp_repl = rs.slice_param_name + ".len >= " + threshold;
+                                    else if (op_str == "<")
+                                        cmp_repl = rs.slice_param_name + ".len < " + threshold;
+                                    else if (op_str == "<=")
+                                        cmp_repl = rs.slice_param_name + ".len <= " + threshold;
+                                    else if (op_str == "==")
+                                        cmp_repl = rs.slice_param_name + ".len == 0";
+                                    else
+                                        cmp_repl = rs.slice_param_name + ".len != 0";
                                 }
                                 SourceLocation loc = SM.getLocForStartOfFile(
-                                    SM.getFileID(BodyStart)).getLocWithOffset(pos);
+                                                           SM.getFileID(BodyStart))
+                                                         .getLocWithOffset(pos);
                                 TheRewriter.ReplaceText(loc, pat.size(), cmp_repl);
                                 m_edited_ranges.push_back({(unsigned)pos, (unsigned)(pos + pat.size())});
                             }
@@ -2061,16 +2343,24 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
                     std::string sub_pat = end_name + " - " + base_name;
                     StringRef origBuf = SM.getBufferData(SM.getFileID(BodyStart));
                     size_t pos = bodyStartOff;
-                    while ((pos = origBuf.find(sub_pat, pos)) != StringRef::npos && pos < bodyEndOff) {
+                    while ((pos = origBuf.find(sub_pat, pos)) != StringRef::npos && pos < bodyEndOff)
+                    {
                         bool in_edited = false;
-                        for (auto &[rs_s, rs_e] : m_edited_ranges) {
-                            if (pos >= rs_s && pos < rs_e) { in_edited = true; break; }
+                        for (auto &[rs_s, rs_e] : m_edited_ranges)
+                        {
+                            if (pos >= rs_s && pos < rs_e)
+                            {
+                                in_edited = true;
+                                break;
+                            }
                         }
-                        if (!in_edited) {
+                        if (!in_edited)
+                        {
                             SourceLocation loc = SM.getLocForStartOfFile(
-                                SM.getFileID(BodyStart)).getLocWithOffset(pos);
+                                                       SM.getFileID(BodyStart))
+                                                     .getLocWithOffset(pos);
                             TheRewriter.ReplaceText(loc, sub_pat.size(),
-                                rs.slice_param_name + ".len");
+                                                    rs.slice_param_name + ".len");
                             m_edited_ranges.push_back({(unsigned)pos, (unsigned)(pos + sub_pat.size())});
                         }
                         pos += sub_pat.size();
