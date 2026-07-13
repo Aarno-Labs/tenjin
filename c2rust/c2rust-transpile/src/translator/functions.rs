@@ -1,7 +1,7 @@
 //! This module implements the translation of functions in C.
 
 use super::*;
-use c2rust_ast_builder::CaptureBy;
+use c2rust_ast_builder::{CaptureBy, Make};
 use failure::format_err;
 use proc_macro2::{TokenStream, TokenTree};
 
@@ -119,7 +119,7 @@ impl<'c> Translation<'c> {
             // Forwarding parameters / call arguments used to build the optional
             // `xj_ffi` export wrapper (XREF:ffi_export_wrapper).
             let mut ffi_wrapper_args: Vec<FnArg> = vec![];
-            let mut ffi_wrapper_call_args: Vec<Box<Expr>> = vec![];
+            let mut ffi_wrapper_call_args: Vec<WithStmts<Box<Expr>>> = vec![];
             let mut has_guided_type = false;
 
             // handle regular (non-variadic) arguments
@@ -165,8 +165,19 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow()
                     .query_ffi_in_conversion(name, var);
-                ffi_wrapper_args.push(mk().arg(original_type, mk().ident_pat(var.clone())));
-                ffi_wrapper_call_args.push(strategy.marshal(mk().path_expr(vec![var])));
+                ffi_wrapper_args.push(mk().arg(original_type.clone(), mk().ident_pat(var.clone())));
+                ffi_wrapper_call_args.push(
+                    strategy.marshal(
+                        self,
+                        var,
+                        &original_type,
+                        guided_type
+                            .map(|gt| gt.parsed)
+                            .as_ref()
+                            .unwrap_or(&original_type),
+                        mk().path_expr(vec![var]),
+                    ),
+                );
 
                 args.push(mk().arg(ty, pat))
             }
@@ -370,14 +381,16 @@ impl<'c> Translation<'c> {
                     // }
                     let wrapper_decl =
                         mk().fn_decl(new_name, ffi_wrapper_args, None, ffi_wrapper_ret);
-                    let wrapper_call = mk().call_expr(
-                        mk().path_expr(vec!["super", new_name]),
-                        ffi_wrapper_call_args,
-                    );
+                    let wrappers: WithStmts<Vec<Box<Expr>>> =
+                        WithStmts::from_iter(ffi_wrapper_call_args);
+                    let (mut stmts, exprs) = wrappers.discard_unsafe();
+                    let wrapper_call =
+                        mk().call_expr(mk().path_expr(vec!["super", new_name]), exprs);
                     let output_conversion =
                         self.parsed_guidance.borrow().query_ffi_out_conversion(name);
                     let convert_output = output_conversion.marshal(wrapper_call);
-                    let wrapper_block = mk().block(vec![mk().expr_stmt(convert_output)]);
+                    stmts.push(mk().expr_stmt(convert_output));
+                    let wrapper_block = mk().block(stmts);
                     let wrapper_item = mk_linkage(false, new_name, name, self.tcfg.edition)
                         .pub_()
                         .extern_("C")
@@ -611,7 +624,9 @@ impl<'c> Translation<'c> {
             val = self.convert_expr(ctx, expr_id, None)?;
             val = val.map(|val| mk_va_list_copy(self.tcfg.edition, val));
         } else {
-            val = self.convert_expr_guided(ctx, expr_id, override_ty, guided_ty)?;
+            val = self
+                .convert_expr_guided(ctx, expr_id, override_ty, guided_ty)?
+                .map(|e| self.try_guided_type_repair(e, guided_ty));
         }
 
         Ok(val)

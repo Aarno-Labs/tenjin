@@ -75,15 +75,58 @@ pub enum FFIInConversion {
 }
 
 impl FFIInConversion {
-    pub fn marshal(&self, e: Box<Expr>) -> Box<Expr> {
+    pub fn marshal(
+        &self,
+        translation: &Translation,
+        name: &str,
+        from: &Type,
+        to: &Type,
+        e: Box<Expr>,
+    ) -> WithStmts<Box<Expr>> {
         match self {
-            FFIInConversion::Id => e,
+            FFIInConversion::Id => WithStmts::new_val(e),
             FFIInConversion::ViaCStr => {
-                let cstr = mk().call_expr(
-                    mk().abs_path_expr(vec!["std", "ffi", "CStr", "from_ptr"]),
-                    vec![e],
+                let is_mutable = type_is_mut_ref(to);
+                let to_slice = if is_mutable {
+                    "from_raw_parts_mut"
+                } else {
+                    "from_raw_parts"
+                };
+                let to_ptr = if is_mutable { "as_mut_ptr" } else { "as_ptr" };
+
+                // temporary -- call out to strlen?
+                let find_zero = mk().closure_expr(
+                    c2rust_ast_builder::CaptureBy::Ref,
+                    Movability::Immovable,
+                    vec![mk().ident_pat("i")],
+                    ReturnType::Type(Default::default(), mk().path_ty("bool")),
+                    mk().binary_expr(
+                        BinOp::Eq(Default::default()),
+                        mk().ident_expr(mk().ident("i")),
+                        mk().lit_expr(mk().int_lit(0, "i8")),
+                    ),
                 );
-                mk().method_call_expr(cstr, mk().path_segment("to_bytes_with_nul"), vec![])
+                // let leno = mk().method_call_expr(
+                //     e.clone(),
+                //     mk().path_segment("position"),
+                //     vec![find_zero],
+                // );
+                // let len = mk().method_call_expr(leno, mk().path_segment("unwrap"), vec![]);
+                translation.use_crate(ExternCrate::Libc);
+                let len = mk().call_expr(mk().path_expr(vec!["libc", "strlen"]), vec![e.clone()]);
+
+                // let declare_tmp = mk().local_stmt(Box::new(tmp));
+                // let tmpe = mk().ident_expr(mk().ident(name));
+                let f = mk().abs_path_expr(vec!["std", "slice", to_slice]);
+
+                let make_slice = mk().call_expr(
+                    f,
+                    vec![
+                        mk().method_call_expr(e, mk().path_segment("cast"), vec![]),
+                        len,
+                    ],
+                );
+                WithStmts::new_val(make_slice)
             }
             FFIInConversion::SliceWithLen(is_mut, ref len) => {
                 let from_raw = if *is_mut {
@@ -91,10 +134,14 @@ impl FFIInConversion {
                 } else {
                     "from_raw_parts"
                 };
+                let as_int = len
+                    .parse::<u128>()
+                    .map(|i: u128| mk().lit_expr(mk().int_lit(i, "usize")))
+                    .unwrap_or_else(|_| {
+                        mk().cast_expr(mk().path_expr(vec![len]), mk().path_ty(mk().path("usize")))
+                    });
                 let function_path = mk().abs_path_expr(vec!["std", "slice", from_raw]);
-                let len =
-                    mk().cast_expr(mk().path_expr(vec![len]), mk().path_ty(mk().path("usize")));
-                mk().call_expr(function_path, vec![e, len])
+                WithStmts::new_val(mk().call_expr(function_path, vec![e, as_int]))
             }
         }
     }
@@ -2386,6 +2433,28 @@ impl Translation<'_> {
             }
         }
         false
+    }
+
+    pub fn try_guided_type_repair(&self, e: Box<Expr>, g: &Option<GuidedType>) -> Box<Expr> {
+        let Some(context_guided_type) = g else { return e; };
+        match &*e {
+            Expr::Reference(r) => {
+                if context_guided_type.is_exclusive_borrow() && r.mutability.is_none() {
+                    Box::new(Expr::Reference(syn::ExprReference {
+                        mutability: Some(Default::default()),
+                        ..r.clone()
+                    }))
+                } else if context_guided_type.is_shared_borrow() && r.mutability.is_some() {
+                    Box::new(Expr::Reference(syn::ExprReference {
+                        mutability: None,
+                        ..r.clone()
+                    }))
+                } else {
+                    e
+                }
+            }
+            _ => e,
+        }
     }
 }
 
