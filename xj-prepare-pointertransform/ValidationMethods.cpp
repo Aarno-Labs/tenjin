@@ -388,6 +388,26 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         }
     }
 
+    // A parameter whose value enters from the caller cannot also serve
+    // as its own index base while being reseated to a *different* array.
+    // The transform (TransformationMethods.cpp: `base_array = ptr_name`)
+    // keeps the parameter as the base and rewrites the reseat `p = arr`
+    // into a bare index reset, silently dropping the reseat. When the
+    // incoming argument differs from `arr` (e.g. `if (!p) p = buf;` with
+    // a NULL argument), the rewritten code indexes off the caller's
+    // pointer instead of `arr`, dereferencing NULL. Only a parameter
+    // used as its *own* base (base_array_text empty, or already equal to
+    // the parameter name) is safe. Globals/statics don't hit this: a
+    // second concrete base conflicts at collection time and is rejected
+    // as Unknown, so a surviving base is the pointer's sole base.
+    if (candidate.is_parameter &&
+        !candidate.base_array_text.empty() &&
+        candidate.base_array_text != PtrVar->getNameAsString()) {
+        error = "Parameter reseated to a different base array (incoming "
+                "argument is an uncaptured second base)";
+        return false;
+    }
+
     // If we still don't have a base, the only salvageable case is a
     // parameter that gets indexed directly (`p[i]`) — there the
     // parameter name itself plays the role of the base array.

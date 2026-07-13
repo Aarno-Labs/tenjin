@@ -372,7 +372,17 @@ bool FunctionAccessAnalyzer::generateTransformation(
         edits.push_back(e);
 
         // For parameters, the base array is the parameter name itself
-        // Accesses become param[param_index] style
+        // Accesses become param[param_index] style. A collected base
+        // that isn't empty and isn't the parameter itself means the
+        // parameter was reseated to a distinct array;
+        // validatePointerCandidate must have rejected that already
+        // (dropping the reseat here would silently miscompile, see the
+        // matching check in ValidationMethods.cpp). We check the
+        // original collected text rather than base_array, which the
+        // RustSlice rewrites above may legitimately have retargeted.
+        assert((candidate.base_array_text.empty() ||
+                candidate.base_array_text == ptr_name) &&
+               "parameter base override would discard a live distinct base");
         base_array = ptr_name;
     }
 
