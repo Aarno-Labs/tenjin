@@ -388,6 +388,17 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         }
     }
 
+    // A parameter whose value enters from the caller cannot also serve
+    // as its own index base while being reseated to a *different* array.
+    if (candidate.is_parameter &&
+        !candidate.base_array_text.empty() &&
+        candidate.base_array_text != PtrVar->getNameAsString())
+    {
+        error = "Parameter reseated to a different base array (incoming "
+                "argument is an uncaptured second base)";
+        return false;
+    }
+
     // If we still don't have a base, the only salvageable case is a
     // parameter that gets indexed directly (`p[i]`) — there the
     // parameter name itself plays the role of the base array.

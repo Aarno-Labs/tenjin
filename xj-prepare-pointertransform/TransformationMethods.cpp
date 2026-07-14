@@ -371,8 +371,10 @@ bool FunctionAccessAnalyzer::generateTransformation(
         e.text = insertion;
         edits.push_back(e);
 
-        // For parameters, the base array is the parameter name itself
-        // Accesses become param[param_index] style
+        // The transformation assumes that the base array of a parameter is the parameter itself
+        assert((candidate.base_array_text.empty() ||
+                candidate.base_array_text == ptr_name) &&
+               "parameter base override would discard a live distinct base");
         base_array = ptr_name;
     }
 
