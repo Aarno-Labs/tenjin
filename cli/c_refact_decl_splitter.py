@@ -2,6 +2,7 @@ from pathlib import Path
 
 import batching_rewriter
 from c_refact import XjLocateJoinedDeclsOutput
+import repo_root
 
 
 def apply_decl_splitting_rewrites(current_codebase: Path, j: XjLocateJoinedDeclsOutput) -> None:
@@ -34,7 +35,14 @@ def apply_decl_splitting_rewrites(current_codebase: Path, j: XjLocateJoinedDecls
             srcfile = Path(r["f"])
             if not srcfile.is_absolute():
                 srcfile = current_codebase / srcfile
-            assert srcfile.is_relative_to(current_codebase)
+
+            if srcfile.is_relative_to(repo_root.localdir()):
+                # Headers within the `_local` directory are ineligible for rewriting.
+                continue
+
+            assert srcfile.is_relative_to(current_codebase), (
+                f"srcfile {srcfile} is not relative to current_codebase {current_codebase}"
+            )
             startoff = r["b"]
             length = r["e"] - r["b"]
 

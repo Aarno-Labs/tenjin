@@ -88,6 +88,13 @@ impl SymbolTable {
         self.items.insert(name, ty);
     }
 
+    /// Remove a name from the table.  Used when a binding shadows `name`
+    /// with a type we cannot determine: the stale outer type must not
+    /// remain visible.
+    pub fn remove(&mut self, name: &str) {
+        self.items.remove(name);
+    }
+
     /// Build a symbol table of global variables (statics and consts) by
     /// scanning every file.  Inline modules are descended recursively.
     pub fn from_files(files: &[(PathBuf, syn::File)]) -> Self {
@@ -395,6 +402,10 @@ impl RewriteVisitor<'_> {
         for arg in &sig.inputs {
             if let Some((name, ty)) = binding_from_fn_arg(arg) {
                 self.symbols.insert(name, ty);
+            } else if let syn::FnArg::Typed(pt) = arg {
+                // A pattern argument we can't map to a single typed name
+                // still shadows whatever it binds.
+                invalidate_pat_bindings(&pt.pat, &mut self.symbols);
             }
         }
     }
@@ -513,12 +524,58 @@ fn binding_from_fn_arg(arg: &syn::FnArg) -> Option<(String, syn::Type)> {
 /// Collect typed bindings from a pattern into the symbol table.
 ///
 /// Handles the common `pat: Type` form (a [`syn::Pat::Type`] wrapping a
-/// [`syn::Pat::Ident`]).
+/// [`syn::Pat::Ident`]).  Every other name the pattern binds shadows any
+/// outer binding with a type we cannot determine here, so those names
+/// are *removed* from the table: leaving them would let rewrites see the
+/// stale outer (e.g. global) type for a local of a different type.
 fn collect_pat_bindings(pat: &syn::Pat, table: &mut SymbolTable) {
     if let syn::Pat::Type(ref pt) = *pat {
         if let syn::Pat::Ident(ref pi) = *pt.pat {
             table.insert(pi.ident.to_string(), (*pt.ty).clone());
+            return;
         }
+    }
+    invalidate_pat_bindings(pat, table);
+}
+
+/// Remove every name bound by `pat` from the symbol table.
+fn invalidate_pat_bindings(pat: &syn::Pat, table: &mut SymbolTable) {
+    match pat {
+        syn::Pat::Ident(pi) => {
+            table.remove(&pi.ident.to_string());
+            if let Some((_, ref subpat)) = pi.subpat {
+                invalidate_pat_bindings(subpat, table);
+            }
+        }
+        syn::Pat::Type(pt) => invalidate_pat_bindings(&pt.pat, table),
+        syn::Pat::Reference(pr) => invalidate_pat_bindings(&pr.pat, table),
+        syn::Pat::Paren(pp) => invalidate_pat_bindings(&pp.pat, table),
+        syn::Pat::Or(po) => {
+            for case in &po.cases {
+                invalidate_pat_bindings(case, table);
+            }
+        }
+        syn::Pat::Tuple(pt) => {
+            for elem in &pt.elems {
+                invalidate_pat_bindings(elem, table);
+            }
+        }
+        syn::Pat::TupleStruct(ts) => {
+            for elem in &ts.elems {
+                invalidate_pat_bindings(elem, table);
+            }
+        }
+        syn::Pat::Slice(ps) => {
+            for elem in &ps.elems {
+                invalidate_pat_bindings(elem, table);
+            }
+        }
+        syn::Pat::Struct(ps) => {
+            for field in &ps.fields {
+                invalidate_pat_bindings(&field.pat, table);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -836,6 +893,36 @@ mod tests {
 
         let untouched = prettyplease::unparse(&files[1].1);
         assert!(!untouched.contains("ByteSlice"));
+    }
+
+    #[test]
+    fn untyped_let_shadows_global_of_same_name() {
+        let mut rw = Rewriter::new();
+        rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_deref);
+
+        // `state` is a global array, but inside `demo` it is shadowed by
+        // an untyped let binding a raw pointer; the deref there must not
+        // be rewritten to an indexing expression.  Sibling functions
+        // (and code after the shadowing scope ends) still see the global.
+        let mut file = syn::parse_file(
+            "static mut state: [u64; 4] = [0; 4];
+             unsafe fn demo(_state: *mut Foo) -> i32 {
+                 let mut state = _state as *mut Foo;
+                 (*state).x
+             }
+             unsafe fn uses_global() -> u64 {
+                 *&raw const state
+             }",
+        )
+        .unwrap();
+
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&file);
+        assert!(rewritten.contains("(*state).x"));
+        assert!(!rewritten.contains("state[0]).x"));
+        assert!(rewritten.contains("state[0]"));
+        assert!(!rewritten.contains("&raw const state"));
     }
 
     #[test]

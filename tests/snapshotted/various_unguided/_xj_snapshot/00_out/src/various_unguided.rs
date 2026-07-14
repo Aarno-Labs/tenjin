@@ -20,14 +20,19 @@ pub unsafe extern "C" fn isatty_stdin() -> ::core::ffi::c_int {
 #[no_mangle]
 pub unsafe extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
     println!("{:>}", {
-        std::ffi::CStr::from_ptr(
+        xj_str_from_ptr(
             (if cond != 0 {
                 b"true\0".as_ptr() as *const ::core::ffi::c_char
             } else {
                 b"false\0".as_ptr() as *const ::core::ffi::c_char
             }) as *const core::ffi::c_char,
         )
-        .to_str()
-        .unwrap()
     });
+}
+unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
+    if ptr.is_null() {
+        "(null)"
+    } else {
+        core::ffi::CStr::from_ptr(ptr).to_str().unwrap()
+    }
 }

@@ -27,6 +27,7 @@ from c_refact_identify_mains import find_main_translation_units
 from fixup_rs_mod_collision import CrateRootNotFound, inject_tu_includes
 from translation_preparation import run_preparation_passes
 from translation_improvement import run_improvement_passes
+from translation_types import TranslationFlags
 from constants import XJ_GUIDANCE_FILENAME
 
 
@@ -187,14 +188,8 @@ def create_translation_snapshot(
 
 
 def do_translate(
-    root: Path,
-    codebase: Path,
-    resultsdir: Path,
-    cratename: str,
+    translation_flags: TranslationFlags,
     guidance_path_or_literal: str,
-    do_not_refactor_headers_within: list[ResolvedPath] = [],
-    buildcmd: str | None = None,
-    cmake_defines: list[str] = [],
 ):
     """
     Translate a codebase from C to Rust.
@@ -210,6 +205,9 @@ def do_translate(
     have files called `translation_metadata.json` and `translation_snapshot.json`.
     """
 
+    codebase = translation_flags.codebase
+    resultsdir = translation_flags.resultsdir
+
     if not codebase.exists():
         raise UserFacingError(f"Codebase path {style_path(codebase)} does not exist!")
     if resultsdir.resolve().is_relative_to(codebase.resolve()):
@@ -217,29 +215,24 @@ def do_translate(
             f"Results directory {style_path(resultsdir)} cannot be inside the codebase {style_path(codebase)}",
         )
 
-    for rp in do_not_refactor_headers_within:
+    for rp in translation_flags.do_not_refactor_headers_within:
         assert rp == rp.resolve(), f"`do_not_refactor` path {rp} not resolved!"
 
     guidance = load_and_parse_guidance(guidance_path_or_literal)
 
     tracker = ingest_tracking.TimingRepo(
-        stub_ingestion_record(codebase, guidance, do_not_refactor_headers_within)
+        stub_ingestion_record(codebase, guidance, translation_flags.do_not_refactor_headers_within)
     )
 
     resultsdir = resultsdir.resolve()
     resultsdir.mkdir(parents=True, exist_ok=True)
+    translation_flags.resultsdir = resultsdir
 
     try:
         do_translate_with_tracker(
-            root,
-            codebase,
-            resultsdir,
-            cratename,
+            translation_flags,
             guidance,
             tracker,
-            do_not_refactor_headers_within,
-            buildcmd,
-            cmake_defines,
         )
     finally:
         record = tracker.finalize()
@@ -247,34 +240,26 @@ def do_translate(
             with (resultsdir / "translation_metadata.json").open("w") as f:
                 f.write(record.to_json(indent=2))
 
-            results_snapshot = create_translation_snapshot(root, codebase, resultsdir, record)
+            results_snapshot = create_translation_snapshot(
+                translation_flags.root, codebase, resultsdir, record
+            )
 
             with (resultsdir / "translation_snapshot.json").open("w") as f:
                 f.write(results_snapshot.to_json(indent=2))
 
 
 def do_translate_with_tracker(
-    root: Path,
-    codebase: Path,
-    resultsdir: Path,
-    cratename: str,
+    translation_flags: TranslationFlags,
     guidance: dict,
     tracker: ingest_tracking.TimingRepo,
-    do_not_refactor_headers_within: list[ResolvedPath] = [],
-    buildcmd: str | None = None,
-    cmake_defines: list[str] = [],
 ):
     skip_remainder_of_translation = False
 
     # Preparation passes may modify the guidance stored in XJ_GUIDANCE_FILENAME
     final_prepared_codebase, build_info = run_preparation_passes(
-        codebase,
-        resultsdir,
-        tracker,
+        translation_flags,
         guidance,
-        do_not_refactor_headers_within,
-        buildcmd,
-        cmake_defines,
+        tracker,
     )
 
     c2rust_transpile_flags = [
@@ -317,7 +302,8 @@ def do_translate_with_tracker(
 
     # The crate name that c2rust uses is based on the directory stem,
     # so we (temporarily) create a subdirectory with the desired crate name.
-    output = resultsdir / cratename
+    resultsdir = translation_flags.resultsdir
+    output = resultsdir / translation_flags.cratename
     output.mkdir(parents=True, exist_ok=False)
 
     compdb = final_prepared_codebase / "compile_commands.json"
@@ -341,17 +327,17 @@ def do_translate_with_tracker(
     compilation_database.munge_compile_commands_for_tenjin_translation(compdb)
 
     # Then run our version, using guidance and preanalysis.
-    output = resultsdir / cratename
+    output = resultsdir / translation_flags.cratename
     output.mkdir(parents=True, exist_ok=False)
     target_subdir = environ.get("XJ_BUILD_RS_PROFILE", "debug")
-    c2rust_bin = root / "c2rust" / "target" / target_subdir / "c2rust"
+    c2rust_bin = translation_flags.root / "c2rust" / "target" / target_subdir / "c2rust"
     try:
         click.echo("Running Tenjin's c2rust translation...")
         _xj_cp = run_c2rust(
             tracker, "xj-c2rust", c2rust_bin, compdb, output, xj_c2rust_transpile_flags
         )
 
-        fixup_binary_crates_in_workspace(output, cratename)
+        fixup_binary_crates_in_workspace(output, translation_flags.cratename)
 
         # Normalize the unmodified translation results to end up
         # in a directory with a project-independent name.
@@ -384,7 +370,13 @@ def do_translate_with_tracker(
                     inject_tu_includes(output)
                 except CrateRootNotFound:
                     pass
-            run_improvement_passes(root, output, resultsdir, cratename, tracker)
+            run_improvement_passes(
+                translation_flags.root,
+                output,
+                resultsdir,
+                translation_flags.cratename,
+                tracker,
+            )
         finally:
             tracker.mark_translation_finished()
 

@@ -74,10 +74,8 @@ pub unsafe extern "C" fn my_printf(mut fmt: *const ::core::ffi::c_char, mut c2ru
                         }
                         115 => {
                             print!("{:>}", {
-                                std::ffi::CStr::from_ptr(ap.arg::<*mut ::core::ffi::c_char>()
+                                xj_str_from_ptr(ap.arg::<*mut ::core::ffi::c_char>()
                                     as *const core::ffi::c_char)
-                                .to_str()
-                                .unwrap()
                             });
                         }
                         _ => {}
@@ -153,5 +151,12 @@ pub unsafe extern "C" fn borrowed_valist(mut count: size_t, mut c2rust_args: ...
     while count > 0 as size_t {
         print_int(&raw mut ap);
         count = count.wrapping_sub(1);
+    }
+}
+unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
+    if ptr.is_null() {
+        "(null)"
+    } else {
+        core::ffi::CStr::from_ptr(ptr).to_str().unwrap()
     }
 }

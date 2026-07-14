@@ -2239,17 +2239,24 @@ mod refactor_format {
                 );
                 mk().method_call_expr(ctime_call, "unwrap", Vec::new())
             } else {
+                x.with_cur_file_item_store(|item_store| {
+                    // TODO(brk): handle emission of bytes
+                    item_store.add_item_str_once(
+                        r#"unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
+                          if ptr.is_null() {
+                              "(null)"
+                          } else {
+                              core::ffi::CStr::from_ptr(ptr).to_str().unwrap()
+                          }
+                        }"#,
+                    );
+                });
+
                 let span = e.span();
-                // CStr::from_ptr(e as *const libc::c_char).to_str().unwrap()
+
                 let e = mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["core", "ffi", "c_char"])));
-                let cs = mk().call_expr(
-                    // TODO(kkysen) change `"std"` to `"core"` after `#![feature(core_c_str)]` is stabilized in `1.63.0`
-                    mk().path_expr(vec!["std", "ffi", "CStr", "from_ptr"]),
-                    vec![e],
-                );
-                let s = mk().method_call_expr(cs, "to_str", Vec::new());
-                let call = mk().method_call_expr(s, "unwrap", Vec::new());
-                let b = mk().unsafe_().block(vec![mk().expr_stmt(call)]);
+                let cs = mk().call_expr(mk().path_expr(vec!["xj_str_from_ptr"]), vec![e]);
+                let b = mk().unsafe_().block(vec![mk().expr_stmt(cs)]);
                 mk().span(span).block_expr(b)
             }
         }
@@ -4714,11 +4721,14 @@ impl<'c> Translation<'c> {
                     .borrow_mut()
                     .query_decl_type(self, decl_id)
                 {
-                    if (var_guided_type.is_slice_ref() || var_guided_type.is_array_ref())
-                        && ctx_guided_type
-                            .as_ref()
-                            .map(|t| !(t.is_slice_ref() || t.is_array_ref()))
-                            .unwrap_or(true)
+                    let context_is_slice_or_array = ctx_guided_type
+                        .as_ref()
+                        .map(|t| t.is_slice_or_array_ref())
+                        .unwrap_or(false);
+
+                    // If the context expects a slice/array ref, do not coerce
+                    if var_guided_type.is_slice_or_array_ref()
+                        && !context_is_slice_or_array
                         && !self.wrapped_with_array_decay(expr_id)
                         && !self.wrapped_with_subscript_base(expr_id)
                     {

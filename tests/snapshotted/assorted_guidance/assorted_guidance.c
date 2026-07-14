@@ -325,3 +325,8 @@ int printf_in_cond(const char* ostr)
     }
     return 0;
 }
+
+void peek_slice(const char *rsu8)
+{
+    char v = *rsu8;
+}

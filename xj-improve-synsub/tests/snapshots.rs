@@ -302,3 +302,36 @@ fn memset_on_cast() {
         "#]],
     );
 }
+
+#[test]
+fn deref_on_slice() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_deref);
+    check(
+        &rw,
+        "fn test(s: &[u8]) -> u8 { *s.as_ptr() }",
+        expect![[r#"
+            fn test(s: &[u8]) -> u8 {
+                s[0]
+            }
+        "#]],
+    );
+    check(
+        &rw,
+        "fn test(s: &[u8]) -> u8 { *s }",
+        expect![[r#"
+            fn test(s: &[u8]) -> u8 {
+                s[0]
+            }
+        "#]],
+    );
+    check(
+        &rw,
+        "fn test(s: *const u8) -> u8 { *s }",
+        expect![[r#"
+            fn test(s: *const u8) -> u8 {
+                *s
+            }
+        "#]],
+    );
+}

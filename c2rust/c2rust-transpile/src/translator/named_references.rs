@@ -107,6 +107,9 @@ impl Translation<'_> {
             .get_qual_type()
             .ok_or_else(|| format_err!("bad reference type"))?;
         let read = |write| self.read(reference_ty, write);
+        // Pass in the expression's guided type here as the context - we really just want
+        // an expression corresponding to whatever the guided type is
+        // (this avoids the temptation to coerce to some other type)
         let ctx_guided_type = self
             .parsed_guidance
             .borrow_mut()

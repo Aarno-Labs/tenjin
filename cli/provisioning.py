@@ -683,6 +683,20 @@ def want_10j_more_deps():
                 str(target / "gmp-6.3.0" / "lib" / "libgmp.10.dylib"),
             ])
 
+            subprocess.check_call([
+                "install_name_tool",
+                "-id",
+                str(target / "lib" / "libjpeg.10.dylib"),
+                str(target / "lib" / "libjpeg.10.dylib"),
+            ])
+
+            subprocess.check_call([
+                "install_name_tool",
+                "-id",
+                str(target / "lib" / "libpng16.16.dylib"),
+                str(target / "lib" / "libpng16.16.dylib"),
+            ])
+
         z3_pc = target / "lib" / "pkgconfig" / "z3.pc"
         if z3_pc.is_file():
             lines = z3_pc.read_text(encoding="utf-8").splitlines()
@@ -702,6 +716,16 @@ def want_10j_more_deps():
                 f.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
         cook_pkg_config_placeholders_within(target)
+
+        for tgt_path in [target / "bin" / "libtoolize", target / "lib" / "libltdl.la"]:
+            data = tgt_path.read_text(encoding="utf-8")
+            tgt_path.write_text(
+                data.replace("/outputs", target.resolve().as_posix()),
+                encoding="utf-8",
+            )
+
+        if (target / "lib" / "libpng16.la-e").is_file():
+            shutil.copyfile(target / "lib" / "libpng16.la", target / "lib" / "libpng16.la-e")
 
         HAVE.note_we_have(keyname, specifier=version)
 

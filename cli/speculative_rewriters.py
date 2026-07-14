@@ -26,21 +26,21 @@ class CondensedSpanGraph:
 class SpeculativeFileRewriter:
     def __init__(self, p: Path):
         self.p = p
-        self.original_content = p.read_text("utf-8")
+        self.original_content = p.read_bytes()
         self.cached_content = self.original_content
 
-    def update_content_via(self, fn: Callable[[str], str]):
+    def update_content_via(self, fn: Callable[[bytes], bytes]):
         self.cached_content = fn(self.cached_content)
 
     def write(self) -> bool:
         """Returns true if any changes were made."""
         if self.cached_content != self.original_content:
-            self.p.write_text(self.cached_content, encoding="utf-8")
+            self.p.write_bytes(self.cached_content)
             return True
         return False
 
     def restore(self):
-        self.p.write_text(self.original_content, encoding="utf-8")
+        self.p.write_bytes(self.original_content)
 
 
 class SpeculativeSpansEraser:
@@ -59,11 +59,11 @@ class SpeculativeSpansEraser:
                     self.rewriters[canonical] = SpeculativeFileRewriter(canonical)
 
     def erase_spans(self):
-        def erase_span(span: ExplicitSpan, content: str) -> str:
+        def erase_span(span: ExplicitSpan, content: bytes) -> bytes:
             """Erase the span from the content."""
             assert span.hi > span.lo, "Span must be non-empty"
             assert span.hi <= len(content), "Span end must be within content bounds"
-            return content[: span.lo] + (" " * (span.hi - span.lo)) + content[span.hi :]
+            return content[: span.lo] + (b" " * (span.hi - span.lo)) + content[span.hi :]
 
         for rewriter in self.rewriters.values():
             for span in self.spans_by_path[rewriter.p]:

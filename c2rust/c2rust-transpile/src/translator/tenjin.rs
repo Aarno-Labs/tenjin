@@ -65,6 +65,10 @@ impl GuidedType {
             _ => false,
         }
     }
+
+    pub fn is_slice_or_array_ref(&self) -> bool {
+        self.is_slice_ref() || self.is_array_ref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

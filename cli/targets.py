@@ -533,6 +533,8 @@ def _CompileCommand_from_intercepted_command(
         # Applies update to an include (-Ipath) argument
         if p.startswith("-I") and len(p) > 2:
             return f"-I{update(p[2:])}"
+        if p.startswith("-Wl,-rpath,$ORIGIN"):
+            return p
         return update(p)
 
     filename = icmd.entry["file"]
