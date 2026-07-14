@@ -1898,6 +1898,35 @@ def run_preparation_passes(
         print("Codehawk stderr:")
         print(cp.stderr.decode("utf-8"))
 
+        try:
+            with open(
+                current_codebase / "errno_analysis_summaryresults.json", encoding="utf-8"
+            ) as errno_results:
+                results = CodehawkSummary.from_dict(json.load(errno_results))  # type:ignore
+            ppos = results.tagresults.ppos
+            if "errno-must-written" not in ppos:
+                total_ppos = 0
+            else:
+                s = ppos["errno-must-written"]
+                total_ppos = s.stmt + s.local + s.api + s.contract + s.open + s.violated
+            if total_ppos == 0:
+                guidance_path = current_codebase / XJ_GUIDANCE_FILENAME
+                guidance: dict = json.load(open(guidance_path, encoding="utf-8"))
+                if "no_math_errno" not in guidance:
+                    guidance["no_math_errno"] = True
+                    json.dump(guidance, open(guidance_path, "w", encoding="utf-8"), indent=2)
+                    print("errno analysis found 0 proof obligations: set no_math_errno=true in guidance")
+                else:
+                    print(
+                        f"errno analysis found 0 proof obligations, but no_math_errno already set to {guidance['no_math_errno']!r} in user guidance; leaving unchanged"
+                    )
+            else:
+                print(
+                    f"errno analysis found {total_ppos} proof obligation(s): not setting no_math_errno"
+                )
+        except FileNotFoundError:
+            print("errno analysis results not found; not setting no_math_errno")
+
     def should_apply_errno_transformation(codebase: Path) -> bool:
         try:
             with open(
