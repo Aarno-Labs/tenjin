@@ -540,3 +540,71 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(reason="This test fails the cclyzer globals-localization phase")
+def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/libtom/libtommath.git",
+        "ae40a87a920099a7d9d00979570e0c8d917a1fd7",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    buildcmd = (
+        "for f in mp_*.c s_mp_*.c demo/test.c demo/shared.c; do "
+        'o=$(basename "${f%.c}").o; cc -O1 -I. -c "$f" -o "$o" || exit 1; '
+        "done && cc -O1 -o test *.o"
+    )
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="libtom_libtommath",
+            buildcmd=buildcmd,
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    c_prog_output = hermetic.run(
+        [str(tmp_resultsdir / "_build_1" / "test")],
+        check=False,
+        capture_output=True,
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = hermetic.run_cargo_on_translated_code(
+        ["run"],
+        cwd=tmp_resultsdir / "final",
+        capture_output=True,
+        check=False,
+    )
+
+    # The test suite seeds its RNG from time(NULL) and prints the seed plus
+    # random intermediate values, so full stdout is not reproducible. The exit
+    # code and the final "Tests OK/NOP/FAIL: <ok>/<nop>/<fail>" summary line are
+    # deterministic, so we compare those.
+    def summary_line(stdout: bytes) -> bytes:
+        for line in reversed(stdout.split(b"\n")):
+            if line.startswith(b"Tests OK/NOP/FAIL:"):
+                return line
+        raise AssertionError(f"No summary line found in output: {stdout!r}")
+
+    assert c_prog_output.returncode == 0, (
+        f"C test binary failed (rc={c_prog_output.returncode}); stderr: {c_prog_output.stderr!r}"
+    )
+    assert rs_prog_output.returncode == c_prog_output.returncode, (
+        f"Different exit codes; Rust got {rs_prog_output.returncode} vs C {c_prog_output.returncode};"
+        f" Rust stderr: {rs_prog_output.stderr!r}"
+    )
+    assert summary_line(rs_prog_output.stdout) == summary_line(c_prog_output.stdout), (
+        f"Rust and C summary lines differed; Rust: {summary_line(rs_prog_output.stdout)!r},"
+        f" C: {summary_line(c_prog_output.stdout)!r}"
+    )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
