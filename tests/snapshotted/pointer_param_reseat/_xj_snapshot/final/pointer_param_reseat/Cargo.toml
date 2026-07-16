@@ -1,0 +1,22 @@
+
+[package]
+name = "pointer_param_reseat"
+authors = ["C2Rust"]
+version = "0.0.0"
+publish = false
+edition = "2021"
+autobins = false
+
+[lib]
+name = "pointer_param_reseat"
+path = "lib.rs"
+crate-type = ["rlib"]
+[[bin]]
+path = "src/pointer_param_reseat.rs"
+name = "pointer_param_reseat"
+[dependencies]
+
+
+
+[profile.release]
+strip = "debuginfo"
