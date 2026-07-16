@@ -323,6 +323,8 @@ def tractor_case_released(case_path: str) -> bool:
         return False
     if "Public-Tests/B02_" in case_path:
         return False
+    if "Public-Tests/B03_" in case_path:
+        return False
     return True
 
 
