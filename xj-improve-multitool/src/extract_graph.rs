@@ -150,8 +150,7 @@ impl GraphExtractionVisitor<'_> {
                 && let Some(preceding_line) = line_info.sf.get_line(line_info.line - 1)
                 && {
                     let trimmed = preceding_line.trim_start();
-                    trimmed.starts_with("#[no_mangle]")
-                        || trimmed.starts_with("#[export_name")
+                    trimmed.starts_with("#[no_mangle]") || trimmed.starts_with("#[export_name")
                 }
             {
                 self.graf

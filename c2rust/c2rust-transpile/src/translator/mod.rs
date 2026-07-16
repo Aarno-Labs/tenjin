@@ -33,7 +33,7 @@ use crate::rust_ast::item_store::ItemStore;
 use crate::rust_ast::set_span::SetSpan;
 use crate::rust_ast::{pos_to_span, SpanExt};
 use crate::translator::named_references::NamedReference;
-use crate::translator::tenjin::{FFIInConversion, FFIOutConversion, GuidedType};
+use crate::translator::tenjin::{FFIConversion, FFIInConversion, FFIOutConversion, GuidedType};
 use crate::translator::variadic::{mk_va_list_copy, mk_va_list_ty};
 use c2rust_ast_builder::{mk, properties::*, Builder};
 use c2rust_ast_printer::pprust;
@@ -340,7 +340,7 @@ fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
 fn parse_ffi_in_conversion(v: &serde_json::Value) -> Option<FFIInConversion> {
     if let Some(obj) = v.as_object() {
         return obj
-            .get("name")
+            .get("method")
             .and_then(|v| v.as_str())
             .and_then(|n| match n {
                 "id" => Some(FFIInConversion::Id),
@@ -365,7 +365,7 @@ fn parse_ffi_in_conversion(v: &serde_json::Value) -> Option<FFIInConversion> {
 
 fn parse_ffi_out_conversion(v: &serde_json::Value) -> Option<FFIOutConversion> {
     if let Some(obj) = v.as_object() {
-        obj.get("name")
+        obj.get("method")
             .and_then(|it| it.as_str())
             .and_then(|n| match n {
                 "id" => Some(FFIOutConversion::Id),
@@ -397,10 +397,7 @@ pub struct ParsedGuidance {
     pub pod_types: HashSet<String>,
     pub no_math_errno: bool,
     pub public_api: Option<HashSet<String>>,
-    /// function -> (argument -> conversion)
-    pub ffi_in_conversion: HashMap<String, HashMap<String, FFIInConversion>>,
-    /// function -> conversion (only return value)
-    pub ffi_out_conversion: HashMap<String, FFIOutConversion>,
+    pub ffi_conversions: HashMap<String, FFIConversion>,
 }
 
 impl ParsedGuidance {
@@ -539,23 +536,26 @@ impl ParsedGuidance {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let mut ffi_in_conversion = HashMap::new();
-        let mut ffi_out_conversion = HashMap::new();
+        let mut ffi_conversions = HashMap::new();
         if let Some(strategies) = raw.get("ffi").and_then(|it| it.as_object()) {
             for (func, conv) in strategies {
+                let mut ffi_in_conversions = HashMap::new();
+                let mut ffi_out_conversion = None;
                 for (arg, strategy) in conv.as_object().unwrap_or(&Map::new()) {
-                    if arg == "$ret" {
-                        if let Some(strategy) = parse_ffi_out_conversion(strategy) {
-                            ffi_out_conversion.insert(func.clone(), strategy);
-                        }
-                    } else {
-                        if let Some(strategy) = parse_ffi_in_conversion(strategy) {
-                            let e = ffi_in_conversion
-                                .entry(func.clone())
-                                .or_insert(HashMap::default());
-                            e.insert(arg.clone(), strategy);
-                        }
+                    if arg == "$return" {
+                        ffi_out_conversion = parse_ffi_out_conversion(strategy);
+                    } else if let Some(strategy) = parse_ffi_in_conversion(strategy) {
+                        ffi_in_conversions.insert(arg.clone(), strategy);
                     }
+                }
+                if !ffi_in_conversions.is_empty() || ffi_out_conversion.is_some() {
+                    ffi_conversions.insert(
+                        func.clone(),
+                        FFIConversion {
+                            ins: ffi_in_conversions,
+                            out: ffi_out_conversion,
+                        },
+                    );
                 }
             }
         }
@@ -571,22 +571,22 @@ impl ParsedGuidance {
             pod_types,
             no_math_errno,
             public_api,
-            ffi_in_conversion,
-            ffi_out_conversion,
+            ffi_conversions,
         }
     }
 
     pub fn query_ffi_in_conversion(&self, fn_name: &str, arg_name: &str) -> FFIInConversion {
-        self.ffi_in_conversion
+        self.ffi_conversions
             .get(fn_name)
-            .and_then(|it| it.get(arg_name))
+            .and_then(|it| it.ins.get(arg_name))
             .unwrap_or(&FFIInConversion::Id)
             .clone()
     }
 
     pub fn query_ffi_out_conversion(&self, fn_name: &str) -> FFIOutConversion {
-        self.ffi_out_conversion
+        self.ffi_conversions
             .get(fn_name)
+            .and_then(|it| it.out.as_ref())
             .unwrap_or(&FFIOutConversion::Id)
             .clone()
     }
@@ -670,6 +670,7 @@ impl ParsedGuidance {
 
 type ZeroInits = IndexMap<CDeclId, (WithStmts<Box<Expr>>, IndexSet<Import>)>;
 
+#[allow(clippy::vec_box)]
 pub struct Translation<'c> {
     // Translation environment
     pub ast_context: TypedAstContext,

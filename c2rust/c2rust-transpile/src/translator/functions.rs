@@ -1,7 +1,7 @@
 //! This module implements the translation of functions in C.
 
 use super::*;
-use c2rust_ast_builder::{CaptureBy, Make};
+use c2rust_ast_builder::CaptureBy;
 use failure::format_err;
 use proc_macro2::{TokenStream, TokenTree};
 
@@ -116,11 +116,6 @@ impl<'c> Translation<'c> {
 
         self.with_scope(|| {
             let mut args: Vec<FnArg> = vec![];
-            // Forwarding parameters / call arguments used to build the optional
-            // `xj_ffi` export wrapper (XREF:ffi_export_wrapper).
-            let mut ffi_wrapper_args: Vec<FnArg> = vec![];
-            let mut ffi_wrapper_call_args: Vec<WithStmts<Box<Expr>>> = vec![];
-            let mut has_guided_type = false;
 
             // handle regular (non-variadic) arguments
             for &(decl_id, ref var, typ) in arguments.iter() {
@@ -129,8 +124,6 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
-                // Only generate wrappers if we have a guided type
-                has_guided_type = has_guided_type | guided_type.is_some();
                 // XREF:guided_mutbl_fn_param
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let ConvertedFunctionParam { ty, mutbl } =
@@ -160,25 +153,6 @@ impl<'c> Translation<'c> {
                     mk().set_mutbl(mutbl).ident_pat(new_var)
                 };
 
-                let original_type = self.convert_type(typ.ctype)?;
-                let strategy = self
-                    .parsed_guidance
-                    .borrow()
-                    .query_ffi_in_conversion(name, var);
-                ffi_wrapper_args.push(mk().arg(original_type.clone(), mk().ident_pat(var.clone())));
-                ffi_wrapper_call_args.push(
-                    strategy.marshal(
-                        self,
-                        var,
-                        &original_type,
-                        guided_type
-                            .map(|gt| gt.parsed)
-                            .as_ref()
-                            .unwrap_or(&original_type),
-                        mk().path_expr(vec![var]),
-                    ),
-                );
-
                 args.push(mk().arg(ty, pat))
             }
 
@@ -199,8 +173,6 @@ impl<'c> Translation<'c> {
             };
 
             let ret = self.convert_function_return_type(name, return_type)?;
-            let ffi_wrapper_ret = self.convert_return_type(return_type)?;
-            has_guided_type = has_guided_type | (ret != ffi_wrapper_ret);
 
             let decl = mk().fn_decl(new_name, args, variadic, ret);
 
@@ -299,12 +271,17 @@ impl<'c> Translation<'c> {
                 // function's signature evolve away from the C ABI while still exposing
                 // the expected symbol. Variadic functions can't be forwarded this way,
                 // so they keep the old in-place scheme.
+                let has_ffi_guidance = self
+                    .parsed_guidance
+                    .borrow()
+                    .ffi_conversions
+                    .contains_key(name);
                 let needs_ffi_wrapper = is_exported_symbol
                     && fn_needs_abi_preservation
                     && !is_main
                     && !is_builtin_wrapper
                     && !is_variadic
-                    && has_guided_type;
+                    && has_ffi_guidance;
 
                 // Only add linkage attributes if the function is `extern`
                 let mut mk_ = if is_main {
@@ -375,30 +352,15 @@ impl<'c> Translation<'c> {
 
                 if needs_ffi_wrapper {
                     // XREF:ffi_export_wrapper
-                    // #[no_mangle]
-                    // fn foo(...) -> r {
-                    //   super::foo(*ffi_wrapper_call_args)
-                    // }
-                    let wrapper_decl =
-                        mk().fn_decl(new_name, ffi_wrapper_args, None, ffi_wrapper_ret);
-                    let wrappers: WithStmts<Vec<Box<Expr>>> =
-                        WithStmts::from_iter(ffi_wrapper_call_args);
-                    let (mut stmts, exprs) = wrappers.discard_unsafe();
-                    let wrapper_call =
-                        mk().call_expr(mk().path_expr(vec!["super", new_name]), exprs);
-                    let output_conversion =
-                        self.parsed_guidance.borrow().query_ffi_out_conversion(name);
-                    let convert_output = output_conversion.marshal(wrapper_call);
-                    stmts.push(mk().expr_stmt(convert_output));
-                    let wrapper_block = mk().block(stmts);
-                    let wrapper_item = mk_linkage(false, new_name, name, self.tcfg.edition)
-                        .pub_()
-                        .extern_("C")
-                        .span(span)
-                        .unsafe_()
-                        .fn_item(wrapper_decl, wrapper_block);
-                    // Stash for the `_xj_ffi` submodule rather than emitting inline.
-                    self.ffi_wrappers.borrow_mut().push(wrapper_item);
+                    self.ffi_wrappers
+                        .borrow_mut()
+                        .push(self.generate_ffi_wrapper(
+                            span,
+                            new_name,
+                            name,
+                            arguments,
+                            return_type,
+                        )?)
                 }
 
                 Ok(ConvertedDecl::Item(fn_item))
