@@ -24,6 +24,12 @@ import translation
 
 
 def tractor_tests_git_clone_for(case_dir: str) -> Path:
+    if "Public-Tests/B03_" in case_dir:
+        # Battery 3 lives only on the private repo's `v3` branch.
+        return cached_git_clone_at_commit(
+            "git@github.com:Aarno-Labs/DARPA-TRACTOR-Program__Test-Corpus.git",
+            "3e3b487366042ee1a37e1c2080f3fd7ec23b598b",
+        )
     if not tractor_case_released(case_dir):
         # Currently Battery 2 requires authentication to access,
         # so the https URL won't work.
@@ -1603,4 +1609,205 @@ def test_tractor_b2_organic_underhanded_c_luggage_app(tenjin_fixtures: TenjinFix
 @pytest.mark.slow
 def test_tractor_b2_synthetic_tu_linkage_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/tu_linkage"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+# ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗    ██████╗     ██╗     ██╗██████╗ ███████╗
+# ██╔══██╗██╔══██╗╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗╚██╗ ██╔╝    ╚════██╗    ██║     ██║██╔══██╗██╔════╝
+# ██████╔╝███████║   ██║      ██║   █████╗  ██████╔╝ ╚████╔╝      █████╔╝    ██║     ██║██████╔╝███████╗
+# ██╔══██╗██╔══██║   ██║      ██║   ██╔══╝  ██╔══██╗  ╚██╔╝       ╚═══██╗    ██║     ██║██╔══██╗╚════██║
+# ██████╔╝██║  ██║   ██║      ██║   ███████╗██║  ██║   ██║       ██████╔╝    ███████╗██║██████╔╝███████║
+# ╚═════╝ ╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝       ╚═════╝     ╚══════╝╚═╝╚═════╝ ╚══════╝
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_array_list_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/array_list_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_avl_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/avl_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_binary_heap_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/binary_heap_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_binomial_heap_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/binomial_heap_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_bloom_filter_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/bloom_filter_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_array_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_array_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_array_sized_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_array_sized_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_dequeue_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_dequeue_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_dynamic_pool_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_dynamic_pool_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_hashset_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_hashset_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_hashtable_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_hashtable_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_pqueue_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_pqueue_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_queue_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_queue_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_ring_buffer_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_ring_buffer_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_stack_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_stack_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_static_pool_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_static_pool_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_treeset_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_treeset_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_treetable_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_treetable_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_tst_table_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_tst_table_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_double_linked_list_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/double_linked_list_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_single_linked_list_lib(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/single_linked_list_lib"
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
+
+
+# ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗    ██████╗     █████╗ ██████╗ ██████╗ ███████╗
+# ██╔══██╗██╔══██╗╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗╚██╗ ██╔╝    ╚════██╗   ██╔══██╗██╔══██╗██╔══██╗██╔════╝
+# ██████╔╝███████║   ██║      ██║   █████╗  ██████╔╝ ╚████╔╝      █████╔╝   ███████║██████╔╝██████╔╝███████╗
+# ██╔══██╗██╔══██║   ██║      ██║   ██╔══╝  ██╔══██╗  ╚██╔╝       ╚═══██╗   ██╔══██║██╔═══╝ ██╔═══╝ ╚════██║
+# ██████╔╝██║  ██║   ██║      ██║   ███████╗██║  ██║   ██║       ██████╔╝   ██║  ██║██║     ██║     ███████║
+# ╚═════╝ ╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝       ╚═════╝    ╚═╝  ╚═╝╚═╝     ╚═╝     ╚══════╝
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_array_list_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/array_list"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_avl_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/avl"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_binary_heap_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/binary_heap"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_binomial_heap_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/binomial_heap"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_bloom_filter_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/bloom_filter"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_cc_array_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/cc_array"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_chibicc_app(tenjin_fixtures: TenjinFixtures):
+    pytest.xfail(
+        reason=(
+            "chibicc does not translate yet. Its built-in macro handlers "
+            "(line_macro, counter_macro, timestamp_macro, file_macro, "
+            "base_file_macro) are invoked through function pointers stored in a "
+            "macro table, so the localize_mutable_globals pass conservatively "
+            "treats them as having unknown external call sites and refuses to "
+            "lift the globals they touch into a context struct. There is no "
+            "guidance knob to override this today, so the pass fails."
+        )
+    )
+    case_dir = "Public-Tests/B03_organic/chibicc"
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
+
+
+@pytest.mark.slow
+def test_tractor_b3_organic_double_linked_list_app(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B03_organic/double_linked_list"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
