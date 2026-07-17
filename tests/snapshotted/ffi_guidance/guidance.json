@@ -1,29 +1,57 @@
 {
     "vars_of_type": {
-        "&[u8]": ["ffi_via_cstr_first_byte:s"],
-        "&[::core::ffi::c_int]": ["ffi_slice_literal_len:xs", "ffi_slice_var_len:xs"],
-        "&mut [::core::ffi::c_int]": ["ffi_mut_slice_var_len:xs"],
-        "&mut [u8]": ["ffi_from_slice_ret:buf"]
+        "&[u8]": [
+            "ffi_via_cstr_first_byte:s"
+        ],
+        "&[::core::ffi::c_int]": [
+            "ffi_slice_literal_len:xs",
+            "ffi_slice_var_len:xs"
+        ],
+        "&mut [::core::ffi::c_int]": [
+            "ffi_mut_slice_var_len:xs"
+        ],
+        "&mut [u8]": [
+            "ffi_from_slice_ret:buf"
+        ]
     },
     "fn_return_type": {
         "ffi_from_slice_ret": "&mut [u8]"
     },
     "ffi": {
         "ffi_via_cstr_first_byte": {
-            "s": "via-cstr"
+            "s": {
+                "method": "via-cstr"
+            }
         },
         "ffi_slice_literal_len": {
-            "xs": { "method": "slice-with-length", "length": "3" }
+            "xs": {
+                "method": "slice-with-length",
+                "length": "3"
+            }
         },
         "ffi_slice_var_len": {
-            "xs": { "method": "slice-with-length", "length": "n" }
+            "xs": {
+                "method": "slice-with-length",
+                "length": "n"
+            }
         },
         "ffi_mut_slice_var_len": {
-            "xs": { "method": "slice-with-length", "length": "n", "mut": true }
+            "xs": {
+                "method": "slice-with-length",
+                "length": "n",
+                "mutable": true
+            }
         },
         "ffi_from_slice_ret": {
-            "buf": { "method": "slice-with-length", "length": "n", "mut": true },
-            "$return": { "method": "from-slice", "mut": true }
+            "buf": {
+                "method": "slice-with-length",
+                "length": "n",
+                "mutable": true
+            },
+            "$return": {
+                "method": "from-slice",
+                "mutable": true
+            }
         }
     }
 }

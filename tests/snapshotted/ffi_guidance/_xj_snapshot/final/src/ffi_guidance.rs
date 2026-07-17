@@ -26,36 +26,36 @@ pub mod xj_ffi {
         s: *const ::core::ffi::c_char,
     ) -> ::core::ffi::c_uchar {
         super::ffi_via_cstr_first_byte({
-            let __lift_2_1092_0 = libc::strlen(s) + 1usize;
-            ::std::slice::from_raw_parts(s.cast(), __lift_2_1092_0)
+            let __lift_2_1090_0 = libc::strlen(s) + 1;
+            std::slice::from_raw_parts(s.cast(), __lift_2_1090_0)
         })
     }
     #[no_mangle]
     pub unsafe extern "C" fn ffi_slice_literal_len(
         xs: *mut ::core::ffi::c_int,
     ) -> ::core::ffi::c_int {
-        super::ffi_slice_literal_len(::std::slice::from_raw_parts(xs.cast(), 3usize))
+        super::ffi_slice_literal_len(std::slice::from_raw_parts(xs.cast(), 3))
     }
     #[no_mangle]
     pub unsafe extern "C" fn ffi_slice_var_len(
         xs: *mut ::core::ffi::c_int,
         n: ::core::ffi::c_int,
     ) -> ::core::ffi::c_int {
-        super::ffi_slice_var_len(::std::slice::from_raw_parts(xs.cast(), n as usize), n)
+        super::ffi_slice_var_len(std::slice::from_raw_parts(xs.cast(), n as usize), n)
     }
     #[no_mangle]
     pub unsafe extern "C" fn ffi_mut_slice_var_len(
         xs: *mut ::core::ffi::c_int,
         n: ::core::ffi::c_int,
     ) {
-        super::ffi_mut_slice_var_len(::std::slice::from_raw_parts_mut(xs.cast(), n as usize), n)
+        super::ffi_mut_slice_var_len(std::slice::from_raw_parts_mut(xs.cast(), n as usize), n)
     }
     #[no_mangle]
     pub unsafe extern "C" fn ffi_from_slice_ret(
         buf: *mut ::core::ffi::c_uchar,
         n: ::core::ffi::c_int,
     ) -> *mut ::core::ffi::c_uchar {
-        super::ffi_from_slice_ret(::std::slice::from_raw_parts_mut(buf.cast(), n as usize), n)
+        super::ffi_from_slice_ret(std::slice::from_raw_parts_mut(buf.cast(), n as usize), n)
             .as_mut_ptr()
     }
 }
