@@ -74,13 +74,13 @@ Currently restricted to a hard-coded list.
 * `ffi` - a dict whose keys are function names. Each entry is a dict
 from argument names or the special `$return` string which denotes the return value to 
 an ffi conversion specifier. The specifier can be:
-  * `{ "method": "via-cstr"}` or simply `"id"` to use the argument as-is (this is the default behavior if omitted)
-  * `{ "method": "via-cstr"}` or simply `"via-cstr"`: used to convert from a `char*` to a rust slice whose length
-    is calculated via `strlen`
-  * `{ "method": "slice-with-length", "length" : e, "mut" : <bool> }` where `e` can be a numeric literal or a variable,
+  * `{ "method": "id"}` or simply `"id"` to use the argument as-is (this is the default behavior if omitted). This method works both to and from Rust.
+  * `{ "method": "via-cstr", "empty-if-null" : <bool> }` or simply `"via-cstr"`: used to convert from a `char*` to a rust slice whose length
+    is calculated via `strlen`. Assumes non-null if "empty-if-null" is `false` (default); supports null pointer and produces empty slice if `true`.
+  * `{ "method": "slice-with-length", "length" : e, "mutable" : <bool> }` where `e` can be a numeric literal or a variable,
     indicating the length of the slice; `<bool>` is either `true` or `false` and indicates if the slice should be mutable
     (default: `false`)
-  * `{ "method": "from-slice", "mut" : `<bool>`}` used to lower a rust slice back to a C pointer
+  * `{ "method": "from-slice", "mutable" : `<bool>`}` used to lower a rust slice back to a C pointer
 * `no_math_errno` - mostly for debugging/testing. Currently asserts
 that no functions in the entire translated codebase make of use
 `errno` in the math stdlib.
