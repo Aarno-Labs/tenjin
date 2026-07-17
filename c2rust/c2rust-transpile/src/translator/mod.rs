@@ -338,52 +338,11 @@ fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
 }
 
 fn parse_ffi_in_conversion(v: &serde_json::Value) -> Option<FFIInConversion> {
-    if let Some(obj) = v.as_object() {
-        return obj
-            .get("method")
-            .and_then(|v| v.as_str())
-            .and_then(|n| match n {
-                "id" => Some(FFIInConversion::Id),
-                "via-cstr" => Some(FFIInConversion::ViaCStr),
-                "slice-with-length" => {
-                    let is_mut = obj.get("mut").and_then(|it| it.as_bool()).unwrap_or(false);
-                    obj.get("length")
-                        .and_then(|it| it.as_str())
-                        .map(|a| FFIInConversion::SliceWithLen(is_mut, a.to_string()))
-                }
-                _ => None,
-            });
-    } else if let Some(n) = v.as_str() {
-        return match n {
-            "id" => Some(FFIInConversion::Id),
-            "via-cstr" => Some(FFIInConversion::ViaCStr),
-            _ => None,
-        };
-    }
-    None
+    serde_json::from_value(v.clone()).unwrap_or(None)
 }
 
 fn parse_ffi_out_conversion(v: &serde_json::Value) -> Option<FFIOutConversion> {
-    if let Some(obj) = v.as_object() {
-        obj.get("method")
-            .and_then(|it| it.as_str())
-            .and_then(|n| match n {
-                "id" => Some(FFIOutConversion::Id),
-                "from-slice" => {
-                    let m = obj.get("mut").and_then(|it| it.as_bool()).unwrap_or(false);
-                    Some(FFIOutConversion::FromSlice(m))
-                }
-                _ => None,
-            })
-    } else if let Some(n) = v.as_str() {
-        match n {
-            "id" => Some(FFIOutConversion::Id),
-            "from-slice" => Some(FFIOutConversion::FromSlice(false)),
-            _ => None,
-        }
-    } else {
-        None
-    }
+    serde_json::from_value(v.clone()).unwrap_or(None)
 }
 
 pub struct ParsedGuidance {

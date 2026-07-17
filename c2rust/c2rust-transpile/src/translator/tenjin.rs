@@ -1,5 +1,6 @@
 use super::*;
 use quote::ToTokens; // for to_token_stream()
+use serde_derive::Deserialize;
 use std::str::FromStr;
 use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
 
@@ -77,11 +78,38 @@ pub struct FFIConversion {
     pub out: Option<FFIOutConversion>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(tag = "method")]
 pub enum FFIInConversion {
+    #[serde(rename = "id")]
     Id,
-    ViaCStr,
-    SliceWithLen(bool, String),
+    #[serde(rename = "via-cstr")]
+    ViaCStr {
+        #[serde(default)]
+        mutable: bool,
+
+        #[serde(default)]
+        #[serde(rename = "empty-if-null")]
+        empty_if_null: bool,
+    },
+    #[serde(rename = "slice-with-length")]
+    SliceWithLen {
+        #[serde(default)]
+        mutable: bool,
+        length: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(tag = "method")]
+pub enum FFIOutConversion {
+    #[serde(rename = "id")]
+    Id,
+    #[serde(rename = "from-slice")]
+    FromSlice {
+        #[serde(rename = "mutable")]
+        mutable: bool,
+    },
 }
 
 fn make_slice(raw_ptr: Box<Expr>, len: Box<Expr>, mutable: bool) -> WithStmts<Box<Expr>> {
@@ -90,7 +118,7 @@ fn make_slice(raw_ptr: Box<Expr>, len: Box<Expr>, mutable: bool) -> WithStmts<Bo
     } else {
         "from_raw_parts"
     };
-    let slice_method = mk().abs_path_expr(vec!["std", "slice", to_slice]);
+    let slice_method = mk().path_expr(vec!["std", "slice", to_slice]);
 
     let make_slice = mk().call_expr(
         slice_method,
@@ -105,48 +133,68 @@ fn make_slice(raw_ptr: Box<Expr>, len: Box<Expr>, mutable: bool) -> WithStmts<Bo
 impl FFIInConversion {
     pub fn marshal(
         &self,
+        x: &str,
         translation: &Translation,
-        to: &Type,
         e: Box<Expr>,
     ) -> WithStmts<Box<Expr>> {
         match self {
             FFIInConversion::Id => WithStmts::new_val(e),
-            FFIInConversion::ViaCStr => {
+            FFIInConversion::ViaCStr {
+                empty_if_null,
+                mutable,
+            } => {
                 translation.use_crate(ExternCrate::Libc);
-                let is_mutable = type_is_mut_ref(to);
                 let len = mk().call_expr(mk().path_expr(vec!["libc", "strlen"]), vec![e.clone()]);
                 let len_plus_one = mk().binary_expr(
                     BinOp::Add(Default::default()),
                     len,
-                    mk().lit_expr(mk().int_lit(1, "usize")),
+                    mk().lit_expr(mk().int_unsuffixed_lit(1)),
                 );
-                make_slice(e, len_plus_one, is_mutable)
+                let slice_of_string = make_slice(e.clone(), len_plus_one, *mutable);
+                if *empty_if_null {
+                    let null_check = mk().unary_expr(
+                        UnOp::Not(Default::default()),
+                        mk().method_call_expr(e, mk().path_segment("is_null"), vec![]),
+                    );
+                    let empty_slice = mk().borrow_expr(mk().array_expr(vec![]));
+                    let out_local = mk().ident_pat(x);
+                    let declare = mk().local(
+                        out_local.clone(),
+                        None,
+                        Some(mk().ifte_expr(
+                            null_check,
+                            slice_of_string.to_block(),
+                            Some(empty_slice),
+                        )),
+                    );
+                    let assign = mk().local_stmt(Box::new(declare));
+                    WithStmts::new(vec![assign], mk().path_expr(x))
+                } else {
+                    slice_of_string
+                }
             }
-            FFIInConversion::SliceWithLen(is_mut, len) => {
-                let len = len
+            FFIInConversion::SliceWithLen { mutable, length } => {
+                let len = length
                     .parse::<u128>()
-                    .map(|i: u128| mk().lit_expr(mk().int_lit(i, "usize")))
+                    .map(|i: u128| mk().lit_expr(mk().int_unsuffixed_lit(i)))
                     .unwrap_or_else(|_| {
-                        mk().cast_expr(mk().path_expr(vec![len]), mk().path_ty(mk().path("usize")))
+                        mk().cast_expr(
+                            mk().path_expr(vec![length]),
+                            mk().path_ty(mk().path("usize")),
+                        )
                     });
-                make_slice(e, len, *is_mut)
+                make_slice(e, len, *mutable)
             }
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum FFIOutConversion {
-    Id,
-    FromSlice(bool),
 }
 
 impl FFIOutConversion {
     pub fn marshal(&self, e: Box<Expr>) -> Box<Expr> {
         match self {
             FFIOutConversion::Id => e,
-            FFIOutConversion::FromSlice(is_mut) => {
-                let ptr_method = if *is_mut { "as_mut_ptr" } else { "as_ptr" };
+            FFIOutConversion::FromSlice { mutable } => {
+                let ptr_method = if *mutable { "as_mut_ptr" } else { "as_ptr" };
                 mk().method_call_expr(e, mk().path_segment(ptr_method), vec![])
             }
         }
@@ -2460,12 +2508,7 @@ impl Translation<'_> {
         let mut ffi_wrapper_args: Vec<FnArg> = vec![];
         let mut ffi_wrapper_call_args: Vec<WithStmts<Box<Expr>>> = vec![];
 
-        for &(decl_id, ref var, typ) in arguments.iter() {
-            // XREF:fn_parameter_guided
-            let guided_type = self
-                .parsed_guidance
-                .borrow_mut()
-                .query_decl_type(self, decl_id);
+        for &(_, ref var, typ) in arguments.iter() {
             let original_type = self.convert_type(typ.ctype)?;
             let strategy = self
                 .parsed_guidance
@@ -2478,16 +2521,11 @@ impl Translation<'_> {
             };
             ffi_wrapper_args
                 .push(mk().arg(original_type.clone(), mk().ident_pat(&ffi_wrapper_arg_name)));
-            ffi_wrapper_call_args.push(
-                strategy.marshal(
-                    self,
-                    guided_type
-                        .map(|gt| gt.parsed)
-                        .as_ref()
-                        .unwrap_or(&original_type),
-                    mk().path_expr(vec![&ffi_wrapper_arg_name]),
-                ),
-            );
+            ffi_wrapper_call_args.push(strategy.marshal(
+                var,
+                self,
+                mk().path_expr(vec![&ffi_wrapper_arg_name]),
+            ));
         }
         let ffi_wrapper_ret = self.convert_return_type(return_type)?;
 
