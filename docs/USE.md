@@ -71,6 +71,16 @@ the `bytemuck` crate.
 * `using_crates` - allows the human driver of translation to
 specify third-party crates that should be used in the translation.
 Currently restricted to a hard-coded list.
+* `ffi` - a dict whose keys are function names. Each entry is a dict
+from argument names or the special `$return` string which denotes the return value to 
+an ffi conversion specifier. The specifier can be:
+  * `{ "method": "via-cstr"}` or simply `"id"` to use the argument as-is (this is the default behavior if omitted)
+  * `{ "method": "via-cstr"}` or simply `"via-cstr"`: used to convert from a `char*` to a rust slice whose length
+    is calculated via `strlen`
+  * `{ "method": "slice-with-length", "length" : e, "mut" : <bool> }` where `e` can be a numeric literal or a variable,
+    indicating the length of the slice; `<bool>` is either `true` or `false` and indicates if the slice should be mutable
+    (default: `false`)
+  * `{ "method": "from-slice", "mut" : `<bool>`}` used to lower a rust slice back to a C pointer
 * `no_math_errno` - mostly for debugging/testing. Currently asserts
 that no functions in the entire translated codebase make of use
 `errno` in the math stdlib.
