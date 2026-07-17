@@ -87,7 +87,6 @@ pub enum FFIInConversion {
     ViaCStr {
         #[serde(default)]
         mutable: bool,
-
         #[serde(default)]
         #[serde(rename = "empty-if-null")]
         empty_if_null: bool,
