@@ -301,7 +301,7 @@ def compute_build_info_in(
 
 
 # Suffixes of build-generated files that later passes must see as source files.
-GENERATED_SOURCE_SUFFIXES = {".h", ".c", ".inc"}
+GENERATED_SOURCE_SUFFIXES = {".h", ".c", ".inc", ".i"}
 
 
 def copy_new_source_files_back(
