@@ -579,8 +579,7 @@ def _CompileCommand_from_intercepted_command(
             link_type = "exe"
         link_info = {
             "inputs": [
-                drop_lib_prefix(compilation_database.legalize_output_name_for_rust(inp))
-                for inp in icmd.rest_inputs
+                drop_lib_prefix(legalize_output_name_for_rust(inp)) for inp in icmd.rest_inputs
             ],  # FIXME: wrong order???
             "c_files": [],
             "libs": [drop_lib_prefix(lib) for lib in icmd.libs],
@@ -609,7 +608,7 @@ def _CompileCommand_from_intercepted_command(
     # re-legalizes later, but only ahead of the Tenjin run.
     output = icmd.output
     if output is not None and link_cmd_handling == LinkCommandHandling.ADAPT_FOR_C2RUST:
-        output = compilation_database.legalize_output_name_for_rust(output)
+        output = legalize_output_name_for_rust(output)
 
     return compilation_database.CompileCommand(
         directory=icmd.entry["directory"],
@@ -617,3 +616,25 @@ def _CompileCommand_from_intercepted_command(
         arguments=[update_arg(arg) for arg in raw_arguments],
         output=drop_lib_prefix(output),
     )
+
+
+def legalize_output_name_for_rust(output: str) -> str:
+    def with_parent(parent: Path | None, child: str) -> Path:
+        if parent:
+            return parent / child
+        else:
+            return Path(child)
+
+    p = Path(output)
+    # Versioned shared libraries can have filenames like "libfoo.so.1.2.3";
+    # we'll convert names of this form to "libfoo_1_2_3.so"
+    if ".so." in p.name:
+        base, version = p.name.split(".so.", 1)
+        version_underscored = version.replace(".", "_")
+        new_name = f"{base}_{version_underscored}.so"
+        return with_parent(p.parent, new_name).as_posix()
+
+    if "-" in p.name:
+        return with_parent(p.parent, p.name.replace("-", "_")).as_posix()
+    else:
+        return output
