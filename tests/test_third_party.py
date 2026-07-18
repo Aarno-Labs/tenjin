@@ -388,6 +388,46 @@ def test_url_h_aka_urlparser(
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.slow  # expected runtime: 510 s
+#                      of which 265 s is refolding, 100 s is numeric cast removal
+def test_fribidi_g0(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/fribidi/fribidi.git", "069a7e3d31e6aa74f2068a8e0804106ce7906639"
+    )
+
+    # fribidi builds irrelevant utilities by default.
+    # We first do a full minimal build, then remove all the artifacts from the library.
+    prebuildcmd = " && ".join([
+        "meson setup _builddir -Dbin=false -Dtests=false -Ddocs=false",
+        "ninja -C _builddir",
+        "rm -rf _builddir/lib/libfribidi.so.0.4.0",
+        "rm -rf _builddir/lib/libfribidi.so.0.4.0.p/*",
+    ])
+    # Then, invoking ninja will re-build just the library artifacts.
+    buildcmd = "ninja -C _builddir"
+
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            prebuildcmd=prebuildcmd,
+            buildcmd=buildcmd,
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    # To test the resulting shared object, we'd need to re-build
+    # with tests=true, and replace the built shared object (`_builddir/lib/libfribidi.so.0.4.0`)
+    # with (tmp_resultsdir / "final" / "target" / "debug" / "libfribidi_0_4_0.so")
+    # then run `top_builddir=$PWD/_builddir ./test/run.tests`
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
 @pytest.mark.slow  # expected runtime: 470 seconds (~8 minutes)
 def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
