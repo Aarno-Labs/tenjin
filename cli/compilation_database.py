@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import shlex
 from dataclasses import dataclass
-from typing import Callable
 
 import repo_root
 import hermetic
@@ -82,18 +81,6 @@ class CompileCommand:
                 command=" ".join(new_parts),
                 output=self.output,
             )
-
-    def with_sanitized_output(self, sanitizer_func: Callable[[str], str]) -> CompileCommand:
-        """Return a copy of this CompileCommand with the output field sanitized using the provided function."""
-        if not self.output:
-            return self
-        return CompileCommand(
-            directory=self.directory,
-            file=self.file,
-            command=self.command,
-            arguments=self.arguments,
-            output=sanitizer_func(self.output),
-        )
 
 
 @dataclass
@@ -297,29 +284,6 @@ def _is_cc_command(args: list[str]) -> bool:
     return False
 
 
-def with_parent(parent: Path | None, child: str) -> Path:
-    if parent:
-        return parent / child
-    else:
-        return Path(child)
-
-
-def legalize_output_name_for_rust(output: str) -> str:
-    p = Path(output)
-    # Versioned shared libraries can have filenames like "libfoo.so.1.2.3";
-    # we'll convert names of this form to "libfoo_1_2_3.so"
-    if ".so." in p.name:
-        base, version = p.name.split(".so.", 1)
-        version_underscored = version.replace(".", "_")
-        new_name = f"{base}_{version_underscored}.so"
-        return with_parent(p.parent, new_name).as_posix()
-
-    if "-" in p.name:
-        return with_parent(p.parent, p.name.replace("-", "_")).as_posix()
-    else:
-        return output
-
-
 def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     """Modify compile_commands.json to include Tenjin-specific declarations
     and block expansion of macros that Tenjin gives special treatment."""
@@ -342,5 +306,7 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
             args.append("--block-macros-file=" + macros_file.as_posix())
             # See https://github.com/Aarno-Labs/llvm-project/commit/4256d14834810a78a1a61679316441172e0f0dd2
 
-        ccs.append(cc.with_command_parts(args).with_sanitized_output(legalize_output_name_for_rust))
+        # Output names were already legalized for Rust when the compilation
+        # database was generated (see _CompileCommand_from_intercepted_command).
+        ccs.append(cc.with_command_parts(args))
     CompileCommands(commands=ccs).to_json_file(compile_commands_path)

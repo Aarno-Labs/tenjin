@@ -116,3 +116,30 @@ def test_shared_lib_renamed_to_avoid_collision_with_executable(tmp_path):
     assert "../../driver" in link_outputs
     # The disambiguation must survive the crate name being derived from the stem.
     assert len(crate_stems) == len(set(crate_stems)), link_outputs
+
+
+def test_versioned_shared_lib_output_legalized_for_c2rust(tmp_path):
+    # c2rust derives the crate name from the link output's file stem, so a
+    # versioned shared library like `libfribidi.so.0.4` must be rewritten
+    # (here to `fribidi_0_4.so`) or the crate name would contain dots.
+    builddir = tmp_path / "build"
+    builddir.mkdir()
+
+    build_info = targets.BuildInfo()
+    build_info.set_intercepted_commands([
+        targets_from_intercept.convert_intercepted_entry({
+            "type": "cc",
+            "directory": builddir.as_posix(),
+            "arguments": ["clang", "-shared", "-o", "libfribidi.so.0.4", "fribidi.o"],
+            "file": None,
+            "output": None,
+        }),
+    ])
+
+    compdb = build_info.compdb_for_all_targets_within(
+        builddir, link_cmd_handling=targets.LinkCommandHandling.ADAPT_FOR_C2RUST
+    )
+    link_outputs = [cmd.output for cmd in compdb.commands if cmd.output]
+
+    assert link_outputs == ["fribidi_0_4.so"]
+    assert "." not in Path(link_outputs[0]).stem
