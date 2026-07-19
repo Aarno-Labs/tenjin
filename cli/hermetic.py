@@ -149,6 +149,14 @@ def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) ->
             *([pkg_config_path] if pkg_config_path else []),
         ])
 
+        # aclocal (in xj-build-deps) only searches its own prefix by default;
+        # libtool's m4 macros live in xj-more-deps, so bridge the two prefixes.
+        aclocal_path = env.get("ACLOCAL_PATH", "")
+        env["ACLOCAL_PATH"] = os.pathsep.join([
+            str(xj_more_deps(localdir) / "share" / "aclocal"),
+            *([aclocal_path] if aclocal_path else []),
+        ])
+
         ld_lib_paths = [str(llvm_root / "lib")]
         if os.environ.get("XJ_LD_SYSROOT", "") == "1":
             triple = f"{platform.machine()}-linux-gnu"
