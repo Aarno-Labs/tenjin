@@ -12,6 +12,9 @@ bool UnionTransformAction::BeginSourceFileAction(CompilerInstance &CI) {
     gLog.replacedUnion = false;
     gLog.error = "";
     addedMemcpyDecl = false;
+    // Helper definitions are static, so each translation unit needs its own
+    // copy even when the same union appears in several TUs via a shared header.
+    generatedObjects.clear();
     return true;
 }
 
