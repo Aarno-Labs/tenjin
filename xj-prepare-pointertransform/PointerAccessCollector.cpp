@@ -598,6 +598,22 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 }
 
                 if (!candidate.base_array_text.empty()) {
+                    // Equality comparisons stay in pointer form:
+                    //   p != q  →  base + p_index != (q)
+                    // The index form `p_index != (q - base)` is ill-typed
+                    // when q's pointee type differs from base's (e.g. a
+                    // `void *` operand, which `==`/`!=` accept but `-`
+                    // does not), and is UB when q doesn't point into
+                    // base's array — equality alone is defined for any
+                    // two pointers.
+                    if (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) {
+                        access_list.push_back({PointerAccessKind::ComparisonExpr,
+                                               BO->getBeginLoc(), DRE, nullptr,
+                                               op_text, candidate.base_array_text,
+                                               "", "(" + other_text + ")"});
+                        return;
+                    }
+
                     std::string resolved = "(" + other_text + " - " +
                                            candidate.base_array_text + ")";
                     access_list.push_back({PointerAccessKind::ComparisonExpr,

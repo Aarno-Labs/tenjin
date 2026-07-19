@@ -274,6 +274,26 @@ void FunctionAccessAnalyzer::detectAllTransformations(ASTContext &Ctx) {
                 if (access.kind == PointerAccessKind::ComparisonExpr) {
                     std::string op_text = access.operand_text;
 
+                    // Case 0: pointer-form equality "base + idx != (end)"
+                    // (field_name carries the base; see the collector's
+                    // equality handling).
+                    if (!access.field_name.empty()) {
+                        if (op_text.size() > 2 && op_text.front() == '(' &&
+                            op_text.back() == ')') {
+                            std::string end_name =
+                                op_text.substr(1, op_text.size() - 2);
+                            for (unsigned i = 0; i < FD->getNumParams(); i++) {
+                                if (FD->getParamDecl(i)->getNameAsString() == end_name &&
+                                    FD->getParamDecl(i)->getType()->isPointerType()) {
+                                    info.end_param_index = i;
+                                    found_rs = true;
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+
                     // Case 1: pointer pair "(end - base)"
                     std::string pair_suffix = " - " + candidate.base_array_text + ")";
                     if (op_text.size() > pair_suffix.size() &&
@@ -1216,8 +1236,13 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                     continue;
                 // Check if operand_text is "(other - base)" pattern
                 // and the other is also being transformed
-                if (!acc.field_name.empty())
-                    continue; // already using pointer reconstruction
+                if (!acc.field_name.empty() &&
+                    acc.field_name != candidate.base_array_text)
+                    continue; // shape-5 param reconstruction; leave alone
+                // (pointer-form equality records — field_name == base —
+                // fall through: their operand still names the other
+                // pointer and must be reconstructed below if that
+                // pointer is transformed too)
                 // Look for the other pointer in the comparison's parent
                 const Stmt *P = skipTransparentParents(acc.expr, Ctx);
                 const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
@@ -1251,7 +1276,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 // base + index <op> other_base + other_index
                 auto &other_cand = analysis.tracked_pointers[OtherVD];
                 std::string other_base = other_cand.base_array_text;
-                std::string other_idx = OtherVD->getNameAsString() + "_index";
+                std::string other_idx = OtherVD->getNameAsString() + "_index_xj";
                 std::string rhs = other_base.empty() ?
                     other_idx : other_base + " + " + other_idx;
                 acc.field_name = candidate.base_array_text;
@@ -1413,7 +1438,7 @@ static const FunctionDecl *findEnclosingFunction(SourceLocation Loc,
 // pointers / removed params it references render as their new spelling.
 //
 // Handled cases:
-//   - A DeclRefExpr to a transformed local pointer -> append "_index".
+//   - A DeclRefExpr to a transformed local pointer -> append "_index_xj".
 //   - A DeclRefExpr to a return-type-changed local -> use the bare
 //     name (no suffix; the variable is already an int).
 //   - A DeclRefExpr to one of the caller's *removed* params (the
@@ -1450,7 +1475,7 @@ std::string FunctionAccessAnalyzer::translateArgExpr(const Expr *ArgExpr,
                 if (analysis.tracked_pointers.count(VD) &&
                     !analysis.tracked_pointers[VD].is_parameter &&
                     !analysis.accesses[VD].empty()) {
-                    return VD->getNameAsString() + "_index";
+                    return VD->getNameAsString() + "_index_xj";
                 }
             }
 
