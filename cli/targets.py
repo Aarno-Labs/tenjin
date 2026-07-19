@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import pprint
+import re
 
 import bencodepy  # type: ignore
 import click
@@ -626,15 +627,26 @@ def legalize_output_name_for_rust(output: str) -> str:
             return Path(child)
 
     p = Path(output)
-    # Versioned shared libraries can have filenames like "libfoo.so.1.2.3";
-    # we'll convert names of this form to "libfoo_1_2_3.so"
-    if ".so." in p.name:
-        base, version = p.name.split(".so.", 1)
-        version_underscored = version.replace(".", "_")
-        new_name = f"{base}_{version_underscored}.so"
-        return with_parent(p.parent, new_name).as_posix()
+    name = p.name
 
-    if "-" in p.name:
-        return with_parent(p.parent, p.name.replace("-", "_")).as_posix()
+    # c2rust derives the crate name from the output file's stem, so that stem
+    # must be a legal Rust identifier. Split the library extension off the base
+    # name, then replace every character that isn't alphanumeric or an
+    # underscore (hyphens, dots, ...) with an underscore.
+    #
+    # Versioned shared libraries have filenames like "libfoo.so.1.2.3"; fold the
+    # version into the base name and keep the ".so" extension, yielding
+    # "libfoo_1_2_3.so". Names like "libfoo-1.0.a" become "libfoo_1_0.a".
+    if ".so." in name:
+        base, version = name.split(".so.", 1)
+        base = f"{base}.{version}"
+        suffix = ".so"
+    elif name.endswith(".so"):
+        base, suffix = name[: -len(".so")], ".so"
     else:
+        base, suffix = p.stem, p.suffix
+
+    legalized_base = re.sub(r"[^0-9A-Za-z_]", "_", base)
+    if legalized_base == base and suffix == p.suffix:
         return output
+    return with_parent(p.parent, f"{legalized_base}{suffix}").as_posix()
