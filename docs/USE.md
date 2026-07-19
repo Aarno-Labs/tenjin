@@ -393,13 +393,6 @@ limitations to its support:
 * If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`
   the project you're trying to translate is using GCC but we require Clang.
 
-* If you see `lib/Makefile.am:3: error: Libtool library used but 'LIBTOOL' is undefined`
-  it's likely due to incomplete integration between Tenjin's copies of Automake and libtool.
-  The easiest fix is to build with Meson or CMake, if available.
-  Running `10j exec libtoolize ; 10j exec autoreconf` may work.
-  See also https://gnu.org/s/automake/manual/automake.html#Libtool-library-used-but-LIBTOOL-is-undefined
-  for ways to address the issue that involve modifying the project's `configure.ac` file.
-
 * If you see something like
 ```
 AssertionError: Link command missing target output: InterceptedCommand(entry={'type': 'ar', 'directory': ..., 'arguments': ['.../tenjin/_local/xj-llvm/bin/ar', 'cru', ...
