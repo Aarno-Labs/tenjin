@@ -428,6 +428,50 @@ def test_fribidi_g0(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.slow  # expected runtime: 1600 s (about half an hour)
+#                      of which 21 minutes is cclyzerpp and 4.5 minutes is refolding.
+def test_libusb_shared_g0(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/libusb/libusb.git", "87a55632db62c9bdc58cd31d3ccfa673f1bb017f"
+    )
+
+    prebuildcmd = "NOCONFIGURE=1 ./autogen.sh && ./configure --disable-static --disable-udev CC=cc"
+    buildcmd = "make -j3"
+
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            prebuildcmd=prebuildcmd,
+            buildcmd=buildcmd,
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    hermetic.run(
+        "make -j3 test_static_link_flag=".split(),
+        cwd=str(tmp_resultsdir / "_build_1" / "tests"),
+        check=True,
+    )
+    # Run the test suite against the original C shared library
+    hermetic.run("./.libs/stress", cwd=str(tmp_resultsdir / "_build_1" / "tests"), check=True)
+    # Copy the Rust shared library over the C version
+    shutil.copyfile(
+        tmp_resultsdir / "final" / "target" / "debug" / "libusb_1_0_0_6_0.so",
+        tmp_resultsdir / "_build_1" / "libusb" / ".libs" / "libusb-1.0.so.0.6.0",
+    )
+    # Re-run the test suite against the Rust code
+    hermetic.run("./.libs/stress", cwd=str(tmp_resultsdir / "_build_1" / "tests"), check=True)
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
 @pytest.mark.slow  # expected runtime: 470 seconds (~8 minutes)
 def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
