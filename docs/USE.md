@@ -71,16 +71,57 @@ the `bytemuck` crate.
 * `using_crates` - allows the human driver of translation to
 specify third-party crates that should be used in the translation.
 Currently restricted to a hard-coded list.
-* `ffi` - a dict whose keys are function names. Each entry is a dict
-from argument names or the special `$return` string which denotes the return value to 
-an ffi conversion specifier. The specifier can be:
-  * `{ "method": "id"}` or simply `"id"` to use the argument as-is (this is the default behavior if omitted). This method works both to and from Rust.
-  * `{ "method": "via-cstr", "empty-if-null" : <bool> }` or simply `"via-cstr"`: used to convert from a `char*` to a rust slice whose length
-    is calculated via `strlen`. Assumes non-null if "empty-if-null" is `false` (default); supports null pointer and produces empty slice if `true`.
-  * `{ "method": "slice-with-length", "length" : e, "mutable" : <bool> }` where `e` can be a numeric literal or a variable,
-    indicating the length of the slice; `<bool>` is either `true` or `false` and indicates if the slice should be mutable
-    (default: `false`)
-  * `{ "method": "from-slice", "mutable" : `<bool>`}` used to lower a rust slice back to a C pointer
+* `ffi` - a dict whose keys are function names. Each entry is a dict from
+argument names (or the special `$return` string, which denotes the return value)
+to an ffi conversion specifier. When any argument or the return value of a
+function is given a conversion, Tenjin keeps the translated function as a plain
+Rust `fn` (with its guided argument/return types) and emits a separate C-ABI
+shim into a `xj_ffi` module. The shim exports the original C symbol,
+converts each incoming C value into the guided Rust type, forwards to the real
+function, and converts the result back to the C return type. (Variadic
+functions and `main` cannot be wrapped this way and are skipped).
+
+  Each specifier is a JSON object with a `"method"` key (the bare-string
+  shorthand such as `"via-cstr"` is no longer accepted; always use the object
+  form). The available *argument* conversions (C value into the guided Rust
+  type) are:
+
+  * `{ "method": "id" }` uses the value as-is. This is the default when an
+    argument is omitted.
+  * `{ "method": "via-cstr", "mutable": <bool>, "empty-if-null": <bool> }`
+    converts a `char*` into a Rust slice (`&[u8]` / `&mut [u8]`) whose length is
+    computed with `strlen` (plus one, to include the null terminator). `mutable`
+    (default `false`) selects a shared or mutable slice. If `empty-if-null` is
+    `true` (default `false`) a null pointer yields an empty slice `&[]` instead
+    of being dereferenced.
+  * `{ "method": "slice-with-length", "length": e, "mutable": <bool> }`
+    converts a pointer into a slice of length `e`, where `e` is a numeric literal
+    or the name of another argument. `mutable` (default `false`) selects a shared
+    or mutable slice.
+  * `{ "method": "ref", "mutable": <bool> }` converts a raw pointer into an
+    `Option` of a reference: `*const T`/`*mut T` become `Option<&T>` (via
+    `as_ref`, `mutable: false`) or `Option<&mut T>` (via `as_mut`,
+    `mutable: true`). Typically paired with `unwrap`.
+  * `{ "method": "unwrap" }` unwraps an `Option<T>` into a `T` (via `.unwrap()`),
+    e.g. to turn the `Option<&T>` produced by `ref` into a plain reference.
+  * `{ "method": "pointer-reinterp", "ty": "T" }` reinterprets a pointer's
+    pointee type via `.cast::<T>()`, producing `*const T`/`*mut T`. Use this for
+    types with the same representation, e.g. reinterpreting `*const u8` as
+    `*const Option<&u8>` where the null-pointer optimization applies.
+  * `{ "method": "pipe", "conversions": [ ... ] }` applies a sequence of
+    conversions left-to-right, threading each result into the next. For example,
+    `pipe` of `ref` then `unwrap` turns a raw pointer into a plain reference.
+
+  The available `$return` conversions (guided Rust value back into the C return
+  type) are:
+
+  * `{ "method": "id" }` returns the value as-is (the default).
+  * `{ "method": "lift" }` the dual of `unwrap`: lifts `T` to `Option<T>`.
+  * `{ "method": "from-slice", "mutable": <bool> }` lowers a slice back to a raw
+    pointer via `.as_ptr()` (`mutable: false`) or `.as_mut_ptr()`
+    (`mutable: true`).
+  * `{ "method": "from-ref", "mutable": <bool> }` lowers a reference back to a
+    raw pointer via a cast (`as *const _` / `as *mut _`).
 * `no_math_errno` - mostly for debugging/testing. Currently asserts
 that no functions in the entire translated codebase make of use
 `errno` in the math stdlib.

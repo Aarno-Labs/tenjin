@@ -88,14 +88,17 @@ pub enum FFIInConversion {
     Pipeline { conversions: Vec<FFIInConversion> },
 
     #[serde(rename = "ref")]
+    // *(const|mut) T -> Option<&(const|mut) T>
     ToRef { mutable: bool },
 
-    #[serde(rename = "pointer-reinterp")]
-    // p.cast::<T>
-    PointerCast { ty: String },
-
     #[serde(rename = "unwrap")]
+    // Option<T> -> T
     Unwrap,
+
+    #[serde(rename = "pointer-reinterp")]
+    // For types that are guaranteed to share the same representation
+    // i.e. &T and Option<&T> (for T where the nullable ptr optimization applies)
+    PointerCast { ty: String },
 
     #[serde(rename = "via-cstr")]
     ViaCStr {
@@ -119,8 +122,15 @@ pub enum FFIInConversion {
 pub enum FFIOutConversion {
     #[serde(rename = "id")]
     Id,
+
     #[serde(rename = "from-ref")]
+    // *(const|mut) T <- Option<&(const|mut) T>
     FromRef { mutable: bool },
+
+    #[serde(rename = "lift")]
+    // Dual of Unwrap -- unclear if needed at the moment
+    Lift,
+
     #[serde(rename = "from-slice")]
     FromSlice {
         #[serde(rename = "mutable")]
@@ -242,16 +252,28 @@ impl FFIOutConversion {
     pub fn marshal(&self, e: Box<Expr>) -> Box<Expr> {
         match self {
             FFIOutConversion::Id => e,
+            FFIOutConversion::Lift => mk().call_expr(mk().ident_expr("Some"), vec![e]),
             FFIOutConversion::FromSlice { mutable } => {
                 let ptr_method = if *mutable { "as_mut_ptr" } else { "as_ptr" };
                 mk().method_call_expr(e, mk().path_segment(ptr_method), vec![])
             }
             FFIOutConversion::FromRef { mutable } => {
-                if !*mutable {
-                    mk().cast_expr(e, syn::parse_str("*const _").unwrap())
+                //opt.map_or(ptr::null(), |r| r as *const u8);
+                let null = mk().call_expr(mk().path_expr(vec!["std", "ptr", "null"]), vec![]);
+                let argexpr = mk().path_expr("x");
+                let body = if !*mutable {
+                    mk().cast_expr(argexpr, syn::parse_str("*const _").unwrap())
                 } else {
-                    mk().cast_expr(e, syn::parse_str("*mut _").unwrap())
-                }
+                    mk().cast_expr(argexpr, syn::parse_str("*mut _").unwrap())
+                };
+                let cast = mk().closure_expr(
+                    c2rust_ast_builder::CaptureBy::Ref,
+                    Movability::Movable,
+                    vec![mk().ident_pat("x")],
+                    ReturnType::Default,
+                    body,
+                );
+                mk().method_call_expr(e, mk().path_segment("map_or"), vec![null, cast])
             }
         }
     }
