@@ -2673,6 +2673,72 @@ void FunctionAccessAnalyzer::fixReturnTypeChanges(ASTContext &Ctx) {
                           << FD->getNameAsString() << "\n";
     }
 
+    // Calls whose return value is consumed directly do not have a receiving
+    // variable for Part D to rewrite.  Fix pointer-null comparisons in place
+    // now that the callee returns -1 for null.
+    class GlobalReturnDirectCallTransformer
+        : public RecursiveASTVisitor<GlobalReturnDirectCallTransformer> {
+    public:
+        Rewriter &Rewrite;
+        SourceManager &SM;
+        const LangOptions &LO;
+
+        GlobalReturnDirectCallTransformer(Rewriter &R, SourceManager &SM,
+                                          const LangOptions &LO)
+            : Rewrite(R), SM(SM), LO(LO) {}
+
+        bool VisitBinaryOperator(BinaryOperator *BO) {
+            if (BO->getOpcode() != BO_EQ && BO->getOpcode() != BO_NE)
+                return true;
+
+            const Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
+            const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
+            const Expr *NullExpr = nullptr;
+            if (isGlobalReturnCall(LHS) && isNullLike(RHS))
+                NullExpr = BO->getRHS();
+            else if (isGlobalReturnCall(RHS) && isNullLike(LHS))
+                NullExpr = BO->getLHS();
+
+            if (!NullExpr)
+                return true;
+
+            SourceLocation Start = NullExpr->getBeginLoc();
+            SourceLocation End = NullExpr->getEndLoc();
+            if (Start.isMacroID() || End.isMacroID()) {
+                auto Expansion = SM.getExpansionRange(NullExpr->getSourceRange());
+                Start = Expansion.getBegin();
+                End = Expansion.getEnd();
+            }
+            End = Lexer::getLocForEndOfToken(End, 0, SM, LO);
+            Rewrite.ReplaceText(Start, SM.getFileOffset(End) - SM.getFileOffset(Start), "-1");
+            return true;
+        }
+
+    private:
+        static bool isGlobalReturnCall(const Expr *E) {
+            const auto *CE = dyn_cast<CallExpr>(E);
+            if (!CE)
+                return false;
+            const FunctionDecl *Callee = CE->getDirectCallee();
+            return Callee &&
+                g_global_return_functions.count(Callee->getCanonicalDecl());
+        }
+
+        static bool isNullLike(const Expr *E) {
+            E = E->IgnoreParenImpCasts();
+            if (const auto *IL = dyn_cast<IntegerLiteral>(E))
+                return IL->getValue() == 0;
+            if (isa<GNUNullExpr>(E))
+                return true;
+            if (const auto *CE = dyn_cast<CStyleCastExpr>(E))
+                return isNullLike(CE->getSubExpr());
+            return false;
+        }
+    };
+
+    GlobalReturnDirectCallTransformer directCallTransformer(TheRewriter, SM, LO);
+    directCallTransformer.TraverseDecl(Ctx.getTranslationUnitDecl());
+
     // Part D: Transform callers of global-return functions
     // Find all calls and their receiving variables
     class GlobalReturnCallFinder : public RecursiveASTVisitor<GlobalReturnCallFinder> {
@@ -2916,6 +2982,23 @@ void FunctionAccessAnalyzer::fixReturnTypeChanges(ASTContext &Ctx) {
                             Rewrite.ReplaceText(Start, len, varName + " != -1");
                             return true;
                         }
+                    }
+                }
+
+                // The variable now stores an index, but an unchanged callee
+                // still expects the pointer produced by the original helper.
+                // Reconstruct that pointer at the argument boundary.
+                if (const auto *CE = dyn_cast<CallExpr>(Parent)) {
+                    for (const Expr *Arg : CE->arguments()) {
+                        if (Arg->IgnoreParenImpCasts() != DRE)
+                            continue;
+                        SourceLocation Start = DRE->getBeginLoc();
+                        SourceLocation End = Lexer::getLocForEndOfToken(
+                            DRE->getEndLoc(), 0, SM, LO);
+                        unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
+                        Rewrite.ReplaceText(Start, len,
+                            "&" + GlobalArray + "[" + varName + "]");
+                        return true;
                     }
                 }
 
