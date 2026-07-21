@@ -14,6 +14,31 @@
 
 #include "FunctionAccessAnalyzer.h"
 
+namespace {
+
+// Replacing a pointer return type's token range does not necessarily leave a
+// separator before the function name.  In the common `T *func()` spelling,
+// Clang reports `T *` as the return-type range and `func` starts immediately
+// after it.  Preserve existing whitespace when there is some, and supply it
+// when the two ranges are adjacent.
+void rewriteReturnTypeAsInt(Rewriter &Rewrite, const FunctionDecl *FD,
+                            SourceManager &SM, const LangOptions &LO) {
+    SourceLocation RetStart = FD->getReturnTypeSourceRange().getBegin();
+    SourceLocation RetEnd = FD->getReturnTypeSourceRange().getEnd();
+    SourceLocation FuncName = FD->getLocation();
+    if (RetStart.isInvalid() || RetEnd.isInvalid() || FuncName.isInvalid())
+        return;
+
+    SourceLocation End = Lexer::getLocForEndOfToken(RetEnd, 0, SM, LO);
+    unsigned start_offset = SM.getFileOffset(RetStart);
+    unsigned end_offset = SM.getFileOffset(End);
+    unsigned name_offset = SM.getFileOffset(FuncName);
+    std::string replacement = end_offset == name_offset ? "int " : "int";
+    Rewrite.ReplaceText(RetStart, end_offset - start_offset, replacement);
+}
+
+} // namespace
+
 // ============================================================================
 // Driver
 // ============================================================================
@@ -2177,14 +2202,8 @@ void FunctionAccessAnalyzer::rewriteForwardDeclarations(ASTContext &Ctx) {
             if (SM.isInSystemHeader(Redecl->getLocation()))
                 continue;
 
-            // Change return type from T* to int
-            SourceLocation RetStart = Redecl->getReturnTypeSourceRange().getBegin();
-            SourceLocation RetEnd = Redecl->getReturnTypeSourceRange().getEnd();
-            if (RetStart.isValid() && RetEnd.isValid()) {
-                SourceLocation End = Lexer::getLocForEndOfToken(RetEnd, 0, SM, LO);
-                unsigned len = SM.getFileOffset(End) - SM.getFileOffset(RetStart);
-                TheRewriter.ReplaceText(RetStart, len, "int");
-            }
+            // Change return type from T* to int.
+            rewriteReturnTypeAsInt(TheRewriter, Redecl, SM, LO);
 
             if (VERBOSE)
                 llvm::outs() << "[Phase5a] Rewrote global-return forward declaration of "
@@ -2561,13 +2580,7 @@ void FunctionAccessAnalyzer::fixReturnTypeChanges(ASTContext &Ctx) {
             continue;
 
         // C1: Change return type from T* to int
-        SourceLocation RetTypeLoc = FD->getReturnTypeSourceRange().getBegin();
-        SourceLocation RetTypeEnd = FD->getReturnTypeSourceRange().getEnd();
-        if (RetTypeLoc.isValid() && RetTypeEnd.isValid()) {
-            SourceLocation End = Lexer::getLocForEndOfToken(RetTypeEnd, 0, SM, LO);
-            unsigned len = SM.getFileOffset(End) - SM.getFileOffset(RetTypeLoc);
-            TheRewriter.ReplaceText(RetTypeLoc, len, "int");
-        }
+        rewriteReturnTypeAsInt(TheRewriter, FD, SM, LO);
 
         // C2: Transform return statements
         class GlobalReturnFixer : public RecursiveASTVisitor<GlobalReturnFixer> {
