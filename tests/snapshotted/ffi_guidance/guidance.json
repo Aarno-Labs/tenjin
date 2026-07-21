@@ -1,7 +1,15 @@
 {
     "vars_of_type": {
         "&[u8]": [
-            "ffi_via_cstr_first_byte:s"
+            "ffi_via_cstr_first_byte:s",
+            "ffi_via_cstr_empty_if_null:s"
+        ],
+        "&mut ::core::ffi::c_int": [
+            "ffi_ref_unwrap:p",
+            "ffi_from_ref_ret:p"
+        ],
+        "*const Option<&u8>": [
+            "ffi_pointer_reinterp:p"
         ],
         "&[::core::ffi::c_int]": [
             "ffi_slice_literal_len:xs",
@@ -15,7 +23,8 @@
         ]
     },
     "fn_return_type": {
-        "ffi_from_slice_ret": "&mut [u8]"
+        "ffi_from_slice_ret": "&mut [u8]",
+        "ffi_from_ref_ret": "&mut ::core::ffi::c_int"
     },
     "ffi": {
         "ffi_via_cstr_first_byte": {
@@ -51,6 +60,40 @@
             "$return": {
                 "method": "from-slice",
                 "mutable": true
+            }
+        },
+        "ffi_ref_unwrap": {
+            "p": {
+                "method": "pipe",
+                "conversions": [
+                    { "method": "ref", "mutable": true },
+                    { "method": "unwrap" }
+                ]
+            }
+        },
+        "ffi_from_ref_ret": {
+            "p": {
+                "method": "pipe",
+                "conversions": [
+                    { "method": "ref", "mutable": true },
+                    { "method": "unwrap" }
+                ]
+            },
+            "$return": {
+                "method": "from-ref",
+                "mutable": true
+            }
+        },
+        "ffi_via_cstr_empty_if_null": {
+            "s": {
+                "method": "via-cstr",
+                "empty-if-null": true
+            }
+        },
+        "ffi_pointer_reinterp": {
+            "p": {
+                "method": "pointer-reinterp",
+                "ty": "Option<&u8>"
             }
         }
     }

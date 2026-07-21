@@ -47,3 +47,40 @@ unsigned char *ffi_from_slice_ret(unsigned char *buf, int n)
     buf[0] = 0;
     return buf;
 }
+
+// XREF:ffi_ref_unwrap
+// `p` is guided to `&mut i32`. The wrapper turns the incoming raw pointer into a
+// reference and unwraps the resulting `Option` by chaining `ref` + `unwrap`
+// inside a `pipe`.
+int ffi_ref_unwrap(int *p)
+{
+    *p += 1;
+    return *p;
+}
+
+// XREF:ffi_from_ref_return
+// `p` and the return value are both guided to `&mut i32`. The wrapper turns the
+// incoming raw pointer into a `&mut` (`ref` + `unwrap`) and casts the returned
+// reference back to a raw pointer via `from-ref` on the way out.
+int *ffi_from_ref_ret(int *p)
+{
+    *p += 1;
+    return p;
+}
+
+// XREF:ffi_via_cstr_empty_if_null
+// `s` is guided to `&[u8]` via `via-cstr`, but with `empty-if-null` the wrapper
+// substitutes an empty slice when the incoming pointer is NULL.
+int ffi_via_cstr_empty_if_null(const char *s)
+{
+    return s[0];
+}
+
+// XREF:ffi_pointer_reinterp
+// `p` is guided to `*const Option<&u8>`. The wrapper reinterprets the incoming
+// `*const u8` as that pointer type via `pointer-reinterp`, relying on the
+// null-pointer layout optimization of `Option<&T>`.
+int ffi_pointer_reinterp(const unsigned char *p)
+{
+    return p != 0;
+}

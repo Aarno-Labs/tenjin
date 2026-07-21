@@ -83,6 +83,20 @@ pub struct FFIConversion {
 pub enum FFIInConversion {
     #[serde(rename = "id")]
     Id,
+
+    #[serde(rename = "pipe")]
+    Pipeline { conversions: Vec<FFIInConversion> },
+
+    #[serde(rename = "ref")]
+    ToRef { mutable: bool },
+
+    #[serde(rename = "pointer-reinterp")]
+    // p.cast::<T>
+    PointerCast { ty: String },
+
+    #[serde(rename = "unwrap")]
+    Unwrap,
+
     #[serde(rename = "via-cstr")]
     ViaCStr {
         #[serde(default)]
@@ -91,6 +105,7 @@ pub enum FFIInConversion {
         #[serde(rename = "empty-if-null")]
         empty_if_null: bool,
     },
+
     #[serde(rename = "slice-with-length")]
     SliceWithLen {
         #[serde(default)]
@@ -104,6 +119,8 @@ pub enum FFIInConversion {
 pub enum FFIOutConversion {
     #[serde(rename = "id")]
     Id,
+    #[serde(rename = "from-ref")]
+    FromRef { mutable: bool },
     #[serde(rename = "from-slice")]
     FromSlice {
         #[serde(rename = "mutable")]
@@ -138,6 +155,10 @@ impl FFIInConversion {
     ) -> WithStmts<Box<Expr>> {
         match self {
             FFIInConversion::Id => WithStmts::new_val(e),
+            FFIInConversion::ToRef { mutable } => {
+                let method = if !*mutable { "as_ref" } else { "as_mut" };
+                WithStmts::new_val(mk().method_call_expr(e, mk().path_segment(method), vec![]))
+            }
             FFIInConversion::ViaCStr {
                 empty_if_null,
                 mutable,
@@ -172,6 +193,7 @@ impl FFIInConversion {
                     slice_of_string
                 }
             }
+
             FFIInConversion::SliceWithLen { mutable, length } => {
                 let len = length
                     .parse::<u128>()
@@ -184,6 +206,34 @@ impl FFIInConversion {
                     });
                 make_slice(e, len, *mutable)
             }
+
+            FFIInConversion::Pipeline { conversions } => {
+                let mut stmts = vec![];
+                let mut e = e;
+                for c in conversions {
+                    let mut r = c.marshal(x, translation, e);
+                    stmts.append(r.stmts_mut());
+                    e = r.into_value();
+                }
+                WithStmts::new(stmts, e)
+            }
+
+            FFIInConversion::PointerCast { ty } => {
+                let gt = GuidedType::from_str(ty).unwrap();
+                let casted = mk().method_call_expr(
+                    e,
+                    mk().path_segment_with_args(
+                        "cast",
+                        mk().angle_bracketed_args(vec![Box::new(gt.parsed)]),
+                    ),
+                    vec![],
+                );
+                WithStmts::new_val(casted)
+            }
+
+            FFIInConversion::Unwrap => {
+                WithStmts::new_val(mk().method_call_expr(e, mk().path_segment("unwrap"), vec![]))
+            }
         }
     }
 }
@@ -195,6 +245,13 @@ impl FFIOutConversion {
             FFIOutConversion::FromSlice { mutable } => {
                 let ptr_method = if *mutable { "as_mut_ptr" } else { "as_ptr" };
                 mk().method_call_expr(e, mk().path_segment(ptr_method), vec![])
+            }
+            FFIOutConversion::FromRef { mutable } => {
+                if !*mutable {
+                    mk().cast_expr(e, syn::parse_str("*const _").unwrap())
+                } else {
+                    mk().cast_expr(e, syn::parse_str("*mut _").unwrap())
+                }
             }
         }
     }
