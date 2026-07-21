@@ -13,6 +13,15 @@ def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp
         "static Item *find_item(int index) {\n"
         "    if (index == 0) return &items[index];\n"
         "    return (void *)0;\n"
+        "}\n"
+        "static int use_item(Item *item) { return item->value; }\n"
+        "static int item_exists(int index) {\n"
+        "    return find_item(index) != (void *)0;\n"
+        "}\n"
+        "static int get_item_value(int index) {\n"
+        "    Item *item = find_item(index);\n"
+        "    if (item) return use_item(item);\n"
+        "    return 0;\n"
         "}\n",
         encoding="utf-8",
     )
@@ -38,3 +47,12 @@ def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp
 
     assert transformed.count("static int find_item(int index)") == 2
     assert "intfind_item" not in transformed
+    assert "find_item(index) != -1" in transformed
+    assert "return use_item(&items[item]);" in transformed
+
+    hermetic.run(
+        [clang, "-std=c11", "-x", "c", "-fsyntax-only", "-"],
+        input=result.stdout,
+        check=True,
+        capture_output=True,
+    )
