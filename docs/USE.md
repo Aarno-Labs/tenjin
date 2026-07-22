@@ -88,17 +88,17 @@ functions and `main` cannot be wrapped this way and are skipped).
 
   * `{ "method": "id" }` uses the value as-is. This is the default when an
     argument is omitted.
-  * `{ "method": "via-cstr", "mutable": <bool>, "empty-if-null": <bool> }`
+  * `{ "method": "to-slice-via-cstr", "mutable": <bool>, "empty-if-null": <bool> }`
     converts a `char*` into a Rust slice (`&[u8]` / `&mut [u8]`) whose length is
     computed with `strlen` (plus one, to include the null terminator). `mutable`
     (default `false`) selects a shared or mutable slice. If `empty-if-null` is
     `true` (default `false`) a null pointer yields an empty slice `&[]` instead
     of being dereferenced.
-  * `{ "method": "slice-with-length", "length": e, "mutable": <bool> }`
+  * `{ "method": "to-slice", "length": e, "mutable": <bool> }`
     converts a pointer into a slice of length `e`, where `e` is a numeric literal
     or the name of another argument. `mutable` (default `false`) selects a shared
     or mutable slice.
-  * `{ "method": "ref", "mutable": <bool> }` converts a raw pointer into an
+  * `{ "method": "to-ref", "mutable": <bool> }` converts a raw pointer into an
     `Option` of a reference: `*const T`/`*mut T` become `Option<&T>` (via
     `as_ref`, `mutable: false`) or `Option<&mut T>` (via `as_mut`,
     `mutable: true`). Typically paired with `unwrap`.
