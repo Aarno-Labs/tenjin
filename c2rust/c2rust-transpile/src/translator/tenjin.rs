@@ -87,7 +87,7 @@ pub enum FFIInConversion {
     #[serde(rename = "pipe")]
     Pipeline { conversions: Vec<FFIInConversion> },
 
-    #[serde(rename = "ref")]
+    #[serde(rename = "to-ref")]
     // *(const|mut) T -> Option<&(const|mut) T>
     ToRef { mutable: bool },
 
@@ -100,7 +100,7 @@ pub enum FFIInConversion {
     // i.e. &T and Option<&T> (for T where the nullable ptr optimization applies)
     PointerCast { ty: String },
 
-    #[serde(rename = "via-cstr")]
+    #[serde(rename = "to-slice-via-cstr")]
     ViaCStr {
         #[serde(default)]
         mutable: bool,
@@ -109,7 +109,7 @@ pub enum FFIInConversion {
         empty_if_null: bool,
     },
 
-    #[serde(rename = "slice-with-length")]
+    #[serde(rename = "to-slice")]
     SliceWithLen {
         #[serde(default)]
         mutable: bool,
@@ -130,6 +130,9 @@ pub enum FFIOutConversion {
     #[serde(rename = "lift")]
     // Dual of Unwrap -- unclear if needed at the moment
     Lift,
+
+    #[serde(rename = "pipe")]
+    Pipeline { conversions: Vec<FFIOutConversion> },
 
     #[serde(rename = "from-slice")]
     FromSlice {
@@ -253,19 +256,27 @@ impl FFIOutConversion {
         match self {
             FFIOutConversion::Id => e,
             FFIOutConversion::Lift => mk().call_expr(mk().ident_expr("Some"), vec![e]),
+            FFIOutConversion::Pipeline { conversions } => {
+                let mut e = e;
+                for c in conversions {
+                    e = c.marshal(e);
+                }
+                e
+            }
             FFIOutConversion::FromSlice { mutable } => {
                 let ptr_method = if *mutable { "as_mut_ptr" } else { "as_ptr" };
                 mk().method_call_expr(e, mk().path_segment(ptr_method), vec![])
             }
             FFIOutConversion::FromRef { mutable } => {
                 //opt.map_or(ptr::null(), |r| r as *const u8);
-                let null = mk().call_expr(mk().path_expr(vec!["std", "ptr", "null"]), vec![]);
                 let argexpr = mk().path_expr("x");
-                let body = if !*mutable {
-                    mk().cast_expr(argexpr, syn::parse_str("*const _").unwrap())
+                let (null_fn, cast_ty) = if *mutable {
+                    ("null_mut", "*mut _")
                 } else {
-                    mk().cast_expr(argexpr, syn::parse_str("*mut _").unwrap())
+                    ("null", "*const _")
                 };
+                let null = mk().call_expr(mk().path_expr(vec!["std", "ptr", null_fn]), vec![]);
+                let body = mk().cast_expr(argexpr, syn::parse_str(cast_ty).unwrap());
                 let cast = mk().closure_expr(
                     c2rust_ast_builder::CaptureBy::Ref,
                     Movability::Movable,

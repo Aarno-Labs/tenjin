@@ -26,11 +26,14 @@ pub unsafe fn ffi_from_ref_ret(mut p: &mut ::core::ffi::c_int) -> &mut ::core::f
     *p += 1 as ::core::ffi::c_int;
     return p;
 }
+pub unsafe fn ffi_lift_from_ref_shared(mut p: &::core::ffi::c_int) -> &::core::ffi::c_int {
+    return p;
+}
 pub unsafe fn ffi_via_cstr_empty_if_null(mut s: &[u8]) -> ::core::ffi::c_int {
     return s[0 as usize] as ::core::ffi::c_int;
 }
-pub unsafe fn ffi_pointer_reinterp(mut p: *const Option<&u8>) -> ::core::ffi::c_int {
-    return !p.is_null() as ::core::ffi::c_int;
+pub unsafe fn ffi_pointer_reinterp(mut p: &Option<&'static u8>) -> Option<&'static u8> {
+    return *p;
 }
 pub mod xj_ffi {
     #[allow(unused_imports)]
@@ -77,7 +80,15 @@ pub mod xj_ffi {
     pub unsafe extern "C" fn ffi_from_ref_ret(
         p: *mut ::core::ffi::c_int,
     ) -> *mut ::core::ffi::c_int {
-        super::ffi_from_ref_ret(p.as_mut().unwrap()) as *mut _
+        Some(super::ffi_from_ref_ret(p.as_mut().unwrap()))
+            .map_or(std::ptr::null_mut(), |x| x as *mut _)
+    }
+    #[no_mangle]
+    pub unsafe extern "C" fn ffi_lift_from_ref_shared(
+        p: *const ::core::ffi::c_int,
+    ) -> *const ::core::ffi::c_int {
+        Some(super::ffi_lift_from_ref_shared(p.as_ref().unwrap()))
+            .map_or(std::ptr::null(), |x| x as *const _)
     }
     #[no_mangle]
     pub unsafe extern "C" fn ffi_via_cstr_empty_if_null(
@@ -92,8 +103,9 @@ pub mod xj_ffi {
     }
     #[no_mangle]
     pub unsafe extern "C" fn ffi_pointer_reinterp(
-        p: *const ::core::ffi::c_uchar,
-    ) -> ::core::ffi::c_int {
-        super::ffi_pointer_reinterp(p.cast::<Option<&u8>>())
+        p: *mut *const ::core::ffi::c_uchar,
+    ) -> *const ::core::ffi::c_uchar {
+        super::ffi_pointer_reinterp(p.cast::<Option<&u8>>().as_ref().unwrap())
+            .map_or(std::ptr::null(), |x| x as *const _)
     }
 }

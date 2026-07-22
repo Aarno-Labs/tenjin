@@ -51,6 +51,15 @@ int *ffi_from_ref_ret(int *p)
     return p;
 }
 
+// XREF:ffi_lift_from_ref_shared
+// `p` and the return value are guided to `&i32`. On the way out, the return
+// conversion is a `pipe` of `lift` (wrap the `&i32` in `Some`) then `from-ref`,
+// lowering the resulting `Option<&i32>` back to a `*const i32` (NULL if `None`).
+const int *ffi_lift_from_ref_shared(const int *p)
+{
+    return p;
+}
+
 // XREF:ffi_via_cstr_empty_if_null
 int ffi_via_cstr_empty_if_null(const char *s)
 {
