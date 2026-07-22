@@ -503,8 +503,22 @@ impl ParsedGuidance {
                 for (arg, strategy) in conv.as_object().unwrap_or(&Map::new()) {
                     if arg == "$return" {
                         ffi_out_conversion = parse_ffi_out_conversion(strategy);
+                        if ffi_out_conversion.is_none() {
+                            log::error!(
+                                "Tenjin `ffi` guidance for return value of {} is invalid: {}",
+                                func,
+                                strategy
+                            );
+                        }
                     } else if let Some(strategy) = parse_ffi_in_conversion(strategy) {
                         ffi_in_conversions.insert(arg.clone(), strategy);
+                    } else {
+                        log::error!(
+                            "Tenjin `ffi` guidance for function {} argument {} is invalid: {}",
+                            func,
+                            arg,
+                            strategy
+                        );
                     }
                 }
                 if !ffi_in_conversions.is_empty() || ffi_out_conversion.is_some() {
