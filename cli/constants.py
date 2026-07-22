@@ -1,7 +1,7 @@
 # Note: the keys in this dict are not command names, or file names,
 # just arbitrary labels for the things we are tracking.
 WANT = {
-    "10j-llvm": "21.1.8+refold@rev-37d52f4c8",
+    "10j-llvm": "21.1.8+refold@rev-73a471b80",
     "10j-llvm14": "14.0.6@llvmorg-14.0.6",
     "10j-opam": "2.3.0",
     "10j-dune": "3.19.1",
@@ -12,7 +12,7 @@ WANT = {
     "10j-build-deps": "rev-ce215d150",
     # Note that 10j-more-deps builds against a specific version of LLVM, so before
     # upgrading the major version of 10j-llvm, update 10j-more-deps first.
-    "10j-more-deps": "rev-ce215d150",
+    "10j-more-deps": "rev-32ad94940",
     "10j-codehawk": "7e01d90290c01f40e572ffee1f79a9d663f3ab7a",
     "10j-codehawk-c": "76556e4d12a6f01f6da2bbf9a8c6f02624e70f04",
     # Keep in sync with the version in `xj-improve-multitool/rust-toolchain.toml`.

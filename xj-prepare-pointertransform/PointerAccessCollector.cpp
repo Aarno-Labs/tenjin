@@ -571,16 +571,33 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 return;
             }
 
-            // Shape 2: p ?= arr + n  →  index ?= n
+            // Shape 2: p ?= base + n  →  index ?= n
+            // Only when the added-to pointer is p's own base array —
+            // `p ?= other + n` for a foreign pointer must not collapse
+            // to an index-vs-n comparison. A parameter with no base yet
+            // may still match its own name: validation later makes the
+            // parameter itself the base (index counts from its incoming
+            // value), so `p ?= p + n` is `index ?= n`.
             if (const BinaryOperator *AddBO = dyn_cast<BinaryOperator>(OtherSide)) {
                 if (AddBO->getOpcode() == BO_Add) {
                     const Expr *AddLHS = AddBO->getLHS()->IgnoreParenImpCasts();
                     if (AddLHS->getType()->isPointerType() || AddLHS->getType()->isArrayType()) {
-                        std::string offset = getSourceText(AddBO->getRHS(), SM, LO);
-                        access_list.push_back({PointerAccessKind::ComparisonExpr,
-                                               BO->getBeginLoc(), DRE, nullptr,
-                                               op_text, "", "", offset});
-                        return;
+                        std::string add_lhs_text = getSourceText(AddLHS, SM, LO);
+                        bool lhs_is_base =
+                            !candidate.base_array_text.empty()
+                                ? add_lhs_text == candidate.base_array_text
+                                : candidate.is_parameter &&
+                                      add_lhs_text ==
+                                          candidate.ptr_var->getNameAsString();
+                        if (lhs_is_base) {
+                            std::string offset = getSourceText(AddBO->getRHS(), SM, LO);
+                            access_list.push_back({PointerAccessKind::ComparisonExpr,
+                                                   BO->getBeginLoc(), DRE, nullptr,
+                                                   op_text, "", "", offset});
+                            return;
+                        }
+                        // Foreign base: fall through to the pointer-
+                        // expression shapes below.
                     }
                 }
             }
@@ -598,6 +615,22 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 }
 
                 if (!candidate.base_array_text.empty()) {
+                    // Equality comparisons stay in pointer form:
+                    //   p != q  →  base + p_index != (q)
+                    // The index form `p_index != (q - base)` is ill-typed
+                    // when q's pointee type differs from base's (e.g. a
+                    // `void *` operand, which `==`/`!=` accept but `-`
+                    // does not), and is UB when q doesn't point into
+                    // base's array — equality alone is defined for any
+                    // two pointers.
+                    if (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) {
+                        access_list.push_back({PointerAccessKind::ComparisonExpr,
+                                               BO->getBeginLoc(), DRE, nullptr,
+                                               op_text, candidate.base_array_text,
+                                               "", "(" + other_text + ")"});
+                        return;
+                    }
+
                     std::string resolved = "(" + other_text + " - " +
                                            candidate.base_array_text + ")";
                     access_list.push_back({PointerAccessKind::ComparisonExpr,

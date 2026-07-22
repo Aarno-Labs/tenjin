@@ -14,6 +14,31 @@
 
 #include "FunctionAccessAnalyzer.h"
 
+namespace {
+
+// Replacing a pointer return type's token range does not necessarily leave a
+// separator before the function name.  In the common `T *func()` spelling,
+// Clang reports `T *` as the return-type range and `func` starts immediately
+// after it.  Preserve existing whitespace when there is some, and supply it
+// when the two ranges are adjacent.
+void rewriteReturnTypeAsInt(Rewriter &Rewrite, const FunctionDecl *FD,
+                            SourceManager &SM, const LangOptions &LO) {
+    SourceLocation RetStart = FD->getReturnTypeSourceRange().getBegin();
+    SourceLocation RetEnd = FD->getReturnTypeSourceRange().getEnd();
+    SourceLocation FuncName = FD->getLocation();
+    if (RetStart.isInvalid() || RetEnd.isInvalid() || FuncName.isInvalid())
+        return;
+
+    SourceLocation End = Lexer::getLocForEndOfToken(RetEnd, 0, SM, LO);
+    unsigned start_offset = SM.getFileOffset(RetStart);
+    unsigned end_offset = SM.getFileOffset(End);
+    unsigned name_offset = SM.getFileOffset(FuncName);
+    std::string replacement = end_offset == name_offset ? "int " : "int";
+    Rewrite.ReplaceText(RetStart, end_offset - start_offset, replacement);
+}
+
+} // namespace
+
 // ============================================================================
 // Driver
 // ============================================================================
@@ -273,6 +298,26 @@ void FunctionAccessAnalyzer::detectAllTransformations(ASTContext &Ctx) {
             for (const auto &access : accesses) {
                 if (access.kind == PointerAccessKind::ComparisonExpr) {
                     std::string op_text = access.operand_text;
+
+                    // Case 0: pointer-form equality "base + idx != (end)"
+                    // (field_name carries the base; see the collector's
+                    // equality handling).
+                    if (!access.field_name.empty()) {
+                        if (op_text.size() > 2 && op_text.front() == '(' &&
+                            op_text.back() == ')') {
+                            std::string end_name =
+                                op_text.substr(1, op_text.size() - 2);
+                            for (unsigned i = 0; i < FD->getNumParams(); i++) {
+                                if (FD->getParamDecl(i)->getNameAsString() == end_name &&
+                                    FD->getParamDecl(i)->getType()->isPointerType()) {
+                                    info.end_param_index = i;
+                                    found_rs = true;
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
 
                     // Case 1: pointer pair "(end - base)"
                     std::string pair_suffix = " - " + candidate.base_array_text + ")";
@@ -1216,8 +1261,13 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                     continue;
                 // Check if operand_text is "(other - base)" pattern
                 // and the other is also being transformed
-                if (!acc.field_name.empty())
-                    continue; // already using pointer reconstruction
+                if (!acc.field_name.empty() &&
+                    acc.field_name != candidate.base_array_text)
+                    continue; // shape-5 param reconstruction; leave alone
+                // (pointer-form equality records — field_name == base —
+                // fall through: their operand still names the other
+                // pointer and must be reconstructed below if that
+                // pointer is transformed too)
                 // Look for the other pointer in the comparison's parent
                 const Stmt *P = skipTransparentParents(acc.expr, Ctx);
                 const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
@@ -1251,7 +1301,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 // base + index <op> other_base + other_index
                 auto &other_cand = analysis.tracked_pointers[OtherVD];
                 std::string other_base = other_cand.base_array_text;
-                std::string other_idx = OtherVD->getNameAsString() + "_index";
+                std::string other_idx = OtherVD->getNameAsString() + "_index_xj";
                 std::string rhs = other_base.empty() ?
                     other_idx : other_base + " + " + other_idx;
                 acc.field_name = candidate.base_array_text;
@@ -1413,7 +1463,7 @@ static const FunctionDecl *findEnclosingFunction(SourceLocation Loc,
 // pointers / removed params it references render as their new spelling.
 //
 // Handled cases:
-//   - A DeclRefExpr to a transformed local pointer -> append "_index".
+//   - A DeclRefExpr to a transformed local pointer -> append "_index_xj".
 //   - A DeclRefExpr to a return-type-changed local -> use the bare
 //     name (no suffix; the variable is already an int).
 //   - A DeclRefExpr to one of the caller's *removed* params (the
@@ -1450,7 +1500,7 @@ std::string FunctionAccessAnalyzer::translateArgExpr(const Expr *ArgExpr,
                 if (analysis.tracked_pointers.count(VD) &&
                     !analysis.tracked_pointers[VD].is_parameter &&
                     !analysis.accesses[VD].empty()) {
-                    return VD->getNameAsString() + "_index";
+                    return VD->getNameAsString() + "_index_xj";
                 }
             }
 
@@ -2152,14 +2202,8 @@ void FunctionAccessAnalyzer::rewriteForwardDeclarations(ASTContext &Ctx) {
             if (SM.isInSystemHeader(Redecl->getLocation()))
                 continue;
 
-            // Change return type from T* to int
-            SourceLocation RetStart = Redecl->getReturnTypeSourceRange().getBegin();
-            SourceLocation RetEnd = Redecl->getReturnTypeSourceRange().getEnd();
-            if (RetStart.isValid() && RetEnd.isValid()) {
-                SourceLocation End = Lexer::getLocForEndOfToken(RetEnd, 0, SM, LO);
-                unsigned len = SM.getFileOffset(End) - SM.getFileOffset(RetStart);
-                TheRewriter.ReplaceText(RetStart, len, "int");
-            }
+            // Change return type from T* to int.
+            rewriteReturnTypeAsInt(TheRewriter, Redecl, SM, LO);
 
             if (VERBOSE)
                 llvm::outs() << "[Phase5a] Rewrote global-return forward declaration of "
@@ -2536,13 +2580,7 @@ void FunctionAccessAnalyzer::fixReturnTypeChanges(ASTContext &Ctx) {
             continue;
 
         // C1: Change return type from T* to int
-        SourceLocation RetTypeLoc = FD->getReturnTypeSourceRange().getBegin();
-        SourceLocation RetTypeEnd = FD->getReturnTypeSourceRange().getEnd();
-        if (RetTypeLoc.isValid() && RetTypeEnd.isValid()) {
-            SourceLocation End = Lexer::getLocForEndOfToken(RetTypeEnd, 0, SM, LO);
-            unsigned len = SM.getFileOffset(End) - SM.getFileOffset(RetTypeLoc);
-            TheRewriter.ReplaceText(RetTypeLoc, len, "int");
-        }
+        rewriteReturnTypeAsInt(TheRewriter, FD, SM, LO);
 
         // C2: Transform return statements
         class GlobalReturnFixer : public RecursiveASTVisitor<GlobalReturnFixer> {
@@ -2634,6 +2672,72 @@ void FunctionAccessAnalyzer::fixReturnTypeChanges(ASTContext &Ctx) {
             llvm::outs() << "[Phase5b-C] Transformed global-return function: "
                           << FD->getNameAsString() << "\n";
     }
+
+    // Calls whose return value is consumed directly do not have a receiving
+    // variable for Part D to rewrite.  Fix pointer-null comparisons in place
+    // now that the callee returns -1 for null.
+    class GlobalReturnDirectCallTransformer
+        : public RecursiveASTVisitor<GlobalReturnDirectCallTransformer> {
+    public:
+        Rewriter &Rewrite;
+        SourceManager &SM;
+        const LangOptions &LO;
+
+        GlobalReturnDirectCallTransformer(Rewriter &R, SourceManager &SM,
+                                          const LangOptions &LO)
+            : Rewrite(R), SM(SM), LO(LO) {}
+
+        bool VisitBinaryOperator(BinaryOperator *BO) {
+            if (BO->getOpcode() != BO_EQ && BO->getOpcode() != BO_NE)
+                return true;
+
+            const Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
+            const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
+            const Expr *NullExpr = nullptr;
+            if (isGlobalReturnCall(LHS) && isNullLike(RHS))
+                NullExpr = BO->getRHS();
+            else if (isGlobalReturnCall(RHS) && isNullLike(LHS))
+                NullExpr = BO->getLHS();
+
+            if (!NullExpr)
+                return true;
+
+            SourceLocation Start = NullExpr->getBeginLoc();
+            SourceLocation End = NullExpr->getEndLoc();
+            if (Start.isMacroID() || End.isMacroID()) {
+                auto Expansion = SM.getExpansionRange(NullExpr->getSourceRange());
+                Start = Expansion.getBegin();
+                End = Expansion.getEnd();
+            }
+            End = Lexer::getLocForEndOfToken(End, 0, SM, LO);
+            Rewrite.ReplaceText(Start, SM.getFileOffset(End) - SM.getFileOffset(Start), "-1");
+            return true;
+        }
+
+    private:
+        static bool isGlobalReturnCall(const Expr *E) {
+            const auto *CE = dyn_cast<CallExpr>(E);
+            if (!CE)
+                return false;
+            const FunctionDecl *Callee = CE->getDirectCallee();
+            return Callee &&
+                g_global_return_functions.count(Callee->getCanonicalDecl());
+        }
+
+        static bool isNullLike(const Expr *E) {
+            E = E->IgnoreParenImpCasts();
+            if (const auto *IL = dyn_cast<IntegerLiteral>(E))
+                return IL->getValue() == 0;
+            if (isa<GNUNullExpr>(E))
+                return true;
+            if (const auto *CE = dyn_cast<CStyleCastExpr>(E))
+                return isNullLike(CE->getSubExpr());
+            return false;
+        }
+    };
+
+    GlobalReturnDirectCallTransformer directCallTransformer(TheRewriter, SM, LO);
+    directCallTransformer.TraverseDecl(Ctx.getTranslationUnitDecl());
 
     // Part D: Transform callers of global-return functions
     // Find all calls and their receiving variables
@@ -2878,6 +2982,23 @@ void FunctionAccessAnalyzer::fixReturnTypeChanges(ASTContext &Ctx) {
                             Rewrite.ReplaceText(Start, len, varName + " != -1");
                             return true;
                         }
+                    }
+                }
+
+                // The variable now stores an index, but an unchanged callee
+                // still expects the pointer produced by the original helper.
+                // Reconstruct that pointer at the argument boundary.
+                if (const auto *CE = dyn_cast<CallExpr>(Parent)) {
+                    for (const Expr *Arg : CE->arguments()) {
+                        if (Arg->IgnoreParenImpCasts() != DRE)
+                            continue;
+                        SourceLocation Start = DRE->getBeginLoc();
+                        SourceLocation End = Lexer::getLocForEndOfToken(
+                            DRE->getEndLoc(), 0, SM, LO);
+                        unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
+                        Rewrite.ReplaceText(Start, len,
+                            "&" + GlobalArray + "[" + varName + "]");
+                        return true;
                     }
                 }
 

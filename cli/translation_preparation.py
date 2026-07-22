@@ -300,13 +300,17 @@ def compute_build_info_in(
     assert not mut_build_info.is_empty(), "Failed to intercept commands from build"
 
 
+# Suffixes of build-generated files that later passes must see as source files.
+GENERATED_SOURCE_SUFFIXES = {".h", ".c", ".inc", ".i"}
+
+
 def copy_new_source_files_back(
     codebase: Path,
     builddir: Path,
 ):
     """Copy newly created source files from the build directory back to the original codebase."""
     for new_file in builddir.rglob("*.*"):
-        if new_file.suffix not in {".h", ".c", ".inc"}:
+        if new_file.suffix not in GENERATED_SOURCE_SUFFIXES:
             continue
         relative_path = new_file.relative_to(builddir)
         dest_file = codebase / relative_path
@@ -346,7 +350,7 @@ def relocate_generated_files(
         if not src.is_file():
             continue
 
-        if Path(rel).suffix in {".h", ".c", ".inc"}:
+        if Path(rel).suffix in GENERATED_SOURCE_SUFFIXES:
             dest_current = current_codebase / rel
             dest_current.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dest_current)

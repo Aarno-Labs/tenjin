@@ -444,3 +444,18 @@ limitations to its support:
 * If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`
   the project you're trying to translate is using GCC but we require Clang.
 
+* If you see something like
+```
+AssertionError: Link command missing target output: InterceptedCommand(entry={'type': 'ar', 'directory': ..., 'arguments': ['.../tenjin/_local/xj-llvm/bin/ar', 'cru', ...
+```
+the problem is the `u` in the `cru` argument to `ar` -- it prevents Tenjin from being able
+to precisely understand what the created archive will actually contain. The `u` flag is
+often the default for older Autotools builds. You can often fix the problem by specifying
+`AR_FLAGS=cr` when invoking `./configure` (e.g. in `--prebuildcmd`). Alternatively, you
+might switch the build to produce/use a dynamic library instead of a static one.
+
+* If the Rust code fails `cargo check` with a message 
+ `error[E0425]: cannot find function 'atoi' in this scope`
+ the issue may be due to having compiled the C code with a flag like
+ `-Wno-implicit-function-declaration` for a file that was missing a required `#include`.
+ The right fix is to add the required `#include` and re-run translation.

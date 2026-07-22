@@ -697,27 +697,14 @@ def want_10j_more_deps():
                 str(target / "lib" / "libpng16.16.dylib"),
             ])
 
-        z3_pc = target / "lib" / "pkgconfig" / "z3.pc"
-        if z3_pc.is_file():
-            lines = z3_pc.read_text(encoding="utf-8").splitlines()
-            lines[0] = f"prefix={target.resolve()}"
-            lines[1] = "exec_prefix=${prefix}"
-            z3_pc.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-        gmp_dir = hermetic.xj_gmp_root(HAVE.localdir)
-        gmp_files_to_cook = [
-            gmp_dir / "lib" / "pkgconfig" / "gmp.pc",
-            gmp_dir / "lib" / "libgmp.la",
-        ]
-        for f in gmp_files_to_cook:
-            if f.is_file():
-                lines = f.read_text(encoding="utf-8").splitlines()
-                lines[0] = f"prefix={gmp_dir.resolve()}"
-                f.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
         cook_pkg_config_placeholders_within(target)
 
-        for tgt_path in [target / "bin" / "libtoolize", target / "lib" / "libltdl.la"]:
+        for tgt_path in [
+            target / "bin" / "libtoolize",
+            target / "bin" / "pcre2-config",
+            *list((target / "lib").rglob("*.la")),
+            hermetic.xj_gmp_root(HAVE.localdir) / "lib" / "libgmp.la",
+        ]:
             data = tgt_path.read_text(encoding="utf-8")
             tgt_path.write_text(
                 data.replace("/outputs", target.resolve().as_posix()),

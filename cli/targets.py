@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import pprint
+import re
 
 import bencodepy  # type: ignore
 import click
@@ -579,8 +580,7 @@ def _CompileCommand_from_intercepted_command(
             link_type = "exe"
         link_info = {
             "inputs": [
-                drop_lib_prefix(compilation_database.legalize_output_name_for_rust(inp))
-                for inp in icmd.rest_inputs
+                drop_lib_prefix(legalize_output_name_for_rust(inp)) for inp in icmd.rest_inputs
             ],  # FIXME: wrong order???
             "c_files": [],
             "libs": [drop_lib_prefix(lib) for lib in icmd.libs],
@@ -603,9 +603,50 @@ def _CompileCommand_from_intercepted_command(
 
     assert filename, f"InterceptedCommand has no identified input file, {icmd}"
 
+    # c2rust derives crate names from the output's file stem, so versioned
+    # shared library names like "libfoo.so.1.2" must be legalized here, before
+    # the vanilla c2rust run -- munge_compile_commands_for_tenjin_translation
+    # re-legalizes later, but only ahead of the Tenjin run.
+    output = icmd.output
+    if output is not None and link_cmd_handling == LinkCommandHandling.ADAPT_FOR_C2RUST:
+        output = legalize_output_name_for_rust(output)
+
     return compilation_database.CompileCommand(
         directory=icmd.entry["directory"],
         file=update(filename),
         arguments=[update_arg(arg) for arg in raw_arguments],
-        output=drop_lib_prefix(icmd.output),
+        output=drop_lib_prefix(output),
     )
+
+
+def legalize_output_name_for_rust(output: str) -> str:
+    def with_parent(parent: Path | None, child: str) -> Path:
+        if parent:
+            return parent / child
+        else:
+            return Path(child)
+
+    p = Path(output)
+    name = p.name
+
+    # c2rust derives the crate name from the output file's stem, so that stem
+    # must be a legal Rust identifier. Split the library extension off the base
+    # name, then replace every character that isn't alphanumeric or an
+    # underscore (hyphens, dots, ...) with an underscore.
+    #
+    # Versioned shared libraries have filenames like "libfoo.so.1.2.3"; fold the
+    # version into the base name and keep the ".so" extension, yielding
+    # "libfoo_1_2_3.so". Names like "libfoo-1.0.a" become "libfoo_1_0.a".
+    if ".so." in name:
+        base, version = name.split(".so.", 1)
+        base = f"{base}.{version}"
+        suffix = ".so"
+    elif name.endswith(".so"):
+        base, suffix = name[: -len(".so")], ".so"
+    else:
+        base, suffix = p.stem, p.suffix
+
+    legalized_base = re.sub(r"[^0-9A-Za-z_]", "_", base)
+    if legalized_base == base and suffix == p.suffix:
+        return output
+    return with_parent(p.parent, f"{legalized_base}{suffix}").as_posix()

@@ -135,6 +135,26 @@ bool FunctionAccessAnalyzer::generateTransformation(
                 if (access.kind == PointerAccessKind::ComparisonExpr) {
                     std::string op_text = access.operand_text;
 
+                    // Case 0: pointer-form equality "base + idx != (end)"
+                    // (field_name carries the base; see the collector's
+                    // equality handling).
+                    if (!access.field_name.empty()) {
+                        if (op_text.size() > 2 && op_text.front() == '(' &&
+                            op_text.back() == ')') {
+                            std::string end_name =
+                                op_text.substr(1, op_text.size() - 2);
+                            for (unsigned i = 0; i < FD->getNumParams(); i++) {
+                                if (FD->getParamDecl(i)->getNameAsString() == end_name &&
+                                    FD->getParamDecl(i)->getType()->isPointerType()) {
+                                    slice_info.end_param_index = i;
+                                    is_rust_slice = true;
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+
                     // Case 1: pointer pair "(end - base)"
                     std::string pair_suffix = " - " + original_base_array + ")";
                     if (op_text.size() > pair_suffix.size() &&
@@ -187,8 +207,24 @@ bool FunctionAccessAnalyzer::generateTransformation(
             // *(p + lookahead).
             base_array = slice_info.slice_param_name + ".ptr";
 
+            std::string end_pat;
+            if (slice_info.end_param_index >= 0)
+                end_pat = "(" +
+                          FD->getParamDecl(slice_info.end_param_index)->getNameAsString() +
+                          ")";
             for (auto &access : accesses) {
                 if (access.kind == PointerAccessKind::ComparisonExpr) {
+                    if (!access.field_name.empty()) {
+                        // Pointer-form equality. If it bounded the pointer
+                        // against `end` it becomes an index bound against
+                        // arr.len (same object by construction); otherwise
+                        // it stays in pointer form, rebased onto arr.ptr.
+                        if (access.operand_text != end_pat) {
+                            access.field_name = base_array;
+                            continue;
+                        }
+                        access.field_name.clear();
+                    }
                     int adjustment = slice_info.lookahead;
                     if (slice_info.inclusive_end)
                         adjustment += 1;
@@ -1921,21 +1957,36 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
             std::string base_pname = FD->getParamDecl(base_idx)->getNameAsString();
             std::string end_pname = FD->getParamDecl(end_idx)->getNameAsString();
             std::string sub_pat = "(" + end_pname + " - " + base_pname + ")";
+            std::string ptr_pat = "(" + end_pname + ")";
             bool incl = (tf_it != g_transformed_functions.end())
                             ? tf_it->second.inclusive_end
                             : inclusive_end;
             for (auto &acc : accesses) {
-                if (acc.kind == PointerAccessKind::ComparisonExpr &&
-                    acc.operand_text == sub_pat) {
-                    int adj = candidate.max_relative_offset;
-                    if (incl)
-                        adj += 1;
-                    if (adj > 0)
-                        acc.operand_text =
-                            arr_name + ".len - " + std::to_string(adj);
-                    else
-                        acc.operand_text = arr_name + ".len";
+                if (acc.kind != PointerAccessKind::ComparisonExpr)
+                    continue;
+                // Pointer-form equality (field_name carries the base):
+                // a bound against `end` becomes an index bound against
+                // arr.len; anything else keeps its pointer form, rebased
+                // onto arr.ptr.
+                if (!acc.field_name.empty()) {
+                    if (acc.operand_text == ptr_pat) {
+                        acc.field_name.clear();
+                    } else {
+                        if (acc.field_name == base_pname)
+                            acc.field_name = arr_name + ".ptr";
+                        continue;
+                    }
+                } else if (acc.operand_text != sub_pat) {
+                    continue;
                 }
+                int adj = candidate.max_relative_offset;
+                if (incl)
+                    adj += 1;
+                if (adj > 0)
+                    acc.operand_text =
+                        arr_name + ".len - " + std::to_string(adj);
+                else
+                    acc.operand_text = arr_name + ".len";
             }
         }
 
