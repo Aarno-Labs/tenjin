@@ -32,7 +32,7 @@ import llvm_bitcode_linking
 import targets_from_intercept
 from targets import BuildInfo, TargetType
 from caching_file_contents import CachingFileContents
-from constants import WANT, XJ_GUIDANCE_FILENAME
+from constants import WANT, XJ_GUIDANCE_FILENAME, PTR_INDEX_METADATA_FILENAME
 from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr
 import tenj_types
 from translation_types import TranslationFlags
@@ -2058,6 +2058,10 @@ def run_preparation_passes(
             .strip()
         )
 
+        # Side-file consumed by the subsequent slicetransform pass (which
+        # deletes it when done).
+        metadata_path = current_codebase / PTR_INDEX_METADATA_FILENAME
+
         xj_start = time.time()
         cp = run_modifying_subprocess_or_restore_prev(
             prev,
@@ -2067,6 +2071,7 @@ def run_preparation_passes(
                 [
                     binary_path.as_posix(),
                     "--inplace",
+                    f"--metadata-out={metadata_path.as_posix()}",
                     "-p",
                     current_codebase.as_posix(),
                     "--extra-arg=-Wno-zero-length-array",
@@ -2089,6 +2094,75 @@ def run_preparation_passes(
             )
         print("xj-prepare-pointertransform stderr:")
         print(cp.stderr.decode("utf-8"))
+        return cp
+
+    def prep_slicetransform(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        builddir = hermetic.xj_prepare_slicetransform_build_dir(repo_root.localdir())
+        assert builddir.exists(), (
+            f"Build directory {builddir} does not exist, should have been built already"
+        )
+
+        # Keep in sync with `xj-prepare-slicetransform/CMakeLists.txt`
+        binary_path = builddir / "xj-prepare-slicetransform"
+
+        compdb_path = current_codebase / "compile_commands.json"
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
+
+        with open(compdb_path, encoding="utf-8") as f:
+            compdb_entries = json.load(f)
+        source_files = [entry["file"] for entry in compdb_entries]
+
+        assert len(source_files) > 0, (
+            "No source files found in compilation database: " + compdb_path.as_posix()
+        )
+
+        xj_clang_resource_dir = (
+            hermetic.run(["clang", "-print-resource-dir"], capture_output=True, check=True)
+            .stdout.decode()
+            .strip()
+        )
+
+        # Metadata side-file written by xj-prepare-pointertransform. The
+        # slice pass consumes it as hints (AST-verified before use); it must
+        # not outlive this pass, lest later passes or builds see it.
+        metadata_path = current_codebase / PTR_INDEX_METADATA_FILENAME
+        metadata_args = (
+            [f"--metadata-in={metadata_path.as_posix()}"] if metadata_path.exists() else []
+        )
+
+        xj_start = time.time()
+        cp = run_modifying_subprocess_or_restore_prev(
+            prev,
+            current_codebase,
+            "xj-prepare-slicetransform",
+            lambda: hermetic.run(
+                [
+                    binary_path.as_posix(),
+                    "--inplace",
+                    *metadata_args,
+                    "-p",
+                    current_codebase.as_posix(),
+                    "--extra-arg=-Wno-zero-length-array",
+                    "--extra-arg=-Wno-implicit-int-conversion",
+                    "--extra-arg=-Wno-unused-function",
+                    f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+                    *source_files,
+                ],
+                cwd=current_codebase,
+                check=True,
+                capture_output=True,
+            ),
+        )
+        xj_elapsed = time.time() - xj_start
+        if cp.returncode == 0:
+            print(f"xj-prepare-slicetransform completed in {xj_elapsed:.1f} seconds")
+        else:
+            print(
+                f"xj-prepare-slicetransform failed in {xj_elapsed:.1f} seconds; restored previous contents"
+            )
+        print("xj-prepare-slicetransform stderr:")
+        print(cp.stderr.decode("utf-8"))
+        metadata_path.unlink(missing_ok=True)
         return cp
 
     def prep_refold_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
@@ -2120,6 +2194,7 @@ def run_preparation_passes(
         ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
         ("pointertransform", prep_pointertransform),
+        ("slicetransform", prep_slicetransform),
         ("uniquify_statics", prep_uniquify_statics),
     ]
 

@@ -18,7 +18,6 @@ bool PointerTransformAction::BeginSourceFileAction(CompilerInstance &CI) {
     g_global_pointer_map.clear();
     g_transformed_functions.clear();
     g_function_analyses.clear();
-    g_index_return_vars.clear();
     g_global_return_functions.clear();
     // NOTE: do NOT clear g_allowed_funcs — it's static configuration
     // (names of library functions we have wrappers for, e.g. strchr,
@@ -27,7 +26,6 @@ bool PointerTransformAction::BeginSourceFileAction(CompilerInstance &CI) {
     // AssignFromAllowedFunc path, the assignment is classified Unknown,
     // and the validator rejects the candidate silently.
     g_emitted_wrappers.clear();
-    g_emitted_typedefs.clear();
     gLog.foundPointer = false;
     gLog.replacedPointer = false;
     gLog.error = "";

@@ -3,10 +3,10 @@
 //
 //   1. Driver: constructor, run() (per-function analysis), and
 //      onEndOfTranslationUnit() (the phase orchestrator).
-//   2. Phase 0  — detectAllTransformations (RustSlice detection).
-//   3. Phase 2+ — transformAllFunctions, applySingleton/PointerPair...
-//   4. Helpers  — emitTypedefs, rewriteCallSites, fixReturnTypeChanges,
-//                 rewriteForwardDeclarations, applyEdits, etc.
+//   2. Phase 0  — detectAllTransformations (RustSlice detection; results
+//      are exported to metadata for xj-prepare-slicetransform).
+//   3. Phase 1  — transformAllFunctions (plain index rewriting).
+//   4. Helpers  — exportMetadata, applyEdits, etc.
 //
 // All actual source rewriting is deferred to onEndOfTranslationUnit so
 // that detection (which depends on which other functions get rewritten)
@@ -14,30 +14,7 @@
 
 #include "FunctionAccessAnalyzer.h"
 
-namespace {
-
-// Replacing a pointer return type's token range does not necessarily leave a
-// separator before the function name.  In the common `T *func()` spelling,
-// Clang reports `T *` as the return-type range and `func` starts immediately
-// after it.  Preserve existing whitespace when there is some, and supply it
-// when the two ranges are adjacent.
-void rewriteReturnTypeAsInt(Rewriter &Rewrite, const FunctionDecl *FD,
-                            SourceManager &SM, const LangOptions &LO) {
-    SourceLocation RetStart = FD->getReturnTypeSourceRange().getBegin();
-    SourceLocation RetEnd = FD->getReturnTypeSourceRange().getEnd();
-    SourceLocation FuncName = FD->getLocation();
-    if (RetStart.isInvalid() || RetEnd.isInvalid() || FuncName.isInvalid())
-        return;
-
-    SourceLocation End = Lexer::getLocForEndOfToken(RetEnd, 0, SM, LO);
-    unsigned start_offset = SM.getFileOffset(RetStart);
-    unsigned end_offset = SM.getFileOffset(End);
-    unsigned name_offset = SM.getFileOffset(FuncName);
-    std::string replacement = end_offset == name_offset ? "int " : "int";
-    Rewrite.ReplaceText(RetStart, end_offset - start_offset, replacement);
-}
-
-} // namespace
+#include "llvm/Support/Path.h"
 
 // ============================================================================
 // Driver
@@ -163,7 +140,10 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
     ASTContext &Ctx = *StoredCtx;
 
     // Detect every RustSlice candidate (root, singleton, pointer-pair,
-    // recursive). No edits emitted yet.
+    // recursive). No edits emitted yet. The detection results are not
+    // applied here — they are exported to the metadata side-file for
+    // xj-prepare-slicetransform, which performs all signature-level
+    // reshaping.
     detectAllTransformations(Ctx);
 
     // Rewrite individual local pointers function-by-function. May
@@ -171,24 +151,8 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
     // validation.
     transformAllFunctions(Ctx);
 
-    // Rewrite RustSlice signatures + bodies.
-    applySingletonTransformations(Ctx);
-    applyPointerPairTransformations(Ctx);
-
-    // Insert typedefs after the body rewrites have settled the set of
-    // pointee types we actually need.
-    emitTypedefs(Ctx);
-
-    // Patch all callers of RustSlice functions and any forward
-    // declarations / return-type changes.
-    if (!g_transformed_functions.empty()) {
-        rewriteCallSites(Ctx);
-    }
-    rewriteForwardDeclarations(Ctx);
-    fixReturnTypeChanges(Ctx);
-
-    // Finally, rewrite file-scope pointer variables (they were
-    // collected once during the first run() call).
+    // Rewrite file-scope pointer variables (they were collected once
+    // during the first run() call).
     for (auto &[VD, state] : g_global_pointer_map) {
         if (state.accesses.empty())
             continue;
@@ -230,8 +194,22 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
                 SM.getSpellingLineNumber(Loc),
                 SM.getSpellingColumnNumber(Loc)
             });
+
+            xj::PtrIndexPointerRecord rec;
+            rec.name = VD->getNameAsString();
+            rec.index_var = rec.name + "_index_xj";
+            rec.param_index = -1;
+            rec.moved = true;
+            rec.base_text = state.candidate.base_array_text;
+            rec.min_offset = state.candidate.min_relative_offset;
+            rec.max_offset = state.candidate.max_relative_offset;
+            rec.variable_offsets = !state.candidate.constant_offsets;
+            g_metadata.globals.push_back(std::move(rec));
         }
     }
+
+    // Export this TU's detection results for the slice pass.
+    exportMetadata(Ctx);
 }
 
 // ============================================================================
@@ -455,12 +433,12 @@ void FunctionAccessAnalyzer::detectAllTransformations(ASTContext &Ctx) {
             // Safety: refuse the rewrite if any *non-rewriteable*
             // pointer in the body references the base/end/len params.
             //
-            // After the signature change, replaceRemovedParams blindly
-            // rewrites every textual reference to those params to
-            // arr.ptr/arr.len. That's correct for pointers we're also
-            // rewriting to indices — `q_index < arr.len` makes sense.
-            // But for a pointer that stays a real pointer (because it
-            // was reseated from an opaque expression like
+            // After the signature change, the slice pass rewrites the
+            // remaining references to those params to arr.ptr/arr.len.
+            // That's correct for pointers we're also rewriting to
+            // indices — `q_index < arr.len` makes sense. But for a
+            // pointer that stays a real pointer (because it was
+            // reseated from an opaque expression like
             // `q = find_comma(q) + 1`), the rewrite turns
             // `q < end` into `char *q < size_t arr.len`, which compiles
             // but is meaningless and silently breaks the loop.
@@ -533,6 +511,7 @@ void FunctionAccessAnalyzer::detectAllTransformations(ASTContext &Ctx) {
                 }
             }
 
+            info.driver_ptr_name = PtrVar->getNameAsString();
             g_transformed_functions[FDCanon] = info;
             if (VERBOSE)
                 llvm::outs() << "[Detect] Root RustSlice in "
@@ -986,7 +965,8 @@ void FunctionAccessAnalyzer::detectAllTransformations(ASTContext &Ctx) {
     // (always the *same* global array) is a candidate to have its
     // return type rewritten from T* to int. The caller will then index
     // into the global array directly. Recorded in
-    // g_global_return_functions and applied later by fixReturnTypeChanges.
+    // g_global_return_functions, exported to metadata, and applied by the
+    // slice pass.
     for (auto &[FDCanon, analysis] : g_function_analyses) {
         if (g_transformed_functions.count(FDCanon))
             continue;
@@ -1079,93 +1059,6 @@ void FunctionAccessAnalyzer::detectAllTransformations(ASTContext &Ctx) {
         }
     }
 }
-
-// ============================================================================
-// emitTypedefs — insert one RustSlice_<T> typedef per pointee type
-// ============================================================================
-//
-// Each typedef is inserted just before the earliest function that
-// references it. Slice types whose function has a forward declaration
-// in a header are skipped here — rewriteForwardDeclarations places
-// the typedef in the header instead so both the prototype and the
-// definition see it.
-
-void FunctionAccessAnalyzer::emitTypedefs(ASTContext &Ctx) {
-    SourceManager &SM = Ctx.getSourceManager();
-
-    // First pass: which slice types belong to functions whose prototype
-    // lives in a non-main file (i.e. a real header)? Those are handled
-    // by rewriteForwardDeclarations to keep header + impl in sync.
-    std::set<std::string> has_header_decl;
-    FileID MainFID = SM.getMainFileID();
-    for (auto &[FDCanon, info] : g_transformed_functions) {
-        for (const FunctionDecl *Redecl : FDCanon->redecls()) {
-            if (Redecl->isThisDeclarationADefinition())
-                continue;
-            if (SM.isInSystemHeader(Redecl->getLocation()))
-                continue;
-            if (SM.getFileID(Redecl->getLocation()) != MainFID) {
-                has_header_decl.insert(info.slice_type);
-                break;
-            }
-        }
-    }
-
-    // Second pass: for each slice type, find the earliest function (or
-    // forward declaration in the main file) that uses it, and build
-    // the typedef text once.
-    std::map<std::string, SourceLocation> earliest_loc;
-    std::map<std::string, std::string> typedef_text;
-
-    for (auto &[FDCanon, info] : g_transformed_functions) {
-        if (has_header_decl.count(info.slice_type))
-            continue;
-
-        auto fa_it = g_function_analyses.find(FDCanon);
-        if (fa_it == g_function_analyses.end())
-            continue;
-        const FunctionDecl *FD = fa_it->second.FD;
-        if (!FD)
-            continue;
-
-        SourceLocation loc = FD->getBeginLoc();
-
-        // Also consider forward declarations in the main file (e.g.
-        // ones inlined by the preprocessor). The typedef must precede
-        // every use of the slice type.
-        for (const FunctionDecl *Redecl : FDCanon->redecls()) {
-            if (Redecl->isThisDeclarationADefinition())
-                continue;
-            if (SM.isInSystemHeader(Redecl->getLocation()))
-                continue;
-            SourceLocation rdLoc = Redecl->getBeginLoc();
-            if (rdLoc.isValid() && SM.isBeforeInTranslationUnit(rdLoc, loc))
-                loc = rdLoc;
-        }
-
-        if (earliest_loc.find(info.slice_type) == earliest_loc.end() ||
-            SM.isBeforeInTranslationUnit(loc, earliest_loc[info.slice_type])) {
-            earliest_loc[info.slice_type] = loc;
-        }
-
-        if (typedef_text.find(info.slice_type) == typedef_text.end()) {
-            typedef_text[info.slice_type] = "typedef struct { " +
-                info.pointee_type + " *ptr; size_t len; } " +
-                info.slice_type + ";\n\n";
-        }
-    }
-
-    // g_emitted_typedefs is checked across translation units so a slice
-    // type that's already been emitted in this run doesn't get emitted
-    // again.
-    for (auto &[type_name, loc] : earliest_loc) {
-        if (g_emitted_typedefs.find(type_name) != g_emitted_typedefs.end())
-            continue;
-        g_emitted_typedefs.insert(type_name);
-        TheRewriter.InsertTextBefore(loc, typedef_text[type_name]);
-    }
-}
-
 // ============================================================================
 // transformAllFunctions — rewrite every local pointer that's safe to
 // rewrite, function by function. For root-RustSlice functions this
@@ -1178,22 +1071,17 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         if (!FD || !FD->hasBody())
             continue;
 
-        // Only process functions that are either root RustSlice
-        // candidates or contain at least one transformable local
-        // pointer.
         auto rs_it = g_transformed_functions.find(FDCanon);
-        bool is_root_rs = rs_it != g_transformed_functions.end() &&
-                          !rs_it->second.singleton_param_indices.empty() == false &&
-                          rs_it->second.base_param_index >= 0 &&
-                          rs_it->second.end_param_index >= 0;
 
-        // Check if this is a singleton or pointer-pair (handled separately)
-        if (rs_it != g_transformed_functions.end()) {
-            if (!rs_it->second.singleton_param_indices.empty())
-                continue; // singleton — handled in applySingletonTransformations
-            if (rs_it->second.base_param_index >= 0 && rs_it->second.end_param_index >= 0)
-                continue; // pointer-pair — handled in applyPointerPairTransformations
-        }
+        // Singleton functions (swap-style) have no moving pointers, so
+        // there is nothing for this pass to rewrite in their bodies; the
+        // slice pass reshapes them wholesale from the metadata. Every
+        // other function — including pointer-pair and root RustSlice
+        // candidates — gets its local pointers rewritten here in plain
+        // (base-param-relative) form.
+        if (rs_it != g_transformed_functions.end() &&
+            !rs_it->second.singleton_param_indices.empty())
+            continue;
 
         m_edited_ranges.clear();
 
@@ -1380,1635 +1268,19 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
         }
 
-        // Post-process: replace remaining references to removed params
-        // Only if at least one pointer was actually transformed
-        if (rs_it != g_transformed_functions.end()) {
-            if (g_pointers_replaced > pre_count) {
-                replaceRemovedParams(FD, Ctx);
-            } else {
-                // The iterating pointer didn't actually transform (e.g.
-                // validation rejected it after detection). Drop the
-                // RustSlice entry so call-site rewriting doesn't try
-                // to rewrite callers of an unchanged signature.
-                g_transformed_functions.erase(rs_it);
-            }
+        // A (ptr, len) root candidate whose iterating pointer didn't
+        // actually transform (e.g. validation rejected it after
+        // detection) is dropped so the slice pass doesn't reshape a
+        // signature whose body was never index-rewritten. Pointer-pair
+        // candidates ((lo, hi) forms) are kept even without body
+        // rewrites: their reshaping never depended on a local pointer
+        // transforming (propagation/recursion cases).
+        if (rs_it != g_transformed_functions.end() &&
+            rs_it->second.end_param_index < 0 &&
+            rs_it->second.singleton_param_indices.empty() &&
+            g_pointers_replaced == pre_count) {
+            g_transformed_functions.erase(rs_it);
         }
-    }
-}
-
-// Rewrite singleton-style functions like swap(int *a, int *b). Each
-// pointer parameter becomes an int index alongside a single shared
-// RustSlice parameter; the body is patched to use arr.ptr[index].
-void FunctionAccessAnalyzer::applySingletonTransformations(ASTContext &Ctx) {
-    for (auto &[FDCanon, info] : g_transformed_functions) {
-        if (info.singleton_param_indices.empty())
-            continue;
-
-        auto fa_it = g_function_analyses.find(FDCanon);
-        if (fa_it == g_function_analyses.end())
-            continue;
-
-        m_edited_ranges.clear();
-        generateSingletonTransformation(fa_it->second.FD, info, fa_it->second, Ctx);
-    }
-}
-
-// Rewrite pointer-pair functions like quick_sort(int *lo, int *hi)
-// whose iteration happens entirely through recursion / callee calls
-// (no local iterating pointer). Root-RustSlice functions, which DO
-// have a local iterating pointer, were already handled in
-// transformAllFunctions.
-void FunctionAccessAnalyzer::applyPointerPairTransformations(ASTContext &Ctx) {
-    for (auto &[FDCanon, info] : g_transformed_functions) {
-        if (!info.singleton_param_indices.empty())
-            continue;
-        if (info.base_param_index < 0)
-            continue;
-        if (info.end_param_index < 0)
-            continue;  // ptr+len form, not pointer-pair
-
-        auto fa_it = g_function_analyses.find(FDCanon);
-        if (fa_it == g_function_analyses.end())
-            continue;
-
-        const FunctionDecl *FD = fa_it->second.FD;
-
-        m_edited_ranges.clear();
-        generatePointerPairTransformation(FD, fa_it->second, Ctx);
-    }
-}
-
-// ============================================================================
-// Call site rewriting
-// ============================================================================
-
-// Locate the FunctionDecl whose body contains `Loc`. Used to know
-// which caller's local-pointer translations to apply when rewriting a
-// call site.
-static const FunctionDecl *findEnclosingFunction(SourceLocation Loc,
-                                                   SourceManager &SM) {
-    for (auto &[fdCanon, fa] : g_function_analyses) {
-        if (!fa.FD || !fa.FD->hasBody()) continue;
-        SourceLocation bodyStart = fa.FD->getBody()->getBeginLoc();
-        SourceLocation bodyEnd = fa.FD->getBody()->getEndLoc();
-        if (SM.isBeforeInTranslationUnit(bodyStart, Loc) &&
-            SM.isBeforeInTranslationUnit(Loc, bodyEnd)) {
-            return fa.FD;
-        }
-    }
-    return nullptr;
-}
-
-// Translate one call-site argument expression so that any transformed
-// pointers / removed params it references render as their new spelling.
-//
-// Handled cases:
-//   - A DeclRefExpr to a transformed local pointer -> append "_index_xj".
-//   - A DeclRefExpr to a return-type-changed local -> use the bare
-//     name (no suffix; the variable is already an int).
-//   - A DeclRefExpr to one of the caller's *removed* params (the
-//     original base / end pointer) -> rewrite to arr.ptr / arr.len.
-//   - A simple `p + n` / `p - n` -> recurse on the LHS, keep the RHS.
-//
-// Anything else falls through to the original source text.
-std::string FunctionAccessAnalyzer::translateArgExpr(const Expr *ArgExpr,
-                                                       const FunctionDecl *CallerFD,
-                                                       ASTContext &Ctx) {
-    SourceManager &SM = Ctx.getSourceManager();
-    const LangOptions &LO = Ctx.getLangOpts();
-
-    ArgExpr = ArgExpr->IgnoreImpCasts();
-    if (const auto *PE = dyn_cast<ParenExpr>(ArgExpr))
-        ArgExpr = PE->getSubExpr()->IgnoreImpCasts();
-
-    auto caller_it = g_transformed_functions.find(CallerFD->getCanonicalDecl());
-    if (caller_it == g_transformed_functions.end())
-        return getSourceText(ArgExpr, SM, LO);
-
-    const RustSliceInfo &caller_info = caller_it->second;
-
-    if (const auto *DRE = dyn_cast<DeclRefExpr>(ArgExpr)) {
-        const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl());
-        if (VD) {
-            if (g_index_return_vars.count(VD)) {
-                return VD->getNameAsString();
-            }
-
-            auto fa_it = g_function_analyses.find(CallerFD->getCanonicalDecl());
-            if (fa_it != g_function_analyses.end()) {
-                auto &analysis = fa_it->second;
-                if (analysis.tracked_pointers.count(VD) &&
-                    !analysis.tracked_pointers[VD].is_parameter &&
-                    !analysis.accesses[VD].empty()) {
-                    return VD->getNameAsString() + "_index_xj";
-                }
-            }
-
-            if (const auto *PD = dyn_cast<ParmVarDecl>(VD)) {
-                if (caller_info.base_param_index >= 0 &&
-                    PD == CallerFD->getParamDecl(caller_info.base_param_index)) {
-                    return caller_info.slice_param_name + ".ptr";
-                }
-                if (caller_info.end_param_index >= 0 &&
-                    PD == CallerFD->getParamDecl(caller_info.end_param_index)) {
-                    if (caller_info.inclusive_end)
-                        return caller_info.slice_param_name + ".len - 1";
-                    else
-                        return caller_info.slice_param_name + ".len";
-                }
-            }
-        }
-    }
-
-    if (const auto *BO = dyn_cast<BinaryOperator>(ArgExpr)) {
-        if (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub) {
-            std::string lhs = translateArgExpr(BO->getLHS(), CallerFD, Ctx);
-            std::string rhs = getSourceText(BO->getRHS(), SM, LO);
-            std::string op = (BO->getOpcode() == BO_Add) ? " + " : " - ";
-            return lhs + op + rhs;
-        }
-    }
-
-    return getSourceText(ArgExpr, SM, LO);
-}
-
-// Walk every call site of every RustSlice-transformed function and
-// rewrite its arguments. Three context groups are handled, all in
-// this single pass:
-//
-//   1. Caller is itself RustSlice and the call is a direct pass-through
-//      of its slice → forward `arr` unchanged.
-//   2. Caller is RustSlice but the call is a sub-range → emit a
-//      compound literal that constructs a sub-slice of `arr`.
-//   3. Caller is not transformed → emit a compound literal that wraps
-//      the original (base, len) / (lo, hi) into a fresh slice.
-//
-// Singleton callees (swap-style) are handled inline at the top of the
-// loop because their argument shape differs.
-void FunctionAccessAnalyzer::rewriteCallSites(ASTContext &Ctx) {
-    SourceManager &SM = Ctx.getSourceManager();
-    const LangOptions &LO = Ctx.getLangOpts();
-
-    class CallSiteCollector : public RecursiveASTVisitor<CallSiteCollector> {
-    public:
-        std::vector<CallExpr *> calls;
-
-        bool VisitCallExpr(CallExpr *CE) {
-            const FunctionDecl *Callee = CE->getDirectCallee();
-            if (!Callee)
-                return true;
-            if (g_transformed_functions.count(Callee->getCanonicalDecl())) {
-                calls.push_back(CE);
-            }
-            return true;
-        }
-    };
-
-    CallSiteCollector collector;
-    collector.TraverseDecl(Ctx.getTranslationUnitDecl());
-
-    // Sort calls by reverse offset to avoid interference
-    std::sort(collector.calls.begin(), collector.calls.end(),
-              [&SM](const CallExpr *A, const CallExpr *B) {
-                  return SM.getFileOffset(A->getBeginLoc()) >
-                         SM.getFileOffset(B->getBeginLoc());
-              });
-
-    for (CallExpr *CE : collector.calls) {
-        const FunctionDecl *Callee = CE->getDirectCallee();
-        auto it = g_transformed_functions.find(Callee->getCanonicalDecl());
-        if (it == g_transformed_functions.end())
-            continue;
-
-        const RustSliceInfo &info = it->second;
-        unsigned NumArgs = CE->getNumArgs();
-        if (NumArgs == 0) continue;
-
-        const FunctionDecl *EnclosingFD = findEnclosingFunction(CE->getBeginLoc(), SM);
-        auto caller_it = EnclosingFD ?
-            g_transformed_functions.find(EnclosingFD->getCanonicalDecl()) :
-            g_transformed_functions.end();
-
-        // Get original argument texts
-        std::vector<std::string> arg_texts;
-        for (unsigned i = 0; i < NumArgs; i++) {
-            arg_texts.push_back(getSourceText(CE->getArg(i), SM, LO));
-        }
-
-        // Handle singleton-param functions (like swap)
-        if (!info.singleton_param_indices.empty()) {
-            if (caller_it != g_transformed_functions.end()) {
-                // Caller is transformed — pass its RustSlice + translated indices
-                const RustSliceInfo &caller_info = caller_it->second;
-                std::string new_args = caller_info.slice_param_name;
-                for (unsigned i = 0; i < NumArgs; i++) {
-                    new_args += ", " + translateArgExpr(CE->getArg(i), EnclosingFD, Ctx);
-                }
-
-                SourceLocation FirstArgLoc = CE->getArg(0)->getBeginLoc();
-                SourceLocation LastArgEnd = Lexer::getLocForEndOfToken(
-                    CE->getArg(NumArgs - 1)->getEndLoc(), 0, SM, LO);
-
-                TheRewriter.ReplaceText(
-                    CharSourceRange::getCharRange(FirstArgLoc, LastArgEnd),
-                    new_args);
-            } else {
-                // Caller is NOT transformed — create compound literal
-                std::string ptr_text = arg_texts[info.singleton_param_indices[0]];
-                std::string compound = "(" + info.slice_type + "){" + ptr_text + ", 0}";
-
-                std::string new_args = compound;
-                for (unsigned i = 0; i < NumArgs; i++) {
-                    if (std::find(info.singleton_param_indices.begin(),
-                                  info.singleton_param_indices.end(),
-                                  (int)i) != info.singleton_param_indices.end()) {
-                        new_args += ", 0";
-                    } else {
-                        new_args += ", " + arg_texts[i];
-                    }
-                }
-
-                SourceLocation FirstArgLoc = CE->getArg(0)->getBeginLoc();
-                SourceLocation LastArgEnd = Lexer::getLocForEndOfToken(
-                    CE->getArg(NumArgs - 1)->getEndLoc(), 0, SM, LO);
-
-                TheRewriter.ReplaceText(
-                    CharSourceRange::getCharRange(FirstArgLoc, LastArgEnd),
-                    new_args);
-            }
-            continue;
-        }
-
-        // Handle pointer-pair and ptr+len functions
-        if (info.base_param_index < 0)
-            continue;
-
-        if (caller_it != g_transformed_functions.end()) {
-            // Both caller and callee are transformed
-            const RustSliceInfo &caller_info = caller_it->second;
-            std::string base_arg = arg_texts[info.base_param_index];
-
-            // Check if base arg is the caller's base param (pass-through)
-            bool is_pass_through = false;
-            std::string caller_base_name;
-            if (caller_info.base_param_index >= 0) {
-                caller_base_name = EnclosingFD->getParamDecl(
-                    caller_info.base_param_index)->getNameAsString();
-                if (base_arg == caller_base_name) {
-                    is_pass_through = true;
-                }
-            }
-
-            auto buildSubslice = [&](const Expr *BaseArgExpr, const Expr *EndArgExpr) {
-                std::string slice = caller_info.slice_param_name;
-
-                // Translate base and end args using transformed names
-                std::string trans_base = translateArgExpr(BaseArgExpr, EnclosingFD, Ctx);
-                std::string trans_end = translateArgExpr(EndArgExpr, EnclosingFD, Ctx);
-
-                std::string ptr_expr;
-                if (trans_base == slice + ".ptr") {
-                    ptr_expr = slice + ".ptr";
-                } else {
-                    ptr_expr = slice + ".ptr + " + trans_base;
-                }
-
-                std::string len_expr;
-                // Check for full pass-through (both base and end match caller's)
-                bool end_is_full = trans_end == (caller_info.inclusive_end ?
-                                                 slice + ".len - 1" : slice + ".len");
-                if (trans_base == slice + ".ptr" && end_is_full) {
-                    len_expr = slice + ".len";
-                } else if (end_is_full) {
-                    // End is caller's full extent but base is shifted
-                    // For inclusive: len = (arr.len-1) - base + 1 = arr.len - base
-                    // For exclusive: len = arr.len - base
-                    // Both simplify to arr.len - base
-                    if (trans_base.find('+') != std::string::npos ||
-                        trans_base.find('-') != std::string::npos) {
-                        len_expr = slice + ".len - (" + trans_base + ")";
-                    } else {
-                        len_expr = slice + ".len - " + trans_base;
-                    }
-                } else {
-                    if (info.inclusive_end) {
-                        if (trans_base == slice + ".ptr") {
-                            // len = trans_end + 1, but simplify "x - 1 + 1" → "x"
-                            if (trans_end.size() >= 4 &&
-                                trans_end.substr(trans_end.size() - 4) == " - 1") {
-                                len_expr = trans_end.substr(0, trans_end.size() - 4);
-                            } else {
-                                len_expr = trans_end + " + 1";
-                            }
-                        } else {
-                            len_expr = "(" + trans_end + ") - (" + trans_base + ") + 1";
-                        }
-                    } else {
-                        if (trans_base == slice + ".ptr") {
-                            len_expr = trans_end;
-                        } else {
-                            if (trans_base.find('+') != std::string::npos ||
-                                trans_base.find('-') != std::string::npos) {
-                                len_expr = slice + ".len - (" + trans_base + ")";
-                            } else {
-                                len_expr = slice + ".len - " + trans_base;
-                            }
-                        }
-                    }
-                }
-
-                std::string compound = "(" + info.slice_type + "){" +
-                                       ptr_expr + ", " + len_expr + "}";
-
-                std::string new_args = compound;
-                for (unsigned i = 0; i < NumArgs; i++) {
-                    if ((int)i == info.base_param_index) continue;
-                    if ((int)i == info.end_param_index) continue;
-                    if ((int)i == info.len_param_index) continue;
-                    new_args += ", " + translateArgExpr(CE->getArg(i), EnclosingFD, Ctx);
-                }
-
-                SourceLocation FirstArgLoc = CE->getArg(0)->getBeginLoc();
-                SourceLocation LastArgEnd = Lexer::getLocForEndOfToken(
-                    CE->getArg(NumArgs - 1)->getEndLoc(), 0, SM, LO);
-                TheRewriter.ReplaceText(
-                    CharSourceRange::getCharRange(FirstArgLoc, LastArgEnd),
-                    new_args);
-            };
-
-            if (is_pass_through && info.end_param_index >= 0) {
-                std::string end_arg = arg_texts[info.end_param_index];
-                std::string caller_end_name = "";
-                if (caller_info.end_param_index >= 0) {
-                    caller_end_name = EnclosingFD->getParamDecl(
-                        caller_info.end_param_index)->getNameAsString();
-                }
-
-                if (end_arg == caller_end_name) {
-                    // Direct pass-through: callee(lo, hi) → callee(arr)
-                    std::string new_args = caller_info.slice_param_name;
-                    for (unsigned i = 0; i < NumArgs; i++) {
-                        if ((int)i == info.base_param_index) continue;
-                        if ((int)i == info.end_param_index) continue;
-                        if ((int)i == info.len_param_index) continue;
-                        new_args += ", " + arg_texts[i];
-                    }
-
-                    SourceLocation FirstArgLoc = CE->getArg(0)->getBeginLoc();
-                    SourceLocation LastArgEnd = Lexer::getLocForEndOfToken(
-                        CE->getArg(NumArgs - 1)->getEndLoc(), 0, SM, LO);
-                    TheRewriter.ReplaceText(
-                        CharSourceRange::getCharRange(FirstArgLoc, LastArgEnd),
-                        new_args);
-                } else {
-                    // Subslice construction (base is pass-through, end differs)
-                    buildSubslice(CE->getArg(info.base_param_index),
-                                  CE->getArg(info.end_param_index));
-                }
-            } else if (info.end_param_index >= 0) {
-                // Non-pass-through: both base and end may differ from caller's params
-                buildSubslice(CE->getArg(info.base_param_index),
-                              CE->getArg(info.end_param_index));
-            }
-        } else {
-            // Non-transformed caller calling a transformed callee
-            std::string base_text = arg_texts[info.base_param_index];
-            std::string len_text;
-
-            if (info.end_param_index >= 0) {
-                std::string end_text = arg_texts[info.end_param_index];
-                if (info.inclusive_end) {
-                    std::string prefix = base_text + " + ";
-                    if (end_text.substr(0, prefix.size()) == prefix) {
-                        std::string suffix = end_text.substr(prefix.size());
-                        // Simplify "x - 1 + 1" → "x"
-                        if (suffix.size() >= 4 &&
-                            suffix.substr(suffix.size() - 4) == " - 1") {
-                            len_text = suffix.substr(0, suffix.size() - 4);
-                        } else {
-                            len_text = suffix + " + 1";
-                        }
-                    } else {
-                        len_text = "(" + end_text + ") - " + base_text + " + 1";
-                    }
-                } else {
-                    std::string prefix = base_text + " + ";
-                    if (end_text.substr(0, prefix.size()) == prefix) {
-                        len_text = end_text.substr(prefix.size());
-                    } else {
-                        if (base_text.find('+') != std::string::npos ||
-                            base_text.find('-') != std::string::npos)
-                            len_text = "(" + end_text + ") - (" + base_text + ")";
-                        else
-                            len_text = "(" + end_text + ") - " + base_text;
-                    }
-                }
-            } else if (info.len_param_index >= 0) {
-                len_text = arg_texts[info.len_param_index];
-            }
-
-            if (info.lookback > 0) {
-                base_text = base_text + " - " + std::to_string(info.lookback);
-                len_text = len_text + " + " + std::to_string(info.lookback);
-            }
-            if (info.lookahead > 0) {
-                len_text = len_text + " + " + std::to_string(info.lookahead);
-            }
-
-            std::string compound = "(" + info.slice_type + "){" +
-                                   base_text + ", " + len_text + "}";
-
-            std::string new_args = compound;
-            for (unsigned i = 0; i < NumArgs; i++) {
-                if ((int)i == info.base_param_index) continue;
-                if ((int)i == info.end_param_index) continue;
-                if ((int)i == info.len_param_index) continue;
-                new_args += ", " + arg_texts[i];
-            }
-
-            SourceLocation FirstArgLoc = CE->getArg(0)->getBeginLoc();
-            SourceLocation LastArgEnd = Lexer::getLocForEndOfToken(
-                CE->getArg(NumArgs - 1)->getEndLoc(), 0, SM, LO);
-            TheRewriter.ReplaceText(
-                CharSourceRange::getCharRange(FirstArgLoc, LastArgEnd),
-                new_args);
-        }
-    }
-}
-
-// ============================================================================
-// replaceRemovedParams — patch up references to base/end/len params
-// inside the body of a RustSlice-transformed function.
-// ============================================================================
-//
-// The signature rewrite drops these parameters, but the body may still
-// mention them (e.g. `if (lo == NULL)` or `n - 1`). Each remaining use
-// is rewritten to its slice-relative equivalent (arr.ptr / arr.len),
-// with lookback/lookahead adjustments folded in when needed.
-
-void FunctionAccessAnalyzer::replaceRemovedParams(const FunctionDecl *FD,
-                                                    ASTContext &Ctx) {
-    auto it = g_transformed_functions.find(FD->getCanonicalDecl());
-    if (it == g_transformed_functions.end())
-        return;
-
-    const RustSliceInfo &info = it->second;
-    SourceManager &SM = Ctx.getSourceManager();
-    const LangOptions &LO = Ctx.getLangOpts();
-
-    // Build the per-parameter replacement strings up-front.
-    std::map<const ParmVarDecl *, std::string> param_replacements;
-    const ParmVarDecl *base_param = nullptr;
-    const ParmVarDecl *end_param = nullptr;
-
-    if (info.base_param_index >= 0) {
-        base_param = FD->getParamDecl(info.base_param_index);
-        std::string repl = info.slice_param_name + ".ptr";
-        if (info.lookback > 0)
-            repl = "(" + info.slice_param_name + ".ptr + " +
-                   std::to_string(info.lookback) + ")";
-        param_replacements[base_param] = repl;
-    }
-    if (info.end_param_index >= 0) {
-        end_param = FD->getParamDecl(info.end_param_index);
-        std::string repl;
-        if (info.inclusive_end)
-            repl = "(" + info.slice_param_name + ".len - 1)";
-        else
-            repl = info.slice_param_name + ".len";
-        if (info.lookahead > 0)
-            repl = "(" + info.slice_param_name + ".len - " +
-                   std::to_string(info.lookahead) + ")";
-        param_replacements[end_param] = repl;
-    }
-    if (info.len_param_index >= 0) {
-        std::string repl = info.slice_param_name + ".len";
-        if (info.lookback > 0 || info.lookahead > 0)
-            repl = "(" + info.slice_param_name + ".len - " +
-                   std::to_string(info.lookback + info.lookahead) + ")";
-        param_replacements[FD->getParamDecl(info.len_param_index)] = repl;
-    }
-
-    if (param_replacements.empty())
-        return;
-
-    std::sort(m_edited_ranges.begin(), m_edited_ranges.end());
-
-    // Context-aware param reference replacement
-    class ParamRefVisitor : public RecursiveASTVisitor<ParamRefVisitor> {
-    public:
-        Rewriter &Rewrite;
-        SourceManager &SM;
-        const LangOptions &LO;
-        ASTContext &Ctx;
-        const std::map<const ParmVarDecl *, std::string> &replacements;
-        std::vector<std::pair<unsigned, unsigned>> &edited_ranges;
-        const RustSliceInfo &info;
-        const ParmVarDecl *base_param;
-        const ParmVarDecl *end_param;
-
-        ParamRefVisitor(Rewriter &R, SourceManager &SM, const LangOptions &LO,
-                        ASTContext &Ctx,
-                        const std::map<const ParmVarDecl *, std::string> &repls,
-                        std::vector<std::pair<unsigned, unsigned>> &ranges,
-                        const RustSliceInfo &info,
-                        const ParmVarDecl *base_p, const ParmVarDecl *end_p)
-            : Rewrite(R), SM(SM), LO(LO), Ctx(Ctx), replacements(repls),
-              edited_ranges(ranges), info(info),
-              base_param(base_p), end_param(end_p) {}
-
-        void markEdited(SourceLocation Start, SourceLocation End) {
-            edited_ranges.push_back({SM.getFileOffset(Start), SM.getFileOffset(End)});
-        }
-
-        bool isInEditedRange(unsigned offset) const {
-            for (const auto &range : edited_ranges) {
-                if (offset >= range.first && offset < range.second)
-                    return true;
-            }
-            return false;
-        }
-
-        bool VisitDeclRefExpr(DeclRefExpr *DRE) {
-            const ParmVarDecl *PD = dyn_cast<ParmVarDecl>(DRE->getDecl());
-            if (!PD) return true;
-
-            auto rep_it = replacements.find(PD);
-            if (rep_it == replacements.end()) return true;
-
-            unsigned offset = SM.getFileOffset(DRE->getBeginLoc());
-            if (isInEditedRange(offset)) return true;
-
-            // Check the parent expression for context-aware replacement
-            const Stmt *Parent = skipTransparentParents(DRE, Ctx);
-
-            // Case: *param (deref) — replace entire *param with arr.ptr[replacement_expr]
-            if (Parent) {
-                if (const UnaryOperator *UO = dyn_cast<UnaryOperator>(Parent)) {
-                    if (UO->getOpcode() == UO_Deref) {
-                        SourceLocation StartLoc = UO->getBeginLoc();
-                        SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                            UO->getEndLoc(), 0, SM, LO);
-
-                        unsigned uo_offset = SM.getFileOffset(StartLoc);
-                        if (!isInEditedRange(uo_offset)) {
-                            // For *base_param: use arr.ptr[0]
-                            // For *end_param: use arr.ptr[arr.len] or arr.ptr[arr.len-1]
-                            std::string idx;
-                            if (PD == base_param)
-                                idx = "0";
-                            else
-                                idx = rep_it->second;
-                            Rewrite.ReplaceText(
-                                CharSourceRange::getCharRange(StartLoc, EndLoc),
-                                info.slice_param_name + ".ptr[" + idx + "]");
-                            markEdited(StartLoc, EndLoc);
-                            return true;
-                        }
-                    }
-                }
-
-                // Case: comparison between two removed params (lo < hi → arr.len > 1)
-                if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(Parent)) {
-                    if (BO->isComparisonOp() && base_param && end_param) {
-                        // Check if both sides are removed params
-                        const DeclRefExpr *LDRE = dyn_cast<DeclRefExpr>(
-                            BO->getLHS()->IgnoreImpCasts());
-                        const DeclRefExpr *RDRE = dyn_cast<DeclRefExpr>(
-                            BO->getRHS()->IgnoreImpCasts());
-
-                        if (LDRE && RDRE) {
-                            const ParmVarDecl *LPD = dyn_cast<ParmVarDecl>(LDRE->getDecl());
-                            const ParmVarDecl *RPD = dyn_cast<ParmVarDecl>(RDRE->getDecl());
-
-                            if ((LPD == base_param && RPD == end_param) ||
-                                (LPD == end_param && RPD == base_param)) {
-                                unsigned bo_offset = SM.getFileOffset(BO->getBeginLoc());
-                                if (!isInEditedRange(bo_offset)) {
-                                    // lo < hi → arr.len > 1 (inclusive) or > 0 (exclusive)
-                                    std::string threshold = info.inclusive_end ? "1" : "0";
-                                    std::string cmp;
-                                    bool base_on_left = (LPD == base_param);
-                                    switch (BO->getOpcode()) {
-                                    case BO_LT:
-                                        cmp = base_on_left ? "> " + threshold : "< " + threshold;
-                                        break;
-                                    case BO_LE:
-                                        cmp = base_on_left ? ">= " + threshold : "<= " + threshold;
-                                        break;
-                                    case BO_GT:
-                                        cmp = base_on_left ? "< " + threshold : "> " + threshold;
-                                        break;
-                                    case BO_GE:
-                                        cmp = base_on_left ? "<= " + threshold : ">= " + threshold;
-                                        break;
-                                    case BO_NE:
-                                        cmp = "!= 0";
-                                        break;
-                                    default:
-                                        cmp = "> " + threshold;
-                                        break;
-                                    }
-
-                                    SourceLocation StartLoc = BO->getBeginLoc();
-                                    SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                                        BO->getEndLoc(), 0, SM, LO);
-                                    Rewrite.ReplaceText(
-                                        CharSourceRange::getCharRange(StartLoc, EndLoc),
-                                        info.slice_param_name + ".len " + cmp);
-                                    markEdited(StartLoc, EndLoc);
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-
-                    // Case: (end - base) <cmp> N → arr.len <cmp> N
-                    if (BO->isComparisonOp() && base_param && end_param) {
-                        // Check if LHS is a subtraction of end - base
-                        if (const BinaryOperator *Sub = dyn_cast<BinaryOperator>(
-                                BO->getLHS()->IgnoreImpCasts())) {
-                            if (Sub->getOpcode() == BO_Sub) {
-                                const auto *SubL = dyn_cast<DeclRefExpr>(Sub->getLHS()->IgnoreImpCasts());
-                                const auto *SubR = dyn_cast<DeclRefExpr>(Sub->getRHS()->IgnoreImpCasts());
-                                if (SubL && SubR) {
-                                    const auto *SubLP = dyn_cast<ParmVarDecl>(SubL->getDecl());
-                                    const auto *SubRP = dyn_cast<ParmVarDecl>(SubR->getDecl());
-                                    if (SubLP == end_param && SubRP == base_param) {
-                                        unsigned bo_offset = SM.getFileOffset(BO->getBeginLoc());
-                                        if (!isInEditedRange(bo_offset)) {
-                                            // Replace "end - start <cmp> N" with "arr.len <cmp> N"
-                                            SourceLocation SubStart = Sub->getBeginLoc();
-                                            SourceLocation SubEnd = Lexer::getLocForEndOfToken(
-                                                Sub->getEndLoc(), 0, SM, LO);
-                                            Rewrite.ReplaceText(
-                                                CharSourceRange::getCharRange(SubStart, SubEnd),
-                                                info.slice_param_name + ".len");
-                                            markEdited(SubStart, SubEnd);
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Case: param in a subtraction (end - base → arr.len)
-                    if (BO->getOpcode() == BO_Sub && base_param && end_param) {
-                        const auto *LDRE = dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreImpCasts());
-                        const auto *RDRE = dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreImpCasts());
-                        if (LDRE && RDRE) {
-                            const auto *LPD = dyn_cast<ParmVarDecl>(LDRE->getDecl());
-                            const auto *RPD = dyn_cast<ParmVarDecl>(RDRE->getDecl());
-                            if (LPD == end_param && RPD == base_param) {
-                                unsigned bo_offset = SM.getFileOffset(BO->getBeginLoc());
-                                if (!isInEditedRange(bo_offset)) {
-                                    SourceLocation StartLoc = BO->getBeginLoc();
-                                    SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                                        BO->getEndLoc(), 0, SM, LO);
-                                    Rewrite.ReplaceText(
-                                        CharSourceRange::getCharRange(StartLoc, EndLoc),
-                                        info.slice_param_name + ".len");
-                                    markEdited(StartLoc, EndLoc);
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Default: simple text replacement
-            SourceLocation StartLoc = DRE->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                DRE->getEndLoc(), 0, SM, LO);
-
-            Rewrite.ReplaceText(
-                CharSourceRange::getCharRange(StartLoc, EndLoc), rep_it->second);
-            markEdited(StartLoc, EndLoc);
-
-            return true;
-        }
-    };
-
-
-    ParamRefVisitor visitor(TheRewriter, SM, LO, Ctx, param_replacements,
-                            m_edited_ranges, info, base_param, end_param);
-    visitor.TraverseStmt(FD->getBody());
-}
-
-// ============================================================================
-// rewriteForwardDeclarations — keep header prototypes in sync with the
-// rewritten definitions.
-// ============================================================================
-//
-// For every transformed function, we walk all redeclarations (skipping
-// the definition itself) and rewrite the parameter list — and the
-// return type, if it changed — to match. When the prototype lives in a
-// non-main file we also drop the slice typedef in once at the top of
-// that file so the prototype compiles.
-
-void FunctionAccessAnalyzer::rewriteForwardDeclarations(ASTContext &Ctx) {
-    SourceManager &SM = Ctx.getSourceManager();
-    const LangOptions &LO = Ctx.getLangOpts();
-
-    std::set<FileID> typedef_emitted_files;
-
-    for (auto &[FDCanon, info] : g_transformed_functions) {
-        for (const FunctionDecl *Redecl : FDCanon->redecls()) {
-            if (Redecl->isThisDeclarationADefinition())
-                continue;
-            if (SM.isInSystemHeader(Redecl->getLocation()))
-                continue;
-            if (Redecl->getNumParams() == 0)
-                continue;
-
-            // First time we touch a non-main file: drop the slice
-            // typedef in front of the prototype.
-            FileID DeclFID = SM.getFileID(Redecl->getLocation());
-            FileID MainFID = SM.getMainFileID();
-            if (DeclFID != MainFID &&
-                typedef_emitted_files.find(DeclFID) == typedef_emitted_files.end()) {
-                typedef_emitted_files.insert(DeclFID);
-                std::string td = "typedef struct { " + info.pointee_type +
-                    " *ptr; size_t len; } " + info.slice_type + ";\n\n";
-                TheRewriter.InsertTextBefore(Redecl->getBeginLoc(), td);
-            }
-
-            // Build the rewritten parameter list. Same shape as the
-            // body rewrite in TransformationMethods.cpp:
-            //   - singleton: slice + (int <name>) for each pointer param
-            //   - pointer-pair / ptr+len: slice + remaining params
-            std::string new_params;
-            if (!info.singleton_param_indices.empty()) {
-                new_params = info.slice_type + " " + info.slice_param_name;
-                for (unsigned i = 0; i < Redecl->getNumParams(); i++) {
-                    const ParmVarDecl *P = Redecl->getParamDecl(i);
-                    bool is_singleton = false;
-                    for (int si : info.singleton_param_indices) {
-                        if ((int)i == si) { is_singleton = true; break; }
-                    }
-                    if (is_singleton) {
-                        new_params += ", int " + P->getNameAsString();
-                    } else {
-                        new_params += ", " + P->getType().getAsString();
-                        if (!P->getNameAsString().empty())
-                            new_params += " " + P->getNameAsString();
-                    }
-                }
-            } else {
-                new_params = info.slice_type + " " + info.slice_param_name;
-                for (unsigned i = 0; i < Redecl->getNumParams(); i++) {
-                    if ((int)i == info.base_param_index) continue;
-                    if ((int)i == info.end_param_index) continue;
-                    if ((int)i == info.len_param_index) continue;
-                    const ParmVarDecl *P = Redecl->getParamDecl(i);
-                    new_params += ", " + P->getType().getAsString();
-                    if (!P->getNameAsString().empty())
-                        new_params += " " + P->getNameAsString();
-                }
-            }
-
-            // Replace parameter list
-            SourceLocation FirstParamLoc = Redecl->getParamDecl(0)->getBeginLoc();
-            unsigned LastIdx = Redecl->getNumParams() - 1;
-            SourceLocation LastParamEnd = Lexer::getLocForEndOfToken(
-                Redecl->getParamDecl(LastIdx)->getEndLoc(), 0, SM, LO);
-
-            unsigned startOff = SM.getFileOffset(FirstParamLoc);
-            unsigned endOff = SM.getFileOffset(LastParamEnd);
-            TheRewriter.ReplaceText(FirstParamLoc, endOff - startOff, new_params);
-
-            // Handle return type change
-            if (info.return_type_changed) {
-                SourceLocation RetStart = Redecl->getBeginLoc();
-                SourceLocation FuncNameLoc = Redecl->getLocation();
-                unsigned retLen = SM.getFileOffset(FuncNameLoc) - SM.getFileOffset(RetStart);
-                TheRewriter.ReplaceText(RetStart, retLen, "int ");
-            }
-
-            if (VERBOSE)
-                llvm::outs() << "[Phase5a] Rewrote forward declaration of "
-                              << Redecl->getNameAsString() << "\n";
-        }
-    }
-
-    // Same idea, but for functions whose entire return type was
-    // collapsed to int (the global-return case in detectAllTransformations).
-    for (auto &[FDCanon, gri] : g_global_return_functions) {
-        for (const FunctionDecl *Redecl : FDCanon->redecls()) {
-            if (Redecl->isThisDeclarationADefinition())
-                continue;
-            if (SM.isInSystemHeader(Redecl->getLocation()))
-                continue;
-
-            // Change return type from T* to int.
-            rewriteReturnTypeAsInt(TheRewriter, Redecl, SM, LO);
-
-            if (VERBOSE)
-                llvm::outs() << "[Phase5a] Rewrote global-return forward declaration of "
-                              << Redecl->getNameAsString() << "\n";
-        }
-    }
-}
-
-// ============================================================================
-// fixReturnTypeChanges — propagate `T* -> int` return-type rewrites
-// ============================================================================
-//
-// When a function's return type changes from a pointer type to int, we
-// need to:
-//   A. Rewrite every `return NULL` (or 0/__null) inside the body to
-//      `return -1`.
-//   B. Update callers: a local `T *p = func(...)` becomes `int p = ...;`,
-//      and any subsequent uses of `p` need to dereference the global
-//      array (`global_arr[p]`) instead of `*p`.
-//
-// The body of this method is split into Part A (return-value fix-up)
-// and Part B (caller rewrites).
-
-void FunctionAccessAnalyzer::fixReturnTypeChanges(ASTContext &Ctx) {
-    SourceManager &SM = Ctx.getSourceManager();
-    const LangOptions &LO = Ctx.getLangOpts();
-
-    // ---- Part A: rewrite `return NULL` to `return -1` -----------------
-    for (auto &[FDCanon, info] : g_transformed_functions) {
-        if (!info.return_type_changed)
-            continue;
-
-        auto fa_it = g_function_analyses.find(FDCanon);
-        if (fa_it == g_function_analyses.end())
-            continue;
-        const FunctionDecl *FD = fa_it->second.FD;
-        if (!FD || !FD->hasBody())
-            continue;
-
-        class ReturnNullFixer : public RecursiveASTVisitor<ReturnNullFixer> {
-        public:
-            Rewriter &Rewrite;
-            SourceManager &SM;
-            const LangOptions &LO;
-            ASTContext &Ctx;
-
-            ReturnNullFixer(Rewriter &R, SourceManager &SM, const LangOptions &LO, ASTContext &Ctx)
-                : Rewrite(R), SM(SM), LO(LO), Ctx(Ctx) {}
-
-            bool VisitReturnStmt(ReturnStmt *RS) {
-                const Expr *RetVal = RS->getRetValue();
-                if (!RetVal)
-                    return true;
-
-                // Get the source text of the return value
-                SourceLocation ValStart = RetVal->getBeginLoc();
-                SourceLocation ValEnd = Lexer::getLocForEndOfToken(
-                    RetVal->getEndLoc(), 0, SM, LO);
-
-                // Handle macro locations (e.g. NULL)
-                if (ValStart.isMacroID())
-                    ValStart = SM.getSpellingLoc(ValStart);
-                if (ValEnd.isMacroID())
-                    ValEnd = SM.getSpellingLoc(ValEnd);
-
-                StringRef valText = Lexer::getSourceText(
-                    CharSourceRange::getCharRange(ValStart, ValEnd), SM, LO);
-
-                if (valText == "NULL" || valText == "0" || valText == "__null" ||
-                    valText == "((void*)0)" || valText == "((void *)0)") {
-                    unsigned len = SM.getFileOffset(ValEnd) - SM.getFileOffset(ValStart);
-                    Rewrite.ReplaceText(ValStart, len, "-1");
-                }
-                return true;
-            }
-        };
-
-        ReturnNullFixer fixer(TheRewriter, SM, LO, Ctx);
-        fixer.TraverseStmt(FD->getBody());
-
-        // Fallback: scan source text for "return NULL" / "return 0" that the
-        // AST visitor may miss (e.g. when NULL is undefined due to missing headers)
-        SourceLocation BodyStart = FD->getBody()->getBeginLoc();
-        SourceLocation BodyEnd = FD->getBody()->getEndLoc();
-        unsigned startOff = SM.getFileOffset(BodyStart);
-        unsigned endOff = SM.getFileOffset(BodyEnd);
-        StringRef bodyText = SM.getBufferData(SM.getFileID(BodyStart))
-                                 .substr(startOff, endOff - startOff);
-        // Search for "return NULL" or "return 0" patterns
-        for (const char *pattern : {"return NULL", "return 0"}) {
-            size_t pos = 0;
-            StringRef pat(pattern);
-            while ((pos = bodyText.find(pat, pos)) != StringRef::npos) {
-                // Make sure the character after the match is ; or space/newline (not part of identifier)
-                size_t afterPos = pos + pat.size();
-                if (afterPos < bodyText.size()) {
-                    char c = bodyText[afterPos];
-                    if (c != ';' && c != ' ' && c != '\n' && c != '\r' && c != '\t') {
-                        pos = afterPos;
-                        continue;
-                    }
-                }
-                // Replace "NULL" or "0" with "-1"
-                unsigned valStart = startOff + pos + strlen("return ");
-                unsigned valLen = pat.size() - strlen("return ");
-                SourceLocation valLoc = SM.getLocForStartOfFile(SM.getFileID(BodyStart))
-                                            .getLocWithOffset(valStart);
-                TheRewriter.ReplaceText(valLoc, valLen, "-1");
-                pos = afterPos;
-            }
-        }
-    }
-
-    // Part B: Transform callers that receive return values from
-    //         return-type-changed functions
-    // Find all calls and their receiving variables
-    class ReturnValueCallFinder : public RecursiveASTVisitor<ReturnValueCallFinder> {
-    public:
-        struct CallInfo {
-            const CallExpr *CE;
-            const VarDecl *RecvVar;        // variable receiving return value
-            std::string base_text;          // base array text from call site
-            bool is_init;                   // true = init, false = assignment
-        };
-        std::vector<CallInfo> calls;
-        ASTContext &Ctx;
-
-        ReturnValueCallFinder(ASTContext &C) : Ctx(C) {}
-
-        bool VisitVarDecl(VarDecl *VD) {
-            if (!VD->hasInit())
-                return true;
-            if (!VD->getType()->isPointerType())
-                return true;
-
-            const Expr *Init = VD->getInit()->IgnoreImpCasts();
-            if (const auto *CE = dyn_cast<CallExpr>(Init)) {
-                checkCall(CE, VD);
-            }
-            return true;
-        }
-
-        bool VisitBinaryOperator(BinaryOperator *BO) {
-            if (BO->getOpcode() != BO_Assign)
-                return true;
-            const auto *LHS = dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreImpCasts());
-            if (!LHS)
-                return true;
-            const auto *VD = dyn_cast<VarDecl>(LHS->getDecl());
-            if (!VD || !VD->getType()->isPointerType())
-                return true;
-            const Expr *RHS = BO->getRHS()->IgnoreImpCasts();
-            if (const auto *CE = dyn_cast<CallExpr>(RHS)) {
-                checkCall(CE, nullptr);
-            }
-            return true;
-        }
-
-    private:
-        void checkCall(const CallExpr *CE, const VarDecl *RecvVD) {
-            const FunctionDecl *Callee = CE->getDirectCallee();
-            if (!Callee)
-                return;
-            auto it = g_transformed_functions.find(Callee->getCanonicalDecl());
-            if (it == g_transformed_functions.end() || !it->second.return_type_changed)
-                return;
-
-            const RustSliceInfo &info = it->second;
-
-            // Extract base text from the call's arguments
-            std::string base = "";
-            if (info.base_param_index >= 0 &&
-                (unsigned)info.base_param_index < CE->getNumArgs()) {
-                const Expr *BaseArg = CE->getArg(info.base_param_index);
-                // If it's a compound literal (RustSlice_int){base, len}, extract base
-                if (const auto *CLE = dyn_cast<CompoundLiteralExpr>(
-                        BaseArg->IgnoreImpCasts())) {
-                    if (const auto *ILE = dyn_cast<InitListExpr>(CLE->getInitializer())) {
-                        if (ILE->getNumInits() > 0) {
-                            SourceManager &SM = Ctx.getSourceManager();
-                            const LangOptions &LO = Ctx.getLangOpts();
-                            base = getSourceText(ILE->getInit(0), SM, LO);
-                        }
-                    }
-                } else {
-                    SourceManager &SM = Ctx.getSourceManager();
-                    const LangOptions &LO = Ctx.getLangOpts();
-                    base = getSourceText(BaseArg, SM, LO);
-                }
-            }
-
-            CallInfo ci;
-            ci.CE = CE;
-            ci.RecvVar = RecvVD;
-            ci.base_text = base;
-            ci.is_init = (RecvVD != nullptr);
-            calls.push_back(ci);
-        }
-    };
-
-    ReturnValueCallFinder finder(Ctx);
-    finder.TraverseDecl(Ctx.getTranslationUnitDecl());
-
-    // Collect all receiving VarDecls and their base texts
-    std::map<const VarDecl *, std::string> recv_var_bases;
-    for (const auto &ci : finder.calls) {
-        if (ci.RecvVar) {
-            recv_var_bases[ci.RecvVar] = ci.base_text;
-            g_index_return_vars.insert(ci.RecvVar);
-        }
-    }
-
-    // Transform each receiving variable
-    for (auto &[VD, base_text] : recv_var_bases) {
-        // Find the enclosing function first
-        const FunctionDecl *EnclosingFD = nullptr;
-        for (auto &[fdCanon, fa] : g_function_analyses) {
-            if (!fa.FD || !fa.FD->hasBody())
-                continue;
-            SourceLocation bodyStart = fa.FD->getBody()->getBeginLoc();
-            SourceLocation bodyEnd = fa.FD->getBody()->getEndLoc();
-            SourceLocation varLoc = VD->getLocation();
-            if (SM.isBeforeInTranslationUnit(bodyStart, varLoc) &&
-                SM.isBeforeInTranslationUnit(varLoc, bodyEnd)) {
-                EnclosingFD = fa.FD;
-                break;
-            }
-        }
-
-        if (!EnclosingFD)
-            continue;
-
-        // Skip if the enclosing function was already transformed by Phase 4
-        // (generatePointerPairTransformation already handled the declaration
-        // and usage changes for this variable)
-        if (g_transformed_functions.count(EnclosingFD->getCanonicalDecl()))
-            continue;
-
-        // Change declaration type: int *var → int var
-        const DeclStmt *DS = nullptr;
-        // Search all function bodies for the DeclStmt
-        for (auto &[fdCanon, fa] : g_function_analyses) {
-            if (fa.FD && fa.FD->hasBody()) {
-                DS = findDeclStmtForVar(VD, fa.FD->getBody());
-                if (DS)
-                    break;
-            }
-        }
-
-        if (DS) {
-            // Replace the type part: "int *var" → "int var"
-            SourceLocation TypeStart = DS->getBeginLoc();
-            SourceLocation NameLoc = VD->getLocation();
-            unsigned origLen = SM.getFileOffset(NameLoc) - SM.getFileOffset(TypeStart);
-            TheRewriter.ReplaceText(TypeStart, origLen, "int ");
-        }
-
-        class VarUsageTransformer : public RecursiveASTVisitor<VarUsageTransformer> {
-        public:
-            Rewriter &Rewrite;
-            SourceManager &SM;
-            const LangOptions &LO;
-            ASTContext &Ctx;
-            const VarDecl *TargetVar;
-            const std::string &BaseText;
-
-            VarUsageTransformer(Rewriter &R, SourceManager &SM, const LangOptions &LO,
-                                ASTContext &C, const VarDecl *V, const std::string &B)
-                : Rewrite(R), SM(SM), LO(LO), Ctx(C), TargetVar(V), BaseText(B) {}
-
-            bool VisitDeclRefExpr(DeclRefExpr *DRE) {
-                if (DRE->getDecl() != TargetVar)
-                    return true;
-
-                const Stmt *Parent = skipTransparentParents(DRE, Ctx);
-                if (!Parent)
-                    return true;
-
-                // Case: *var → base[var]
-                if (const auto *UO = dyn_cast<UnaryOperator>(Parent)) {
-                    if (UO->getOpcode() == UO_Deref) {
-                        std::string varName = TargetVar->getNameAsString();
-                        SourceLocation Start = UO->getBeginLoc();
-                        SourceLocation End = Lexer::getLocForEndOfToken(
-                            UO->getEndLoc(), 0, SM, LO);
-                        unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                        Rewrite.ReplaceText(Start, len,
-                            BaseText + "[" + varName + "]");
-                        return true;
-                    }
-                }
-
-                // Case: if (var) → if (var != -1)
-                // Case: if (!var) → if (var == -1)  (parent would be UnaryOperator LNot)
-                if (const auto *UO = dyn_cast<UnaryOperator>(Parent)) {
-                    if (UO->getOpcode() == UO_LNot) {
-                        std::string varName = TargetVar->getNameAsString();
-                        SourceLocation Start = UO->getBeginLoc();
-                        SourceLocation End = Lexer::getLocForEndOfToken(
-                            UO->getEndLoc(), 0, SM, LO);
-                        unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                        Rewrite.ReplaceText(Start, len,
-                            varName + " == -1");
-                        return true;
-                    }
-                }
-
-                // Case: implicit boolean (if (var) where parent is IfStmt/While/etc)
-                if (isa<IfStmt>(Parent) || isa<WhileStmt>(Parent) ||
-                    isa<ConditionalOperator>(Parent)) {
-                    // Check if DRE is the condition
-                    if (const auto *IS = dyn_cast<IfStmt>(Parent)) {
-                        if (IS->getCond()->IgnoreImpCasts() == DRE) {
-                            std::string varName = TargetVar->getNameAsString();
-                            SourceLocation Start = DRE->getBeginLoc();
-                            SourceLocation End = Lexer::getLocForEndOfToken(
-                                DRE->getEndLoc(), 0, SM, LO);
-                            unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                            Rewrite.ReplaceText(Start, len,
-                                varName + " != -1");
-                            return true;
-                        }
-                    }
-                }
-
-                // Case: var - base → var (pointer difference giving index)
-                if (const auto *BO = dyn_cast<BinaryOperator>(Parent)) {
-                    if (BO->getOpcode() == BO_Sub) {
-                        const auto *RhsDRE = dyn_cast<DeclRefExpr>(
-                            BO->getRHS()->IgnoreImpCasts());
-                        if (RhsDRE) {
-                            std::string rhs = getSourceText(BO->getRHS(), SM, LO);
-                            if (rhs == BaseText) {
-                                // var - base → var
-                                std::string varName = TargetVar->getNameAsString();
-                                // Check if wrapped in a cast: (int)(var - base) → var
-                                const Stmt *GrandParent = skipTransparentParents(BO, Ctx);
-                                if (GrandParent) {
-                                    if (const auto *CSC = dyn_cast<CStyleCastExpr>(GrandParent)) {
-                                        SourceLocation Start = CSC->getBeginLoc();
-                                        SourceLocation End = Lexer::getLocForEndOfToken(
-                                            CSC->getEndLoc(), 0, SM, LO);
-                                        unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                                        Rewrite.ReplaceText(Start, len, varName);
-                                        return true;
-                                    }
-                                }
-                                SourceLocation Start = BO->getBeginLoc();
-                                SourceLocation End = Lexer::getLocForEndOfToken(
-                                    BO->getEndLoc(), 0, SM, LO);
-                                unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                                Rewrite.ReplaceText(Start, len, varName);
-                                return true;
-                            }
-                        }
-                    }
-                }
-
-                return true;
-            }
-        };
-
-        VarUsageTransformer transformer(TheRewriter, SM, LO, Ctx, VD, base_text);
-        transformer.TraverseStmt(EnclosingFD->getBody());
-    }
-
-    // Part C: Transform functions that return pointers into global/static arrays
-    for (auto &[FDCanon, gri] : g_global_return_functions) {
-        auto fa_it = g_function_analyses.find(FDCanon);
-        if (fa_it == g_function_analyses.end())
-            continue;
-        const FunctionDecl *FD = fa_it->second.FD;
-        if (!FD || !FD->hasBody())
-            continue;
-
-        // C1: Change return type from T* to int
-        rewriteReturnTypeAsInt(TheRewriter, FD, SM, LO);
-
-        // C2: Transform return statements
-        class GlobalReturnFixer : public RecursiveASTVisitor<GlobalReturnFixer> {
-        public:
-            Rewriter &Rewrite;
-            SourceManager &SM;
-            const LangOptions &LO;
-            const std::string &GlobalArrayName;
-
-            GlobalReturnFixer(Rewriter &R, SourceManager &SM, const LangOptions &LO,
-                              const std::string &Name)
-                : Rewrite(R), SM(SM), LO(LO), GlobalArrayName(Name) {}
-
-            bool VisitReturnStmt(ReturnStmt *RS) {
-                const Expr *RetVal = RS->getRetValue();
-                if (!RetVal)
-                    return true;
-
-                // Check for NULL at AST level first
-                const Expr *Stripped = RetVal->IgnoreParenImpCasts();
-                bool isNullAST = false;
-                if (const auto *IL = dyn_cast<IntegerLiteral>(Stripped)) {
-                    if (IL->getValue() == 0) isNullAST = true;
-                }
-                if (dyn_cast<GNUNullExpr>(Stripped)) isNullAST = true;
-                if (const auto *CSC = dyn_cast<CStyleCastExpr>(Stripped)) {
-                    const Expr *Sub = CSC->getSubExpr()->IgnoreParenImpCasts();
-                    if (const auto *IL = dyn_cast<IntegerLiteral>(Sub)) {
-                        if (IL->getValue() == 0) isNullAST = true;
-                    }
-                }
-
-                SourceLocation ValStart = RetVal->getBeginLoc();
-                SourceLocation ValEnd = RetVal->getEndLoc();
-
-                // Handle macro locations (e.g. NULL) — use expansion loc
-                if (ValStart.isMacroID()) {
-                    auto ExpRange = SM.getExpansionRange(RetVal->getSourceRange());
-                    ValStart = ExpRange.getBegin();
-                    ValEnd = ExpRange.getEnd();
-                }
-                SourceLocation ValEndTok = Lexer::getLocForEndOfToken(ValEnd, 0, SM, LO);
-
-                // NULL/0 → -1 (AST or text check)
-                if (isNullAST) {
-                    unsigned len = SM.getFileOffset(ValEndTok) - SM.getFileOffset(ValStart);
-                    Rewrite.ReplaceText(ValStart, len, "-1");
-                    return true;
-                }
-
-                StringRef valText = Lexer::getSourceText(
-                    CharSourceRange::getCharRange(ValStart, ValEndTok), SM, LO);
-                if (valText == "NULL" || valText == "0" || valText == "__null" ||
-                    valText == "((void*)0)" || valText == "((void *)0)") {
-                    unsigned len = SM.getFileOffset(ValEndTok) - SM.getFileOffset(ValStart);
-                    Rewrite.ReplaceText(ValStart, len, "-1");
-                    return true;
-                }
-
-                // &global_array[expr] → expr
-                const Expr *RV = RetVal->IgnoreImpCasts();
-                if (const auto *UO = dyn_cast<UnaryOperator>(RV)) {
-                    if (UO->getOpcode() == UO_AddrOf) {
-                        const Expr *Sub = UO->getSubExpr()->IgnoreImpCasts();
-                        if (const auto *ASE = dyn_cast<ArraySubscriptExpr>(Sub)) {
-                            const Expr *Idx = ASE->getIdx();
-                            // Get the index expression text
-                            SourceLocation IdxStart = Idx->getBeginLoc();
-                            SourceLocation IdxEnd = Lexer::getLocForEndOfToken(
-                                Idx->getEndLoc(), 0, SM, LO);
-                            StringRef idxText = Lexer::getSourceText(
-                                CharSourceRange::getCharRange(IdxStart, IdxEnd), SM, LO);
-
-                            unsigned len = SM.getFileOffset(ValEndTok) - SM.getFileOffset(ValStart);
-                            Rewrite.ReplaceText(ValStart, len, idxText.str());
-                            return true;
-                        }
-                    }
-                }
-
-                return true;
-            }
-        };
-
-        GlobalReturnFixer fixer(TheRewriter, SM, LO, gri.global_array_name);
-        fixer.TraverseStmt(FD->getBody());
-
-        if (VERBOSE)
-            llvm::outs() << "[Phase5b-C] Transformed global-return function: "
-                          << FD->getNameAsString() << "\n";
-    }
-
-    // Calls whose return value is consumed directly do not have a receiving
-    // variable for Part D to rewrite.  Fix pointer-null comparisons in place
-    // now that the callee returns -1 for null.
-    class GlobalReturnDirectCallTransformer
-        : public RecursiveASTVisitor<GlobalReturnDirectCallTransformer> {
-    public:
-        Rewriter &Rewrite;
-        SourceManager &SM;
-        const LangOptions &LO;
-
-        GlobalReturnDirectCallTransformer(Rewriter &R, SourceManager &SM,
-                                          const LangOptions &LO)
-            : Rewrite(R), SM(SM), LO(LO) {}
-
-        bool VisitBinaryOperator(BinaryOperator *BO) {
-            if (BO->getOpcode() != BO_EQ && BO->getOpcode() != BO_NE)
-                return true;
-
-            const Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
-            const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
-            const Expr *NullExpr = nullptr;
-            if (isGlobalReturnCall(LHS) && isNullLike(RHS))
-                NullExpr = BO->getRHS();
-            else if (isGlobalReturnCall(RHS) && isNullLike(LHS))
-                NullExpr = BO->getLHS();
-
-            if (!NullExpr)
-                return true;
-
-            SourceLocation Start = NullExpr->getBeginLoc();
-            SourceLocation End = NullExpr->getEndLoc();
-            if (Start.isMacroID() || End.isMacroID()) {
-                auto Expansion = SM.getExpansionRange(NullExpr->getSourceRange());
-                Start = Expansion.getBegin();
-                End = Expansion.getEnd();
-            }
-            End = Lexer::getLocForEndOfToken(End, 0, SM, LO);
-            Rewrite.ReplaceText(Start, SM.getFileOffset(End) - SM.getFileOffset(Start), "-1");
-            return true;
-        }
-
-    private:
-        static bool isGlobalReturnCall(const Expr *E) {
-            const auto *CE = dyn_cast<CallExpr>(E);
-            if (!CE)
-                return false;
-            const FunctionDecl *Callee = CE->getDirectCallee();
-            return Callee &&
-                g_global_return_functions.count(Callee->getCanonicalDecl());
-        }
-
-        static bool isNullLike(const Expr *E) {
-            E = E->IgnoreParenImpCasts();
-            if (const auto *IL = dyn_cast<IntegerLiteral>(E))
-                return IL->getValue() == 0;
-            if (isa<GNUNullExpr>(E))
-                return true;
-            if (const auto *CE = dyn_cast<CStyleCastExpr>(E))
-                return isNullLike(CE->getSubExpr());
-            return false;
-        }
-    };
-
-    GlobalReturnDirectCallTransformer directCallTransformer(TheRewriter, SM, LO);
-    directCallTransformer.TraverseDecl(Ctx.getTranslationUnitDecl());
-
-    // Part D: Transform callers of global-return functions
-    // Find all calls and their receiving variables
-    class GlobalReturnCallFinder : public RecursiveASTVisitor<GlobalReturnCallFinder> {
-    public:
-        struct CallInfo {
-            const CallExpr *CE;
-            const VarDecl *RecvVar;
-            std::string global_array_name;
-        };
-        std::vector<CallInfo> calls;
-        ASTContext &Ctx;
-
-        GlobalReturnCallFinder(ASTContext &C) : Ctx(C) {}
-
-        bool VisitVarDecl(VarDecl *VD) {
-            if (!VD->hasInit())
-                return true;
-            if (!VD->getType()->isPointerType())
-                return true;
-
-            const Expr *Init = VD->getInit()->IgnoreImpCasts();
-            if (const auto *CE = dyn_cast<CallExpr>(Init)) {
-                checkCall(CE, VD);
-            }
-            return true;
-        }
-
-        bool VisitBinaryOperator(BinaryOperator *BO) {
-            if (BO->getOpcode() != BO_Assign)
-                return true;
-            const auto *LHS = dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreImpCasts());
-            if (!LHS)
-                return true;
-            const auto *VD = dyn_cast<VarDecl>(LHS->getDecl());
-            if (!VD || !VD->getType()->isPointerType())
-                return true;
-            const Expr *RHS = BO->getRHS()->IgnoreImpCasts();
-            if (const auto *CE = dyn_cast<CallExpr>(RHS)) {
-                checkCall(CE, VD);
-            }
-            return true;
-        }
-
-    private:
-        void checkCall(const CallExpr *CE, const VarDecl *RecvVD) {
-            const FunctionDecl *Callee = CE->getDirectCallee();
-            if (!Callee)
-                return;
-            auto it = g_global_return_functions.find(Callee->getCanonicalDecl());
-            if (it == g_global_return_functions.end())
-                return;
-
-            CallInfo ci;
-            ci.CE = CE;
-            ci.RecvVar = RecvVD;
-            ci.global_array_name = it->second.global_array_name;
-            calls.push_back(ci);
-        }
-    };
-
-    GlobalReturnCallFinder gFinder(Ctx);
-    gFinder.TraverseDecl(Ctx.getTranslationUnitDecl());
-
-    // Collect receiving variables and their global array bases
-    std::map<const VarDecl *, std::string> global_recv_vars;
-    for (const auto &ci : gFinder.calls) {
-        if (ci.RecvVar) {
-            global_recv_vars[ci.RecvVar] = ci.global_array_name;
-        }
-    }
-
-    // Transform each receiving variable's declaration and usages
-    for (auto &[VD, global_array] : global_recv_vars) {
-        // Find the enclosing function
-        const FunctionDecl *EnclosingFD = nullptr;
-        for (auto &[fdCanon, fa] : g_function_analyses) {
-            if (!fa.FD || !fa.FD->hasBody())
-                continue;
-            SourceLocation bodyStart = fa.FD->getBody()->getBeginLoc();
-            SourceLocation bodyEnd = fa.FD->getBody()->getEndLoc();
-            SourceLocation varLoc = VD->getLocation();
-            if (SM.isBeforeInTranslationUnit(bodyStart, varLoc) &&
-                SM.isBeforeInTranslationUnit(varLoc, bodyEnd)) {
-                EnclosingFD = fa.FD;
-                break;
-            }
-        }
-
-        if (!EnclosingFD)
-            continue;
-
-        // Skip if the enclosing function was already transformed
-        if (g_transformed_functions.count(EnclosingFD->getCanonicalDecl()))
-            continue;
-
-        // Change declaration type: T *var → int var
-        const DeclStmt *DS = nullptr;
-        for (auto &[fdCanon, fa] : g_function_analyses) {
-            if (fa.FD && fa.FD->hasBody()) {
-                DS = findDeclStmtForVar(VD, fa.FD->getBody());
-                if (DS)
-                    break;
-            }
-        }
-
-        if (DS) {
-            SourceLocation TypeStart = DS->getBeginLoc();
-            SourceLocation NameLoc = VD->getLocation();
-            unsigned origLen = SM.getFileOffset(NameLoc) - SM.getFileOffset(TypeStart);
-            TheRewriter.ReplaceText(TypeStart, origLen, "int ");
-        }
-
-        // Transform usages of the receiving variable
-        class GlobalVarUsageTransformer : public RecursiveASTVisitor<GlobalVarUsageTransformer> {
-        public:
-            Rewriter &Rewrite;
-            SourceManager &SM;
-            const LangOptions &LO;
-            ASTContext &Ctx;
-            const VarDecl *TargetVar;
-            const std::string &GlobalArray;
-
-            GlobalVarUsageTransformer(Rewriter &R, SourceManager &SM, const LangOptions &LO,
-                                      ASTContext &C, const VarDecl *V, const std::string &G)
-                : Rewrite(R), SM(SM), LO(LO), Ctx(C), TargetVar(V), GlobalArray(G) {}
-
-            bool VisitDeclRefExpr(DeclRefExpr *DRE) {
-                if (DRE->getDecl() != TargetVar)
-                    return true;
-
-                const Stmt *Parent = skipTransparentParents(DRE, Ctx);
-                if (!Parent)
-                    return true;
-
-                std::string varName = TargetVar->getNameAsString();
-
-                // Case: var->field → global_array[var].field
-                if (const auto *ME = dyn_cast<MemberExpr>(Parent)) {
-                    if (ME->isArrow()) {
-                        std::string field = ME->getMemberDecl()->getNameAsString();
-                        SourceLocation Start = ME->getBeginLoc();
-                        SourceLocation End = Lexer::getLocForEndOfToken(
-                            ME->getEndLoc(), 0, SM, LO);
-                        unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                        Rewrite.ReplaceText(Start, len,
-                            GlobalArray + "[" + varName + "]." + field);
-                        return true;
-                    }
-                }
-
-                // Case: *var → global_array[var]
-                if (const auto *UO = dyn_cast<UnaryOperator>(Parent)) {
-                    if (UO->getOpcode() == UO_Deref) {
-                        SourceLocation Start = UO->getBeginLoc();
-                        SourceLocation End = Lexer::getLocForEndOfToken(
-                            UO->getEndLoc(), 0, SM, LO);
-                        unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                        Rewrite.ReplaceText(Start, len,
-                            GlobalArray + "[" + varName + "]");
-                        return true;
-                    }
-                    // Case: !var → var == -1
-                    if (UO->getOpcode() == UO_LNot) {
-                        SourceLocation Start = UO->getBeginLoc();
-                        SourceLocation End = Lexer::getLocForEndOfToken(
-                            UO->getEndLoc(), 0, SM, LO);
-                        unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                        Rewrite.ReplaceText(Start, len, varName + " == -1");
-                        return true;
-                    }
-                }
-
-                // Case: var == NULL / var != NULL → var == -1 / var != -1
-                if (const auto *BO = dyn_cast<BinaryOperator>(Parent)) {
-                    if (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) {
-                        // Check if the other side is NULL
-                        const Expr *Other = nullptr;
-                        if (BO->getLHS()->IgnoreImpCasts() == DRE)
-                            Other = BO->getRHS()->IgnoreImpCasts();
-                        else
-                            Other = BO->getLHS()->IgnoreImpCasts();
-
-                        bool isNull = false;
-                        const Expr *OtherStripped = Other->IgnoreParens();
-                        if (const auto *IL = dyn_cast<IntegerLiteral>(OtherStripped)) {
-                            if (IL->getValue() == 0) isNull = true;
-                        }
-                        if (dyn_cast<GNUNullExpr>(OtherStripped)) isNull = true;
-                        if (const auto *CSC = dyn_cast<CStyleCastExpr>(OtherStripped)) {
-                            const Expr *Sub = CSC->getSubExpr()->IgnoreParenImpCasts();
-                            if (const auto *IL = dyn_cast<IntegerLiteral>(Sub)) {
-                                if (IL->getValue() == 0) isNull = true;
-                            }
-                        }
-                        // Also check source text for "NULL" macro
-                        if (!isNull) {
-                            SourceLocation OtherStart = Other->getBeginLoc();
-                            SourceLocation OtherEnd = Other->getEndLoc();
-                            if (OtherStart.isMacroID()) {
-                                auto ExpRange = SM.getExpansionRange(
-                                    SourceRange(OtherStart, OtherEnd));
-                                OtherStart = ExpRange.getBegin();
-                                OtherEnd = ExpRange.getEnd();
-                            }
-                            SourceLocation OtherEndTok = Lexer::getLocForEndOfToken(
-                                OtherEnd, 0, SM, LO);
-                            StringRef otherText = Lexer::getSourceText(
-                                CharSourceRange::getCharRange(OtherStart, OtherEndTok), SM, LO);
-                            if (otherText == "NULL" || otherText == "0" || otherText == "__null")
-                                isNull = true;
-                        }
-
-                        if (isNull) {
-                            std::string op = (BO->getOpcode() == BO_EQ) ? " == " : " != ";
-                            SourceLocation Start = BO->getBeginLoc();
-                            SourceLocation End = BO->getEndLoc();
-                            if (Start.isMacroID() || End.isMacroID()) {
-                                auto ExpRange = SM.getExpansionRange(
-                                    BO->getSourceRange());
-                                Start = ExpRange.getBegin();
-                                End = ExpRange.getEnd();
-                            }
-                            SourceLocation EndTok = Lexer::getLocForEndOfToken(
-                                End, 0, SM, LO);
-                            unsigned len = SM.getFileOffset(EndTok) - SM.getFileOffset(Start);
-                            Rewrite.ReplaceText(Start, len, varName + op + "-1");
-                            return true;
-                        }
-                    }
-                }
-
-                // Case: implicit boolean (if (var)) → if (var != -1)
-                if (isa<IfStmt>(Parent) || isa<WhileStmt>(Parent) ||
-                    isa<ConditionalOperator>(Parent)) {
-                    if (const auto *IS = dyn_cast<IfStmt>(Parent)) {
-                        if (IS->getCond()->IgnoreImpCasts() == DRE) {
-                            SourceLocation Start = DRE->getBeginLoc();
-                            SourceLocation End = Lexer::getLocForEndOfToken(
-                                DRE->getEndLoc(), 0, SM, LO);
-                            unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                            Rewrite.ReplaceText(Start, len, varName + " != -1");
-                            return true;
-                        }
-                    }
-                }
-
-                // The variable now stores an index, but an unchanged callee
-                // still expects the pointer produced by the original helper.
-                // Reconstruct that pointer at the argument boundary.
-                if (const auto *CE = dyn_cast<CallExpr>(Parent)) {
-                    for (const Expr *Arg : CE->arguments()) {
-                        if (Arg->IgnoreParenImpCasts() != DRE)
-                            continue;
-                        SourceLocation Start = DRE->getBeginLoc();
-                        SourceLocation End = Lexer::getLocForEndOfToken(
-                            DRE->getEndLoc(), 0, SM, LO);
-                        unsigned len = SM.getFileOffset(End) - SM.getFileOffset(Start);
-                        Rewrite.ReplaceText(Start, len,
-                            "&" + GlobalArray + "[" + varName + "]");
-                        return true;
-                    }
-                }
-
-                return true;
-            }
-        };
-
-        GlobalVarUsageTransformer transformer(TheRewriter, SM, LO, Ctx, VD, global_array);
-        transformer.TraverseStmt(EnclosingFD->getBody());
-
     }
 }
 
@@ -3097,6 +1369,106 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
             SM.getSpellingLineNumber(Loc),
             SM.getSpellingColumnNumber(Loc)
         });
+
+        // Record the transformed pointer in the metadata side-file so
+        // the slice pass knows which index variables exist and what
+        // they index into.
+        if (FD) {
+            if (xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(FD, Ctx)) {
+                xj::PtrIndexPointerRecord rec;
+                rec.name = PtrVar->getNameAsString();
+                rec.index_var = rec.name + "_index_xj";
+                rec.param_index = -1;
+                if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
+                    rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
+                rec.moved = true;
+                rec.base_text = candidate.base_array_text;
+                rec.min_offset = candidate.min_relative_offset;
+                rec.max_offset = candidate.max_relative_offset;
+                rec.variable_offsets = !candidate.constant_offsets;
+                fnRec->pointers.push_back(std::move(rec));
+            }
+        }
+    }
+}
+
+// Return the metadata record for `FD`, creating it (with the right
+// source file stamped) on first use. Returns nullptr when a function of
+// the same name from a *different* file already claimed the record —
+// uniquify_statics runs after this pass, so distinct static functions
+// can still share a name here.
+xj::PtrIndexFunctionRecord *
+FunctionAccessAnalyzer::metadataRecordFor(const FunctionDecl *FD, ASTContext &Ctx) {
+    SourceManager &SM = Ctx.getSourceManager();
+    std::string name = FD->getNameAsString();
+    std::string file;
+    if (auto FE = SM.getFileEntryRefForID(
+            SM.getFileID(SM.getSpellingLoc(FD->getLocation()))))
+        file = llvm::sys::path::filename(FE->getName()).str();
+
+    auto it = g_metadata.functions.find(name);
+    if (it == g_metadata.functions.end()) {
+        xj::PtrIndexFunctionRecord rec;
+        rec.file = file;
+        it = g_metadata.functions.emplace(name, std::move(rec)).first;
+    } else if (it->second.file != file) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
+// Export the surviving detection results (slice reshapings and
+// global-return rewrites) for this TU into g_metadata. Called at the
+// end of onEndOfTranslationUnit, after transformAllFunctions has had
+// its chance to drop candidates whose body rewrites failed.
+void FunctionAccessAnalyzer::exportMetadata(ASTContext &Ctx) {
+    SourceManager &SM = Ctx.getSourceManager();
+
+    for (auto &[FDCanon, info] : g_transformed_functions) {
+        auto fa_it = g_function_analyses.find(FDCanon);
+        if (fa_it == g_function_analyses.end() || !fa_it->second.FD)
+            continue;
+        const FunctionDecl *FD = fa_it->second.FD;
+
+        xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(FD, Ctx);
+        if (!fnRec)
+            continue;
+        // A record from an earlier TU (e.g. an inline function defined
+        // in a shared, already-rewritten header) wins.
+        if (fnRec->slice.present)
+            continue;
+
+        xj::PtrIndexSliceRecord &S = fnRec->slice;
+        S.present = true;
+        S.slice_param_name = info.slice_param_name;
+        S.slice_type = info.slice_type;
+        S.pointee_type = info.pointee_type;
+        S.base_param_index = info.base_param_index;
+        S.end_param_index = info.end_param_index;
+        S.len_param_index = info.len_param_index;
+        S.lookback = info.lookback;
+        S.lookahead = info.lookahead;
+        S.inclusive_end = info.inclusive_end;
+        S.return_type_changed = info.return_type_changed;
+        S.singleton_param_indices = info.singleton_param_indices;
+    }
+
+    for (auto &[FDCanon, gri] : g_global_return_functions) {
+        auto fa_it = g_function_analyses.find(FDCanon);
+        if (fa_it == g_function_analyses.end() || !fa_it->second.FD)
+            continue;
+        const FunctionDecl *FD = fa_it->second.FD;
+        std::string name = FD->getNameAsString();
+        if (g_metadata.global_return_functions.count(name))
+            continue;
+
+        xj::PtrIndexGlobalReturnRecord rec;
+        if (auto FE = SM.getFileEntryRefForID(
+                SM.getFileID(SM.getSpellingLoc(FD->getLocation()))))
+            rec.file = llvm::sys::path::filename(FE->getName()).str();
+        rec.global_array_name = gri.global_array_name;
+        rec.pointee_type = gri.pointee_type;
+        g_metadata.global_return_functions.emplace(name, std::move(rec));
     }
 }
 

@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "PtrIndexMetadata.h"
+
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -220,6 +222,12 @@ struct RustSliceInfo {
     // Pointer parameters that don't iterate but are dereferenced (e.g.
     // swap's a,b). They turn into int indices alongside the slice.
     std::vector<int> singleton_param_indices;
+
+    // Name of the local iterating pointer whose accesses triggered root
+    // detection (empty for singleton / pointer-pair functions). The slice
+    // pass uses it to tell the driver's index apart from other pointers
+    // over the same base.
+    std::string driver_ptr_name;
 };
 
 // ============================================================================
@@ -274,24 +282,24 @@ extern std::set<std::string> g_allowed_funcs;
 // to make wrapper emission idempotent across the TU.
 extern std::set<std::string> g_emitted_wrappers;
 
-// Functions whose signature has been (or will be) rewritten to use a
-// RustSlice. Populated during detection, consumed by call-site rewriting.
+// Functions detected as RustSlice candidates. Detection still runs in
+// this tool (it needs the analysis fixpoint), but the actual reshaping
+// is done by xj-prepare-slicetransform: this map is exported to the
+// metadata side-file at the end of each TU.
 extern std::map<const FunctionDecl *, RustSliceInfo> g_transformed_functions;
-
-// Names of slice typedefs already emitted (e.g. "RustSlice_int").
-extern std::set<std::string> g_emitted_typedefs;
 
 // Per-function analysis snapshots saved during run() for later phases.
 extern std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
 
-// Local variables whose type was rewritten from T* to int because they
-// were initialized from a return-type-changed function. Tracked so
-// later argument translation knows to use the bare name (no "_index"
-// suffix).
-extern std::set<const VarDecl *> g_index_return_vars;
-
-// Functions whose return type was rewritten from T* to int.
+// Functions whose return type is to be rewritten from T* to int by the
+// slice pass (they only ever return into one global/static array).
 extern std::map<const FunctionDecl *, GlobalReturnInfo> g_global_return_functions;
+
+// Metadata accumulated across every TU in this run, written to
+// g_metadata_out (if set) after the last file is processed. Consumed by
+// xj-prepare-slicetransform.
+extern xj::PtrIndexMetadata g_metadata;
+extern std::string g_metadata_out; // --metadata-out CLI flag ("" = don't write)
 
 // ============================================================================
 // Edit — one pending source-text rewrite

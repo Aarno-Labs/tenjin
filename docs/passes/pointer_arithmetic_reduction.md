@@ -7,7 +7,18 @@
 ## What
 
 C preparatory refactoring pass to convert pointer arithmetic into explicitly
-subscripted accesses and replace ptr/len arguments with slice structs.
+subscripted accesses: each moving pointer's motion is redirected into a
+companion integer index variable (`p` → `p_index_xj`), with accesses spelled
+`base[p_index_xj]`.
+
+This pass also *detects* which functions can have their `(ptr, len)` /
+`(lo, hi)` parameter pairs reshaped into `RustSlice_<T>` structs, but does
+not apply that reshaping itself: the detection results are written to a
+metadata side-file (`tenjin_ptr_index_metadata.json`, see
+`xj-prepare-support/PtrIndexMetadata.h`) which the immediately-following
+[slice signature reshaping](slice_signature_reshaping.md) pass
+(`xj-prepare-slicetransform`) consumes. This pass's output is always valid,
+compilable C with the original signatures intact.
 
 ## Why
 

@@ -1,6 +1,22 @@
+"""Tests for xj-prepare-pointertransform (plain index rewriting) and its
+chaining into xj-prepare-slicetransform. Cases that exercise the
+RustSlice reshaping specifically live in test_slice_transform.py."""
+
 import json
+from pathlib import Path
+
+import pytest
 
 import hermetic
+from ptr_slice_fixture_harness import run_case
+
+_CASES_DIR = Path(__file__).parent / "pointer_transform_cases"
+_CASES = sorted(p.name for p in _CASES_DIR.iterdir() if p.is_dir())
+
+
+@pytest.mark.parametrize("case", _CASES)
+def test_pointer_transform_case(root, test_tmp_dir, case):
+    run_case(root, test_tmp_dir, _CASES_DIR / case)
 
 
 def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp_codebase):
@@ -37,13 +53,22 @@ def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp
         encoding="utf-8",
     )
 
+    # The T*->int return-type rewrite is applied by the slice pass, so
+    # chain both tools (metadata side-file in between).
     pointer_transform = root / "_local" / "_build_pointertransform" / "xj-prepare-pointertransform"
-    result = hermetic.run(
-        [pointer_transform, "-p", tmp_codebase, source],
+    slice_transform = root / "_local" / "_build_slicetransform" / "xj-prepare-slicetransform"
+    metadata = tmp_codebase / "metadata.json"
+    hermetic.run(
+        [pointer_transform, "--inplace", f"--metadata-out={metadata}", "-p", tmp_codebase, source],
         check=True,
         capture_output=True,
     )
-    transformed = result.stdout.decode("utf-8")
+    hermetic.run(
+        [slice_transform, "--inplace", f"--metadata-in={metadata}", "-p", tmp_codebase, source],
+        check=True,
+        capture_output=True,
+    )
+    transformed = source.read_text(encoding="utf-8")
 
     assert transformed.count("static int find_item(int index)") == 2
     assert "intfind_item" not in transformed
@@ -52,7 +77,7 @@ def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp
 
     hermetic.run(
         [clang, "-std=c11", "-x", "c", "-fsyntax-only", "-"],
-        input=result.stdout,
+        input=transformed.encode("utf-8"),
         check=True,
         capture_output=True,
     )
