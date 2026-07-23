@@ -277,11 +277,17 @@ impl<'c> Translation<'c> {
                     .ffi_conversions
                     .contains_key(name);
                 let needs_ffi_wrapper = is_exported_symbol
-                    && fn_needs_abi_preservation
                     && !is_main
                     && !is_builtin_wrapper
                     && !is_variadic
                     && has_ffi_guidance;
+
+                if needs_ffi_wrapper && !fn_needs_abi_preservation {
+                    log::warn!(
+                        "Function {} has FFI-wrapper guidance but is marked as non-API. An FFI wrapper will be generated anyway.",
+                        name
+                    );
+                }
 
                 // Only add linkage attributes if the function is `extern`
                 let mut mk_ = if is_main {
