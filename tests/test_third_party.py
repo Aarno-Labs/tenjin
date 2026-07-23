@@ -692,3 +692,111 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: ~30 minutes
+@pytest.mark.xfail(
+    reason="dbcc does not yet translate end-to-end; the C sources handed to c2rust "
+    "fail to parse, so no final/ crate is produced. Refolding itself is not at "
+    "fault (the c_16 output was verified token-faithful to the modified program); "
+    "both error classes originate elsewhere: (1) every TU except getopt/util calls "
+    "assert(<pointer>); with assert a blocked macro during translation, the calls "
+    "bind to the autoincluded 'void assert(int);' marker decl and Clang rejects "
+    "the pointer-to-int conversions as errors. (2) The _xjw unmodified-function "
+    "wrappers from xj-prepare-findfnptrdecls are inserted (at c_13, pre-refold) "
+    "between a forward declaration and its ';' in mpc.c (the insertion-point "
+    "lookup sees hasBody() true via a later redecl, looks for a '}' after the "
+    "prototype, and falls back to just after the ')'), yielding invalid C plus "
+    "knock-on conflicting-type and incompatible-function-pointer errors "
+    "(mpc_fold_t vs xjg-threaded mpc_fold_t_xjtp, etc.); the invalid Clang AST "
+    "makes xj-c2rust panic (exit 101, conversion.rs 'Type conversion not "
+    "implemented for TagTypeUnknown').",
+    strict=True,
+)
+def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/howerj/dbcc.git", "2f5031d8013aafed199a35c2dfa92db2bb33a5de"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="howerj_dbcc",
+            buildcmd="make dbcc CC=cc",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    # dbcc compiles a CAN DBC description into C/XML/CSV/JSON source. Each output
+    # format writes its generated files into the directory named by `-o`, so we
+    # point the C and Rust builds at separate output directories and compare the
+    # generated files byte-for-byte (as well as stdout/stderr/exit code) across a
+    # range of inputs and every conversion mode.
+    c_dbcc = tmp_resultsdir / "_build_1" / "dbcc"
+    rs_dbcc = tmp_resultsdir / "final" / "target" / "debug" / "howerj_dbcc"
+
+    dbc_files = [
+        "ex1.dbc",
+        "ex2.dbc",
+        "enum.dbc",
+        "mul-val.dbc",
+        "single-enum.dbc",
+        "double_signal.dbc",
+        "float_signal.dbc",
+    ]
+    # Each flag selects an output format: "" is the default C codec, -x is XML,
+    # -C is CSV, and -j is JSON.
+    mode_flags = ["", "-x", "-C", "-j"]
+
+    c_out = tmp_resultsdir / "dbcc_c_out"
+    rs_out = tmp_resultsdir / "dbcc_rs_out"
+
+    for dbc in dbc_files:
+        dbc_path = tmp_codebase / dbc
+        for flag in mode_flags:
+            flag_args = [flag] if flag else []
+            shutil.rmtree(c_out, ignore_errors=True)
+            shutil.rmtree(rs_out, ignore_errors=True)
+            c_out.mkdir()
+            rs_out.mkdir()
+
+            c_proc = hermetic.run(
+                [str(c_dbcc), *flag_args, "-o", str(c_out), str(dbc_path)],
+                check=False,
+                capture_output=True,
+            )
+            rs_proc = hermetic.run(
+                [str(rs_dbcc), *flag_args, "-o", str(rs_out), str(dbc_path)],
+                check=False,
+                capture_output=True,
+            )
+
+            label = f"{dbc} (flag {flag!r})"
+            assert rs_proc.returncode == c_proc.returncode, (
+                f"{label}: different exit codes; Rust got {rs_proc.returncode} vs C {c_proc.returncode}"
+            )
+            assert rs_proc.stdout == c_proc.stdout, (
+                f"{label}: stdout differed; Rust output was: {rs_proc.stdout!r}"
+            )
+            assert rs_proc.stderr == c_proc.stderr, (
+                f"{label}: stderr differed; Rust error was: {rs_proc.stderr!r}"
+            )
+
+            c_files = sorted(p.name for p in c_out.iterdir())
+            rs_files = sorted(p.name for p in rs_out.iterdir())
+            assert rs_files == c_files, (
+                f"{label}: generated a different set of files; Rust {rs_files} vs C {c_files}"
+            )
+            for name in c_files:
+                c_bytes = (c_out / name).read_bytes()
+                rs_bytes = (rs_out / name).read_bytes()
+                assert rs_bytes == c_bytes, (
+                    f"{label}: generated file {name!r} differed between Rust and C"
+                )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
