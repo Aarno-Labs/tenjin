@@ -1949,6 +1949,7 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
 
         if (candidate.base_array_text ==
             FD->getParamDecl(base_idx)->getNameAsString()) {
+            g_pre_slice_base_text[PtrVar] = candidate.base_array_text;
             candidate.base_array_text = arr_name + ".ptr";
         }
 

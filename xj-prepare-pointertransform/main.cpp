@@ -26,6 +26,16 @@ static cl::opt<bool> VerboseOpt(
     cl::init(false),
     cl::cat(MyToolCategory));
 
+// --metadata-out: path where the pointer/index metadata side-file is
+// written (accumulated over every processed TU). Records the facts about
+// each rewritten pointer for downstream consumers; see
+// xj-prepare-support/PtrIndexMetadata.h.
+static cl::opt<std::string> MetadataOutOpt(
+    "metadata-out",
+    cl::desc("Path to write pointer/index metadata JSON"),
+    cl::init(""),
+    cl::cat(MyToolCategory));
+
 int main(int argc, const char **argv) {
     auto ExpectedParser = CommonOptionsParser::create(argc, argv, MyToolCategory);
     if (!ExpectedParser) {
@@ -37,6 +47,7 @@ int main(int argc, const char **argv) {
     // Publish CLI flags to the rest of the tool through Common.cpp globals.
     g_inplace = InplaceOpt;
     g_verbose = VerboseOpt;
+    g_metadata_out = MetadataOutOpt;
 
     // Process each source file with its OWN ClangTool, and therefore a fresh
     // FileManager, rather than one ClangTool over the whole source list.
@@ -58,6 +69,14 @@ int main(int argc, const char **argv) {
         int r = Tool.run(newFrontendActionFactory<PointerTransformAction>().get());
         if (r != 0)
             rc = r;
+    }
+
+    // g_metadata accumulated one function/pointer record set per TU as
+    // files were processed; flush it once at the end of the run.
+    if (!g_metadata_out.empty() && !g_metadata.writeToFile(g_metadata_out)) {
+        llvm::errs() << "xj-prepare-pointertransform: failed to write metadata to "
+                     << g_metadata_out << "\n";
+        rc = 1;
     }
     return rc;
 }

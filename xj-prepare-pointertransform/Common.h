@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "PtrIndexMetadata.h"
+
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -292,6 +294,18 @@ extern std::set<const VarDecl *> g_index_return_vars;
 
 // Functions whose return type was rewritten from T* to int.
 extern std::map<const FunctionDecl *, GlobalReturnInfo> g_global_return_functions;
+
+// Metadata accumulated across every TU in this run, written to
+// g_metadata_out (if set) after the last file is processed. See
+// xj-prepare-support/PtrIndexMetadata.h.
+extern xj::PtrIndexMetadata g_metadata;
+extern std::string g_metadata_out; // --metadata-out CLI flag ("" = don't write)
+
+// The RustSlice pointer-pair path retargets a candidate's base to
+// arr.ptr before rewriting it. The metadata records the *original* base
+// (the fact about the input C), so the original text is stashed here at
+// the retarget site, keyed by the pointer's VarDecl.
+extern std::map<const VarDecl *, std::string> g_pre_slice_base_text;
 
 // ============================================================================
 // Edit — one pending source-text rewrite

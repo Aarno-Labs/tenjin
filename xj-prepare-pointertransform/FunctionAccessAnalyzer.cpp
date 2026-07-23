@@ -14,6 +14,8 @@
 
 #include "FunctionAccessAnalyzer.h"
 
+#include "llvm/Support/Path.h"
+
 namespace {
 
 // Replacing a pointer return type's token range does not necessarily leave a
@@ -230,6 +232,17 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
                 SM.getSpellingLineNumber(Loc),
                 SM.getSpellingColumnNumber(Loc)
             });
+
+            xj::PtrIndexPointerRecord rec;
+            rec.name = VD->getNameAsString();
+            rec.index_var = rec.name + "_index_xj";
+            rec.param_index = -1;
+            rec.moved = true;
+            rec.base_text = state.candidate.base_array_text;
+            rec.min_offset = state.candidate.min_relative_offset;
+            rec.max_offset = state.candidate.max_relative_offset;
+            rec.variable_offsets = !state.candidate.constant_offsets;
+            g_metadata.globals.push_back(std::move(rec));
         }
     }
 }
@@ -3097,7 +3110,55 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
             SM.getSpellingLineNumber(Loc),
             SM.getSpellingColumnNumber(Loc)
         });
+
+        // Record the transformed pointer in the metadata side-file so
+        // downstream consumers know which index variables exist and what
+        // they index into.
+        if (FD) {
+            if (xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(FD, Ctx)) {
+                xj::PtrIndexPointerRecord rec;
+                rec.name = PtrVar->getNameAsString();
+                rec.index_var = rec.name + "_index_xj";
+                rec.param_index = -1;
+                if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
+                    rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
+                rec.moved = true;
+                auto ob = g_pre_slice_base_text.find(PtrVar);
+                rec.base_text = ob != g_pre_slice_base_text.end()
+                                    ? ob->second
+                                    : candidate.base_array_text;
+                rec.min_offset = candidate.min_relative_offset;
+                rec.max_offset = candidate.max_relative_offset;
+                rec.variable_offsets = !candidate.constant_offsets;
+                fnRec->pointers.push_back(std::move(rec));
+            }
+        }
     }
+}
+
+// Return the metadata record for `FD`, creating it (with the right
+// source file stamped) on first use. Returns nullptr when a function of
+// the same name from a *different* file already claimed the record —
+// uniquify_statics runs after this pass, so distinct static functions
+// can still share a name here.
+xj::PtrIndexFunctionRecord *
+FunctionAccessAnalyzer::metadataRecordFor(const FunctionDecl *FD, ASTContext &Ctx) {
+    SourceManager &SM = Ctx.getSourceManager();
+    std::string name = FD->getNameAsString();
+    std::string file;
+    if (auto FE = SM.getFileEntryRefForID(
+            SM.getFileID(SM.getSpellingLoc(FD->getLocation()))))
+        file = llvm::sys::path::filename(FE->getName()).str();
+
+    auto it = g_metadata.functions.find(name);
+    if (it == g_metadata.functions.end()) {
+        xj::PtrIndexFunctionRecord rec;
+        rec.file = file;
+        it = g_metadata.functions.emplace(name, std::move(rec)).first;
+    } else if (it->second.file != file) {
+        return nullptr;
+    }
+    return &it->second;
 }
 
 // Push a vector<Edit> through the Rewriter. Edits are applied

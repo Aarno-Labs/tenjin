@@ -1,0 +1,26 @@
+{
+  "functions": {
+    "sum_range": {
+      "file": "callgraph_propagation.c",
+      "pointers": [
+        {
+          "base_text": "lo",
+          "compared_against": [],
+          "dereferenced": false,
+          "handle_source": "",
+          "index_var": "p_index_xj",
+          "max_offset": 0,
+          "min_offset": 0,
+          "moved": true,
+          "name": "p",
+          "param_index": -1,
+          "returned_at_offset": false,
+          "variable_offsets": false
+        }
+      ]
+    }
+  },
+  "global_return_functions": {},
+  "globals": [],
+  "version": 1
+}

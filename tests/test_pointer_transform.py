@@ -1,6 +1,18 @@
 import json
+from pathlib import Path
+
+import pytest
 
 import hermetic
+from ptr_slice_fixture_harness import run_case
+
+_CASES_DIR = Path(__file__).parent / "pointer_transform_cases"
+_CASES = sorted(p.name for p in _CASES_DIR.iterdir() if p.is_dir())
+
+
+@pytest.mark.parametrize("case", _CASES)
+def test_pointer_transform_case(root, test_tmp_dir, case):
+    run_case(root, test_tmp_dir, _CASES_DIR / case)
 
 
 def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp_codebase):

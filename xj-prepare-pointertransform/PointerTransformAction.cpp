@@ -20,6 +20,9 @@ bool PointerTransformAction::BeginSourceFileAction(CompilerInstance &CI) {
     g_function_analyses.clear();
     g_index_return_vars.clear();
     g_global_return_functions.clear();
+    g_pre_slice_base_text.clear();
+    // (g_metadata is intentionally NOT cleared: it accumulates records
+    // across every TU and is flushed once at the end of the run.)
     // NOTE: do NOT clear g_allowed_funcs — it's static configuration
     // (names of library functions we have wrappers for, e.g. strchr,
     // sscanf), initialized once in Common.cpp. Clearing it leaves an

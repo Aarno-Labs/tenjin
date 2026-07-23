@@ -102,6 +102,12 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // and skipping any that overlap an already-edited range.
     void applyEdits(std::vector<Edit> &edits, SourceManager &SM);
 
+    // ---- Metadata export (--metadata-out) -----------------------------
+    // Look up (or create) the metadata record for FD; nullptr when a
+    // same-named function from another file already owns the record.
+    xj::PtrIndexFunctionRecord *metadataRecordFor(const FunctionDecl *FD,
+                                                  ASTContext &Ctx);
+
     // ---- Cross-function transformation phases -------------------------
     void detectAllTransformations(ASTContext &Ctx);
     void transformAllFunctions(ASTContext &Ctx);
