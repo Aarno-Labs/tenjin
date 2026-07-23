@@ -692,3 +692,164 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 700 seconds (~12 minutes, up to the xfail below)
+@pytest.mark.xfail(
+    reason="file(1) does not yet translate end-to-end: refold emits valid C for all 27 "
+    "TUs, but xj-c2rust's raw output (00_out) fails `cargo check` with 6 errors from "
+    "two causes. (1) softmagic.c's magiccheck() uses isunordered(); xj-c2rust reports "
+    "'Unimplemented builtin __builtin_isunordered' and drops the definition while "
+    "keeping its two call sites -> 2x E0425 in softmagic.rs. (2) compress.c calls "
+    "FD_ZERO, which glibc implements as x86-64 inline asm; the translation passes "
+    "`&raw mut` locals (*mut i32) to c2rust_asm_casts::AsmCast::cast_in/cast_out, "
+    "which expect `&mut _` -> 4x E0308 in compress.rs. The `cargo check` gate after "
+    "improvement_pass_02_lift-call-args then raises CalledProcessError, so no final/ "
+    "crate is produced.",
+    strict=True,
+)
+def test_file_file(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/file/file.git", "eb754ace19fed5481d8142426543100a2d6bae4e"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # autoreconf/configure/make must run before there is anything to translate:
+    # configure writes config.h, make generates src/magic.h and compiles the magic
+    # database into magic/magic.mgc. Done outside `do_translate` so the interceptor
+    # never sees configure's hundreds of conftest.c probes.
+    #
+    # The decompression back-ends are disabled so the translation doesn't depend on
+    # which of zlib/bzlib/xz/... are installed; the sandboxes (libseccomp, Landlock)
+    # because they'd restrict the C and Rust binaries unevenly.
+    #
+    # Tenjin's `aclocal` and `libtoolize` live under different prefixes, so aclocal
+    # can't find libtool.m4 and autoreconf dies with "Libtool library used but LIBTOOL
+    # is undefined". Deriving ACLOCAL_PATH from `libtoolize` works for both that split
+    # layout and a normal system install.
+    configure_args = [
+        "--disable-shared",
+        "--disable-landlock",
+        "--disable-libseccomp",
+        "--disable-zlib",
+        "--disable-bzlib",
+        "--disable-xzlib",
+        "--disable-zstdlib",
+        "--disable-lzlib",
+        "--disable-lrziplib",
+        "--disable-lz4lib",
+    ]
+    # `CC=cc` picks Tenjin's clang, which compiles against a bundled glibc 2.26
+    # sysroot. Otherwise configure probes the host gcc/libc and on a modern glibc
+    # concludes HAVE_STRLCPY/HAVE_STRLCAT (glibc 2.38+), dropping src/strlcpy.c and
+    # src/strlcat.c from $(LIBOBJS) -- and the clang build then fails on the
+    # undeclared functions.
+    hermetic.run(
+        "ACLOCAL_PATH=$(dirname $(dirname $(command -v libtoolize)))/share/aclocal"
+        f" autoreconf -fi && ./configure CC=cc {' '.join(configure_args)} && make",
+        cwd=str(tmp_codebase),
+        shell=True,
+        check=True,
+    )
+
+    # Building via `make` would give Tenjin a multi-target codebase (libmagic.a plus
+    # src/file), which disables the non-trivial-refactoring passes. Instead we link
+    # every object into `file` in one `cc` invocation, leaving exactly one target.
+    #
+    # The object list is platform-dependent -- $(LIBOBJS) holds only the
+    # AC_REPLACE_FUNCS fallbacks this host lacks -- so ask the generated Makefile
+    # rather than hardcoding it.
+    objs = hermetic.run(
+        [
+            "make",
+            "-C",
+            "src",
+            "-s",
+            "--eval=xj-print-objs: ; @echo $(libmagic_la_OBJECTS) $(file_OBJECTS) $(LIBOBJS)",
+            "xj-print-objs",
+        ],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=True,
+    ).stdout.decode("utf-8")
+    srcs = [f"src/{Path(o).stem}.c" for o in objs.split()]
+    assert "src/file.c" in srcs and "src/apprentice.c" in srcs, (
+        f"Object list from the generated Makefile looks wrong: {objs!r}"
+    )
+
+    buildcmd_args = [
+        "cc",
+        "-DHAVE_CONFIG_H",
+        "-I.",
+        "-Isrc",
+        # Compiled-in default database path; unused here (we override it with $MAGIC
+        # below) but src/apprentice.c doesn't compile without it.
+        '-DMAGIC="/usr/local/share/misc/magic"',
+        *srcs,
+        "-lm",
+        "-o",
+        "file.exe",
+    ]
+    hermetic.run(buildcmd_args, cwd=str(tmp_codebase), check=True)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="file_file",
+            buildcmd=hermetic.shellize(buildcmd_args),
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    c_file = tmp_codebase / "file.exe"
+    rs_file = tmp_resultsdir / "final" / "target" / "debug" / "file"
+
+    # The compiled-in default database path is only populated by `make install`, so
+    # point both binaries at the magic.mgc that `make` compiled above. TZ is pinned
+    # because many magic entries render timestamps.
+    env_ext = {
+        "MAGIC": str(tmp_codebase / "magic" / "magic.mgc"),
+        "TZ": "UTC",
+    }
+
+    # The upstream corpus: ~88 `<name>.testfile` samples of formats the magic database
+    # should recognize. Upstream checks them via tests/test.c, a separately linked
+    # libmagic client that would make the codebase multi-target again, so we drive the
+    # same corpus through the `file` CLI and require Rust to match C byte-for-byte.
+    testfiles = sorted((tmp_codebase / "tests").glob("*.testfile"))
+    assert len(testfiles) > 50, f"Expected the upstream test corpus, found {len(testfiles)} files"
+
+    # Each flag set exercises a different libmagic output path: default description,
+    # MIME type/encoding, `-k` (MAGIC_CONTINUE: print every match, not just the
+    # first), and the two combined.
+    flag_sets = [["-b"], ["-b", "--mime"], ["-b", "-k"], ["-b", "-k", "--mime-type"]]
+
+    for testfile in testfiles:
+        for flags in flag_sets:
+            args = [*flags, str(testfile)]
+            c_proc = hermetic.run(
+                [str(c_file), *args], check=False, capture_output=True, env_ext=env_ext
+            )
+            rs_proc = hermetic.run(
+                [str(rs_file), *args], check=False, capture_output=True, env_ext=env_ext
+            )
+            label = f"{testfile.name} (flags {flags!r})"
+            assert rs_proc.returncode == c_proc.returncode, (
+                f"{label}: different exit codes; Rust got {rs_proc.returncode} "
+                f"vs C {c_proc.returncode}"
+            )
+            assert rs_proc.stdout == c_proc.stdout, (
+                f"{label}: stdout differed; Rust output was: {rs_proc.stdout!r}, "
+                f"C output was: {c_proc.stdout!r}"
+            )
+            assert rs_proc.stderr == c_proc.stderr, (
+                f"{label}: stderr differed; Rust error was: {rs_proc.stderr!r}, "
+                f"C error was: {c_proc.stderr!r}"
+            )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
