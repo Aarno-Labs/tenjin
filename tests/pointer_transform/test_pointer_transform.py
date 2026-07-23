@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import hermetic
-from ptr_slice_fixture_harness import run_case
+from pointer_transform_utils import run_case
 
 _CASES_DIR = Path(__file__).parent / "pointer_transform_cases"
 _CASES = sorted(p.name for p in _CASES_DIR.iterdir() if p.is_dir())

@@ -1,4 +1,4 @@
-"""Shared driver for the pointer-transform fixture tests.
+"""Shared driver for the pointer-transform tests.
 
 Each fixture directory looks like:
 
