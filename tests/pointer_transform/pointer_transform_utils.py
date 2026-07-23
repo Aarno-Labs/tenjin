@@ -32,13 +32,12 @@ EXTRA_ARGS = [
 
 
 def _write_compdb(workdir: Path, sources: list[Path]) -> None:
-    root = repo_root.localdir()
-    clang = root / "_local" / "xj-llvm" / "bin" / "clang"
+    clang = hermetic.xj_llvm_root(repo_root.localdir()) / "bin" / "clang"
     entries = [
         {
             "directory": workdir.as_posix(),
             "file": src.as_posix(),
-            "arguments": ["clang", "-std=c11", "-c", src.as_posix()],
+            "arguments": [clang.as_posix(), "-std=c11", "-c", src.as_posix()],
         }
         for src in sources
     ]
