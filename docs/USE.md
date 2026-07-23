@@ -81,9 +81,7 @@ converts each incoming C value into the guided Rust type, forwards to the real
 function, and converts the result back to the C return type. (Variadic
 functions and `main` cannot be wrapped this way and are skipped).
 
-  Each specifier is a JSON object with a `"method"` key (the bare-string
-  shorthand such as `"via-cstr"` is no longer accepted; always use the object
-  form). The available *argument* conversions (C value into the guided Rust
+  Each specifier is a JSON object with a `"method"` key. The available *argument* conversions (C value into the guided Rust
   type) are:
 
   * `{ "method": "id" }` uses the value as-is. This is the default when an
