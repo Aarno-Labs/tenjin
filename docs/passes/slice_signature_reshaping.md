@@ -15,12 +15,27 @@ typedef struct { int *ptr; size_t len; } RustSlice_int;
 
 It runs immediately after
 [pointer arithmetic reduction](pointer_arithmetic_reduction.md)
-(`xj-prepare-pointertransform`) and consumes the metadata side-file that
-pass wrote (`tenjin_ptr_index_metadata.json`, schema in
-`xj-prepare-support/PtrIndexMetadata.h`). Every metadata fact is verified
-against the AST before being applied, so stale or already-applied facts
-(e.g. a shared header rewritten while processing an earlier translation
-unit) are skipped.
+(`xj-prepare-pointertransform`) — within the same preparation pass — and
+consumes the metadata side-file that tool wrote
+(`tenjin_ptr_index_metadata.json`, schema in
+`xj-prepare-support/PtrIndexMetadata.h`), which identifies each
+synthesized index variable and its base. The side-file is internal to the
+pass: it is deleted before the pass finishes.
+
+The tool works in two sweeps over the sources:
+
+1. **Detection** (read-only, `SliceDetector`): finds every reshaping
+   candidate from the index-transformed C, anchored by the per-pointer
+   metadata records — root `(ptr, len)` / `(lo, hi)` functions (an index
+   variable over a pointer parameter, bounded by another parameter),
+   singleton callees, pointer-pair propagation (to a fixpoint, including
+   recursion), and "global-return" functions. Detection completes for
+   all translation units before any rewriting, so call sites in one TU
+   see candidates defined in another.
+2. **Rewriting** (`SliceRewriter`): applies the reshaping. Every
+   detected fact is verified against the AST before being applied, so
+   stale or already-applied facts (e.g. a shared header rewritten while
+   processing an earlier translation unit) are skipped.
 
 Per reshaped function it performs:
 
@@ -52,6 +67,7 @@ slice struct does, and c2rust (with Tenjin guidance) can translate a
 Tool-level golden tests live in `tests/slice_transform_cases/` (and
 `tests/pointer_transform_cases/` for index-rewriting-only cases), driven
 by `tests/test_slice_transform.py` / `tests/test_pointer_transform.py`.
-Each case checks the pointer pass's intermediate output, the metadata
-side-file, and the chained final output against goldens, and verifies
-compile-and-run equivalence at every stage.
+Each case checks the pointer tool's intermediate output, its metadata
+side-file, this tool's detection results (its `--metadata-out` dump), and
+the chained final output against goldens, and verifies compile-and-run
+equivalence at every stage.

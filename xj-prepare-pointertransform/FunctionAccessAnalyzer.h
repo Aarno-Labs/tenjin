@@ -6,23 +6,22 @@
 //
 // MatchFinder calls run() once per function definition. run() collects
 // per-function data (using PointerAccessCollector) and snapshots it into
-// g_function_analyses, but it does NOT yet emit edits. That deferral is
-// important: detection of RustSlice-transformable functions runs in a
-// fixpoint loop, so the set of "transformed" callees can grow as more
-// functions are analyzed.
+// g_function_analyses, but it does NOT yet emit edits, so that every
+// function in the TU has been analyzed before any rewriting starts.
 //
 // onEndOfTranslationUnit() runs after every function has been seen and
-// drives the actual rewriting in a fixed phase order:
+// drives the actual rewriting:
 //
-//   1. detectAllTransformations: figure out which functions become
-//      RustSlice (singletons, pointer-pairs, propagation, global-return).
-//      The results are only *recorded* here (see exportMetadata); the
-//      signature-level reshaping is applied by xj-prepare-slicetransform.
-//   2. transformAllFunctions: rewrite each pointer access inside the
-//      bodies of locally-eligible pointers, in plain form (base params
-//      kept, comparisons against the original len/end params).
-//   3. Globals: file-scope pointers are transformed at the very end,
-//      then exportMetadata records this TU's facts for the slice pass.
+//   1. transformAllFunctions: rewrite each pointer access inside the
+//      bodies of eligible pointers, in plain form (base params kept,
+//      comparisons against the original len/end params). Each rewritten
+//      pointer is recorded in the metadata side-file.
+//   2. Globals: file-scope pointers are transformed at the very end.
+//
+// This tool performs NO RustSlice-related work: candidate detection and
+// all signature-level reshaping live in xj-prepare-slicetransform, which
+// runs on this tool's output (valid, index-rewritten C) plus the
+// per-pointer metadata records.
 
 class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
   public:
@@ -86,8 +85,7 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // and skipping any that overlap an already-edited range.
     void applyEdits(std::vector<Edit> &edits, SourceManager &SM);
 
-    // ---- Cross-function transformation phases -------------------------
-    void detectAllTransformations(ASTContext &Ctx);
+    // ---- Cross-function transformation phase --------------------------
     void transformAllFunctions(ASTContext &Ctx);
 
     // ---- Metadata export for xj-prepare-slicetransform ----------------
@@ -95,6 +93,4 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // same-named function from another file already owns the record.
     xj::PtrIndexFunctionRecord *metadataRecordFor(const FunctionDecl *FD,
                                                   ASTContext &Ctx);
-    // Record this TU's surviving slice / global-return detection results.
-    void exportMetadata(ASTContext &Ctx);
 };

@@ -1,10 +1,30 @@
 #include "SliceTransformAction.h"
+#include "SliceDetector.h"
 #include "SliceRewriter.h"
 
 bool g_slice_inplace = false;
 bool g_slice_verbose = false;
 std::string g_slice_metadata_in;
+std::string g_slice_metadata_out;
 xj::PtrIndexMetadata g_slice_metadata;
+
+namespace {
+
+// Runs the SliceDetector over the fully-parsed TU (read-only).
+class SliceDetectConsumer : public ASTConsumer {
+  public:
+    void HandleTranslationUnit(ASTContext &Ctx) override {
+        xj::SliceDetector detector(g_slice_metadata);
+        detector.run(Ctx);
+    }
+};
+
+} // namespace
+
+std::unique_ptr<ASTConsumer>
+SliceDetectAction::CreateASTConsumer(CompilerInstance &CI, StringRef file) {
+    return std::make_unique<SliceDetectConsumer>();
+}
 
 SliceTransformAction::SliceTransformAction() {}
 

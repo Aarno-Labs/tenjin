@@ -1,10 +1,10 @@
 {
   "functions": {
-    "sum": {
-      "file": "ptr_len_root.c",
+    "get_bits": {
+      "file": "get_bits.c",
       "pointers": [
         {
-          "base_text": "buf",
+          "base_text": "p",
           "compared_against": [],
           "dereferenced": false,
           "handle_source": "",
@@ -13,7 +13,7 @@
           "min_offset": 0,
           "moved": true,
           "name": "p",
-          "param_index": -1,
+          "param_index": 0,
           "returned_at_offset": false,
           "variable_offsets": false
         }

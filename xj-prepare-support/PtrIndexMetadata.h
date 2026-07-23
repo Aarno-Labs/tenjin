@@ -2,13 +2,15 @@
 // xj-prepare-slicetransform via a JSON side-file in the codebase
 // directory (see XJ_PTR_INDEX_METADATA_FILENAME).
 //
-// The pointer pass records, for every pointer it transformed (and for
-// non-moved pointer parameters that matter to slice detection), the facts
-// that are cheap to observe during its analysis but fragile to reconstruct
-// from the rewritten source text. It also records, per function, the
-// RustSlice reshaping decision its detection fixpoint reached. The slice
-// pass treats every fact here as a hint and re-verifies it against the
-// AST before acting on it.
+// The pointer pass records, for every pointer it rewrote as an index,
+// the facts that identify the rewrite in the transformed source: the
+// synthesized index variable, the base it indexes into, and the offset
+// bounds it observed. Nothing slice-related is recorded by the pointer
+// pass — RustSlice candidate detection runs entirely in the slice pass,
+// which fills in the per-function slice records and the global-return
+// map below itself (and can dump the enriched result via its
+// --metadata-out flag). The slice pass treats every incoming fact as a
+// hint and re-verifies it against the AST before acting on it.
 
 #ifndef XJ_PREPARE_SUPPORT_PTR_INDEX_METADATA_H
 #define XJ_PREPARE_SUPPORT_PTR_INDEX_METADATA_H
@@ -51,8 +53,9 @@ struct PtrIndexPointerRecord {
     bool dereferenced = false;
 };
 
-// How a function is to be reshaped into a RustSlice signature. Field
-// meanings mirror RustSliceInfo in xj-prepare-pointertransform/Common.h.
+// How a function is to be reshaped into a RustSlice signature. Filled
+// in by the slice pass's detector (SliceDetector), consumed by its
+// rewriter (SliceRewriter).
 struct PtrIndexSliceRecord {
     bool present = false; // false => no slice reshaping for this function
 
@@ -104,6 +107,28 @@ struct PtrIndexMetadata {
     // Parse from `path`. Returns false on I/O or schema error.
     bool readFromFile(const std::string &path);
 };
+
+// Turn a C type string into something legal inside an identifier.
+// e.g. "char *" -> "char_ptr", "unsigned char" -> "unsigned_char".
+inline std::string sanitizeTypeForIdentifier(const std::string &type) {
+    std::string result = type;
+    size_t pos;
+    while ((pos = result.find(" *")) != std::string::npos)
+        result.replace(pos, 2, "_ptr");
+    while ((pos = result.find('*')) != std::string::npos)
+        result.replace(pos, 1, "_ptr");
+    for (char &c : result) {
+        if (c == ' ')
+            c = '_';
+    }
+    return result;
+}
+
+// Generate the slice typedef name for a pointee type.
+// e.g. "int" -> "RustSlice_int", "char *" -> "RustSlice_char_ptr".
+inline std::string makeSliceTypeName(const std::string &pointee_type) {
+    return "RustSlice_" + sanitizeTypeForIdentifier(pointee_type);
+}
 
 } // namespace xj
 

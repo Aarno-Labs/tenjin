@@ -78,12 +78,12 @@ bool FunctionAccessAnalyzer::generateTransformation(
     std::string index_name = ptr_name + "_index_xj";
     std::string base_array = safeBase(candidate.base_array_text);
 
-    // Note: even when this function was detected as a RustSlice candidate
-    // (g_transformed_functions), the body is rewritten here in *plain*
-    // form — base params kept, indices counted from the original base,
-    // comparisons against the original len/end params. The signature-level
-    // reshaping (and the corresponding body touch-ups) is performed by
-    // xj-prepare-slicetransform, driven by the metadata side-file.
+    // Note: the body is always rewritten in *plain* form — base params
+    // kept, indices counted from the original base, comparisons against
+    // the original len/end params. RustSlice candidate detection, the
+    // signature-level reshaping, and the corresponding body touch-ups are
+    // all performed downstream by xj-prepare-slicetransform, driven by
+    // this tool's output plus the metadata side-file.
 
     std::vector<Edit> edits;
 

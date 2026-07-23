@@ -1,10 +1,10 @@
 {
   "functions": {
-    "sum": {
-      "file": "ptr_len_root.c",
+    "count_commas": {
+      "file": "strchr_wrapper.c",
       "pointers": [
         {
-          "base_text": "buf",
+          "base_text": "s",
           "compared_against": [],
           "dereferenced": false,
           "handle_source": "",

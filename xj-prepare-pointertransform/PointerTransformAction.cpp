@@ -16,9 +16,7 @@ bool PointerTransformAction::BeginSourceFileAction(CompilerInstance &CI) {
     // freed before this callback fires for the next file, so anything not
     // cleared here becomes a use-after-free on the next translation unit.
     g_global_pointer_map.clear();
-    g_transformed_functions.clear();
     g_function_analyses.clear();
-    g_global_return_functions.clear();
     // NOTE: do NOT clear g_allowed_funcs — it's static configuration
     // (names of library functions we have wrappers for, e.g. strchr,
     // sscanf), initialized once in Common.cpp. Clearing it leaves an

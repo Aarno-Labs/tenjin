@@ -3,10 +3,13 @@
 Each fixture directory looks like:
 
     <case>/
-      input/                  # source files (.c / .h)
-      expected_ptr/           # golden: after xj-prepare-pointertransform alone
-      expected_combined/      # golden: after chaining xj-prepare-slicetransform
-      expected_metadata.json  # golden: the metadata side-file
+      input/                        # source files (.c / .h)
+      expected_ptr/                 # golden: after xj-prepare-pointertransform alone
+      expected_combined/            # golden: after chaining xj-prepare-slicetransform
+      expected_metadata.json        # golden: side-file written by the pointer tool
+                                    #   (per-pointer facts only; no slice records)
+      expected_slice_metadata.json  # golden: enriched metadata dumped by the slice
+                                    #   tool's detection sweep (--metadata-out)
 
 The driver runs both tools over a scratch copy of input/ and checks, at
 each stage:
@@ -113,6 +116,17 @@ def _compare_with_golden(case_dir: Path, golden_subdir: str, workdir: Path, file
     )
 
 
+def _compare_metadata_golden(case_dir: Path, golden_name: str, got_path: Path) -> None:
+    got = got_path.read_text(encoding="utf-8")
+    golden = case_dir / golden_name
+    if not golden.exists() or golden.read_text(encoding="utf-8") != got:
+        golden.write_text(got, encoding="utf-8")
+        raise AssertionError(
+            f"{case_dir.name}: metadata changed — {golden} updated; "
+            "inspect with git diff and keep or revert"
+        )
+
+
 def run_case(root: Path, tmp_path: Path, case_dir: Path) -> None:
     ptr_tool = root / "_local" / "_build_pointertransform" / "xj-prepare-pointertransform"
     slice_tool = root / "_local" / "_build_slicetransform" / "xj-prepare-slicetransform"
@@ -138,17 +152,19 @@ def run_case(root: Path, tmp_path: Path, case_dir: Path) -> None:
     )
     _compare_with_golden(case_dir, "expected_ptr", workdir, input_files)
 
-    got_metadata = metadata_path.read_text(encoding="utf-8")
-    golden_metadata = case_dir / "expected_metadata.json"
-    if not golden_metadata.exists() or golden_metadata.read_text(encoding="utf-8") != got_metadata:
-        golden_metadata.write_text(got_metadata, encoding="utf-8")
-        raise AssertionError(
-            f"{case_dir.name}: metadata changed — {golden_metadata} updated; "
-            "inspect with git diff and keep or revert"
-        )
+    _compare_metadata_golden(case_dir, "expected_metadata.json", metadata_path)
 
-    # ---- Pass 2: slice transform (signature reshaping) ---------------
-    _run_tool(root, slice_tool, workdir, sources, [f"--metadata-in={metadata_path}"])
+    # ---- Pass 2: slice transform (detection + signature reshaping) ---
+    slice_metadata_path = workdir / "slice_metadata.json"
+    _run_tool(
+        root,
+        slice_tool,
+        workdir,
+        sources,
+        [f"--metadata-in={metadata_path}", f"--metadata-out={slice_metadata_path}"],
+    )
+
+    _compare_metadata_golden(case_dir, "expected_slice_metadata.json", slice_metadata_path)
 
     _check_syntax(root, sources)
     _compare_with_golden(case_dir, "expected_combined", workdir, input_files)

@@ -17,7 +17,20 @@
           "returned_at_offset": false,
           "variable_offsets": false
         }
-      ]
+      ],
+      "slice": {
+        "base_param_index": 0,
+        "end_param_index": -1,
+        "inclusive_end": false,
+        "len_param_index": 1,
+        "lookahead": 0,
+        "lookback": 0,
+        "pointee_type": "int",
+        "return_type_changed": false,
+        "singleton_param_indices": [],
+        "slice_param_name": "arr",
+        "slice_type": "RustSlice_int"
+      }
     }
   },
   "global_return_functions": {},

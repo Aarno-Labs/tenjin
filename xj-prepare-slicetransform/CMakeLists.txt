@@ -11,6 +11,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 add_executable(xj-prepare-slicetransform
     main.cpp
     SliceTransformAction.cpp
+    SliceDetector.cpp
     SliceRewriter.cpp
     "${XJ_SUPPORT_DIR}/PtrIndexMetadata.cpp"
 )

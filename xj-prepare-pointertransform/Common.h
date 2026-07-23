@@ -5,7 +5,6 @@
 //   - PointerAccessKind: the classification of a single pointer use
 //   - PointerCandidate: per-pointer metadata (base array, offset bounds, ...)
 //   - PointerAccess:    one classified use of a pointer
-//   - RustSliceInfo:    how a function was reshaped into a RustSlice signature
 //   - FunctionAnalysis: per-function snapshot saved from run() to use in
 //                       onEndOfTranslationUnit()
 //   - Edit:             one pending source-text rewrite
@@ -190,47 +189,6 @@ struct GlobalPointerState {
 };
 
 // ============================================================================
-// RustSlice transformation metadata
-// ============================================================================
-//
-// When a function's signature is rewritten to take a single RustSlice
-// instead of a (pointer, length) or (pointer, pointer) pair, this struct
-// records how the rewrite was performed so call sites can be patched up
-// consistently. One entry per transformed function lives in
-// g_transformed_functions.
-
-struct RustSliceInfo {
-    std::string slice_type;        // generated typedef name, e.g. "RustSlice_int"
-    std::string pointee_type;      // element type, e.g. "int"
-    std::string slice_param_name;  // name chosen for the new slice param, e.g. "arr"
-
-    // Indices into the *original* parameter list. base_param_index is
-    // the pointer that becomes arr.ptr; the others identify how the
-    // length was originally expressed.
-    int base_param_index = -1;     // pointer parameter (always set for RustSlice)
-    int end_param_index = -1;      // end pointer (pointer-pair form);  -1 otherwise
-    int len_param_index = -1;      // length parameter (ptr+len form);   -1 otherwise
-
-    // Slice-bound padding driven by *(p ± k) accesses inside the body.
-    // Call sites widen the constructed slice by these amounts.
-    int lookback = 0;              // = -min_relative_offset
-    int lookahead = 0;             // =  max_relative_offset
-
-    bool return_type_changed = false;  // function's return type rewritten from T* to int
-    bool inclusive_end = false;        // [lo, hi] pair where hi is dereferenced (length = hi - lo + 1)
-
-    // Pointer parameters that don't iterate but are dereferenced (e.g.
-    // swap's a,b). They turn into int indices alongside the slice.
-    std::vector<int> singleton_param_indices;
-
-    // Name of the local iterating pointer whose accesses triggered root
-    // detection (empty for singleton / pointer-pair functions). The slice
-    // pass uses it to tell the driver's index apart from other pointers
-    // over the same base.
-    std::string driver_ptr_name;
-};
-
-// ============================================================================
 // FunctionAnalysis — per-function snapshot saved during run()
 // ============================================================================
 //
@@ -245,22 +203,14 @@ struct FunctionAnalysis {
     std::map<const VarDecl *, std::vector<PointerAccess>> accesses;
 };
 
-// Records functions whose return type the tool has rewritten from
-// "T *" to "int" because they only ever return into one global/static
-// array. Lets callers be patched up to receive an index.
-struct GlobalReturnInfo {
-    std::string global_array_name;   // e.g., "node_storage"
-    std::string pointee_type;        // e.g., "Node"
-};
-
 // ============================================================================
 // Global state (defined in Common.cpp)
 // ============================================================================
 //
 // The tool intentionally keeps cross-phase state in globals because
-// detection runs in a fixpoint (one function's classification can mark
-// another for rewriting) and emission needs to dedupe across functions
-// (one strchr_index wrapper per TU, one typedef per pointee type).
+// analysis is snapshotted per function during run() and consumed at
+// end-of-TU, and emission needs to dedupe across functions (one
+// strchr_index wrapper per TU).
 
 extern int g_pointers_found;
 extern int g_pointers_replaced;
@@ -282,18 +232,8 @@ extern std::set<std::string> g_allowed_funcs;
 // to make wrapper emission idempotent across the TU.
 extern std::set<std::string> g_emitted_wrappers;
 
-// Functions detected as RustSlice candidates. Detection still runs in
-// this tool (it needs the analysis fixpoint), but the actual reshaping
-// is done by xj-prepare-slicetransform: this map is exported to the
-// metadata side-file at the end of each TU.
-extern std::map<const FunctionDecl *, RustSliceInfo> g_transformed_functions;
-
 // Per-function analysis snapshots saved during run() for later phases.
 extern std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
-
-// Functions whose return type is to be rewritten from T* to int by the
-// slice pass (they only ever return into one global/static array).
-extern std::map<const FunctionDecl *, GlobalReturnInfo> g_global_return_functions;
 
 // Metadata accumulated across every TU in this run, written to
 // g_metadata_out (if set) after the last file is processed. Consumed by
@@ -426,24 +366,3 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 
 // Debug helper: stringify a PointerAccessKind for trace logs.
 const char *pointerAccessKindToString(PointerAccessKind kind);
-
-// Turn a C type string into something legal inside an identifier.
-// e.g. "char *" -> "char_ptr", "unsigned char" -> "unsigned_char".
-inline std::string sanitizeTypeForIdentifier(const std::string &type) {
-    std::string result = type;
-    size_t pos;
-    while ((pos = result.find(" *")) != std::string::npos)
-        result.replace(pos, 2, "_ptr");
-    while ((pos = result.find('*')) != std::string::npos)
-        result.replace(pos, 1, "_ptr");
-    for (char &c : result) {
-        if (c == ' ') c = '_';
-    }
-    return result;
-}
-
-// Generate the slice typedef name for a pointee type.
-// e.g. "int" -> "RustSlice_int", "char *" -> "RustSlice_char_ptr".
-inline std::string makeSliceTypeName(const std::string &pointee_type) {
-    return "RustSlice_" + sanitizeTypeForIdentifier(pointee_type);
-}

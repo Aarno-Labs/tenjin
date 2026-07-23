@@ -27,9 +27,7 @@ std::map<const VarDecl *, GlobalPointerState> g_global_pointer_map;
 std::set<std::string> g_allowed_funcs = {"strchr", "sscanf"};
 
 std::set<std::string> g_emitted_wrappers;
-std::map<const FunctionDecl *, RustSliceInfo> g_transformed_functions;
 std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
-std::map<const FunctionDecl *, GlobalReturnInfo> g_global_return_functions;
 xj::PtrIndexMetadata g_metadata;
 std::string g_metadata_out;
 

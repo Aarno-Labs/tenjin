@@ -11,14 +11,17 @@ subscripted accesses: each moving pointer's motion is redirected into a
 companion integer index variable (`p` → `p_index_xj`), with accesses spelled
 `base[p_index_xj]`.
 
-This pass also *detects* which functions can have their `(ptr, len)` /
-`(lo, hi)` parameter pairs reshaped into `RustSlice_<T>` structs, but does
-not apply that reshaping itself: the detection results are written to a
-metadata side-file (`tenjin_ptr_index_metadata.json`, see
-`xj-prepare-support/PtrIndexMetadata.h`) which the immediately-following
-[slice signature reshaping](slice_signature_reshaping.md) pass
-(`xj-prepare-slicetransform`) consumes. This pass's output is always valid,
-compilable C with the original signatures intact.
+This tool knows nothing about `RustSlice` reshaping — no detection, no
+signature changes. For each pointer it rewrites, it records identifying
+facts (the index variable's name, the base it indexes, the constant
+offset bounds observed) in a metadata side-file
+(`tenjin_ptr_index_metadata.json`, see
+`xj-prepare-support/PtrIndexMetadata.h`). The
+[slice signature reshaping](slice_signature_reshaping.md) tool
+(`xj-prepare-slicetransform`), which the same preparation pass runs
+immediately afterwards, performs both the candidate *detection* and the
+reshaping, from this tool's output plus those records. This tool's output
+is always valid, compilable C with the original signatures intact.
 
 ## Why
 
