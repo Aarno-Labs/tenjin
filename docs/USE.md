@@ -79,7 +79,8 @@ Rust `fn` (with its guided argument/return types) and emits a separate C-ABI
 shim into a `xj_ffi` module. The shim exports the original C symbol,
 converts each incoming C value into the guided Rust type, forwards to the real
 function, and converts the result back to the C return type. (Variadic
-functions and `main` cannot be wrapped this way and are skipped).
+functions and `main` cannot be wrapped this way and are skipped). 
+See FFI Guidance below for more information and examples.
 
   Each specifier is a JSON object with a `"method"` key. The available *argument* conversions (C value into the guided Rust
   type) are:
@@ -160,6 +161,27 @@ When these conditions are not met, automated translation will not produce a
 correct program. Note that one may rationally want to produce an incorrect
 translation, if the cost of fixing the unhandled cases from "incorrect" guidance
 is lower than the cost of otherwise obtaining an acceptably correct translation.
+
+### FFI Guidance
+
+FFI guidance is at an early stage: at the moment, the following Rust types are not handled as targets (not exhaustive!):
+- Owned types (`Box`, `Vec`, `String`)
+- `&str`
+- Structs/Enums
+- `fn` types
+
+Examples of applying ffi guidance can be found [here](../tests/snapshotted/ffi_guidance/).
+
+Why do we need the flexibility to specify how to convert a C signature to a Rust signature? 
+Consider:
+
+```c
+void foo(int *a1, int *a2, int *a3, size_t len1, size_t len2) {...}
+```
+We need to be able to generate different wrappers for the following cases 
+(and this is not immediate from the types of course):
+- `a1` and `a2` are arrays of length `len1` and `a3` is an array of length `len2`
+- `a1` is an array of length `len1` and `a2` and `a3` are arrays of length `l2`
 
 ## Preparatory Refactoring and Improvement Passes
 
