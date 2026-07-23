@@ -32,6 +32,8 @@ EXTRA_ARGS = [
 
 
 def _write_compdb(workdir: Path, sources: list[Path]) -> None:
+    root = repo_root.localdir()
+    clang = root / "_local" / "xj-llvm" / "bin" / "clang"
     entries = [
         {
             "directory": workdir.as_posix(),
