@@ -1,0 +1,165 @@
+{
+    "vars_of_type": {
+        "&[u8]": [
+            "ffi_via_cstr_first_byte:s",
+            "ffi_via_cstr_empty_if_null:s"
+        ],
+        "&mut ::core::ffi::c_int": [
+            "ffi_ref_unwrap:p",
+            "ffi_from_ref_ret:p"
+        ],
+        "&::core::ffi::c_int": [
+            "ffi_lift_from_ref_shared:p"
+        ],
+        "&Option<&'static u8>": [
+            "ffi_pointer_reinterp:p"
+        ],
+        "&[::core::ffi::c_int]": [
+            "ffi_slice_literal_len:xs",
+            "ffi_slice_var_len:xs"
+        ],
+        "&mut [::core::ffi::c_int]": [
+            "ffi_mut_slice_var_len:xs"
+        ],
+        "&mut [u8]": [
+            "ffi_from_slice_ret:buf"
+        ]
+    },
+    "fn_return_type": {
+        "ffi_from_slice_ret": "&mut [u8]",
+        "ffi_from_ref_ret": "&mut ::core::ffi::c_int",
+        "ffi_lift_from_ref_shared": "&::core::ffi::c_int",
+        "ffi_pointer_reinterp": "Option<&'static u8>"
+    },
+    "ffi": {
+        "ffi_via_cstr_first_byte": {
+            "s": {
+                "method": "to-slice-via-cstr"
+            }
+        },
+        "ffi_slice_literal_len": {
+            "xs": {
+                "method": "to-slice",
+                "length": "3"
+            }
+        },
+        "ffi_slice_var_len": {
+            "xs": {
+                "method": "to-slice",
+                "length": "n"
+            }
+        },
+        "ffi_mut_slice_var_len": {
+            "xs": {
+                "method": "to-slice",
+                "length": "n",
+                "mutable": true
+            }
+        },
+        "ffi_from_slice_ret": {
+            "buf": {
+                "method": "to-slice",
+                "length": "n",
+                "mutable": true
+            },
+            "$return": {
+                "method": "from-slice",
+                "mutable": true
+            }
+        },
+        "ffi_ref_unwrap": {
+            "p": {
+                "method": "pipe",
+                "conversions": [
+                    {
+                        "method": "to-ref",
+                        "mutable": true
+                    },
+                    {
+                        "method": "unwrap"
+                    }
+                ]
+            }
+        },
+        "ffi_from_ref_ret": {
+            "p": {
+                "method": "pipe",
+                "conversions": [
+                    {
+                        "method": "to-ref",
+                        "mutable": true
+                    },
+                    {
+                        "method": "unwrap"
+                    }
+                ]
+            },
+            "$return": {
+                "method": "pipe",
+                "conversions": [
+                    {
+                        "method": "lift"
+                    },
+                    {
+                        "method": "from-ref",
+                        "mutable": true
+                    }
+                ]
+            }
+        },
+        "ffi_lift_from_ref_shared": {
+            "p": {
+                "method": "pipe",
+                "conversions": [
+                    {
+                        "method": "to-ref",
+                        "mutable": false
+                    },
+                    {
+                        "method": "unwrap"
+                    }
+                ]
+            },
+            "$return": {
+                "method": "pipe",
+                "conversions": [
+                    {
+                        "method": "lift"
+                    },
+                    {
+                        "method": "from-ref",
+                        "mutable": false
+                    }
+                ]
+            }
+        },
+        "ffi_via_cstr_empty_if_null": {
+            "s": {
+                "method": "to-slice-via-cstr",
+                "empty-if-null": true
+            }
+        },
+        "ffi_pointer_reinterp": {
+            "p": {
+                "method": "pipe",
+                "conversions": [
+                    {
+                        "method": "pointer-reinterp",
+                        "ty": "Option<&u8>"
+                    },
+                    {
+                        "method": "to-ref",
+                        "mutable": false
+                    },
+                    {
+                        "method": "unwrap"
+                    }
+                ]
+            },
+            "$return": {
+                "method": "from-ref",
+                "mutable": false
+            }
+        }
+    }
+}

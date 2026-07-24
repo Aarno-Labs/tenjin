@@ -71,6 +71,56 @@ the `bytemuck` crate.
 * `using_crates` - allows the human driver of translation to
 specify third-party crates that should be used in the translation.
 Currently restricted to a hard-coded list.
+* `ffi` - a dict whose keys are function names. Each entry is a dict from
+argument names (or the special `$return` string, which denotes the return value)
+to an ffi conversion specifier. When any argument or the return value of a
+function is given a conversion, Tenjin keeps the translated function as a plain
+Rust `fn` (with its guided argument/return types) and emits a separate C-ABI
+shim into a `xj_ffi` module. The shim exports the original C symbol,
+converts each incoming C value into the guided Rust type, forwards to the real
+function, and converts the result back to the C return type. (Variadic
+functions and `main` cannot be wrapped this way and are skipped). 
+See FFI Guidance below for more information and examples.
+
+  Each specifier is a JSON object with a `"method"` key. The available *argument* conversions (C value into the guided Rust
+  type) are:
+
+  * `{ "method": "id" }` uses the value as-is. This is the default when an
+    argument is omitted.
+  * `{ "method": "to-slice-via-cstr", "mutable": <bool>, "empty-if-null": <bool> }`
+    converts a `char*` into a Rust slice (`&[u8]` / `&mut [u8]`) whose length is
+    computed with `strlen` (plus one, to include the null terminator). `mutable`
+    (default `false`) selects a shared or mutable slice. If `empty-if-null` is
+    `true` (default `false`) a null pointer yields an empty slice `&[]` instead
+    of being dereferenced.
+  * `{ "method": "to-slice", "length": e, "mutable": <bool> }`
+    converts a pointer into a slice of length `e`, where `e` is a numeric literal
+    or the name of another argument. `mutable` (default `false`) selects a shared
+    or mutable slice.
+  * `{ "method": "to-ref", "mutable": <bool> }` converts a raw pointer into an
+    `Option` of a reference: `*const T`/`*mut T` become `Option<&T>` (via
+    `as_ref`, `mutable: false`) or `Option<&mut T>` (via `as_mut`,
+    `mutable: true`). Typically paired with `unwrap`.
+  * `{ "method": "unwrap" }` unwraps an `Option<T>` into a `T` (via `.unwrap()`),
+    e.g. to turn the `Option<&T>` produced by `ref` into a plain reference.
+  * `{ "method": "pointer-reinterp", "ty": "T" }` reinterprets a pointer's
+    pointee type via `.cast::<T>()`, producing `*const T`/`*mut T`. Use this for
+    types with the same representation, e.g. reinterpreting `*const u8` as
+    `*const Option<&u8>` where the null-pointer optimization applies.
+  * `{ "method": "pipe", "conversions": [ ... ] }` applies a sequence of
+    conversions left-to-right, threading each result into the next. For example,
+    `pipe` of `ref` then `unwrap` turns a raw pointer into a plain reference.
+
+  The available `$return` conversions (guided Rust value back into the C return
+  type) are:
+
+  * `{ "method": "id" }` returns the value as-is (the default).
+  * `{ "method": "lift" }` the dual of `unwrap`: lifts `T` to `Option<T>`.
+  * `{ "method": "from-slice", "mutable": <bool> }` lowers a slice back to a raw
+    pointer via `.as_ptr()` (`mutable: false`) or `.as_mut_ptr()`
+    (`mutable: true`).
+  * `{ "method": "from-ref", "mutable": <bool> }` lowers a reference back to a
+    raw pointer via a cast (`as *const _` / `as *mut _`).
 * `no_math_errno` - mostly for debugging/testing. Currently asserts
 that no functions in the entire translated codebase make of use
 `errno` in the math stdlib.
@@ -111,6 +161,27 @@ When these conditions are not met, automated translation will not produce a
 correct program. Note that one may rationally want to produce an incorrect
 translation, if the cost of fixing the unhandled cases from "incorrect" guidance
 is lower than the cost of otherwise obtaining an acceptably correct translation.
+
+### FFI Guidance
+FFI guidance is at an early stage: at the moment, the following Rust types are not handled as targets (not exhaustive!):
+- Owned types (`Box`, `Vec`, `String`)
+- `&str`
+- Structs/Enums
+- `fn` types
+
+In general, we expect that the system will be able to _automatically_ infer how to appropriately
+generate FFI wrappers. However, even if the majority cases can be synthesized, there may be cases
+where the user needs to provide guidance. For example:
+
+```c
+void foo(int *a1, int *a2, int *a3, size_t len1, size_t len2) {...}
+```
+We need to be able to generate different wrappers for the following cases 
+(and this is not immediate from the types of course):
+- `a1` and `a2` are arrays of length `len1` and `a3` is an array of length `len2`
+- `a1` is an array of length `len1` and `a2` and `a3` are arrays of length `l2`
+
+Examples of applying ffi guidance can be found [here](../tests/snapshotted/ffi_guidance/).
 
 ## Preparatory Refactoring and Improvement Passes
 

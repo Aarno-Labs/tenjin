@@ -1,5 +1,6 @@
 use super::*;
 use quote::ToTokens; // for to_token_stream()
+use serde_derive::Deserialize;
 use std::str::FromStr;
 use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
 
@@ -68,6 +69,224 @@ impl GuidedType {
 
     pub fn is_slice_or_array_ref(&self) -> bool {
         self.is_slice_ref() || self.is_array_ref()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FFIConversion {
+    pub ins: HashMap<String, FFIInConversion>,
+    pub out: Option<FFIOutConversion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(tag = "method")]
+pub enum FFIInConversion {
+    #[serde(rename = "id")]
+    Id,
+
+    #[serde(rename = "pipe")]
+    Pipeline { conversions: Vec<FFIInConversion> },
+
+    #[serde(rename = "to-ref")]
+    // *(const|mut) T -> Option<&(const|mut) T>
+    ToRef { mutable: bool },
+
+    #[serde(rename = "unwrap")]
+    // Option<T> -> T
+    Unwrap,
+
+    #[serde(rename = "pointer-reinterp")]
+    // For types that are guaranteed to share the same representation
+    // i.e. &T and Option<&T> (for T where the nullable ptr optimization applies)
+    PointerCast { ty: String },
+
+    #[serde(rename = "to-slice-via-cstr")]
+    ViaCStr {
+        #[serde(default)]
+        mutable: bool,
+        #[serde(default)]
+        #[serde(rename = "empty-if-null")]
+        empty_if_null: bool,
+    },
+
+    #[serde(rename = "to-slice")]
+    SliceWithLen {
+        #[serde(default)]
+        mutable: bool,
+        length: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(tag = "method")]
+pub enum FFIOutConversion {
+    #[serde(rename = "id")]
+    Id,
+
+    #[serde(rename = "from-ref")]
+    // *(const|mut) T <- Option<&(const|mut) T>
+    FromRef { mutable: bool },
+
+    #[serde(rename = "lift")]
+    // Dual of Unwrap -- unclear if needed at the moment
+    Lift,
+
+    #[serde(rename = "pipe")]
+    Pipeline { conversions: Vec<FFIOutConversion> },
+
+    #[serde(rename = "from-slice")]
+    FromSlice {
+        #[serde(rename = "mutable")]
+        mutable: bool,
+    },
+}
+
+fn make_slice(raw_ptr: Box<Expr>, len: Box<Expr>, mutable: bool) -> WithStmts<Box<Expr>> {
+    let to_slice = if mutable {
+        "from_raw_parts_mut"
+    } else {
+        "from_raw_parts"
+    };
+    let slice_method = mk().path_expr(vec!["std", "slice", to_slice]);
+
+    let make_slice = mk().call_expr(
+        slice_method,
+        vec![
+            mk().method_call_expr(raw_ptr, mk().path_segment("cast"), vec![]),
+            len,
+        ],
+    );
+    WithStmts::new_val(make_slice)
+}
+
+impl FFIInConversion {
+    pub fn marshal(
+        &self,
+        x: &str,
+        translation: &Translation,
+        e: Box<Expr>,
+    ) -> WithStmts<Box<Expr>> {
+        match self {
+            FFIInConversion::Id => WithStmts::new_val(e),
+            FFIInConversion::ToRef { mutable } => {
+                let method = if !*mutable { "as_ref" } else { "as_mut" };
+                WithStmts::new_val(mk().method_call_expr(e, mk().path_segment(method), vec![]))
+            }
+            FFIInConversion::ViaCStr {
+                empty_if_null,
+                mutable,
+            } => {
+                translation.use_crate(ExternCrate::Libc);
+                let len = mk().call_expr(mk().path_expr(vec!["libc", "strlen"]), vec![e.clone()]);
+                let len_plus_one = mk().binary_expr(
+                    BinOp::Add(Default::default()),
+                    len,
+                    mk().lit_expr(mk().int_unsuffixed_lit(1)),
+                );
+                let slice_of_string = make_slice(e.clone(), len_plus_one, *mutable);
+                if *empty_if_null {
+                    let null_check = mk().unary_expr(
+                        UnOp::Not(Default::default()),
+                        mk().method_call_expr(e, mk().path_segment("is_null"), vec![]),
+                    );
+                    let empty_slice = mk().borrow_expr(mk().array_expr(vec![]));
+                    let out_local = mk().ident_pat(x);
+                    let declare = mk().local(
+                        out_local.clone(),
+                        None,
+                        Some(mk().ifte_expr(
+                            null_check,
+                            slice_of_string.to_block(),
+                            Some(empty_slice),
+                        )),
+                    );
+                    let assign = mk().local_stmt(Box::new(declare));
+                    WithStmts::new(vec![assign], mk().path_expr(x))
+                } else {
+                    slice_of_string
+                }
+            }
+
+            FFIInConversion::SliceWithLen { mutable, length } => {
+                let len = length
+                    .parse::<u128>()
+                    .map(|i: u128| mk().lit_expr(mk().int_unsuffixed_lit(i)))
+                    .unwrap_or_else(|_| {
+                        mk().cast_expr(
+                            mk().path_expr(vec![length]),
+                            mk().path_ty(mk().path("usize")),
+                        )
+                    });
+                make_slice(e, len, *mutable)
+            }
+
+            FFIInConversion::Pipeline { conversions } => {
+                let mut stmts = vec![];
+                let mut e = e;
+                for c in conversions {
+                    let mut r = c.marshal(x, translation, e);
+                    stmts.append(r.stmts_mut());
+                    e = r.into_value();
+                }
+                WithStmts::new(stmts, e)
+            }
+
+            FFIInConversion::PointerCast { ty } => {
+                let gt = GuidedType::from_str(ty).unwrap();
+                let casted = mk().method_call_expr(
+                    e,
+                    mk().path_segment_with_args(
+                        "cast",
+                        mk().angle_bracketed_args(vec![Box::new(gt.parsed)]),
+                    ),
+                    vec![],
+                );
+                WithStmts::new_val(casted)
+            }
+
+            FFIInConversion::Unwrap => {
+                WithStmts::new_val(mk().method_call_expr(e, mk().path_segment("unwrap"), vec![]))
+            }
+        }
+    }
+}
+
+impl FFIOutConversion {
+    pub fn marshal(&self, e: Box<Expr>) -> Box<Expr> {
+        match self {
+            FFIOutConversion::Id => e,
+            FFIOutConversion::Lift => mk().call_expr(mk().ident_expr("Some"), vec![e]),
+            FFIOutConversion::Pipeline { conversions } => {
+                let mut e = e;
+                for c in conversions {
+                    e = c.marshal(e);
+                }
+                e
+            }
+            FFIOutConversion::FromSlice { mutable } => {
+                let ptr_method = if *mutable { "as_mut_ptr" } else { "as_ptr" };
+                mk().method_call_expr(e, mk().path_segment(ptr_method), vec![])
+            }
+            FFIOutConversion::FromRef { mutable } => {
+                //opt.map_or(ptr::null(), |r| r as *const u8);
+                let argexpr = mk().path_expr("x");
+                let (null_fn, cast_ty) = if *mutable {
+                    ("null_mut", "*mut _")
+                } else {
+                    ("null", "*const _")
+                };
+                let null = mk().call_expr(mk().path_expr(vec!["std", "ptr", null_fn]), vec![]);
+                let body = mk().cast_expr(argexpr, syn::parse_str(cast_ty).unwrap());
+                let cast = mk().closure_expr(
+                    c2rust_ast_builder::CaptureBy::Ref,
+                    Movability::Movable,
+                    vec![mk().ident_pat("x")],
+                    ReturnType::Default,
+                    body,
+                );
+                mk().method_call_expr(e, mk().path_segment("map_or"), vec![null, cast])
+            }
+        }
     }
 }
 
@@ -957,8 +1176,8 @@ impl Translation<'_> {
                         dest.extend_from_slice(&bytes[..to_copy]);
                         to_copy
                     }",
-                    );
-                });
+                );
+            });
 
                 Ok(mk().call_expr(
                     mk().path_expr(vec!["xj_sprintf_Vec_u8"]),
@@ -1128,10 +1347,10 @@ impl Translation<'_> {
                 /* This requires Rust 1.77, which snapshots do not yet use. */
                 /*
                 _ if (tenjin::is_path_exactly_1(path, "nearbyint")
-                    || tenjin::is_path_exactly_1(path, "nearbyintf")
-                    || tenjin::is_path_exactly_1(path, "nearbyintl")) =>
+                || tenjin::is_path_exactly_1(path, "nearbyintf")
+                || tenjin::is_path_exactly_1(path, "nearbyintl")) =>
                 {
-                    self.recognize_preconversion_call_method_1_guided(ctx, "round_ties_even", cargs)
+                self.recognize_preconversion_call_method_1_guided(ctx, "round_ties_even", cargs)
                 }
                 */
                 // We don't yet handle rintf, which may raise the `inexact` floating-point exception.
@@ -1495,9 +1714,9 @@ impl Translation<'_> {
                         .is_some_and(|g| type_is_string(&g.parsed))
                 {
                     self.with_cur_file_item_store(|item_store| {
-                        item_store.add_item_str_once("fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
-                        );
-                    });
+                    item_store.add_item_str_once("fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
+                );
+            });
 
                     let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
                     let expr_bar = self.convert_expr(ctx.used(), cargs[1], None)?;
@@ -1553,11 +1772,11 @@ impl Translation<'_> {
             // Fallthrough: no guidance, or expr was not a simple variable.
             let rust_helper_name = format!("xj_{}", c_fn_name);
             self.with_cur_file_item_store(|item_store| {
-                item_store.add_item_str_once(&format!(
-                    "fn {}(c: core::ffi::c_int) -> core::ffi::c_int {{ if c == -1 {{ 0 }} else {{ let c = c as u8 as char; ({}) as core::ffi::c_int }} }}",
-                    rust_helper_name, rust_char_impl
-                ));
-            });
+            item_store.add_item_str_once(&format!(
+                "fn {}(c: core::ffi::c_int) -> core::ffi::c_int {{ if c == -1 {{ 0 }} else {{ let c = c as u8 as char; ({}) as core::ffi::c_int }} }}",
+                rust_helper_name, rust_char_impl
+            ));
+        });
 
             let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
             let call = mk().call_expr(
@@ -1618,12 +1837,12 @@ impl Translation<'_> {
                     .is_some_and(|g| type_is_char(&g.parsed))
                 {
                     self.with_cur_file_item_store(|item_store| {
-                        // For now we return an integer code rather than a bool,
-                        // to better match the C function signature.
-                        item_store.add_item_str_once(
-                            "fn tolower_char_i(c: char) -> core::ffi::c_int { c.to_ascii_lowercase() as core::ffi::c_int }",
-                        );
-                    });
+                    // For now we return an integer code rather than a bool,
+                    // to better match the C function signature.
+                    item_store.add_item_str_once(
+                        "fn tolower_char_i(c: char) -> core::ffi::c_int { c.to_ascii_lowercase() as core::ffi::c_int }",
+                    );
+                });
 
                     let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
                     // Stripping casts is correct because we know the underlying type is char,
@@ -1638,10 +1857,10 @@ impl Translation<'_> {
             // Fallthrough: no guidance, or expr was not a simple variable.
 
             self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once(
-                        "fn xj_tolower(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { (c as u8 as char).to_ascii_lowercase() as core::ffi::c_int } }",
-                    );
-                });
+            item_store.add_item_str_once(
+                "fn xj_tolower(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { (c as u8 as char).to_ascii_lowercase() as core::ffi::c_int } }",
+            );
+        });
 
             let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
             let tolower_call =
@@ -1668,12 +1887,12 @@ impl Translation<'_> {
                     .is_some_and(|g| type_is_char(&g.parsed))
                 {
                     self.with_cur_file_item_store(|item_store| {
-                        // For now we return an integer code rather than a bool,
-                        // to better match the C function signature.
-                        item_store.add_item_str_once(
-                            "fn toupper_char_i(c: char) -> core::ffi::c_int { c.to_ascii_uppercase() as core::ffi::c_int }",
-                        );
-                    });
+                    // For now we return an integer code rather than a bool,
+                    // to better match the C function signature.
+                    item_store.add_item_str_once(
+                        "fn toupper_char_i(c: char) -> core::ffi::c_int { c.to_ascii_uppercase() as core::ffi::c_int }",
+                    );
+                });
 
                     let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
                     // Stripping casts is correct because we know the underlying type is char,
@@ -1688,10 +1907,10 @@ impl Translation<'_> {
             // Fallthrough: no guidance, or expr was not a simple variable.
 
             self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once(
-                        "fn xj_toupper(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { (c as u8 as char).to_ascii_uppercase() as core::ffi::c_int } }",
-                    );
-                });
+            item_store.add_item_str_once(
+                "fn xj_toupper(c: core::ffi::c_int) -> core::ffi::c_int { if c == -1 { -1 } else { (c as u8 as char).to_ascii_uppercase() as core::ffi::c_int } }",
+            );
+        });
 
             let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
             let toupper_call =
@@ -1718,10 +1937,10 @@ impl Translation<'_> {
                     .is_some_and(|g| type_is_char(&g.parsed))
                 {
                     self.with_cur_file_item_store(|item_store| {
-                        item_store.add_item_str_once(
-                            "fn toascii_char_i(c: char) -> core::ffi::c_int { char::from_u32((c as u32) & 0x7f).unwrap() as core::ffi::c_int }",
-                        );
-                    });
+                    item_store.add_item_str_once(
+                        "fn toascii_char_i(c: char) -> core::ffi::c_int { char::from_u32((c as u32) & 0x7f).unwrap() as core::ffi::c_int }",
+                    );
+                });
 
                     let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
                     // Stripping casts is correct because we know the underlying type is char,
@@ -1759,8 +1978,8 @@ impl Translation<'_> {
         if cargs.len() == 1 {
             self.with_cur_file_item_store(|item_store| {
                 item_store.add_item_str_once(
-                    "fn xj_isinf(f: f64) -> core::ffi::c_int { if f.is_infinite() { 1 } else { 0 } }",
-                );
+                "fn xj_isinf(f: f64) -> core::ffi::c_int { if f.is_infinite() { 1 } else { 0 } }",
+            );
             });
             let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
             let cast = mk().cast_expr(e1.to_expr(), mk().path_ty(vec!["f64"]));
@@ -2339,6 +2558,84 @@ impl Translation<'_> {
             }
         }
         false
+    }
+
+    pub fn try_guided_type_repair(&self, e: Box<Expr>, g: &Option<GuidedType>) -> Box<Expr> {
+        let Some(context_guided_type) = g else {
+            return e;
+        };
+        match &*e {
+            Expr::Reference(r) => {
+                if context_guided_type.is_exclusive_borrow() && r.mutability.is_none() {
+                    Box::new(Expr::Reference(syn::ExprReference {
+                        mutability: Some(Default::default()),
+                        ..r.clone()
+                    }))
+                } else if context_guided_type.is_shared_borrow() && r.mutability.is_some() {
+                    Box::new(Expr::Reference(syn::ExprReference {
+                        mutability: None,
+                        ..r.clone()
+                    }))
+                } else {
+                    e
+                }
+            }
+            _ => e,
+        }
+    }
+
+    pub fn generate_ffi_wrapper(
+        &self,
+        span: Span,
+        new_name: &str,
+        name: &str,
+        arguments: &[(CDeclId, String, CQualTypeId)],
+        return_type: Option<CQualTypeId>,
+    ) -> TranslationResult<Box<Item>> {
+        // Forwarding parameters / call arguments used to build the optional
+        // `xj_ffi` export wrapper (XREF:ffi_export_wrapper).
+        let mut ffi_wrapper_args: Vec<FnArg> = vec![];
+        let mut ffi_wrapper_call_args: Vec<WithStmts<Box<Expr>>> = vec![];
+
+        for &(_, ref var, typ) in arguments.iter() {
+            let original_type = self.convert_type(typ.ctype)?;
+            let strategy = self
+                .parsed_guidance
+                .borrow()
+                .query_ffi_in_conversion(name, var);
+            let ffi_wrapper_arg_name = if var.is_empty() {
+                self.renamer.borrow_mut().fresh()
+            } else {
+                var.clone()
+            };
+            ffi_wrapper_args
+                .push(mk().arg(original_type.clone(), mk().ident_pat(&ffi_wrapper_arg_name)));
+            ffi_wrapper_call_args.push(strategy.marshal(
+                var,
+                self,
+                mk().path_expr(vec![&ffi_wrapper_arg_name]),
+            ));
+        }
+        let ffi_wrapper_ret = self.convert_return_type(return_type)?;
+
+        let wrapper_decl = mk().fn_decl(new_name, ffi_wrapper_args, None, ffi_wrapper_ret);
+        let wrappers: WithStmts<Vec<Box<Expr>>> = WithStmts::from_iter(ffi_wrapper_call_args);
+        let (mut stmts, exprs) = wrappers.discard_unsafe();
+        let wrapper_call = mk().call_expr(mk().path_expr(vec!["super", new_name]), exprs);
+        let output_conversion = self.parsed_guidance.borrow().query_ffi_out_conversion(name);
+        let convert_output = output_conversion.marshal(wrapper_call);
+        stmts.push(mk().expr_stmt(convert_output));
+        let wrapper_block = mk().block(stmts);
+        // #[no_mangle]
+        // fn foo(...) -> r {
+        //   super::foo(*ffi_wrapper_call_args)
+        // }
+        Ok(mk_linkage(false, new_name, name, self.tcfg.edition)
+            .pub_()
+            .extern_("C")
+            .span(span)
+            .unsafe_()
+            .fn_item(wrapper_decl, wrapper_block))
     }
 }
 

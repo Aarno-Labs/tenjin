@@ -9,17 +9,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
-name = "main"
+name = "tenjinized"
 version = "0.0.0"
-dependencies = [
- "xj_ctime",
-]
-
-[[package]]
-name = "xj_ctime"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "218f83754352e4b67cd9b39c2447db71937b33cd20eca34e21283f0dce5c1dc8"
 dependencies = [
  "libc",
 ]

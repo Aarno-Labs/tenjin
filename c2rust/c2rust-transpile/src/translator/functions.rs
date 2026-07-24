@@ -118,7 +118,7 @@ impl<'c> Translation<'c> {
             let mut args: Vec<FnArg> = vec![];
 
             // handle regular (non-variadic) arguments
-            for &(decl_id, ref var, typ) in arguments {
+            for &(decl_id, ref var, typ) in arguments.iter() {
                 // XREF:fn_parameter_guided
                 let guided_type = self
                     .parsed_guidance
@@ -246,21 +246,10 @@ impl<'c> Translation<'c> {
 
                 let is_builtin_wrapper = name.starts_with("_xj_wrap");
 
-                // Only add linkage attributes if the function is `extern`
-                let mut mk_ = if is_main {
-                    // Cross-check this function as if it was called `main`
-                    // FIXME: pass in a vector of NestedMetaItem elements,
-                    // but strings have to do for now
-                    self.mk_cross_check(mk(), vec!["entry(djb2=\"main\")", "exit(djb2=\"main\")"])
-                } else if is_builtin_wrapper {
-                    mk()
-                } else if (is_global && !is_inline) || is_extern_inline {
-                    mk_linkage(false, new_name, name, self.tcfg.edition).pub_()
-                } else if self.cur_file.get().is_some() {
-                    mk().pub_()
-                } else {
-                    mk()
-                };
+                // Functions that produce an externally-visible, unmangled symbol;
+                // these are the ones that would otherwise carry `#[no_mangle]` /
+                // `#[export_name]` (see `mk_linkage`).
+                let is_exported_symbol = (is_global && !is_inline) || is_extern_inline;
 
                 // If we've been given guidance about what constitutes the public API of the
                 // code we're translating, we can use it to refine what functions are marked `extern`.
@@ -273,7 +262,54 @@ impl<'c> Translation<'c> {
                         !is_builtin_wrapper
                     };
 
-                if fn_needs_abi_preservation && !is_main {
+                // XREF:ffi_export_wrapper
+                // Rather than placing `extern "C"` + `#[no_mangle]`/`#[export_name]`
+                // directly on the translated function, we keep the function itself a
+                // plain Rust `fn` and emit a separate C-ABI shim (collected into a
+                // dedicated `xj_ffi` submodule during final assembly) that exports the
+                // original symbol and forwards to the real function. This lets the real
+                // function's signature evolve away from the C ABI while still exposing
+                // the expected symbol. Variadic functions can't be forwarded this way,
+                // so they keep the old in-place scheme.
+                let has_ffi_guidance = self
+                    .parsed_guidance
+                    .borrow()
+                    .ffi_conversions
+                    .contains_key(name);
+                let needs_ffi_wrapper = is_exported_symbol
+                    && !is_main
+                    && !is_builtin_wrapper
+                    && !is_variadic
+                    && has_ffi_guidance;
+
+                if needs_ffi_wrapper && !fn_needs_abi_preservation {
+                    log::warn!(
+                        "Function {} has FFI-wrapper guidance but is marked as non-API. An FFI wrapper will be generated anyway.",
+                        name
+                    );
+                }
+
+                // Only add linkage attributes if the function is `extern`
+                let mut mk_ = if is_main {
+                    // Cross-check this function as if it was called `main`
+                    // FIXME: pass in a vector of NestedMetaItem elements,
+                    // but strings have to do for now
+                    self.mk_cross_check(mk(), vec!["entry(djb2=\"main\")", "exit(djb2=\"main\")"])
+                } else if is_builtin_wrapper {
+                    mk()
+                } else if needs_ffi_wrapper {
+                    // The exported C symbol is provided by the `xj_ffi` shim emitted
+                    // below, so the function itself is just a (public) Rust fn.
+                    mk().pub_()
+                } else if is_exported_symbol {
+                    mk_linkage(false, new_name, name, self.tcfg.edition).pub_()
+                } else if self.cur_file.get().is_some() {
+                    mk().pub_()
+                } else {
+                    mk()
+                };
+
+                if fn_needs_abi_preservation && !is_main && !needs_ffi_wrapper {
                     mk_ = mk_.extern_("C");
                 }
 
@@ -318,9 +354,22 @@ impl<'c> Translation<'c> {
                     // specifies internal linkage in all other cases due to name mangling by rustc.
                 }
 
-                Ok(ConvertedDecl::Item(
-                    mk_.span(span).unsafe_().fn_item(decl, block),
-                ))
+                let fn_item = mk_.span(span).unsafe_().fn_item(decl, block);
+
+                if needs_ffi_wrapper {
+                    // XREF:ffi_export_wrapper
+                    self.ffi_wrappers
+                        .borrow_mut()
+                        .push(self.generate_ffi_wrapper(
+                            span,
+                            new_name,
+                            name,
+                            arguments,
+                            return_type,
+                        )?)
+                }
+
+                Ok(ConvertedDecl::Item(fn_item))
             } else {
                 // Translating an extern function declaration
                 let mut mk_ = mk_linkage(true, new_name, name, self.tcfg.edition).span(span);
@@ -543,7 +592,9 @@ impl<'c> Translation<'c> {
             val = self.convert_expr(ctx, expr_id, None)?;
             val = val.map(|val| mk_va_list_copy(self.tcfg.edition, val));
         } else {
-            val = self.convert_expr_guided(ctx, expr_id, override_ty, guided_ty)?;
+            val = self
+                .convert_expr_guided(ctx, expr_id, override_ty, guided_ty)?
+                .map(|e| self.try_guided_type_repair(e, guided_ty));
         }
 
         Ok(val)
