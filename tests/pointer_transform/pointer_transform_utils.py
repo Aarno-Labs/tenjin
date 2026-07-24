@@ -8,9 +8,7 @@ Each fixture directory looks like:
 
 The driver runs the tool over a scratch copy of input/ and checks:
 
-  1. the output matches the stored golden (mismatches auto-rewrite the
-     golden and fail, mirroring the repo's snapshot-test convention:
-     inspect with git diff and keep or revert);
+  1. the output matches the stored golden;
   2. the output still parses (clang -fsyntax-only);
   3. the program still compiles and behaves identically (stdout + exit
      code) to the untransformed input.
