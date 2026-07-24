@@ -163,17 +163,15 @@ translation, if the cost of fixing the unhandled cases from "incorrect" guidance
 is lower than the cost of otherwise obtaining an acceptably correct translation.
 
 ### FFI Guidance
-
 FFI guidance is at an early stage: at the moment, the following Rust types are not handled as targets (not exhaustive!):
 - Owned types (`Box`, `Vec`, `String`)
 - `&str`
 - Structs/Enums
 - `fn` types
 
-Examples of applying ffi guidance can be found [here](../tests/snapshotted/ffi_guidance/).
-
-Why do we need the flexibility to specify how to convert a C signature to a Rust signature? 
-Consider:
+In general, we expect that the system will be able to _automatically_ infer how to appropriately
+generate FFI wrappers. However, even if the majority cases can be synthesized, there may be cases
+where the user needs to provide guidance. For example:
 
 ```c
 void foo(int *a1, int *a2, int *a3, size_t len1, size_t len2) {...}
@@ -182,6 +180,8 @@ We need to be able to generate different wrappers for the following cases
 (and this is not immediate from the types of course):
 - `a1` and `a2` are arrays of length `len1` and `a3` is an array of length `len2`
 - `a1` is an array of length `len1` and `a2` and `a3` are arrays of length `l2`
+
+Examples of applying ffi guidance can be found [here](../tests/snapshotted/ffi_guidance/).
 
 ## Preparatory Refactoring and Improvement Passes
 
