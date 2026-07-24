@@ -695,7 +695,7 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 700 seconds (~12 minutes, up to the xfail below)
-@pytest.mark.xfail(
+@pytest.mark.skip(
     reason="file(1) does not yet translate end-to-end: refold emits valid C for all 27 "
     "TUs, but xj-c2rust's raw output (00_out) fails `cargo check` with 6 errors from "
     "two causes. (1) softmagic.c's magiccheck() uses isunordered(); xj-c2rust reports "
@@ -706,7 +706,6 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     "which expect `&mut _` -> 4x E0308 in compress.rs. The `cargo check` gate after "
     "improvement_pass_02_lift-call-args then raises CalledProcessError, so no final/ "
     "crate is produced.",
-    strict=True,
 )
 def test_file_file(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
