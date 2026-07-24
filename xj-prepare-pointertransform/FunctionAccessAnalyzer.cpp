@@ -1178,22 +1178,19 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         if (!FD || !FD->hasBody())
             continue;
 
-        // Only process functions that are either root RustSlice
-        // candidates or contain at least one transformable local
-        // pointer.
         auto rs_it = g_transformed_functions.find(FDCanon);
-        bool is_root_rs = rs_it != g_transformed_functions.end() &&
-                          !rs_it->second.singleton_param_indices.empty() == false &&
-                          rs_it->second.base_param_index >= 0 &&
-                          rs_it->second.end_param_index >= 0;
 
-        // Check if this is a singleton or pointer-pair (handled separately)
-        if (rs_it != g_transformed_functions.end()) {
-            if (!rs_it->second.singleton_param_indices.empty())
-                continue; // singleton — handled in applySingletonTransformations
-            if (rs_it->second.base_param_index >= 0 && rs_it->second.end_param_index >= 0)
-                continue; // pointer-pair — handled in applyPointerPairTransformations
-        }
+        // Pointer-pair functions (base + end params) are rewritten
+        // wholesale — signature, comparison retargeting, and any local
+        // iterating pointer — in applyPointerPairTransformations, so
+        // their bodies must not be touched here. Singleton functions
+        // flow through: their pointer params never move and so fail
+        // validation, making the loop below a no-op for them;
+        // applySingletonTransformations does their rewriting.
+        if (rs_it != g_transformed_functions.end() &&
+            rs_it->second.base_param_index >= 0 &&
+            rs_it->second.end_param_index >= 0)
+            continue;
 
         m_edited_ranges.clear();
 
@@ -1241,8 +1238,6 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             const VarDecl *PtrVar = pair.first;
             auto &candidate = analysis.tracked_pointers[PtrVar];
             auto &access_list = pair.second;
-            if (candidate.is_parameter && rs_it != g_transformed_functions.end())
-                continue;
             std::string error;
             if (validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error))
                 will_transform.insert(PtrVar);
@@ -1367,22 +1362,23 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
         }
 
-        // Second pass: remaining pointers (skip parameter pointers in
-        // RustSlice functions — they're consumed or should remain as-is)
-        // Also skip pointers removed from will_transform by init conflict detection.
+        // Second pass: remaining pointers. Skip pointers removed from
+        // will_transform by init conflict detection.
         for (const VarDecl *PtrVar : other_pointers) {
             auto &access_list = analysis.accesses[PtrVar];
             auto &candidate = analysis.tracked_pointers[PtrVar];
-            if (candidate.is_parameter && rs_it != g_transformed_functions.end())
-                continue;
             if (will_transform.find(PtrVar) == will_transform.end())
                 continue;
             transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
         }
 
         // Post-process: replace remaining references to removed params
-        // Only if at least one pointer was actually transformed
-        if (rs_it != g_transformed_functions.end()) {
+        // Only if at least one pointer was actually transformed.
+        // Singleton entries are exempt: their body loop above never
+        // replaces a pointer (nothing moves), but the entry must
+        // survive for applySingletonTransformations to consume.
+        if (rs_it != g_transformed_functions.end() &&
+            rs_it->second.singleton_param_indices.empty()) {
             if (g_pointers_replaced > pre_count) {
                 replaceRemovedParams(FD, Ctx);
             } else {
