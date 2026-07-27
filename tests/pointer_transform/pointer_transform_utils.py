@@ -4,11 +4,15 @@ Each fixture directory looks like:
 
     <case>/
       input/     # source files (.c / .h)
-      expected/  # golden: after xj-prepare-pointertransform
+      expected/  # golden: after the full pointer+slice pipeline
 
-The driver runs the tool over a scratch copy of input/ and checks:
+The driver mirrors the `pointertransform` preparation pass: it runs
+xj-prepare-pointertransform (index rewriting, emitting the per-pointer
+metadata side-file) and then xj-prepare-slicetransform (RustSlice
+detection + signature reshaping, consuming that side-file) over a
+scratch copy of input/ and checks:
 
-  1. the output matches the stored golden;
+  1. the combined output matches the stored golden;
   2. the output still parses (clang -fsyntax-only);
   3. the program still compiles and behaves identically (stdout + exit
      code) to the untransformed input.
@@ -105,9 +109,15 @@ def _compare_with_golden(case_dir: Path, golden_subdir: str, workdir: Path, file
 
 
 def run_case(tmp_path: Path, case_dir: Path) -> None:
-    builddir = hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
-    # Keep in sync with `xj-prepare-pointertransform/CMakeLists.txt`
-    ptr_tool = builddir / "xj-prepare-pointertransform"
+    # Keep in sync with the tools' CMakeLists.txt
+    ptr_tool = (
+        hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
+        / "xj-prepare-pointertransform"
+    )
+    slice_tool = (
+        hermetic.xj_prepare_slicetransform_build_dir(repo_root.localdir())
+        / "xj-prepare-slicetransform"
+    )
 
     input_files = sorted(p.name for p in (case_dir / "input").iterdir())
     workdir = tmp_path / "codebase"
@@ -119,7 +129,12 @@ def run_case(tmp_path: Path, case_dir: Path) -> None:
 
     baseline = _compile_and_run(workdir, sources, "orig")
 
-    _run_tool(ptr_tool, workdir, sources, [])
+    # Pass 1: pointer transform (plain index rewriting + metadata side-file).
+    metadata_path = workdir / "metadata.json"
+    _run_tool(ptr_tool, workdir, sources, [f"--metadata-out={metadata_path}"])
+
+    # Pass 2: slice transform (RustSlice detection + signature reshaping).
+    _run_tool(slice_tool, workdir, sources, [f"--metadata-in={metadata_path}"])
 
     _check_syntax(sources)
     _compare_with_golden(case_dir, "expected", workdir, input_files)

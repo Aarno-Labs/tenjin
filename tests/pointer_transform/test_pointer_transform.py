@@ -50,13 +50,23 @@ def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp
         encoding="utf-8",
     )
 
+    # The T*-to-int rewrite under test is performed by the slice tool,
+    # so run the full pointer -> slice pipeline (in-place: the slice
+    # tool re-parses the pointer tool's output from disk).
     pointer_transform = root / "_local" / "_build_pointertransform" / "xj-prepare-pointertransform"
-    result = hermetic.run(
-        [pointer_transform, "-p", tmp_codebase, source],
+    slice_transform = root / "_local" / "_build_slicetransform" / "xj-prepare-slicetransform"
+    metadata = tmp_codebase / "metadata.json"
+    hermetic.run(
+        [pointer_transform, "--inplace", f"--metadata-out={metadata}", "-p", tmp_codebase, source],
         check=True,
         capture_output=True,
     )
-    transformed = result.stdout.decode("utf-8")
+    hermetic.run(
+        [slice_transform, "--inplace", f"--metadata-in={metadata}", "-p", tmp_codebase, source],
+        check=True,
+        capture_output=True,
+    )
+    transformed = source.read_text(encoding="utf-8")
 
     assert transformed.count("static int find_item(int index)") == 2
     assert "intfind_item" not in transformed
@@ -64,8 +74,7 @@ def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp
     assert "return use_item(&items[item]);" in transformed
 
     hermetic.run(
-        [clang, "-std=c11", "-x", "c", "-fsyntax-only", "-"],
-        input=result.stdout,
+        [clang, "-std=c11", "-fsyntax-only", source],
         check=True,
         capture_output=True,
     )

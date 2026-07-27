@@ -6,26 +6,22 @@
 //
 // MatchFinder calls run() once per function definition. run() collects
 // per-function data (using PointerAccessCollector) and snapshots it into
-// g_function_analyses, but it does NOT yet emit edits. That deferral is
-// important: detection of RustSlice-transformable functions runs in a
-// fixpoint loop, so the set of "transformed" callees can grow as more
-// functions are analyzed.
+// g_function_analyses, but it does NOT yet emit edits, so that every
+// function in the TU has been analyzed before any rewriting starts.
 //
 // onEndOfTranslationUnit() runs after every function has been seen and
-// drives the actual rewriting in a fixed phase order:
+// drives the actual rewriting:
 //
-//   1. detectAllTransformations: figure out which functions become
-//      RustSlice (singletons, pointer-pairs, propagation, global-return).
-//   2. transformAllFunctions: rewrite each pointer access inside the
-//      bodies of locally-eligible pointers.
-//   3. applySingletonTransformations / applyPointerPairTransformations:
-//      rewrite the signatures + bodies of RustSlice-transformed funcs.
-//   4. emitTypedefs: insert RustSlice_* typedefs.
-//   5. rewriteCallSites: patch up callers of RustSlice functions.
-//   6. rewriteForwardDeclarations: keep header decls in sync.
-//   7. fixReturnTypeChanges: propagate `T* -> int` return-type changes
-//      through callers (including return NULL → return -1).
-//   8. Globals: file-scope pointers are transformed at the very end.
+//   1. transformAllFunctions: rewrite each pointer access inside the
+//      bodies of eligible pointers, in plain form (base params kept,
+//      comparisons against the original len/end params). Each rewritten
+//      pointer is recorded in the metadata side-file.
+//   2. Globals: file-scope pointers are transformed at the very end.
+//
+// This tool performs NO RustSlice-related work: candidate detection and
+// all signature-level reshaping live in xj-prepare-slicetransform, which
+// runs on this tool's output (valid, index-rewritten C) plus the
+// per-pointer metadata records.
 
 class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
   public:
@@ -85,61 +81,16 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
                                       std::vector<PointerAccess> &accesses,
                                       ASTContext &Ctx);
 
-    // generateSingletonTransformation: rewrite a function whose pointer
-    // params are non-iterating (e.g. swap).
-    bool generateSingletonTransformation(const FunctionDecl *FD,
-                                         const RustSliceInfo &slice_info,
-                                         FunctionAnalysis &analysis,
-                                         ASTContext &Ctx);
-
-    // generatePointerPairTransformation: rewrite a function whose pointer
-    // pair (lo, hi) becomes a single RustSlice.
-    bool generatePointerPairTransformation(const FunctionDecl *FD,
-                                           FunctionAnalysis &analysis,
-                                           ASTContext &Ctx);
-
     // Apply a vector<Edit> to the Rewriter, sorted to avoid offset drift
     // and skipping any that overlap an already-edited range.
     void applyEdits(std::vector<Edit> &edits, SourceManager &SM);
 
-    // ---- Cross-function transformation phases -------------------------
-    void detectAllTransformations(ASTContext &Ctx);
+    // ---- Cross-function transformation phase --------------------------
     void transformAllFunctions(ASTContext &Ctx);
-    void applySingletonTransformations(ASTContext &Ctx);
-    void applyPointerPairTransformations(ASTContext &Ctx);
 
     // ---- Metadata export for xj-prepare-slicetransform ----------------
     // Look up (or create) the metadata record for FD; nullptr when a
     // same-named function from another file already owns the record.
     xj::PtrIndexFunctionRecord *metadataRecordFor(const FunctionDecl *FD,
                                                   ASTContext &Ctx);
-
-    // Rewrite every call site of a RustSlice-transformed function so
-    // callers pass the new slice (or a compound literal) instead of the
-    // original (ptr, len) / (lo, hi) pair.
-    void rewriteCallSites(ASTContext &Ctx);
-
-    // After RustSlice signature rewriting, some uses of the *original*
-    // base/end/len params can survive in the body. This patches them up
-    // to reference the new slice (arr.ptr / arr.len).
-    void replaceRemovedParams(const FunctionDecl *FD, ASTContext &Ctx);
-
-    // Insert one RustSlice_<T> typedef per pointee type at the earliest
-    // function in the TU that needs it.
-    void emitTypedefs(ASTContext &Ctx);
-
-    // Translate an argument expression at a call site so that any
-    // references to transformed pointers / removed params come out
-    // correctly (e.g. `p` → `p_index`, `lo` → `arr.ptr`).
-    std::string translateArgExpr(const Expr *ArgExpr, const FunctionDecl *CallerFD,
-                                  ASTContext &Ctx);
-
-    // Propagate `T* -> int` return-type changes: rewrite return NULL,
-    // change pointer-typed locals that hold return values to int, and
-    // patch up callers' assumptions about pointer return values.
-    void fixReturnTypeChanges(ASTContext &Ctx);
-
-    // Update non-defining declarations (typically in headers) to match
-    // the rewritten signature so the program still links.
-    void rewriteForwardDeclarations(ASTContext &Ctx);
 };

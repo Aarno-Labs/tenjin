@@ -5,7 +5,6 @@
 //   - PointerAccessKind: the classification of a single pointer use
 //   - PointerCandidate: per-pointer metadata (base array, offset bounds, ...)
 //   - PointerAccess:    one classified use of a pointer
-//   - RustSliceInfo:    how a function was reshaped into a RustSlice signature
 //   - FunctionAnalysis: per-function snapshot saved from run() to use in
 //                       onEndOfTranslationUnit()
 //   - Edit:             one pending source-text rewrite
@@ -134,12 +133,6 @@ struct PointerCandidate {
     int min_relative_offset = 0;   // most-negative constant offset seen (e.g. -1)
     int max_relative_offset = 0;   // most-positive constant offset seen (e.g. +2)
     bool constant_offsets = true;  // false if any *(p + variable) was seen → reject
-
-    // Original spelling of base_array_text, stashed by the pointer-pair
-    // body path before it retargets base_array_text to arr.ptr. The
-    // metadata side-file must describe the *input* C, not the rewritten
-    // form. Empty = base_array_text was never retargeted.
-    std::string original_base_text;
 };
 
 // One classified use of a tracked pointer. The combination of `kind` and
@@ -196,41 +189,6 @@ struct GlobalPointerState {
 };
 
 // ============================================================================
-// RustSlice transformation metadata
-// ============================================================================
-//
-// When a function's signature is rewritten to take a single RustSlice
-// instead of a (pointer, length) or (pointer, pointer) pair, this struct
-// records how the rewrite was performed so call sites can be patched up
-// consistently. One entry per transformed function lives in
-// g_transformed_functions.
-
-struct RustSliceInfo {
-    std::string slice_type;        // generated typedef name, e.g. "RustSlice_int"
-    std::string pointee_type;      // element type, e.g. "int"
-    std::string slice_param_name;  // name chosen for the new slice param, e.g. "arr"
-
-    // Indices into the *original* parameter list. base_param_index is
-    // the pointer that becomes arr.ptr; the others identify how the
-    // length was originally expressed.
-    int base_param_index = -1;     // pointer parameter (always set for RustSlice)
-    int end_param_index = -1;      // end pointer (pointer-pair form);  -1 otherwise
-    int len_param_index = -1;      // length parameter (ptr+len form);   -1 otherwise
-
-    // Slice-bound padding driven by *(p ± k) accesses inside the body.
-    // Call sites widen the constructed slice by these amounts.
-    int lookback = 0;              // = -min_relative_offset
-    int lookahead = 0;             // =  max_relative_offset
-
-    bool return_type_changed = false;  // function's return type rewritten from T* to int
-    bool inclusive_end = false;        // [lo, hi] pair where hi is dereferenced (length = hi - lo + 1)
-
-    // Pointer parameters that don't iterate but are dereferenced (e.g.
-    // swap's a,b). They turn into int indices alongside the slice.
-    std::vector<int> singleton_param_indices;
-};
-
-// ============================================================================
 // FunctionAnalysis — per-function snapshot saved during run()
 // ============================================================================
 //
@@ -245,22 +203,14 @@ struct FunctionAnalysis {
     std::map<const VarDecl *, std::vector<PointerAccess>> accesses;
 };
 
-// Records functions whose return type the tool has rewritten from
-// "T *" to "int" because they only ever return into one global/static
-// array. Lets callers be patched up to receive an index.
-struct GlobalReturnInfo {
-    std::string global_array_name;   // e.g., "node_storage"
-    std::string pointee_type;        // e.g., "Node"
-};
-
 // ============================================================================
 // Global state (defined in Common.cpp)
 // ============================================================================
 //
 // The tool intentionally keeps cross-phase state in globals because
-// detection runs in a fixpoint (one function's classification can mark
-// another for rewriting) and emission needs to dedupe across functions
-// (one strchr_index wrapper per TU, one typedef per pointee type).
+// analysis is snapshotted per function during run() and consumed at
+// end-of-TU, and emission needs to dedupe across functions (one
+// strchr_index wrapper per TU).
 
 extern int g_pointers_found;
 extern int g_pointers_replaced;
@@ -282,24 +232,8 @@ extern std::set<std::string> g_allowed_funcs;
 // to make wrapper emission idempotent across the TU.
 extern std::set<std::string> g_emitted_wrappers;
 
-// Functions whose signature has been (or will be) rewritten to use a
-// RustSlice. Populated during detection, consumed by call-site rewriting.
-extern std::map<const FunctionDecl *, RustSliceInfo> g_transformed_functions;
-
-// Names of slice typedefs already emitted (e.g. "RustSlice_int").
-extern std::set<std::string> g_emitted_typedefs;
-
 // Per-function analysis snapshots saved during run() for later phases.
 extern std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
-
-// Local variables whose type was rewritten from T* to int because they
-// were initialized from a return-type-changed function. Tracked so
-// later argument translation knows to use the bare name (no "_index"
-// suffix).
-extern std::set<const VarDecl *> g_index_return_vars;
-
-// Functions whose return type was rewritten from T* to int.
-extern std::map<const FunctionDecl *, GlobalReturnInfo> g_global_return_functions;
 
 // Metadata accumulated across every TU in this run, written to
 // g_metadata_out (if set) after the last file is processed. Consumed by
@@ -432,9 +366,3 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 
 // Debug helper: stringify a PointerAccessKind for trace logs.
 const char *pointerAccessKindToString(PointerAccessKind kind);
-
-// Slice type naming (sanitizeTypeForIdentifier / makeSliceTypeName)
-// lives in xj-prepare-support/PtrIndexMetadata.h, shared with the
-// slice tool.
-using xj::makeSliceTypeName;
-using xj::sanitizeTypeForIdentifier;
