@@ -2,8 +2,9 @@ cmake_minimum_required(VERSION 3.17)
 project(xj-prepare-pointertransform)
 
 set(XJ_LLVM_ROOT "${CMAKE_CURRENT_LIST_DIR}/../_local/xj-llvm")
+set(XJ_SUPPORT_DIR "${CMAKE_CURRENT_LIST_DIR}/../xj-prepare-support")
 
-include_directories("${XJ_LLVM_ROOT}/include")
+include_directories("${XJ_LLVM_ROOT}/include" "${XJ_SUPPORT_DIR}")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 
@@ -15,6 +16,7 @@ add_executable(xj-prepare-pointertransform
     ValidationMethods.cpp
     TransformationMethods.cpp
     PointerTransformAction.cpp
+    "${XJ_SUPPORT_DIR}/PtrIndexMetadata.cpp"
 )
 
 set_target_properties(xj-prepare-pointertransform PROPERTIES

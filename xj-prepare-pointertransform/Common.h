@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "PtrIndexMetadata.h"
+
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -419,23 +421,8 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 // Debug helper: stringify a PointerAccessKind for trace logs.
 const char *pointerAccessKindToString(PointerAccessKind kind);
 
-// Turn a C type string into something legal inside an identifier.
-// e.g. "char *" -> "char_ptr", "unsigned char" -> "unsigned_char".
-inline std::string sanitizeTypeForIdentifier(const std::string &type) {
-    std::string result = type;
-    size_t pos;
-    while ((pos = result.find(" *")) != std::string::npos)
-        result.replace(pos, 2, "_ptr");
-    while ((pos = result.find('*')) != std::string::npos)
-        result.replace(pos, 1, "_ptr");
-    for (char &c : result) {
-        if (c == ' ') c = '_';
-    }
-    return result;
-}
-
-// Generate the slice typedef name for a pointee type.
-// e.g. "int" -> "RustSlice_int", "char *" -> "RustSlice_char_ptr".
-inline std::string makeSliceTypeName(const std::string &pointee_type) {
-    return "RustSlice_" + sanitizeTypeForIdentifier(pointee_type);
-}
+// Slice type naming (sanitizeTypeForIdentifier / makeSliceTypeName)
+// lives in xj-prepare-support/PtrIndexMetadata.h, shared with the
+// slice tool.
+using xj::makeSliceTypeName;
+using xj::sanitizeTypeForIdentifier;
