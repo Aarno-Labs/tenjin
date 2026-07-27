@@ -1,0 +1,12 @@
+{
+  "functions": {},
+  "global_return_functions": {
+    "find_item": {
+      "file": "global_return.c",
+      "global_array_name": "items",
+      "pointee_type": "Item"
+    }
+  },
+  "globals": [],
+  "version": 1
+}
