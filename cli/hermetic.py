@@ -99,6 +99,10 @@ def xj_prepare_pointertransform_build_dir(localdir: Path) -> Path:
     return localdir / "_build_pointertransform"
 
 
+def xj_prepare_slicetransform_build_dir(localdir: Path) -> Path:
+    return localdir / "_build_slicetransform"
+
+
 def xj_localize_errno_build_dir(localdir: Path) -> Path:
     return localdir / "_build_localize_errno"
 
