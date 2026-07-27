@@ -3,8 +3,7 @@
 // Runs on code already processed by xj-prepare-pointertransform: moving
 // pointers have been replaced by integer index variables in plain form
 // (base params kept, `base[idx]` accesses, comparisons against the
-// original len/end params). Driven by the metadata side-file, this class
-// performs everything signature-level:
+// original len/end params). This class performs everything signature-level:
 //
 //   1. Body touch-ups per reshaped function: references to the removed
 //      base/end/len params become arr.ptr / arr.len forms, index
@@ -36,9 +35,11 @@
 #include <string>
 #include <vector>
 
-namespace xj {
+namespace xj
+{
 
-class SliceRewriter {
+  class SliceRewriter
+  {
   public:
     SliceRewriter(clang::Rewriter &R, const PtrIndexMetadata &Metadata)
         : TheRewriter(R), Meta(Metadata) {}
@@ -50,16 +51,17 @@ class SliceRewriter {
     const PtrIndexMetadata &Meta;
 
     // One verified, applicable slice reshaping in this TU.
-    struct SliceTarget {
-        const PtrIndexFunctionRecord *FnRec = nullptr;
-        const PtrIndexSliceRecord *S = nullptr;
-        const clang::FunctionDecl *Canon = nullptr; // canonical decl in this TU
-        const clang::FunctionDecl *Def = nullptr;   // definition, if in this TU
-        bool body_applicable = false; // Def present, still in pre-slice shape
+    struct SliceTarget
+    {
+      const PtrIndexFunctionRecord *FnRec = nullptr;
+      const PtrIndexSliceRecord *S = nullptr;
+      const clang::FunctionDecl *Canon = nullptr; // canonical decl in this TU
+      const clang::FunctionDecl *Def = nullptr;   // definition, if in this TU
+      bool body_applicable = false;               // Def present, still in pre-slice shape
     };
 
     // Populated by run() for the current TU.
-    std::map<const clang::FunctionDecl *, SliceTarget> slice_targets; // by canonical
+    std::map<const clang::FunctionDecl *, SliceTarget> slice_targets;     // by canonical
     std::map<std::string, const clang::FunctionDecl *> global_return_fns; // name->canonical
     // Locals retyped from T* to int because they receive a
     // return-type-changed call result.
@@ -90,6 +92,6 @@ class SliceRewriter {
     std::string translateArgExpr(const clang::Expr *ArgExpr,
                                  const SliceTarget &CallerT,
                                  clang::ASTContext &Ctx);
-};
+  };
 
 } // namespace xj

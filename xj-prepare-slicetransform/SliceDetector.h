@@ -13,8 +13,7 @@
 //
 // Detection uses the metadata records for pointer *identity* (which int
 // locals are indices, over which base) and the AST for everything else
-// (offset bounds and the anchors), in four sub-phases mirroring the
-// pre-split tool:
+// (offset bounds and the anchors), in four sub-phases:
 //
 //   A. Root candidates: a function containing an index variable whose
 //      base is a pointer parameter and whose bound comparison resolves
@@ -43,9 +42,11 @@
 #include <string>
 #include <vector>
 
-namespace xj {
+namespace xj
+{
 
-class SliceDetector {
+  class SliceDetector
+  {
   public:
     explicit SliceDetector(PtrIndexMetadata &Metadata) : Meta(Metadata) {}
 
@@ -89,6 +90,6 @@ class SliceDetector {
 
     void markDetected(const clang::FunctionDecl *Canon,
                       PtrIndexSliceRecord rec);
-};
+  };
 
 } // namespace xj
