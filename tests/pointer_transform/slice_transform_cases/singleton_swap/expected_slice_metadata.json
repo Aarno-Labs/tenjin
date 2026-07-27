@@ -7,11 +7,10 @@
           "base_text": "buf",
           "index_var": "p_index_xj",
           "max_offset": 0,
-          "min_offset": 0,
+          "min_offset": -1,
           "moved": true,
           "name": "p",
-          "param_index": -1,
-          "variable_offsets": false
+          "param_index": -1
         }
       ],
       "slice": {
@@ -20,7 +19,7 @@
         "inclusive_end": false,
         "len_param_index": 1,
         "lookahead": 0,
-        "lookback": 0,
+        "lookback": 1,
         "pointee_type": "int",
         "return_type_changed": false,
         "singleton_param_indices": [],

@@ -5,15 +5,16 @@
 // pointers have been replaced by integer index variables in plain form
 // (`base[idx]` accesses, `idx < len` / `idx < (end - base)` comparisons,
 // `return base + idx`), and the metadata side-file identifies each
-// synthesized index variable (its name, the base it indexes, and the
-// constant offset bounds observed). The pointer pass records nothing
-// slice-related: this class is the sole author of the per-function
-// PtrIndexSliceRecord and global-return entries in the metadata, which
-// SliceRewriter then consumes.
+// synthesized index variable (its name and the base it indexes). The
+// pointer pass records identity only: this class is the sole author of
+// the per-pointer offset bounds (computeOffsetBounds), the per-function
+// PtrIndexSliceRecord, and the global-return entries in the metadata,
+// which SliceRewriter then consumes.
 //
 // Detection uses the metadata records for pointer *identity* (which int
-// locals are indices, over which base, with what lookaround) and the AST
-// for the *anchors*, in four sub-phases mirroring the pre-split tool:
+// locals are indices, over which base) and the AST for everything else
+// (offset bounds and the anchors), in four sub-phases mirroring the
+// pre-split tool:
 //
 //   A. Root candidates: a function containing an index variable whose
 //      base is a pointer parameter and whose bound comparison resolves
@@ -75,6 +76,11 @@ class SliceDetector {
     sliceInfoFor(const clang::FunctionDecl *Callee) const;
 
     void collectTU(clang::ASTContext &Ctx);
+    // Fill each pointer record's min/max_offset from the rewritten AST
+    // (constant offsets applied at the index position, e.g.
+    // base[idx - 1]). The pointer pass records identity only; the
+    // lookaround bounds are derived here, where they are consumed.
+    void computeOffsetBounds(clang::ASTContext &Ctx);
     void detectRoots(clang::ASTContext &Ctx);
     void detectSingletons(clang::ASTContext &Ctx);
     void detectPointerPairs(clang::ASTContext &Ctx);

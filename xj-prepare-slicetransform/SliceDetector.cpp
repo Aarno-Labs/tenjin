@@ -12,6 +12,7 @@
 
 #include "clang/AST/ParentMapContext.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Lex/Lexer.h"
 #include "llvm/Support/Path.h"
 
 using namespace clang;
@@ -230,6 +231,111 @@ static bool allReturnsAreIndexShaped(const FunctionDecl *FD,
 // TU collection and lookups
 // ============================================================================
 
+// Resolve the constant offset a subscript expression applies to `IdxVD`:
+// `idx` / `idx++` / `--idx` → 0, `idx + 2` / `2 + idx` / `idx - 1` → ±k,
+// folding chains like `idx + 1 + 2`. Returns false when the expression
+// is not idx-plus-constants (e.g. `idx + n` — a non-constant offset
+// contributes nothing to the bounds, mirroring the pre-split tool,
+// whose validation refused to transform such pointers at all).
+static bool constSubscriptOffset(const Expr *E, const VarDecl *IdxVD,
+                                 ASTContext &Ctx, long &off) {
+    E = E->IgnoreParenImpCasts();
+    if (const auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+        if (DRE->getDecl() == IdxVD) {
+            off = 0;
+            return true;
+        }
+        return false;
+    }
+    if (const auto *UO = dyn_cast<UnaryOperator>(E)) {
+        if (UO->isIncrementDecrementOp())
+            return constSubscriptOffset(UO->getSubExpr(), IdxVD, Ctx, off);
+        return false;
+    }
+    if (const auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (BO->getOpcode() != BO_Add && BO->getOpcode() != BO_Sub)
+            return false;
+        long inner = 0;
+        Expr::EvalResult ER;
+        if (constSubscriptOffset(BO->getLHS(), IdxVD, Ctx, inner) &&
+            BO->getRHS()->EvaluateAsInt(ER, Ctx)) {
+            long k = static_cast<long>(ER.Val.getInt().getExtValue());
+            off = BO->getOpcode() == BO_Add ? inner + k : inner - k;
+            return true;
+        }
+        if (BO->getOpcode() == BO_Add &&
+            constSubscriptOffset(BO->getRHS(), IdxVD, Ctx, inner) &&
+            BO->getLHS()->EvaluateAsInt(ER, Ctx)) {
+            off = inner + static_cast<long>(ER.Val.getInt().getExtValue());
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+// Source spelling of an expression (used to match subscript bases like
+// `bs->buf` against the textual base recorded by the pointer pass).
+static std::string sourceTextOf(const Expr *E, ASTContext &Ctx) {
+    const SourceManager &SM = Ctx.getSourceManager();
+    return Lexer::getSourceText(
+               CharSourceRange::getTokenRange(E->getSourceRange()), SM,
+               Ctx.getLangOpts())
+        .str();
+}
+
+void SliceDetector::computeOffsetBounds(ASTContext &Ctx) {
+    SourceManager &SM = Ctx.getSourceManager();
+    for (const FunctionDecl *FD : tu_defs) {
+        auto it = Meta.functions.find(FD->getNameAsString());
+        if (it == Meta.functions.end())
+            continue;
+        if (!it->second.file.empty() &&
+            it->second.file != fileBasenameOf(FD, SM))
+            continue; // same-named function from a different file
+
+        for (PtrIndexPointerRecord &P : it->second.pointers) {
+            if (P.index_var.empty())
+                continue;
+            const VarDecl *IdxVD = findLocalVarNamed(FD->getBody(), P.index_var);
+            if (!IdxVD || !IdxVD->getType()->isIntegerType())
+                continue;
+            // A parameter pointer is its own base (base_text empty).
+            const std::string base =
+                P.base_text.empty() ? P.name : P.base_text;
+
+            struct SubscriptWalker : RecursiveASTVisitor<SubscriptWalker> {
+                ASTContext *Ctx;
+                const VarDecl *IdxVD;
+                const std::string *base;
+                PtrIndexPointerRecord *P;
+                bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
+                    if (sourceTextOf(ASE->getBase()->IgnoreParenImpCasts(),
+                                     *Ctx) != *base)
+                        return true;
+                    long off = 0;
+                    if (constSubscriptOffset(ASE->getIdx(), IdxVD, *Ctx, off)) {
+                        if (off < P->min_offset)
+                            P->min_offset = off;
+                        if (off > P->max_offset)
+                            P->max_offset = off;
+                    }
+                    return true;
+                }
+            };
+            SubscriptWalker W;
+            W.Ctx = &Ctx;
+            W.IdxVD = IdxVD;
+            W.base = &base;
+            W.P = &P;
+            // Folding is monotonic from a [0, 0] start, so revisiting
+            // the same definition from another TU (a function in a
+            // shared header) is idempotent.
+            W.TraverseStmt(FD->getBody());
+        }
+    }
+}
+
 void SliceDetector::collectTU(ASTContext &Ctx) {
     SourceManager &SM = Ctx.getSourceManager();
     for (Decl *D : Ctx.getTranslationUnitDecl()->decls()) {
@@ -297,9 +403,6 @@ void SliceDetector::detectRoots(ASTContext &Ctx) {
             // pointers anchor a root slice. (Param-driven roots are a
             // deliberate follow-up generalization.)
             if (P.param_index >= 0)
-                continue;
-            // Non-constant dereference offsets disqualify slice bounds.
-            if (P.variable_offsets)
                 continue;
 
             // Verify the record against the AST: the index variable must
@@ -1041,6 +1144,7 @@ void SliceDetector::exportResults(ASTContext &Ctx) {
 
 void SliceDetector::run(ASTContext &Ctx) {
     collectTU(Ctx);
+    computeOffsetBounds(Ctx);
     detectRoots(Ctx);
     detectSingletons(Ctx);
     detectPointerPairs(Ctx);

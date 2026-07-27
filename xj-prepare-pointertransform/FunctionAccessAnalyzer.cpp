@@ -191,9 +191,6 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
             rec.param_index = -1;
             rec.moved = true;
             rec.base_text = state.candidate.base_array_text;
-            rec.min_offset = state.candidate.min_relative_offset;
-            rec.max_offset = state.candidate.max_relative_offset;
-            rec.variable_offsets = !state.candidate.constant_offsets;
             g_metadata.globals.push_back(std::move(rec));
         }
     }
@@ -481,7 +478,8 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
 
         // Record the transformed pointer in the metadata side-file so
         // the slice pass knows which index variables exist and what
-        // they index into.
+        // they index into. Identity only — offset bounds are derived by
+        // the slice pass from the rewritten AST.
         if (FD) {
             if (xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(FD, Ctx)) {
                 xj::PtrIndexPointerRecord rec;
@@ -492,9 +490,6 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                     rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
                 rec.moved = true;
                 rec.base_text = candidate.base_array_text;
-                rec.min_offset = candidate.min_relative_offset;
-                rec.max_offset = candidate.max_relative_offset;
-                rec.variable_offsets = !candidate.constant_offsets;
                 fnRec->pointers.push_back(std::move(rec));
             }
         }

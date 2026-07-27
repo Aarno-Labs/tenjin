@@ -13,7 +13,7 @@ static void sort(RustSlice_int arr) {
     while (!done) {
         done = 1;
         int i = 0;
-        int p_index_xj = 0;
+        int p_index_xj = 1;
         while (p_index_xj < arr.len) {
             if (i > 0) {
                 if (arr.ptr[p_index_xj + -1] > arr.ptr[p_index_xj]) {
@@ -29,7 +29,7 @@ static void sort(RustSlice_int arr) {
 
 int main(void) {
     int d[6] = {3, 1, 4, 1, 5, 9};
-    sort((RustSlice_int){d, 6});
+    sort((RustSlice_int){d - 1, 6 + 1});
     for (int i = 0; i < 6; i++)
         printf("%d ", d[i]);
     printf("\n");

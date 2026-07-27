@@ -10,8 +10,7 @@
           "min_offset": 0,
           "moved": true,
           "name": "p",
-          "param_index": -1,
-          "variable_offsets": false
+          "param_index": -1
         }
       ]
     },
@@ -25,8 +24,7 @@
           "min_offset": 0,
           "moved": true,
           "name": "p",
-          "param_index": -1,
-          "variable_offsets": false
+          "param_index": -1
         }
       ]
     },
@@ -40,8 +38,7 @@
           "min_offset": 0,
           "moved": true,
           "name": "p",
-          "param_index": -1,
-          "variable_offsets": false
+          "param_index": -1
         }
       ]
     }

@@ -33,13 +33,13 @@ struct PtrIndexPointerRecord {
     // Source text of the base array this pointer indexes into (e.g. "buf",
     // "bs->buf"). Empty when the pointer is its own base (a parameter).
     std::string base_text;
-    // Range of constant offsets seen relative to the index position
-    // (e.g. p[-1] => min_offset = -1). Used for slice lookback/lookahead.
+    // Range of constant offsets applied at the index position (e.g. a
+    // rewritten *(p - 1) access => min_offset = -1). Used for slice
+    // lookback/lookahead. NOT populated by the pointer pass: the slice
+    // pass's detector derives these from the index-transformed AST
+    // (SliceDetector::computeOffsetBounds), where they are consumed.
     long min_offset = 0;
     long max_offset = 0;
-    // A non-constant offset (e.g. *(p + n)) was applied to this pointer.
-    // Legal for the index transform, but disqualifies slice reshaping.
-    bool variable_offsets = false;
 };
 
 // How a function is to be reshaped into a RustSlice signature. Filled
