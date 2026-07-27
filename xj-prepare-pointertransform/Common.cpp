@@ -32,6 +32,8 @@ std::set<std::string> g_emitted_typedefs;
 std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
 std::set<const VarDecl *> g_index_return_vars;
 std::map<const FunctionDecl *, GlobalReturnInfo> g_global_return_functions;
+xj::PtrIndexMetadata g_metadata;
+std::string g_metadata_out;
 
 // ============================================================================
 // Helpers

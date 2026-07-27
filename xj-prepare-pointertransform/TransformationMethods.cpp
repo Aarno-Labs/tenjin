@@ -1949,6 +1949,10 @@ bool FunctionAccessAnalyzer::generatePointerPairTransformation(
 
         if (candidate.base_array_text ==
             FD->getParamDecl(base_idx)->getNameAsString()) {
+            // Stash the input-C spelling first: transformPointerVar's
+            // metadata record must describe the original source, not
+            // the arr.ptr form this rewrite is about to introduce.
+            candidate.original_base_text = candidate.base_array_text;
             candidate.base_array_text = arr_name + ".ptr";
         }
 

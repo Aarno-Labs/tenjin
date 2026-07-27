@@ -134,6 +134,12 @@ struct PointerCandidate {
     int min_relative_offset = 0;   // most-negative constant offset seen (e.g. -1)
     int max_relative_offset = 0;   // most-positive constant offset seen (e.g. +2)
     bool constant_offsets = true;  // false if any *(p + variable) was seen → reject
+
+    // Original spelling of base_array_text, stashed by the pointer-pair
+    // body path before it retargets base_array_text to arr.ptr. The
+    // metadata side-file must describe the *input* C, not the rewritten
+    // form. Empty = base_array_text was never retargeted.
+    std::string original_base_text;
 };
 
 // One classified use of a tracked pointer. The combination of `kind` and
@@ -294,6 +300,12 @@ extern std::set<const VarDecl *> g_index_return_vars;
 
 // Functions whose return type was rewritten from T* to int.
 extern std::map<const FunctionDecl *, GlobalReturnInfo> g_global_return_functions;
+
+// Metadata accumulated across every TU in this run, written to
+// g_metadata_out (if set) after the last file is processed. Consumed by
+// xj-prepare-slicetransform.
+extern xj::PtrIndexMetadata g_metadata;
+extern std::string g_metadata_out; // --metadata-out CLI flag ("" = don't write)
 
 // ============================================================================
 // Edit — one pending source-text rewrite

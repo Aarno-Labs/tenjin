@@ -108,6 +108,12 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     void applySingletonTransformations(ASTContext &Ctx);
     void applyPointerPairTransformations(ASTContext &Ctx);
 
+    // ---- Metadata export for xj-prepare-slicetransform ----------------
+    // Look up (or create) the metadata record for FD; nullptr when a
+    // same-named function from another file already owns the record.
+    xj::PtrIndexFunctionRecord *metadataRecordFor(const FunctionDecl *FD,
+                                                  ASTContext &Ctx);
+
     // Rewrite every call site of a RustSlice-transformed function so
     // callers pass the new slice (or a compound literal) instead of the
     // original (ptr, len) / (lo, hi) pair.
