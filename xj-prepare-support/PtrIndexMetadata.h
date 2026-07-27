@@ -40,17 +40,6 @@ struct PtrIndexPointerRecord {
     // A non-constant offset (e.g. *(p + n)) was applied to this pointer.
     // Legal for the index transform, but disqualifies slice reshaping.
     bool variable_offsets = false;
-    // Name of the single variable this pointer's handle was derived from
-    // (sole reseat source), "" if none/multiple.
-    std::string handle_source;
-    // Some `return` statement returns this pointer (at its index offset).
-    bool returned_at_offset = false;
-    // Non-pointer variables this pointer's position was compared against
-    // (candidates for the `len` of a slice).
-    std::vector<std::string> compared_against;
-    // The pointer (at fixed offset) is dereferenced but never moved;
-    // relevant for (lo,hi) pointer-pair inclusive-end detection.
-    bool dereferenced = false;
 };
 
 // How a function is to be reshaped into a RustSlice signature. Filled

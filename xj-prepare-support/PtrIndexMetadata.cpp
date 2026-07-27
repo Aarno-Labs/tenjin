@@ -18,13 +18,6 @@ static llvm::json::Object pointerToJson(const PtrIndexPointerRecord &R) {
     O["min_offset"] = static_cast<int64_t>(R.min_offset);
     O["max_offset"] = static_cast<int64_t>(R.max_offset);
     O["variable_offsets"] = R.variable_offsets;
-    O["handle_source"] = R.handle_source;
-    O["returned_at_offset"] = R.returned_at_offset;
-    O["dereferenced"] = R.dereferenced;
-    llvm::json::Array Compared;
-    for (const auto &C : R.compared_against)
-        Compared.push_back(C);
-    O["compared_against"] = std::move(Compared);
     return O;
 }
 
@@ -42,15 +35,6 @@ static bool pointerFromJson(const llvm::json::Object &O,
     R.min_offset = static_cast<long>(O.getInteger("min_offset").value_or(0));
     R.max_offset = static_cast<long>(O.getInteger("max_offset").value_or(0));
     R.variable_offsets = O.getBoolean("variable_offsets").value_or(false);
-    R.handle_source = O.getString("handle_source").value_or("").str();
-    R.returned_at_offset = O.getBoolean("returned_at_offset").value_or(false);
-    R.dereferenced = O.getBoolean("dereferenced").value_or(false);
-    if (const llvm::json::Array *Compared = O.getArray("compared_against")) {
-        for (const auto &V : *Compared) {
-            if (auto S = V.getAsString())
-                R.compared_against.push_back(S->str());
-        }
-    }
     return true;
 }
 
