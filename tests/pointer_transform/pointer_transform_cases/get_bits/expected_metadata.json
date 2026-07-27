@@ -6,8 +6,6 @@
         {
           "base_text": "p",
           "index_var": "p_index_xj",
-          "max_offset": 0,
-          "min_offset": 0,
           "moved": true,
           "name": "p",
           "param_index": 0

@@ -308,17 +308,15 @@ void SliceDetector::computeOffsetBounds(ASTContext &Ctx) {
                 ASTContext *Ctx;
                 const VarDecl *IdxVD;
                 const std::string *base;
-                PtrIndexPointerRecord *P;
+                long mn = 0, mx = 0;
                 bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
                     if (sourceTextOf(ASE->getBase()->IgnoreParenImpCasts(),
                                      *Ctx) != *base)
                         return true;
                     long off = 0;
                     if (constSubscriptOffset(ASE->getIdx(), IdxVD, *Ctx, off)) {
-                        if (off < P->min_offset)
-                            P->min_offset = off;
-                        if (off > P->max_offset)
-                            P->max_offset = off;
+                        mn = std::min(mn, off);
+                        mx = std::max(mx, off);
                     }
                     return true;
                 }
@@ -327,11 +325,14 @@ void SliceDetector::computeOffsetBounds(ASTContext &Ctx) {
             W.Ctx = &Ctx;
             W.IdxVD = IdxVD;
             W.base = &base;
-            W.P = &P;
-            // Folding is monotonic from a [0, 0] start, so revisiting
-            // the same definition from another TU (a function in a
-            // shared header) is idempotent.
+            // Fold from any bounds a previous TU derived (a definition
+            // in a shared header is revisited per TU): the refold is
+            // idempotent because the body is identical.
+            W.mn = P.min_offset.value_or(0);
+            W.mx = P.max_offset.value_or(0);
             W.TraverseStmt(FD->getBody());
+            P.min_offset = W.mn;
+            P.max_offset = W.mx;
         }
     }
 }
@@ -435,8 +436,8 @@ void SliceDetector::detectRoots(ASTContext &Ctx) {
             QualType pt = base_pd->getType()->getPointeeType();
             rec.pointee_type = pt.getUnqualifiedType().getAsString();
             rec.slice_type = makeSliceTypeName(rec.pointee_type);
-            rec.lookback = -P.min_offset;
-            rec.lookahead = P.max_offset;
+            rec.lookback = -P.min_offset.value_or(0);
+            rec.lookahead = P.max_offset.value_or(0);
 
             bool found_bound = false;
             for (const BinaryOperator *BO : collectComparisons(FD->getBody())) {

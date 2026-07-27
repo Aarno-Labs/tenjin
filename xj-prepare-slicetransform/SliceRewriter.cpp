@@ -474,7 +474,7 @@ void SliceRewriter::applySliceBody(const SliceTarget &T, ASTContext &Ctx) {
     // The bound adjustment the pointer pass would have applied when it
     // rewrote this pointer's comparison against the slice's extent.
     auto boundText = [&](const RsPtr &rp) -> std::string {
-        long adj = rp.rec->max_offset;
+        long adj = rp.rec->max_offset.value_or(0);
         if (S.inclusive_end)
             adj += 1;
         if (adj > 0)
@@ -769,7 +769,7 @@ void SliceRewriter::applySliceBody(const SliceTarget &T, ASTContext &Ctx) {
     for (auto &[idx_name, rp] : rs_ptrs) {
         if (!rp.matched_comparison)
             continue;
-        long lb = -rp.rec->min_offset;
+        long lb = -rp.rec->min_offset.value_or(0);
         if (lb <= 0)
             continue;
         // Find `int <idx_name> = <init>;` in the body.
