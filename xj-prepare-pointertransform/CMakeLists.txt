@@ -17,6 +17,7 @@ add_executable(xj-prepare-pointertransform
     TransformationMethods.cpp
     PointerTransformAction.cpp
     "${XJ_SUPPORT_DIR}/PtrIndexMetadata.cpp"
+    "${XJ_SUPPORT_DIR}/FunctionKey.cpp"
 )
 
 set_target_properties(xj-prepare-pointertransform PROPERTIES

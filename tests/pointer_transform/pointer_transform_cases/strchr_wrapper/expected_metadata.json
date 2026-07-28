@@ -1,6 +1,6 @@
 {
   "functions": {
-    "count_commas": {
+    "count_commas@strchr_wrapper.c": {
       "file": "strchr_wrapper.c",
       "pointers": [
         {

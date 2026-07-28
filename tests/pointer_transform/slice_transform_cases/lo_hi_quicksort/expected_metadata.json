@@ -1,6 +1,6 @@
 {
   "functions": {
-    "partition": {
+    "partition@lo_hi_quicksort.c": {
       "file": "lo_hi_quicksort.c",
       "pointers": [
         {

@@ -1,6 +1,6 @@
 {
   "functions": {
-    "adjacent_pairs": {
+    "adjacent_pairs@nonconst_bound.c": {
       "file": "nonconst_bound.c",
       "pointers": [
         {

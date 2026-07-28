@@ -1,6 +1,6 @@
 {
   "functions": {
-    "lookaround": {
+    "lookaround@lookaround.c": {
       "file": "lookaround.c",
       "pointers": [
         {

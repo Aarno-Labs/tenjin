@@ -1,6 +1,6 @@
 {
   "functions": {
-    "sort": {
+    "sort@singleton_swap.c": {
       "file": "singleton_swap.c",
       "pointers": [
         {

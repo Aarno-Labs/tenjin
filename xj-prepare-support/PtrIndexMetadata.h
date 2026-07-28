@@ -27,14 +27,16 @@ namespace xj
 
     struct PtrIndexFunctionRecord
     {
-        // Basename of the file containing the function's definition.
+        // Path of the file containing the function's definition.
         std::string file;
         std::vector<PtrIndexPointerRecord> pointers;
     };
 
     struct PtrIndexMetadata
     {
-        // Keyed by function name.
+        // Keyed by xj::functionKey (see FunctionKey.h) — *not* by bare
+        // function name, which does not separate same-named statics in
+        // different files.
         std::map<std::string, PtrIndexFunctionRecord> functions;
 
         // Serialize to `path`, overwriting. Returns false on I/O error.

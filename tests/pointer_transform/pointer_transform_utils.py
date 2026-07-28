@@ -107,6 +107,7 @@ def _compare_with_golden(case_dir: Path, golden_subdir: str, workdir: Path, file
         golden_file = golden_dir / name
         want = golden_file.read_text(encoding="utf-8") if golden_file.exists() else None
         if got != want:
+            golden_file.parent.mkdir(parents=True, exist_ok=True)
             golden_file.write_text(got, encoding="utf-8")
             stale.append(name)
     assert not stale, (
@@ -137,11 +138,18 @@ def run_case(tmp_path: Path, case_dir: Path) -> None:
         / "xj-prepare-slicetransform"
     )
 
-    input_files = sorted(p.name for p in (case_dir / "input").iterdir())
+    # Paths are relative to input/ so a case can place same-named files
+    # in different directories (distinct statics that share a name).
+    input_root = case_dir / "input"
+    input_files = sorted(
+        p.relative_to(input_root).as_posix() for p in input_root.rglob("*") if p.is_file()
+    )
     workdir = tmp_path / "codebase"
     workdir.mkdir()
     for name in input_files:
-        shutil.copy(case_dir / "input" / name, workdir / name)
+        dest = workdir / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(input_root / name, dest)
     sources = [workdir / n for n in input_files if n.endswith(".c")]
     _write_compdb(workdir, sources)
 

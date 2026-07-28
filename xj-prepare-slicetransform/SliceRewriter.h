@@ -77,8 +77,9 @@ namespace xj
     };
 
     // Populated by run() for the current TU.
+    clang::SourceManager *SM = nullptr; // set by run()
     std::map<const clang::FunctionDecl *, SliceTarget> slice_targets;     // by canonical
-    std::map<std::string, const clang::FunctionDecl *> global_return_fns; // name->canonical
+    std::map<std::string, const clang::FunctionDecl *> global_return_fns; // key->canonical
     // Locals retyped from T* to int because they receive a
     // return-type-changed call result.
     std::set<const clang::VarDecl *> index_return_vars;

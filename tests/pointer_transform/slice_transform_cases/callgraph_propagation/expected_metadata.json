@@ -1,6 +1,6 @@
 {
   "functions": {
-    "sum_range": {
+    "sum_range@callgraph_propagation.c": {
       "file": "callgraph_propagation.c",
       "pointers": [
         {

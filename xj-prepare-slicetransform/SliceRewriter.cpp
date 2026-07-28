@@ -203,32 +203,23 @@ namespace xj
     {
         SourceManager &SM = Ctx.getSourceManager();
 
-        // Name -> canonical FunctionDecl for every non-system function in the TU.
-        std::map<std::string, const FunctionDecl *> by_name;
+        // Key -> canonical FunctionDecl for every non-system function in
+        // the TU. Keying by xj::functionKey rather than by bare name is
+        // what stops a record detected for a static in one file from
+        // being applied to a same-named static in another.
+        std::map<std::string, const FunctionDecl *> by_key;
         for (Decl *D : Ctx.getTranslationUnitDecl()->decls())
         {
             auto *FD = dyn_cast<FunctionDecl>(D);
             if (!FD || SM.isInSystemHeader(FD->getLocation()))
                 continue;
-            by_name.emplace(FD->getNameAsString(), FD->getCanonicalDecl());
+            by_key.emplace(functionKey(FD, SM), FD->getCanonicalDecl());
         }
 
-        auto fileBasename = [&](const FunctionDecl *FD) -> std::string
+        for (const auto &[key, S] : Slices)
         {
-            if (auto FE = SM.getFileEntryRefForID(
-                    SM.getFileID(SM.getSpellingLoc(FD->getLocation()))))
-            {
-                StringRef name = FE->getName();
-                size_t slash = name.rfind('/');
-                return (slash == StringRef::npos ? name : name.substr(slash + 1)).str();
-            }
-            return "";
-        };
-
-        for (const auto &[name, S] : Slices)
-        {
-            auto it = by_name.find(name);
-            if (it == by_name.end())
+            auto it = by_key.find(key);
+            if (it == by_key.end())
                 continue;
             const FunctionDecl *Canon = it->second;
 
@@ -249,8 +240,6 @@ namespace xj
             bool body_ok = false;
             if (Def)
             {
-                if (!S.file.empty() && fileBasename(Def) != S.file)
-                    continue; // same-named function from a different file
                 unsigned n = Def->getNumParams();
                 body_ok = true;
                 auto paramOk = [&](int idx, bool want_pointer)
@@ -280,9 +269,8 @@ namespace xj
             SliceTarget T;
             // The pointer records for this function, when it has any (a
             // singleton or propagation target may have none).
-            auto fn_it = Meta.functions.find(name);
-            if (fn_it != Meta.functions.end() &&
-                (fn_it->second.file.empty() || fn_it->second.file == S.file))
+            auto fn_it = Meta.functions.find(key);
+            if (fn_it != Meta.functions.end())
                 T.FnRec = &fn_it->second;
             T.S = &S;
             T.Canon = Canon;
@@ -291,12 +279,12 @@ namespace xj
             slice_targets.emplace(Canon, std::move(T));
         }
 
-        for (const auto &[name, array_name] : GReturns)
+        for (const auto &[key, array_name] : GReturns)
         {
-            auto it = by_name.find(name);
-            if (it == by_name.end())
+            auto it = by_key.find(key);
+            if (it == by_key.end())
                 continue;
-            global_return_fns.emplace(name, it->second);
+            global_return_fns.emplace(key, it->second);
         }
     }
 
@@ -1652,7 +1640,7 @@ namespace xj
 
         // Global-return functions: only the return type changes on their
         // prototypes (int instead of T*).
-        for (const auto &[name, Canon] : global_return_fns)
+        for (const auto &[key, Canon] : global_return_fns)
         {
             for (const FunctionDecl *Redecl : Canon->redecls())
             {
@@ -1890,7 +1878,7 @@ namespace xj
                     return false;
                 const FunctionDecl *Callee = CE->getDirectCallee();
                 return Callee &&
-                       Self->global_return_fns.count(Callee->getNameAsString());
+                       Self->global_return_fns.count(functionKey(Callee, *Self->SM));
             }
 
             bool VisitBinaryOperator(BinaryOperator *BO)
@@ -1928,7 +1916,7 @@ namespace xj
         directCallTransformer.TraverseDecl(Ctx.getTranslationUnitDecl());
 
         // ---- Global-return function definitions --------------------------
-        for (const auto &[name, Canon] : global_return_fns)
+        for (const auto &[key, Canon] : global_return_fns)
         {
             const FunctionDecl *Def = nullptr;
             for (const FunctionDecl *Redecl : Canon->redecls())
@@ -2066,10 +2054,11 @@ namespace xj
                 const FunctionDecl *Callee = CE->getDirectCallee();
                 if (!Callee || !RecvVD)
                     return;
-                auto it = Self->GReturns.find(Callee->getNameAsString());
+                std::string key = functionKey(Callee, *Self->SM);
+                auto it = Self->GReturns.find(key);
                 if (it == Self->GReturns.end())
                     return;
-                if (!Self->global_return_fns.count(Callee->getNameAsString()))
+                if (!Self->global_return_fns.count(key))
                     return;
                 Out->push_back({RecvVD, it->second});
             }
@@ -2322,6 +2311,7 @@ namespace xj
 
     void SliceRewriter::run(ASTContext &Ctx)
     {
+        SM = &Ctx.getSourceManager();
         collectTU(Ctx);
         verifyTargets(Ctx);
         if (slice_targets.empty() && global_return_fns.empty())

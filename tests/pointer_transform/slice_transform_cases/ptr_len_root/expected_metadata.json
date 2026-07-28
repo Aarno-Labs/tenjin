@@ -1,6 +1,6 @@
 {
   "functions": {
-    "sum": {
+    "sum@ptr_len_root.c": {
       "file": "ptr_len_root.c",
       "pointers": [
         {

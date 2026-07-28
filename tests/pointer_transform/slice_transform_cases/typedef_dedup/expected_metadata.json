@@ -1,6 +1,6 @@
 {
   "functions": {
-    "count_upper": {
+    "count_upper@typedef_dedup.c": {
       "file": "typedef_dedup.c",
       "pointers": [
         {
@@ -11,7 +11,7 @@
         }
       ]
     },
-    "max_int": {
+    "max_int@typedef_dedup.c": {
       "file": "typedef_dedup.c",
       "pointers": [
         {
@@ -22,7 +22,7 @@
         }
       ]
     },
-    "sum_ints": {
+    "sum_ints@typedef_dedup.c": {
       "file": "typedef_dedup.c",
       "pointers": [
         {

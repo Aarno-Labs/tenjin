@@ -1,7 +1,7 @@
 {
   "functions": {
-    "sum_plain@variable_offset.c": {
-      "file": "variable_offset.c",
+    "scale@src1/util.c": {
+      "file": "src1/util.c",
       "pointers": [
         {
           "base_text": "buf",
@@ -11,8 +11,19 @@
         }
       ]
     },
-    "sum_stride@variable_offset.c": {
-      "file": "variable_offset.c",
+    "scale@src2/util.c": {
+      "file": "src2/util.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "sum@a.c": {
+      "file": "a.c",
       "pointers": [
         {
           "base_text": "buf",

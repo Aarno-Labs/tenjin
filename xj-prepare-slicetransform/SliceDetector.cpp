@@ -16,14 +16,6 @@ namespace xj
     // Small helpers
     // ============================================================================
 
-    static std::string fileBasenameOf(const FunctionDecl *FD, SourceManager &SM)
-    {
-        if (auto FE = SM.getFileEntryRefForID(
-                SM.getFileID(SM.getSpellingLoc(FD->getLocation()))))
-            return llvm::sys::path::filename(FE->getName()).str();
-        return "";
-    }
-
     // Turn a C type string into something legal inside an identifier.
     // e.g. "char *" -> "char_ptr", "unsigned char" -> "unsigned_char".
     static std::string sanitizeTypeForIdentifier(const std::string &type)
@@ -363,12 +355,9 @@ namespace xj
         SourceManager &SM = Ctx.getSourceManager();
         for (const FunctionDecl *FD : tu_defs)
         {
-            auto it = Meta.functions.find(FD->getNameAsString());
+            auto it = Meta.functions.find(functionKey(FD, SM));
             if (it == Meta.functions.end())
                 continue;
-            if (!it->second.file.empty() &&
-                it->second.file != fileBasenameOf(FD, SM))
-                continue; // same-named function from a different file
 
             for (const PtrIndexPointerRecord &P : it->second.pointers)
             {
@@ -411,7 +400,8 @@ namespace xj
                 W.base = &base;
                 // Fold from any bounds a previous TU derived (a definition
                 // in a shared header is revisited per TU): the refold is
-                // idempotent because the body is identical.
+                // idempotent because the key pins us to one function, so
+                // the body is necessarily identical.
                 W.B = Bounds[&P];
                 W.TraverseStmt(FD->getBody());
                 Bounds[&P] = W.B;
@@ -438,11 +428,9 @@ namespace xj
     const PtrIndexFunctionRecord *
     SliceDetector::recordFor(const FunctionDecl *FD, SourceManager &SM) const
     {
-        auto it = Meta.functions.find(FD->getNameAsString());
+        auto it = Meta.functions.find(functionKey(FD, SM));
         if (it == Meta.functions.end())
             return nullptr;
-        if (!it->second.file.empty() && it->second.file != fileBasenameOf(FD, SM))
-            return nullptr; // same-named function from a different file
         return &it->second;
     }
 
@@ -454,7 +442,7 @@ namespace xj
             return &it->second;
         // Fall back to a record detected while processing an earlier TU
         // (e.g. the callee's defining TU was processed before this one).
-        auto sit = Slices.find(Callee->getNameAsString());
+        auto sit = Slices.find(functionKey(Callee, *SM));
         if (sit != Slices.end())
             return &sit->second;
         return nullptr;
@@ -1289,23 +1277,15 @@ namespace xj
             if (def_it == def_by_canon.end())
                 continue;
             const FunctionDecl *FD = def_it->second;
-            std::string name = FD->getNameAsString();
-            std::string file = fileBasenameOf(FD, SM);
+            std::string key = functionKey(FD, SM);
 
-            // A same-named function from a different file owns the
-            // pointer records for this name — don't attach slice info
-            // computed for this one to it.
-            auto mit = Meta.functions.find(name);
-            if (mit != Meta.functions.end() && !mit->second.file.empty() &&
-                mit->second.file != file)
-                continue;
             // A record from an earlier TU (e.g. an inline function in a
             // shared, already-rewritten header) wins.
-            if (Slices.count(name))
+            if (Slices.count(key))
                 continue;
             PtrIndexSliceRecord rec = detected[Canon];
-            rec.file = file;
-            Slices.emplace(name, std::move(rec));
+            rec.file = functionFilePath(FD, SM);
+            Slices.emplace(std::move(key), std::move(rec));
         }
 
         for (const auto &[Canon, array_name] : global_returns)
@@ -1313,8 +1293,7 @@ namespace xj
             auto def_it = def_by_canon.find(Canon);
             if (def_it == def_by_canon.end())
                 continue;
-            std::string name = def_it->second->getNameAsString();
-            GReturns.emplace(name, array_name);
+            GReturns.emplace(functionKey(def_it->second, SM), array_name);
         }
     }
 
@@ -1324,6 +1303,7 @@ namespace xj
 
     void SliceDetector::run(ASTContext &Ctx)
     {
+        SM = &Ctx.getSourceManager();
         collectTU(Ctx);
         computeOffsetBounds(Ctx);
         detectRoots(Ctx);

@@ -14,6 +14,7 @@ add_executable(xj-prepare-slicetransform
     SliceDetector.cpp
     SliceRewriter.cpp
     "${XJ_SUPPORT_DIR}/PtrIndexMetadata.cpp"
+    "${XJ_SUPPORT_DIR}/FunctionKey.cpp"
 )
 
 set_target_properties(xj-prepare-slicetransform PROPERTIES

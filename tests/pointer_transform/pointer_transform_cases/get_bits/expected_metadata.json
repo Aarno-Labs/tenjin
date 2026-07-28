@@ -1,6 +1,6 @@
 {
   "functions": {
-    "get_bits": {
+    "get_bits@get_bits.c": {
       "file": "get_bits.c",
       "pointers": [
         {

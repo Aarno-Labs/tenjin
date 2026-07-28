@@ -12,7 +12,7 @@
 
 #include "FunctionAccessAnalyzer.h"
 
-#include "llvm/Support/Path.h"
+#include "FunctionKey.h"
 
 // ============================================================================
 // Driver
@@ -488,26 +488,20 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
 }
 
 // Return the metadata record for `FD`, creating it (with the right
-// source file stamped) on first use. Returns nullptr when a function of
-// the same name from a *different* file already claimed the record —
-// uniquify_statics runs after this pass, so distinct static functions
-// can still share a name here.
+// source file stamped) on first use. Keying by xj::functionKey rather
+// than by bare name is what keeps distinct same-named statics apart:
+// uniquify_statics runs after this pass, so the names have not been
+// made unique yet.
 xj::PtrIndexFunctionRecord *
 FunctionAccessAnalyzer::metadataRecordFor(const FunctionDecl *FD, ASTContext &Ctx) {
     SourceManager &SM = Ctx.getSourceManager();
-    std::string name = FD->getNameAsString();
-    std::string file;
-    if (auto FE = SM.getFileEntryRefForID(
-            SM.getFileID(SM.getSpellingLoc(FD->getLocation()))))
-        file = llvm::sys::path::filename(FE->getName()).str();
+    std::string key = xj::functionKey(FD, SM);
 
-    auto it = g_metadata.functions.find(name);
+    auto it = g_metadata.functions.find(key);
     if (it == g_metadata.functions.end()) {
         xj::PtrIndexFunctionRecord rec;
-        rec.file = file;
-        it = g_metadata.functions.emplace(name, std::move(rec)).first;
-    } else if (it->second.file != file) {
-        return nullptr;
+        rec.file = xj::functionFilePath(FD, SM);
+        it = g_metadata.functions.emplace(std::move(key), std::move(rec)).first;
     }
     return &it->second;
 }

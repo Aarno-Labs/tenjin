@@ -28,11 +28,13 @@
 //      the return type collapses to int.
 //
 // Results accumulate across TUs into the shared in-memory maps with
-// first-TU-wins semantics and a file-basename guard against same-named
-// statics (uniquify_statics runs after this pass).
+// first-TU-wins semantics, keyed by xj::functionKey so that same-named
+// statics in different files stay apart (uniquify_statics runs after
+// this pass, so the names are not unique yet).
 
 #pragma once
 
+#include "FunctionKey.h"
 #include "PtrIndexMetadata.h"
 
 #include "clang/AST/ASTContext.h"
@@ -70,9 +72,8 @@ namespace xj
   // like PtrOffsetBounds.
   struct PtrIndexSliceRecord
   {
-    // Basename of the definition's file. Guards against name collisions
-    // between static functions in different TUs (uniquify_statics runs
-    // after this pass).
+    // Path of the definition's file, for diagnostics and as a
+    // cross-check when verifying a record against a redeclaration.
     std::string file;
 
     std::string slice_param_name; // name of the new slice param, e.g. "arr"
@@ -94,12 +95,12 @@ namespace xj
     // swap's a,b). They become int indices alongside the slice.
     std::vector<int> singleton_param_indices;
   };
-  // Detected reshapings, keyed by function name.
+  // Detected reshapings, keyed by xj::functionKey.
   using SliceRecordMap = std::map<std::string, PtrIndexSliceRecord>;
 
   // Functions whose every return is NULL or &global_array[i]: the
   // return type is rewritten from T* to int and callers index the array
-  // directly. Function name -> global array name.
+  // directly. xj::functionKey -> global array name.
   using GlobalReturnMap = std::map<std::string, std::string>;
 
   class SliceDetector
@@ -121,6 +122,7 @@ namespace xj
     GlobalReturnMap &GReturns;
 
     // Per-TU state (one SliceDetector instance per TU).
+    clang::SourceManager *SM = nullptr;               // set by run()
     std::vector<const clang::FunctionDecl *> tu_defs; // definitions, source order
     std::map<const clang::FunctionDecl *, const clang::FunctionDecl *>
         def_by_canon;
@@ -130,8 +132,8 @@ namespace xj
     std::map<const clang::FunctionDecl *, std::string>
         global_returns; // by canonical decl -> global array name
 
-    // The pointer-pass record for FD's function, or nullptr when there is
-    // none or a same-named function from a different file owns it.
+    // The pointer-pass record for FD's function, or nullptr when there
+    // is none.
     const PtrIndexFunctionRecord *recordFor(const clang::FunctionDecl *FD,
                                             clang::SourceManager &SM) const;
 

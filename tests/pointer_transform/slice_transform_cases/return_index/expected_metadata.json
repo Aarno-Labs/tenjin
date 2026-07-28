@@ -1,6 +1,6 @@
 {
   "functions": {
-    "find": {
+    "find@return_index.c": {
       "file": "return_index.c",
       "pointers": [
         {
