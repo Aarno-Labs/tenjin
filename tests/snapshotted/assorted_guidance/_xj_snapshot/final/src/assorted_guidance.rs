@@ -277,19 +277,19 @@ fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usi
     dest.extend_from_slice(&bytes[..to_copy]);
     to_copy
 }
-fn xj_isalnum(c: core::ffi::c_int) -> core::ffi::c_int {
-    if c == -1 {
+fn xj_isalnum(xjc: core::ffi::c_int) -> core::ffi::c_int {
+    if xjc == -1 {
         0
     } else {
-        let c = c as u8 as char;
-        (c.is_ascii_alphanumeric()) as core::ffi::c_int
+        let xjc = xjc as u8 as char;
+        (xjc.is_ascii_alphanumeric()) as core::ffi::c_int
     }
 }
-fn xj_tolower(c: core::ffi::c_int) -> core::ffi::c_int {
-    if c == -1 {
+fn xj_tolower(xjc: core::ffi::c_int) -> core::ffi::c_int {
+    if xjc == -1 {
         -1
     } else {
-        (c as u8 as char).to_ascii_lowercase() as core::ffi::c_int
+        (xjc as u8 as char).to_ascii_lowercase() as core::ffi::c_int
     }
 }
 fn strcspn_str(s: &str, chars: &str) -> usize {

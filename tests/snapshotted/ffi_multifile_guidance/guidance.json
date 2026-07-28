@@ -1,0 +1,50 @@
+{
+    "vars_of_type": {
+        "&[u8]": [
+            "first_byte:s"
+        ],
+        "&mut [u8]": [
+            "zero_first:buf"
+        ],
+        "&[::core::ffi::c_int]": [
+            "sum_n:xs"
+        ],
+        "&mut ::core::ffi::c_int": [
+            "bump:p"
+        ]
+    },
+    "ffi": {
+        "first_byte": {
+            "s": {
+                "method": "to-slice-via-cstr"
+            }
+        },
+        "zero_first": {
+            "buf": {
+                "method": "to-slice",
+                "length": "n",
+                "mutable": true
+            }
+        },
+        "sum_n": {
+            "xs": {
+                "method": "to-slice",
+                "length": "n"
+            }
+        },
+        "bump": {
+            "p": {
+                "method": "pipe",
+                "conversions": [
+                    {
+                        "method": "to-ref",
+                        "mutable": true
+                    },
+                    {
+                        "method": "unwrap"
+                    }
+                ]
+            }
+        }
+    }
+}

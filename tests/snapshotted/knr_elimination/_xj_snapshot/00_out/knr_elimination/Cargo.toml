@@ -1,0 +1,22 @@
+
+[package]
+name = "knr_elimination"
+authors = ["C2Rust"]
+version = "0.0.0"
+publish = false
+edition = "2021"
+autobins = false
+
+[lib]
+name = "knr_elimination"
+path = "lib.rs"
+crate-type = ["rlib"]
+[[bin]]
+path = "src/knr_elimination.rs"
+name = "knr_elimination"
+[dependencies]
+
+
+
+[profile.release]
+strip = "debuginfo"

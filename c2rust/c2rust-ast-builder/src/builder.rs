@@ -1733,6 +1733,29 @@ impl Builder {
         }))
     }
 
+    // `use <path>::*;` item
+    pub fn use_glob_item<Pa>(self, path: Pa) -> Box<Item>
+    where
+        Pa: Make<Path>,
+    {
+        let path = path.make(&self);
+        let leading_colon = path.leading_colon;
+        let tree = use_tree_with_prefix(
+            path,
+            UseTree::Glob(UseGlob {
+                star_token: Token![*](self.span),
+            }),
+        );
+        Box::new(Item::Use(ItemUse {
+            attrs: self.attrs,
+            vis: self.vis,
+            use_token: Token![use](self.span),
+            leading_colon,
+            semi_token: Token![;](self.span),
+            tree,
+        }))
+    }
+
     pub fn use_multiple_item<Pa, I, It>(self, path: Pa, inner: It) -> Box<Item>
     where
         Pa: Make<Path>,

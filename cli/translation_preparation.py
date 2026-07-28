@@ -21,6 +21,7 @@ import compilation_database
 import batching_rewriter
 import c_refact
 import c_refact_decl_splitter
+import c_refact_knr
 import c_refact_tag_hoister
 import c_refact_type_mod_replicator
 from c_refact_identify_mains import translation_unit_has_main
@@ -1856,6 +1857,47 @@ def run_preparation_passes(
             f"Collected declarations after preprocessing: {len(store.items_defined_after_pp)} TUs"
         )
 
+    def prep_eliminate_knr(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        """Rewrite K&R (old-style) declarations and definitions into prototype form.
+
+        The precondition is preprocessed input, not a single target. In a `.i`
+        file every declaration, definition and call site of a function is in one
+        place, which is what lets an unprototyped declaration be filled in from
+        its definition -- and it means the pass never has to touch a header, so
+        it does not care how many targets share one. Any target that was not
+        preprocessed is simply left alone.
+
+        Unlike the passes guarded by XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS,
+        this transformation is ABI-preserving (promoted parameters keep their
+        promoted signature, converting in the function body instead) and
+        idempotent, so running it across targets is safe.
+
+        Modifications to regions that came from headers are picked up by
+        `prep_pre_refold_consolidation`, which diffs against the
+        `items_defined_after_pp` snapshot taken just above.
+        """
+        compdb = store.build_info.compdb_for_all_targets_within(current_codebase)
+
+        # `prep_uniquify_built_files` has already arranged for each source file
+        # to be compiled once, but a file shared between targets would otherwise
+        # be rewritten (and its diagnostics baselined) twice over.
+        commands: list[compilation_database.CompileCommand] = []
+        seen: set[str] = set()
+        for cmd in compdb.commands:
+            if cmd.is_fake_link_thingy or cmd.file_path.suffix != ".i":
+                continue
+            path = cmd.absolute_file_path.as_posix()
+            if path in seen:
+                continue
+            seen.add(path)
+            commands.append(cmd)
+
+        if not commands:
+            print("TENJIN: NOTE: Skipping K&R elimination; no preprocessed targets.")
+            return
+
+        c_refact_knr.eliminate_knr_syntax(commands)
+
     def prep_analyze_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         all_build_targets = store.build_info.get_all_targets()
         if platform.system() != "Linux":
@@ -2117,6 +2159,7 @@ def run_preparation_passes(
         ("split_joined_decls", prep_split_joined_decls),
         ("analyze_errno", prep_analyze_errno),
         ("expand_preprocessor", prep_expand_preprocessor),
+        ("eliminate_knr", prep_eliminate_knr),
         ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
         ("pointertransform", prep_pointertransform),
