@@ -24,6 +24,31 @@ namespace xj
         return "";
     }
 
+    // Turn a C type string into something legal inside an identifier.
+    // e.g. "char *" -> "char_ptr", "unsigned char" -> "unsigned_char".
+    static std::string sanitizeTypeForIdentifier(const std::string &type)
+    {
+        std::string result = type;
+        size_t pos;
+        while ((pos = result.find(" *")) != std::string::npos)
+            result.replace(pos, 2, "_ptr");
+        while ((pos = result.find('*')) != std::string::npos)
+            result.replace(pos, 1, "_ptr");
+        for (char &c : result)
+        {
+            if (c == ' ')
+                c = '_';
+        }
+        return result;
+    }
+
+    // Generate the slice typedef name for a pointee type.
+    // e.g. "int" -> "RustSlice_int", "char *" -> "RustSlice_char_ptr".
+    static std::string makeSliceTypeName(const std::string &pointee_type)
+    {
+        return "RustSlice_" + sanitizeTypeForIdentifier(pointee_type);
+    }
+
     static bool isNullLike(const Expr *E)
     {
         E = E->IgnoreParenImpCasts();
@@ -345,7 +370,7 @@ namespace xj
                 it->second.file != fileBasenameOf(FD, SM))
                 continue; // same-named function from a different file
 
-            for (PtrIndexPointerRecord &P : it->second.pointers)
+            for (const PtrIndexPointerRecord &P : it->second.pointers)
             {
                 if (P.index_var.empty())
                     continue;
@@ -429,16 +454,15 @@ namespace xj
             return &it->second;
         // Fall back to a record detected while processing an earlier TU
         // (e.g. the callee's defining TU was processed before this one).
-        auto mit = Meta.functions.find(Callee->getNameAsString());
-        if (mit != Meta.functions.end() && mit->second.slice.present)
-            return &mit->second.slice;
+        auto sit = Slices.find(Callee->getNameAsString());
+        if (sit != Slices.end())
+            return &sit->second;
         return nullptr;
     }
 
     void SliceDetector::markDetected(const FunctionDecl *Canon,
                                      PtrIndexSliceRecord rec)
     {
-        rec.present = true;
         detected[Canon] = std::move(rec);
         detect_order.push_back(Canon);
     }
@@ -1247,16 +1271,12 @@ namespace xj
             detector.TraverseStmt(FD->getBody());
 
             if (detector.found_global_return && detector.all_returns_valid)
-            {
-                PtrIndexGlobalReturnRecord rec;
-                rec.global_array_name = detector.global_array_name;
-                global_returns[Canon] = std::move(rec);
-            }
+                global_returns[Canon] = detector.global_array_name;
         }
     }
 
     // ============================================================================
-    // Export into the shared metadata
+    // Export into the shared in-memory maps
     // ============================================================================
 
     void SliceDetector::exportResults(ASTContext &Ctx)
@@ -1272,33 +1292,29 @@ namespace xj
             std::string name = FD->getNameAsString();
             std::string file = fileBasenameOf(FD, SM);
 
-            auto it = Meta.functions.find(name);
-            if (it == Meta.functions.end())
-            {
-                PtrIndexFunctionRecord fnRec;
-                fnRec.file = file;
-                it = Meta.functions.emplace(name, std::move(fnRec)).first;
-            }
-            else if (it->second.file != file)
-            {
-                continue; // same-named function from a different file
-            }
+            // A same-named function from a different file owns the
+            // pointer records for this name — don't attach slice info
+            // computed for this one to it.
+            auto mit = Meta.functions.find(name);
+            if (mit != Meta.functions.end() && !mit->second.file.empty() &&
+                mit->second.file != file)
+                continue;
             // A record from an earlier TU (e.g. an inline function in a
             // shared, already-rewritten header) wins.
-            if (it->second.slice.present)
+            if (Slices.count(name))
                 continue;
-            it->second.slice = detected[Canon];
+            PtrIndexSliceRecord rec = detected[Canon];
+            rec.file = file;
+            Slices.emplace(name, std::move(rec));
         }
 
-        for (const auto &[Canon, rec] : global_returns)
+        for (const auto &[Canon, array_name] : global_returns)
         {
             auto def_it = def_by_canon.find(Canon);
             if (def_it == def_by_canon.end())
                 continue;
             std::string name = def_it->second->getNameAsString();
-            if (Meta.global_return_functions.count(name))
-                continue;
-            Meta.global_return_functions.emplace(name, rec);
+            GReturns.emplace(name, array_name);
         }
     }
 

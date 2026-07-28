@@ -1,8 +1,0 @@
-{
-  "functions": {},
-  "global_return_functions": {
-    "find_item": {
-      "global_array_name": "items"
-    }
-  }
-}

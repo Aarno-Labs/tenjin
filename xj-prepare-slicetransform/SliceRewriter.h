@@ -43,8 +43,11 @@ namespace xj
   {
   public:
     SliceRewriter(clang::Rewriter &R, const PtrIndexMetadata &Metadata,
-                  const PtrOffsetBoundsMap &OffsetBounds)
-        : TheRewriter(R), Meta(Metadata), Bounds(OffsetBounds) {}
+                  const PtrOffsetBoundsMap &OffsetBounds,
+                  const SliceRecordMap &SliceRecords,
+                  const GlobalReturnMap &GlobalReturns)
+        : TheRewriter(R), Meta(Metadata), Bounds(OffsetBounds),
+          Slices(SliceRecords), GReturns(GlobalReturns) {}
 
     void run(clang::ASTContext &Ctx);
 
@@ -52,6 +55,8 @@ namespace xj
     clang::Rewriter &TheRewriter;
     const PtrIndexMetadata &Meta;
     const PtrOffsetBoundsMap &Bounds;
+    const SliceRecordMap &Slices;
+    const GlobalReturnMap &GReturns;
 
     // The detector-derived offset bounds for a pointer record; zero
     // bounds when none were derived.

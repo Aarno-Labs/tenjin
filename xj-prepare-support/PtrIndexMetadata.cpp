@@ -30,54 +30,6 @@ static bool pointerFromJson(const llvm::json::Object &O,
     return true;
 }
 
-static llvm::json::Object sliceToJson(const PtrIndexSliceRecord &S) {
-    llvm::json::Object O;
-    O["slice_param_name"] = S.slice_param_name;
-    O["slice_type"] = S.slice_type;
-    O["pointee_type"] = S.pointee_type;
-    O["base_param_index"] = S.base_param_index;
-    O["end_param_index"] = S.end_param_index;
-    O["len_param_index"] = S.len_param_index;
-    O["lookback"] = static_cast<int64_t>(S.lookback);
-    O["lookahead"] = static_cast<int64_t>(S.lookahead);
-    O["inclusive_end"] = S.inclusive_end;
-    O["return_type_changed"] = S.return_type_changed;
-    llvm::json::Array Singletons;
-    for (int I : S.singleton_param_indices)
-        Singletons.push_back(I);
-    O["singleton_param_indices"] = std::move(Singletons);
-    return O;
-}
-
-static bool sliceFromJson(const llvm::json::Object &O, PtrIndexSliceRecord &S) {
-    auto SliceType = O.getString("slice_type");
-    auto PointeeType = O.getString("pointee_type");
-    if (!SliceType || !PointeeType)
-        return false;
-    S.present = true;
-    S.slice_param_name = O.getString("slice_param_name").value_or("arr").str();
-    S.slice_type = SliceType->str();
-    S.pointee_type = PointeeType->str();
-    S.base_param_index =
-        static_cast<int>(O.getInteger("base_param_index").value_or(-1));
-    S.end_param_index =
-        static_cast<int>(O.getInteger("end_param_index").value_or(-1));
-    S.len_param_index =
-        static_cast<int>(O.getInteger("len_param_index").value_or(-1));
-    S.lookback = static_cast<long>(O.getInteger("lookback").value_or(0));
-    S.lookahead = static_cast<long>(O.getInteger("lookahead").value_or(0));
-    S.inclusive_end = O.getBoolean("inclusive_end").value_or(false);
-    S.return_type_changed = O.getBoolean("return_type_changed").value_or(false);
-    if (const llvm::json::Array *Singletons =
-            O.getArray("singleton_param_indices")) {
-        for (const auto &V : *Singletons) {
-            if (auto I = V.getAsInteger())
-                S.singleton_param_indices.push_back(static_cast<int>(*I));
-        }
-    }
-    return true;
-}
-
 bool PtrIndexMetadata::writeToFile(const std::string &path) const {
     llvm::json::Object Root;
 
@@ -89,19 +41,9 @@ bool PtrIndexMetadata::writeToFile(const std::string &path) const {
         llvm::json::Object FnObj;
         FnObj["file"] = FnRec.file;
         FnObj["pointers"] = std::move(Pointers);
-        if (FnRec.slice.present)
-            FnObj["slice"] = sliceToJson(FnRec.slice);
         Functions[FnName] = std::move(FnObj);
     }
     Root["functions"] = std::move(Functions);
-
-    llvm::json::Object GlobalReturns;
-    for (const auto &[FnName, GR] : global_return_functions) {
-        llvm::json::Object GRObj;
-        GRObj["global_array_name"] = GR.global_array_name;
-        GlobalReturns[FnName] = std::move(GRObj);
-    }
-    Root["global_return_functions"] = std::move(GlobalReturns);
 
     std::error_code EC;
     llvm::raw_fd_ostream OS(path, EC);
@@ -125,7 +67,6 @@ bool PtrIndexMetadata::readFromFile(const std::string &path) {
         return false;
 
     functions.clear();
-    global_return_functions.clear();
 
     if (const llvm::json::Object *Functions = Root->getObject("functions")) {
         for (const auto &[Key, Val] : *Functions) {
@@ -143,23 +84,7 @@ bool PtrIndexMetadata::readFromFile(const std::string &path) {
                     FnRec.pointers.push_back(std::move(R));
                 }
             }
-            if (const llvm::json::Object *SliceObj = FnObj->getObject("slice")) {
-                if (!sliceFromJson(*SliceObj, FnRec.slice))
-                    return false;
-            }
             functions[Key.str()] = std::move(FnRec);
-        }
-    }
-    if (const llvm::json::Object *GlobalReturns =
-            Root->getObject("global_return_functions")) {
-        for (const auto &[Key, Val] : *GlobalReturns) {
-            const llvm::json::Object *GRObj = Val.getAsObject();
-            if (!GRObj)
-                return false;
-            PtrIndexGlobalReturnRecord GR;
-            GR.global_array_name =
-                GRObj->getString("global_array_name").value_or("").str();
-            global_return_functions[Key.str()] = std::move(GR);
         }
     }
     return true;

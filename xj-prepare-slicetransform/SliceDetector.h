@@ -7,10 +7,10 @@
 // `return base + idx`), and the metadata side-file identifies each
 // synthesized index variable (its name and the base it indexes). The
 // pointer pass records identity only: this class is the sole author of
-// the per-pointer offset bounds (computeOffsetBounds, kept in a
-// tool-private PtrOffsetBoundsMap rather than the metadata), the
-// per-function PtrIndexSliceRecord, and the global-return entries in
-// the metadata, which SliceRewriter then consumes.
+// the per-pointer offset bounds, the per-function PtrIndexSliceRecords,
+// and the global-return map — all tool-private in-memory state (defined
+// below) that SliceRewriter then consumes; the metadata itself is
+// read-only input.
 //
 // Detection uses the metadata records for pointer *identity* (which int
 // locals are indices, over which base) and the AST for everything else
@@ -27,7 +27,7 @@
 //   D. Global-return functions: every return is NULL or &global[i];
 //      the return type collapses to int.
 //
-// Results accumulate across TUs into the shared metadata with
+// Results accumulate across TUs into the shared in-memory maps with
 // first-TU-wins semantics and a file-basename guard against same-named
 // statics (uniquify_statics runs after this pass).
 
@@ -65,18 +65,60 @@ namespace xj
   };
   using PtrOffsetBoundsMap = std::map<const PtrIndexPointerRecord *, PtrOffsetBounds>;
 
+  // How a function is to be reshaped into a RustSlice signature. Filled
+  // in by SliceDetector, consumed by SliceRewriter; in-memory only,
+  // like PtrOffsetBounds.
+  struct PtrIndexSliceRecord
+  {
+    // Basename of the definition's file. Guards against name collisions
+    // between static functions in different TUs (uniquify_statics runs
+    // after this pass).
+    std::string file;
+
+    std::string slice_param_name; // name of the new slice param, e.g. "arr"
+    std::string slice_type;       // generated typedef name, e.g. "RustSlice_int"
+    std::string pointee_type;     // element type, e.g. "int"
+
+    // Indices into the *original* parameter list.
+    int base_param_index = -1; // pointer parameter that becomes arr.ptr
+    int end_param_index = -1;  // end pointer ((lo,hi) form); -1 otherwise
+    int len_param_index = -1;  // length parameter (ptr+len form); -1 otherwise
+
+    long lookback = 0;  // slice widening below the base (from *(p - k))
+    long lookahead = 0; // slice widening past the bound (from *(p + k))
+
+    bool inclusive_end = false;       // [lo, hi] with hi dereferenced
+    bool return_type_changed = false; // T* return rewritten to int
+
+    // Pointer params that don't iterate but are dereferenced (e.g.
+    // swap's a,b). They become int indices alongside the slice.
+    std::vector<int> singleton_param_indices;
+  };
+  // Detected reshapings, keyed by function name.
+  using SliceRecordMap = std::map<std::string, PtrIndexSliceRecord>;
+
+  // Functions whose every return is NULL or &global_array[i]: the
+  // return type is rewritten from T* to int and callers index the array
+  // directly. Function name -> global array name.
+  using GlobalReturnMap = std::map<std::string, std::string>;
+
   class SliceDetector
   {
   public:
-    SliceDetector(PtrIndexMetadata &Metadata, PtrOffsetBoundsMap &OffsetBounds)
-        : Meta(Metadata), Bounds(OffsetBounds) {}
+    SliceDetector(const PtrIndexMetadata &Metadata,
+                  PtrOffsetBoundsMap &OffsetBounds, SliceRecordMap &SliceRecords,
+                  GlobalReturnMap &GlobalReturns)
+        : Meta(Metadata), Bounds(OffsetBounds), Slices(SliceRecords),
+          GReturns(GlobalReturns) {}
 
     // Detect candidates in one TU and fold the results into Meta.
     void run(clang::ASTContext &Ctx);
 
   private:
-    PtrIndexMetadata &Meta;
+    const PtrIndexMetadata &Meta;
     PtrOffsetBoundsMap &Bounds;
+    SliceRecordMap &Slices;
+    GlobalReturnMap &GReturns;
 
     // Per-TU state (one SliceDetector instance per TU).
     std::vector<const clang::FunctionDecl *> tu_defs; // definitions, source order
@@ -85,16 +127,16 @@ namespace xj
     std::map<const clang::FunctionDecl *, PtrIndexSliceRecord>
         detected; // by canonical decl
     std::vector<const clang::FunctionDecl *> detect_order;
-    std::map<const clang::FunctionDecl *, PtrIndexGlobalReturnRecord>
-        global_returns;
+    std::map<const clang::FunctionDecl *, std::string>
+        global_returns; // by canonical decl -> global array name
 
     // The pointer-pass record for FD's function, or nullptr when there is
     // none or a same-named function from a different file owns it.
     const PtrIndexFunctionRecord *recordFor(const clang::FunctionDecl *FD,
                                             clang::SourceManager &SM) const;
 
-    // Slice info for a callee: detected in this TU, else recorded in the
-    // metadata by an earlier TU, else nullptr.
+    // Slice info for a callee: detected in this TU, else recorded in
+    // Slices by an earlier TU, else nullptr.
     const PtrIndexSliceRecord *
     sliceInfoFor(const clang::FunctionDecl *Callee) const;
 

@@ -19,16 +19,18 @@ using namespace llvm;
 extern bool g_slice_inplace;
 extern bool g_slice_verbose;
 extern std::string g_slice_metadata_in;
-extern std::string g_slice_metadata_out;
 
+// The pointer tool's side-file, read once at startup; read-only input.
 extern xj::PtrIndexMetadata g_slice_metadata;
-// Detector-derived offset bounds, shared between the detection and
-// rewriting sweeps within this process; never serialized.
+// Detector-derived state, shared between the detection and rewriting
+// sweeps within this process; never serialized.
 extern xj::PtrOffsetBoundsMap g_slice_offset_bounds;
+extern xj::SliceRecordMap g_slice_records;
+extern xj::GlobalReturnMap g_slice_global_returns;
 
 // Read-only per-TU FrontendAction for the detection sweep: runs
 // SliceDetector over the index-transformed TU and folds the detected
-// RustSlice candidates into g_slice_metadata. Makes no edits.
+// RustSlice candidates into the shared in-memory maps. Makes no edits.
 class SliceDetectAction : public ASTFrontendAction
 {
 public:
@@ -40,7 +42,7 @@ public:
 
 // Per-translation-unit FrontendAction for the slice signature reshaping
 // pass. Runs after the detection sweep and applies the RustSlice
-// reshaping recorded in g_slice_metadata (see SliceRewriter.h).
+// reshaping recorded in g_slice_records (see SliceRewriter.h).
 class SliceTransformAction : public ASTFrontendAction
 {
 public:

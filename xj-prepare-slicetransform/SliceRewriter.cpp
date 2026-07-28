@@ -225,15 +225,12 @@ namespace xj
             return "";
         };
 
-        for (const auto &[name, rec] : Meta.functions)
+        for (const auto &[name, S] : Slices)
         {
-            if (!rec.slice.present)
-                continue;
             auto it = by_name.find(name);
             if (it == by_name.end())
                 continue;
             const FunctionDecl *Canon = it->second;
-            const PtrIndexSliceRecord &S = rec.slice;
 
             const FunctionDecl *Def = nullptr;
             for (const FunctionDecl *Redecl : Canon->redecls())
@@ -252,7 +249,7 @@ namespace xj
             bool body_ok = false;
             if (Def)
             {
-                if (!rec.file.empty() && fileBasename(Def) != rec.file)
+                if (!S.file.empty() && fileBasename(Def) != S.file)
                     continue; // same-named function from a different file
                 unsigned n = Def->getNumParams();
                 body_ok = true;
@@ -281,7 +278,12 @@ namespace xj
             }
 
             SliceTarget T;
-            T.FnRec = &rec;
+            // The pointer records for this function, when it has any (a
+            // singleton or propagation target may have none).
+            auto fn_it = Meta.functions.find(name);
+            if (fn_it != Meta.functions.end() &&
+                (fn_it->second.file.empty() || fn_it->second.file == S.file))
+                T.FnRec = &fn_it->second;
             T.S = &S;
             T.Canon = Canon;
             T.Def = body_ok ? Def : nullptr;
@@ -289,7 +291,7 @@ namespace xj
             slice_targets.emplace(Canon, std::move(T));
         }
 
-        for (const auto &[name, gr] : Meta.global_return_functions)
+        for (const auto &[name, array_name] : GReturns)
         {
             auto it = by_name.find(name);
             if (it == by_name.end())
@@ -488,7 +490,8 @@ namespace xj
         std::map<std::string, RsPtr> rs_ptrs; // by index_var
         std::set<std::string> all_index_vars;
         std::set<std::string> rs_index_vars;
-        for (const auto &P : T.FnRec->pointers)
+        static const std::vector<PtrIndexPointerRecord> no_pointers;
+        for (const auto &P : T.FnRec ? T.FnRec->pointers : no_pointers)
         {
             if (P.index_var.empty())
                 continue;
@@ -2063,13 +2066,12 @@ namespace xj
                 const FunctionDecl *Callee = CE->getDirectCallee();
                 if (!Callee || !RecvVD)
                     return;
-                auto it = Self->Meta.global_return_functions.find(
-                    Callee->getNameAsString());
-                if (it == Self->Meta.global_return_functions.end())
+                auto it = Self->GReturns.find(Callee->getNameAsString());
+                if (it == Self->GReturns.end())
                     return;
                 if (!Self->global_return_fns.count(Callee->getNameAsString()))
                     return;
-                Out->push_back({RecvVD, it->second.global_array_name});
+                Out->push_back({RecvVD, it->second});
             }
 
             bool VisitVarDecl(VarDecl *VD)

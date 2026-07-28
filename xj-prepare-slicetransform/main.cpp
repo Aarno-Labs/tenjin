@@ -12,9 +12,8 @@
 //      sites to use RustSlice_<T> structs, driven by the detected
 //      records.
 //
-// --metadata-out (optional) dumps the enriched metadata — the pointer
-// records plus this tool's detection results — after sweep 1; used by
-// the fixture tests to assert detection decisions.
+// Detection results are in-memory state shared between the sweeps
+// (g_slice_records and friends); nothing is written back to disk.
 
 #include "SliceTransformAction.h"
 #include "PtrIndexMetadata.h"
@@ -46,14 +45,6 @@ static cl::opt<std::string> MetadataInOpt(
     cl::init(""),
     cl::cat(MyToolCategory));
 
-// --metadata-out: dump the enriched metadata (pointer records + this
-// tool's detection results) after the detection sweep.
-static cl::opt<std::string> MetadataOutOpt(
-    "metadata-out",
-    cl::desc("Path to write metadata JSON enriched with detection results"),
-    cl::init(""),
-    cl::cat(MyToolCategory));
-
 int main(int argc, const char **argv) {
     auto ExpectedParser = CommonOptionsParser::create(argc, argv, MyToolCategory);
     if (!ExpectedParser) {
@@ -65,7 +56,6 @@ int main(int argc, const char **argv) {
     g_slice_inplace = InplaceOpt;
     g_slice_verbose = VerboseOpt;
     g_slice_metadata_in = MetadataInOpt;
-    g_slice_metadata_out = MetadataOutOpt;
 
     if (!g_slice_metadata_in.empty() &&
         !g_slice_metadata.readFromFile(g_slice_metadata_in)) {
@@ -88,13 +78,6 @@ int main(int argc, const char **argv) {
         int r = Tool.run(newFrontendActionFactory<SliceDetectAction>().get());
         if (r != 0)
             rc = r;
-    }
-
-    if (!g_slice_metadata_out.empty() &&
-        !g_slice_metadata.writeToFile(g_slice_metadata_out)) {
-        llvm::errs() << "xj-prepare-slicetransform: failed to write metadata to "
-                     << g_slice_metadata_out << "\n";
-        return 1;
     }
 
     // ---- Sweep 2: rewriting -------------------------------------------

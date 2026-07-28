@@ -5,9 +5,10 @@
 bool g_slice_inplace = false;
 bool g_slice_verbose = false;
 std::string g_slice_metadata_in;
-std::string g_slice_metadata_out;
 xj::PtrIndexMetadata g_slice_metadata;
 xj::PtrOffsetBoundsMap g_slice_offset_bounds;
+xj::SliceRecordMap g_slice_records;
+xj::GlobalReturnMap g_slice_global_returns;
 
 namespace {
 
@@ -15,7 +16,8 @@ namespace {
 class SliceDetectConsumer : public ASTConsumer {
   public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
-        xj::SliceDetector detector(g_slice_metadata, g_slice_offset_bounds);
+        xj::SliceDetector detector(g_slice_metadata, g_slice_offset_bounds,
+                                   g_slice_records, g_slice_global_returns);
         detector.run(Ctx);
     }
 };
@@ -53,7 +55,8 @@ class SliceTransformConsumer : public ASTConsumer {
 
     void HandleTranslationUnit(ASTContext &Ctx) override {
         xj::SliceRewriter rewriter(TheRewriter, g_slice_metadata,
-                                   g_slice_offset_bounds);
+                                   g_slice_offset_bounds, g_slice_records,
+                                   g_slice_global_returns);
         rewriter.run(Ctx);
     }
 

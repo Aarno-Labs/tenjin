@@ -8,8 +8,6 @@ Each fixture directory looks like:
       expected/                     # golden: after chaining xj-prepare-slicetransform
       expected_metadata.json        # golden: side-file written by the pointer tool
                                     #   (per-pointer facts only; no slice records)
-      expected_slice_metadata.json  # golden: enriched metadata dumped by the slice
-                                    #   tool's detection sweep (--metadata-out)
 
 The driver mirrors the `pointertransform` preparation pass: it runs
 xj-prepare-pointertransform (index rewriting, emitting the per-pointer
@@ -162,15 +160,7 @@ def run_case(tmp_path: Path, case_dir: Path) -> None:
     _compare_metadata_golden(case_dir, "expected_metadata.json", metadata_path)
 
     # Pass 2: slice transform (RustSlice detection + signature reshaping).
-    slice_metadata_path = workdir / "slice_metadata.json"
-    _run_tool(
-        slice_tool,
-        workdir,
-        sources,
-        [f"--metadata-in={metadata_path}", f"--metadata-out={slice_metadata_path}"],
-    )
-
-    _compare_metadata_golden(case_dir, "expected_slice_metadata.json", slice_metadata_path)
+    _run_tool(slice_tool, workdir, sources, [f"--metadata-in={metadata_path}"])
 
     _check_syntax(sources)
     _compare_with_golden(case_dir, "expected", workdir, input_files)

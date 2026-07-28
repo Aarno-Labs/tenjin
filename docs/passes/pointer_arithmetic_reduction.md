@@ -17,8 +17,8 @@ companion integer index variable (`p` → `p_index_xj`), with accesses spelled
 `base[p_index_xj]`.
 
 For each pointer rewritten by the tool, it records identifying
-facts (the index variable's name, the base it indexes, the constant
-offset bounds observed) in a metadata side-file
+facts (the index variable's name and the base it indexes) in a
+metadata side-file
 (`tenjin_ptr_index_metadata.json`, see
 `xj-prepare-support/PtrIndexMetadata.h`). The
 (`xj-prepare-slicetransform`) tool runs
