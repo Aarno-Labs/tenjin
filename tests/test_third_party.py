@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 import platform
+import subprocess
 
 import pytest
 
@@ -797,6 +798,182 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
                 assert rs_bytes == c_bytes, (
                     f"{label}: generated file {name!r} differed between Rust and C"
                 )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 110 s
+def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
+    """Translate Megalania's compressor and require it to behave exactly as the C
+    build does: byte-identical compressed output on several inputs, and matching
+    diagnostics and exit codes on its failure paths.
+
+    Megalania's Makefile builds two programs out of the same sources: `megalania`
+    (src/main.c plus the library) and `megalania_tests` (tests/*.c plus the same
+    library, with src/main.c filtered out). We translate only the former, for two
+    reasons. The repo's unit tests reach just 5 of the 16 library files: the LZMA
+    core (range coder, probability model, packet encoder, state machine) and the
+    annealing search (top-k finder, slab neighbour, packet enumerator) are compiled
+    but never run there, whereas compressing even a 64-byte input executes
+    essentially all of the library. And translating both programs at once is not an
+    option: a codebase with more than one build target skips cclyzer++'s
+    globals localization and preprocessor refolding, which are two of the passes this
+    test is here to exercise.
+    """
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/blackle/Megalania.git",
+        "8246d38223b653ec22d99308b630962daa3a3b16",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    megalania_lib_srcs = [
+        "src/file_output.c",
+        "src/lzma_header_encoder.c",
+        "src/lzma_packet.c",
+        "src/lzma_packet_encoder.c",
+        "src/lzma_state.c",
+        "src/max_heap.c",
+        "src/memory_mapper.c",
+        "src/packet_enumerator.c",
+        "src/packet_slab.c",
+        "src/packet_slab_neighbour.c",
+        "src/packet_slab_undo_stack.c",
+        "src/perplexity_encoder.c",
+        "src/probability_model.c",
+        "src/range_encoder.c",
+        "src/substring_enumerator.c",
+        "src/top_k_packet_finder.c",
+    ]
+
+    # We spell out the build rather than using the Makefile: it hardcodes gcc and
+    # builds both programs, and we want the translation to see exactly one target.
+    # `-flto` and `-Werror` are dropped (the former is the build system's concern,
+    # the latter turns clang's differing warnings into build failures), and the
+    # Makefile's -O3 is not needed, since the comparison is on program output.
+    buildcmd_args = [
+        "cc",
+        "-o",
+        "megalania",
+        "src/main.c",
+        *megalania_lib_srcs,
+        "-lm",
+        "-g",
+        "-Wall",
+        "-Wextra",
+    ]
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd=hermetic.shellize(buildcmd_args),
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    c_compressor = tmp_resultsdir / "_build_1" / "megalania"
+    # The crate is named after the build's output artifact (megalania) and the binary
+    # after the file holding `main` (src/main.c).
+    rs_compressor = tmp_resultsdir / "final" / "target" / "debug" / "main"
+
+    def run_both(
+        args: list[str], label: str
+    ) -> tuple[subprocess.CompletedProcess, subprocess.CompletedProcess]:
+        """Run the C build and the translated build on the same arguments, requiring
+        that they agree on exit code, stdout and stderr; returns both results so the
+        caller can check the C side against what it is known to produce."""
+        c_proc = hermetic.run([str(c_compressor), *args], check=False, capture_output=True)
+        rs_proc = hermetic.run([str(rs_compressor), *args], check=False, capture_output=True)
+        assert rs_proc.returncode == c_proc.returncode, (
+            f"[{label}] Different exit codes; Rust got {rs_proc.returncode}"
+            f" vs C {c_proc.returncode}; Rust stderr: {rs_proc.stderr!r}"
+        )
+        assert rs_proc.stdout == c_proc.stdout, (
+            f"[{label}] Rust and C output differed;"
+            f" Rust produced {len(rs_proc.stdout)} bytes vs C {len(c_proc.stdout)}"
+        )
+        assert rs_proc.stderr == c_proc.stderr, (
+            f"[{label}] Rust and C error output differed; Rust error was: {rs_proc.stderr!r}"
+        )
+        return c_proc, rs_proc
+
+    megalania_inputs = [
+        # (name, contents, size of the C build's compressed output)
+        # Text: repeated words and shared prefixes, so the match finder and the packet
+        # encoder both get real work to do.
+        ("mixed_text", b"the quick brown fox jumps over the lazy dog, the quick brown fox", 61),
+        # Binary, with bytes outside ASCII and a short period.
+        ("binary_repeat", bytes([0x00, 0xFF] * 16), 22),
+        # Degenerate: one long run, so nearly every packet is a match.
+        ("single_run", b"a" * 16, 20),
+    ]
+
+    # The annealing search calls rand(), but main() seeds it with srand(1673551), so
+    # the search -- and hence the packet sequence, and hence the compressed bytes --
+    # is fully determined by the input. Verified stable across repeated runs and
+    # across -O0/-O3 on the C side.
+    for name, contents, expected_c_size in megalania_inputs:
+        # main() mmaps its argument, so the input has to be a real file on disk.
+        input_path = tmp_resultsdir / f"compressor_input_{name}.bin"
+        input_path.write_bytes(contents)
+
+        c_proc, _ = run_both([str(input_path)], name)
+        assert c_proc.returncode == 0, (
+            f"[{name}] The C megalania failed (rc={c_proc.returncode}); stderr: {c_proc.stderr!r}"
+        )
+        assert len(c_proc.stdout) == expected_c_size, (
+            f"[{name}] The C megalania produced {len(c_proc.stdout)} bytes of compressed"
+            f" output, expected {expected_c_size}"
+        )
+        assert b"current file size:" in c_proc.stderr, (
+            f"[{name}] The C megalania reported no annealing progress; stderr: {c_proc.stderr!r}"
+        )
+
+    # The failure paths, which the successful runs above never touch: mmap of an
+    # empty file fails, and open of a missing file fails. Both print a diagnostic
+    # naming the file (the same path string for both builds) and return -1.
+    empty_path = tmp_resultsdir / "compressor_input_empty.bin"
+    empty_path.write_bytes(b"")
+    c_proc, _ = run_both([str(empty_path)], "empty_file")
+    assert c_proc.returncode != 0 and c_proc.stderr == f"could not mmap {empty_path}\n".encode(), (
+        f"The C megalania did not report a failed mmap for an empty file;"
+        f" rc={c_proc.returncode}, stderr: {c_proc.stderr!r}"
+    )
+
+    missing_path = tmp_resultsdir / "compressor_input_does_not_exist.bin"
+    c_proc, _ = run_both([str(missing_path)], "missing_file")
+    assert (
+        c_proc.returncode != 0 and c_proc.stderr == f"could not open {missing_path}\n".encode()
+    ), (
+        f"The C megalania did not report a failed open for a missing file;"
+        f" rc={c_proc.returncode}, stderr: {c_proc.stderr!r}"
+    )
+
+    # The usage path is checked separately: its message contains argv[0], which is
+    # necessarily a different path for the two builds, so only the exit code and the
+    # shape of the message can be compared.
+    c_usage = hermetic.run([str(c_compressor)], check=False, capture_output=True)
+    rs_usage = hermetic.run([str(rs_compressor)], check=False, capture_output=True)
+    assert rs_usage.returncode == c_usage.returncode, (
+        f"Different exit codes for the usage path; Rust got {rs_usage.returncode}"
+        f" vs C {c_usage.returncode}; Rust stderr: {rs_usage.stderr!r}"
+    )
+    assert (
+        c_usage.returncode != 0 and c_usage.stderr == f"usage: {c_compressor} filename\n".encode()
+    ), (
+        f"The C megalania did not print its usage message; rc={c_usage.returncode},"
+        f" stderr: {c_usage.stderr!r}"
+    )
+    assert rs_usage.stderr == f"usage: {rs_compressor} filename\n".encode(), (
+        f"Rust did not print the usage message C prints; Rust stderr: {rs_usage.stderr!r}"
+    )
+    assert rs_usage.stdout == c_usage.stdout, (
+        f"Rust and C usage-path output differed; Rust output was: {rs_usage.stdout!r}"
+    )
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
