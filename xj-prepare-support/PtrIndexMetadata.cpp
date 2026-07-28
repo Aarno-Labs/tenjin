@@ -13,7 +13,6 @@ static llvm::json::Object pointerToJson(const PtrIndexPointerRecord &R) {
     O["name"] = R.name;
     O["index_var"] = R.index_var;
     O["param_index"] = R.param_index;
-    O["moved"] = R.moved;
     O["base_text"] = R.base_text;
     if (R.min_offset)
         O["min_offset"] = static_cast<int64_t>(*R.min_offset);
@@ -31,7 +30,6 @@ static bool pointerFromJson(const llvm::json::Object &O,
     R.name = Name->str();
     R.index_var = IndexVar->str();
     R.param_index = static_cast<int>(O.getInteger("param_index").value_or(-1));
-    R.moved = O.getBoolean("moved").value_or(false);
     R.base_text = O.getString("base_text").value_or("").str();
     if (auto V = O.getInteger("min_offset"))
         R.min_offset = static_cast<long>(*V);
@@ -109,17 +107,10 @@ bool PtrIndexMetadata::writeToFile(const std::string &path) const {
     llvm::json::Object GlobalReturns;
     for (const auto &[FnName, GR] : global_return_functions) {
         llvm::json::Object GRObj;
-        GRObj["file"] = GR.file;
         GRObj["global_array_name"] = GR.global_array_name;
-        GRObj["pointee_type"] = GR.pointee_type;
         GlobalReturns[FnName] = std::move(GRObj);
     }
     Root["global_return_functions"] = std::move(GlobalReturns);
-
-    llvm::json::Array Globals;
-    for (const auto &G : globals)
-        Globals.push_back(pointerToJson(G));
-    Root["globals"] = std::move(Globals);
 
     std::error_code EC;
     llvm::raw_fd_ostream OS(path, EC);
@@ -146,7 +137,6 @@ bool PtrIndexMetadata::readFromFile(const std::string &path) {
 
     functions.clear();
     global_return_functions.clear();
-    globals.clear();
 
     if (const llvm::json::Object *Functions = Root->getObject("functions")) {
         for (const auto &[Key, Val] : *Functions) {
@@ -178,20 +168,9 @@ bool PtrIndexMetadata::readFromFile(const std::string &path) {
             if (!GRObj)
                 return false;
             PtrIndexGlobalReturnRecord GR;
-            GR.file = GRObj->getString("file").value_or("").str();
             GR.global_array_name =
                 GRObj->getString("global_array_name").value_or("").str();
-            GR.pointee_type = GRObj->getString("pointee_type").value_or("").str();
             global_return_functions[Key.str()] = std::move(GR);
-        }
-    }
-    if (const llvm::json::Array *Globals = Root->getArray("globals")) {
-        for (const auto &GV : *Globals) {
-            const llvm::json::Object *GO = GV.getAsObject();
-            PtrIndexPointerRecord R;
-            if (!GO || !pointerFromJson(*GO, R))
-                return false;
-            globals.push_back(std::move(R));
         }
     }
     return true;

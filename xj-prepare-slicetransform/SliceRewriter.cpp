@@ -490,7 +490,7 @@ namespace xj
         std::set<std::string> rs_index_vars;
         for (const auto &P : T.FnRec->pointers)
         {
-            if (!P.moved || P.index_var.empty())
+            if (P.index_var.empty())
                 continue;
             all_index_vars.insert(P.index_var);
             if (P.base_text == base_name)

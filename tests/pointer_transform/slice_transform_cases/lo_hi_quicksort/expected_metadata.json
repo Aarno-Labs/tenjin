@@ -6,14 +6,12 @@
         {
           "base_text": "lo",
           "index_var": "j_index_xj",
-          "moved": true,
           "name": "j",
           "param_index": -1
         },
         {
           "base_text": "lo",
           "index_var": "i_index_xj",
-          "moved": true,
           "name": "i",
           "param_index": -1
         }
@@ -21,6 +19,5 @@
     }
   },
   "global_return_functions": {},
-  "globals": [],
   "version": 1
 }

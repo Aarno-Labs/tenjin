@@ -445,7 +445,7 @@ namespace xj
 
             for (const PtrIndexPointerRecord &P : fnRec->pointers)
             {
-                if (!P.moved || P.index_var.empty())
+                if (P.index_var.empty())
                     continue;
                 if (P.param_index >= 0)
                     continue;
@@ -578,7 +578,7 @@ namespace xj
                     std::set<std::string> base_idx_vars;
                     for (const PtrIndexPointerRecord &Q : fnRec->pointers)
                     {
-                        if (Q.moved && !Q.index_var.empty() &&
+                        if (!Q.index_var.empty() &&
                             Q.base_text == P.base_text)
                             base_idx_vars.insert(Q.index_var);
                     }
@@ -676,7 +676,7 @@ namespace xj
             if (fnRec)
             {
                 for (const PtrIndexPointerRecord &P : fnRec->pointers)
-                    if (P.moved && !P.index_var.empty())
+                    if (!P.index_var.empty())
                         caller_idx_vars.insert(P.index_var);
             }
 
@@ -1118,7 +1118,7 @@ namespace xj
                     {
                         for (const PtrIndexPointerRecord &Q : fnRec->pointers)
                         {
-                            if (Q.moved && !Q.index_var.empty() &&
+                            if (!Q.index_var.empty() &&
                                 Q.base_text == BaseParam->getNameAsString())
                                 base_idx_vars.insert(Q.index_var);
                         }
@@ -1222,10 +1222,7 @@ namespace xj
             if (detector.found_global_return && detector.all_returns_valid)
             {
                 PtrIndexGlobalReturnRecord rec;
-                rec.file = fileBasenameOf(FD, SM);
                 rec.global_array_name = detector.global_array_name;
-                QualType pt = FD->getReturnType()->getPointeeType();
-                rec.pointee_type = pt.getUnqualifiedType().getAsString();
                 global_returns[Canon] = std::move(rec);
             }
         }

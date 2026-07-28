@@ -4,8 +4,8 @@
 //
 // The pointer pass records, for every pointer it rewrote as an index,
 // the facts that identify the rewrite in the transformed source: the
-// synthesized index variable, the base it indexes into, and the offset
-// bounds it observed. Nothing slice-related is recorded by the pointer
+// synthesized index variable and the base it indexes into. Nothing
+// slice-related is recorded by the pointer
 // pass — RustSlice candidate detection runs entirely in the slice pass,
 // which fills in the per-function slice records and the global-return
 // map below itself (and can dump the enriched result via its
@@ -30,7 +30,6 @@ struct PtrIndexPointerRecord {
     std::string name;      // pointer variable name
     std::string index_var; // companion index variable name, "" if none
     int param_index = -1;  // position among the function's params, -1 if local
-    bool moved = false;    // pointer had movement and was index-transformed
     // Source text of the base array this pointer indexes into (e.g. "buf",
     // "bs->buf"). Empty when the pointer is its own base (a parameter).
     std::string base_text;
@@ -74,9 +73,7 @@ struct PtrIndexSliceRecord {
 // A function whose every return is NULL or &global_array[i]: its return
 // type is rewritten from T* to int and callers index the array directly.
 struct PtrIndexGlobalReturnRecord {
-    std::string file;              // basename of the definition's file
     std::string global_array_name; // e.g. "node_storage"
-    std::string pointee_type;      // e.g. "Node"
 };
 
 struct PtrIndexFunctionRecord {
@@ -92,7 +89,6 @@ struct PtrIndexMetadata {
     // Keyed by function name.
     std::map<std::string, PtrIndexFunctionRecord> functions;
     std::map<std::string, PtrIndexGlobalReturnRecord> global_return_functions;
-    std::vector<PtrIndexPointerRecord> globals;
 
     // Serialize to `path`, overwriting. Returns false on I/O error.
     bool writeToFile(const std::string &path) const;

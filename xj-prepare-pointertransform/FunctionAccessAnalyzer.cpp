@@ -184,14 +184,6 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
                 SM.getSpellingLineNumber(Loc),
                 SM.getSpellingColumnNumber(Loc)
             });
-
-            xj::PtrIndexPointerRecord rec;
-            rec.name = VD->getNameAsString();
-            rec.index_var = rec.name + "_index_xj";
-            rec.param_index = -1;
-            rec.moved = true;
-            rec.base_text = state.candidate.base_array_text;
-            g_metadata.globals.push_back(std::move(rec));
         }
     }
 }
@@ -488,7 +480,6 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                 rec.param_index = -1;
                 if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
                     rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
-                rec.moved = true;
                 rec.base_text = candidate.base_array_text;
                 fnRec->pointers.push_back(std::move(rec));
             }

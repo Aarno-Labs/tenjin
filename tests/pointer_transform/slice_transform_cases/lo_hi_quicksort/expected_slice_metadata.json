@@ -8,7 +8,6 @@
           "index_var": "j_index_xj",
           "max_offset": 0,
           "min_offset": 0,
-          "moved": true,
           "name": "j",
           "param_index": -1
         },
@@ -17,7 +16,6 @@
           "index_var": "i_index_xj",
           "max_offset": 0,
           "min_offset": 0,
-          "moved": true,
           "name": "i",
           "param_index": -1
         }
@@ -55,6 +53,5 @@
     }
   },
   "global_return_functions": {},
-  "globals": [],
   "version": 1
 }

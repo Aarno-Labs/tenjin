@@ -6,7 +6,6 @@
         {
           "base_text": "buf",
           "index_var": "p_index_xj",
-          "moved": true,
           "name": "p",
           "param_index": -1
         }
@@ -14,6 +13,5 @@
     }
   },
   "global_return_functions": {},
-  "globals": [],
   "version": 1
 }
