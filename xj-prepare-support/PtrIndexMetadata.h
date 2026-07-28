@@ -17,7 +17,6 @@
 #define XJ_PREPARE_SUPPORT_PTR_INDEX_METADATA_H
 
 #include <map>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,15 +29,6 @@ struct PtrIndexPointerRecord {
     // Source text of the base array this pointer indexes into (e.g. "buf",
     // "bs->buf"). Empty when the pointer is its own base (a parameter).
     std::string base_text;
-    // Range of constant offsets applied at the index position (e.g. a
-    // rewritten *(p - 1) access => min_offset = -1). Used for slice
-    // lookback/lookahead. Derived fields: the pointer pass never sets
-    // them (they are absent from its side-file); the slice pass's
-    // detector computes them from the index-transformed AST
-    // (SliceDetector::computeOffsetBounds), where they are consumed.
-    // Unset = not derived (record not yet verified against an AST).
-    std::optional<long> min_offset;
-    std::optional<long> max_offset;
 };
 
 // How a function is to be reshaped into a RustSlice signature. Filled

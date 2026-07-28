@@ -6,16 +6,12 @@
         {
           "base_text": "lo",
           "index_var": "j_index_xj",
-          "max_offset": 0,
-          "min_offset": 0,
           "name": "j",
           "param_index": -1
         },
         {
           "base_text": "lo",
           "index_var": "i_index_xj",
-          "max_offset": 0,
-          "min_offset": 0,
           "name": "i",
           "param_index": -1
         }

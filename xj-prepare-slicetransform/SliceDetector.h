@@ -7,9 +7,10 @@
 // `return base + idx`), and the metadata side-file identifies each
 // synthesized index variable (its name and the base it indexes). The
 // pointer pass records identity only: this class is the sole author of
-// the per-pointer offset bounds (computeOffsetBounds), the per-function
-// PtrIndexSliceRecord, and the global-return entries in the metadata,
-// which SliceRewriter then consumes.
+// the per-pointer offset bounds (computeOffsetBounds, kept in a
+// tool-private PtrOffsetBoundsMap rather than the metadata), the
+// per-function PtrIndexSliceRecord, and the global-return entries in
+// the metadata, which SliceRewriter then consumes.
 //
 // Detection uses the metadata records for pointer *identity* (which int
 // locals are indices, over which base) and the AST for everything else
@@ -45,16 +46,37 @@
 namespace xj
 {
 
+  // Offset bounds derived for one pointer record: the range of constant
+  // offsets applied at the index position in the rewritten source (e.g.
+  // base[idx - 1] => min_offset = -1), and whether any subscript applied
+  // a non-constant offset to the index (base[idx + n]) — such a pointer
+  // has no static bounds, so slice detection must not claim any.
+  //
+  // This is derived, tool-private state — computed by SliceDetector from
+  // the AST, consumed by it and SliceRewriter in the same process — so
+  // it lives in an in-memory map keyed by the pointer record's address
+  // in the shared metadata (stable for the life of the run), not in the
+  // metadata schema itself.
+  struct PtrOffsetBounds
+  {
+    long min_offset = 0;
+    long max_offset = 0;
+    bool variable_offset = false;
+  };
+  using PtrOffsetBoundsMap = std::map<const PtrIndexPointerRecord *, PtrOffsetBounds>;
+
   class SliceDetector
   {
   public:
-    explicit SliceDetector(PtrIndexMetadata &Metadata) : Meta(Metadata) {}
+    SliceDetector(PtrIndexMetadata &Metadata, PtrOffsetBoundsMap &OffsetBounds)
+        : Meta(Metadata), Bounds(OffsetBounds) {}
 
     // Detect candidates in one TU and fold the results into Meta.
     void run(clang::ASTContext &Ctx);
 
   private:
     PtrIndexMetadata &Meta;
+    PtrOffsetBoundsMap &Bounds;
 
     // Per-TU state (one SliceDetector instance per TU).
     std::vector<const clang::FunctionDecl *> tu_defs; // definitions, source order
@@ -77,7 +99,7 @@ namespace xj
     sliceInfoFor(const clang::FunctionDecl *Callee) const;
 
     void collectTU(clang::ASTContext &Ctx);
-    // Fill each pointer record's min/max_offset from the rewritten AST
+    // Fill Bounds for each pointer record from the rewritten AST
     // (constant offsets applied at the index position, e.g.
     // base[idx - 1]). The pointer pass records identity only; the
     // lookaround bounds are derived here, where they are consumed.

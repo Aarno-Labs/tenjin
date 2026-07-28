@@ -539,7 +539,7 @@ namespace xj
         // rewrote this pointer's comparison against the slice's extent.
         auto boundText = [&](const RsPtr &rp) -> std::string
         {
-            long adj = rp.rec->max_offset.value_or(0);
+            long adj = boundsFor(rp.rec).max_offset;
             if (S.inclusive_end)
                 adj += 1;
             if (adj > 0)
@@ -889,7 +889,7 @@ namespace xj
         {
             if (!rp.matched_comparison)
                 continue;
-            long lb = -rp.rec->min_offset.value_or(0);
+            long lb = -boundsFor(rp.rec).min_offset;
             if (lb <= 0)
                 continue;
             // Find `int <idx_name> = <init>;` in the body.

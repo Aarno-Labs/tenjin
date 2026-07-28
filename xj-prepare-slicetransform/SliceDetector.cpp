@@ -305,6 +305,23 @@ namespace xj
         return false;
     }
 
+    // Whether `E` references `VD` anywhere. Distinguishes a subscript
+    // that applies a non-constant offset to the index (base[idx + n] —
+    // a variable offset of this pointer) from one that doesn't involve
+    // the index at all (base[j] — some other access to the same array).
+    static bool mentionsVar(const Expr *E, const VarDecl *VD)
+    {
+        if (!E)
+            return false;
+        if (const auto *DRE = dyn_cast<DeclRefExpr>(E->IgnoreParenImpCasts()))
+            return DRE->getDecl() == VD;
+        for (const Stmt *Child : E->children())
+            if (const auto *CE = dyn_cast_or_null<Expr>(Child))
+                if (mentionsVar(CE, VD))
+                    return true;
+        return false;
+    }
+
     // Source spelling of an expression (used to match subscript bases like
     // `bs->buf` against the textual base recorded by the pointer pass).
     static std::string sourceTextOf(const Expr *E, ASTContext &Ctx)
@@ -344,7 +361,7 @@ namespace xj
                     ASTContext *Ctx;
                     const VarDecl *IdxVD;
                     const std::string *base;
-                    long mn = 0, mx = 0;
+                    PtrOffsetBounds B;
                     bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE)
                     {
                         if (sourceTextOf(ASE->getBase()->IgnoreParenImpCasts(),
@@ -353,8 +370,12 @@ namespace xj
                         long off = 0;
                         if (constSubscriptOffset(ASE->getIdx(), IdxVD, *Ctx, off))
                         {
-                            mn = std::min(mn, off);
-                            mx = std::max(mx, off);
+                            B.min_offset = std::min(B.min_offset, off);
+                            B.max_offset = std::max(B.max_offset, off);
+                        }
+                        else if (mentionsVar(ASE->getIdx(), IdxVD))
+                        {
+                            B.variable_offset = true;
                         }
                         return true;
                     }
@@ -366,11 +387,9 @@ namespace xj
                 // Fold from any bounds a previous TU derived (a definition
                 // in a shared header is revisited per TU): the refold is
                 // idempotent because the body is identical.
-                W.mn = P.min_offset.value_or(0);
-                W.mx = P.max_offset.value_or(0);
+                W.B = Bounds[&P];
                 W.TraverseStmt(FD->getBody());
-                P.min_offset = W.mn;
-                P.max_offset = W.mx;
+                Bounds[&P] = W.B;
             }
         }
     }
@@ -449,6 +468,14 @@ namespace xj
                     continue;
                 if (P.param_index >= 0)
                     continue;
+                // A non-constant offset applied to the index means the
+                // pointer's reach past idx is unknowable statically, so no
+                // sound slice bounds exist for it.
+                auto bit = Bounds.find(&P);
+                const PtrOffsetBounds B =
+                    bit != Bounds.end() ? bit->second : PtrOffsetBounds{};
+                if (B.variable_offset)
+                    continue;
 
                 // Verify the record against the AST: the index variable must
                 // exist as an integer local, and the base must name a pointer
@@ -482,8 +509,8 @@ namespace xj
                 QualType pt = base_pd->getType()->getPointeeType();
                 rec.pointee_type = pt.getUnqualifiedType().getAsString();
                 rec.slice_type = makeSliceTypeName(rec.pointee_type);
-                rec.lookback = -P.min_offset.value_or(0);
-                rec.lookahead = P.max_offset.value_or(0);
+                rec.lookback = -B.min_offset;
+                rec.lookahead = B.max_offset;
 
                 bool found_bound = false;
                 for (const BinaryOperator *BO : collectComparisons(FD->getBody()))

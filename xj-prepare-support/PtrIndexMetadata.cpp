@@ -14,10 +14,6 @@ static llvm::json::Object pointerToJson(const PtrIndexPointerRecord &R) {
     O["index_var"] = R.index_var;
     O["param_index"] = R.param_index;
     O["base_text"] = R.base_text;
-    if (R.min_offset)
-        O["min_offset"] = static_cast<int64_t>(*R.min_offset);
-    if (R.max_offset)
-        O["max_offset"] = static_cast<int64_t>(*R.max_offset);
     return O;
 }
 
@@ -31,10 +27,6 @@ static bool pointerFromJson(const llvm::json::Object &O,
     R.index_var = IndexVar->str();
     R.param_index = static_cast<int>(O.getInteger("param_index").value_or(-1));
     R.base_text = O.getString("base_text").value_or("").str();
-    if (auto V = O.getInteger("min_offset"))
-        R.min_offset = static_cast<long>(*V);
-    if (auto V = O.getInteger("max_offset"))
-        R.max_offset = static_cast<long>(*V);
     return true;
 }
 

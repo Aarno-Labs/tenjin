@@ -23,8 +23,6 @@
         {
           "base_text": "lo",
           "index_var": "p_index_xj",
-          "max_offset": 0,
-          "min_offset": 0,
           "name": "p",
           "param_index": -1
         }

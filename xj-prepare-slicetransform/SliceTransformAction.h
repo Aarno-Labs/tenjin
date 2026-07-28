@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PtrIndexMetadata.h"
+#include "SliceDetector.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -21,6 +22,9 @@ extern std::string g_slice_metadata_in;
 extern std::string g_slice_metadata_out;
 
 extern xj::PtrIndexMetadata g_slice_metadata;
+// Detector-derived offset bounds, shared between the detection and
+// rewriting sweeps within this process; never serialized.
+extern xj::PtrOffsetBoundsMap g_slice_offset_bounds;
 
 // Read-only per-TU FrontendAction for the detection sweep: runs
 // SliceDetector over the index-transformed TU and folds the detected

@@ -1,7 +1,7 @@
 {
   "functions": {
-    "lookaround": {
-      "file": "lookaround.c",
+    "sum_plain": {
+      "file": "variable_offset.c",
       "pointers": [
         {
           "base_text": "buf",
@@ -15,14 +15,25 @@
         "end_param_index": -1,
         "inclusive_end": false,
         "len_param_index": 1,
-        "lookahead": 1,
-        "lookback": 1,
+        "lookahead": 0,
+        "lookback": 0,
         "pointee_type": "int",
         "return_type_changed": false,
         "singleton_param_indices": [],
         "slice_param_name": "arr",
         "slice_type": "RustSlice_int"
       }
+    },
+    "sum_stride": {
+      "file": "variable_offset.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
     }
   },
   "global_return_functions": {}

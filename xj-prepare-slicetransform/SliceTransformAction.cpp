@@ -7,6 +7,7 @@ bool g_slice_verbose = false;
 std::string g_slice_metadata_in;
 std::string g_slice_metadata_out;
 xj::PtrIndexMetadata g_slice_metadata;
+xj::PtrOffsetBoundsMap g_slice_offset_bounds;
 
 namespace {
 
@@ -14,7 +15,7 @@ namespace {
 class SliceDetectConsumer : public ASTConsumer {
   public:
     void HandleTranslationUnit(ASTContext &Ctx) override {
-        xj::SliceDetector detector(g_slice_metadata);
+        xj::SliceDetector detector(g_slice_metadata, g_slice_offset_bounds);
         detector.run(Ctx);
     }
 };
@@ -51,7 +52,8 @@ class SliceTransformConsumer : public ASTConsumer {
     explicit SliceTransformConsumer(Rewriter &R) : TheRewriter(R) {}
 
     void HandleTranslationUnit(ASTContext &Ctx) override {
-        xj::SliceRewriter rewriter(TheRewriter, g_slice_metadata);
+        xj::SliceRewriter rewriter(TheRewriter, g_slice_metadata,
+                                   g_slice_offset_bounds);
         rewriter.run(Ctx);
     }
 

@@ -25,6 +25,7 @@
 #pragma once
 
 #include "PtrIndexMetadata.h"
+#include "SliceDetector.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -41,14 +42,24 @@ namespace xj
   class SliceRewriter
   {
   public:
-    SliceRewriter(clang::Rewriter &R, const PtrIndexMetadata &Metadata)
-        : TheRewriter(R), Meta(Metadata) {}
+    SliceRewriter(clang::Rewriter &R, const PtrIndexMetadata &Metadata,
+                  const PtrOffsetBoundsMap &OffsetBounds)
+        : TheRewriter(R), Meta(Metadata), Bounds(OffsetBounds) {}
 
     void run(clang::ASTContext &Ctx);
 
   private:
     clang::Rewriter &TheRewriter;
     const PtrIndexMetadata &Meta;
+    const PtrOffsetBoundsMap &Bounds;
+
+    // The detector-derived offset bounds for a pointer record; zero
+    // bounds when none were derived.
+    PtrOffsetBounds boundsFor(const PtrIndexPointerRecord *rec) const
+    {
+      auto it = Bounds.find(rec);
+      return it != Bounds.end() ? it->second : PtrOffsetBounds{};
+    }
 
     // One verified, applicable slice reshaping in this TU.
     struct SliceTarget
