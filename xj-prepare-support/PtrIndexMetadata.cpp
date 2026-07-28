@@ -88,7 +88,6 @@ static bool sliceFromJson(const llvm::json::Object &O, PtrIndexSliceRecord &S) {
 
 bool PtrIndexMetadata::writeToFile(const std::string &path) const {
     llvm::json::Object Root;
-    Root["version"] = XJ_PTR_INDEX_METADATA_VERSION;
 
     llvm::json::Object Functions;
     for (const auto &[FnName, FnRec] : functions) {
@@ -131,8 +130,6 @@ bool PtrIndexMetadata::readFromFile(const std::string &path) {
     }
     const llvm::json::Object *Root = Parsed->getAsObject();
     if (!Root)
-        return false;
-    if (Root->getInteger("version").value_or(0) != XJ_PTR_INDEX_METADATA_VERSION)
         return false;
 
     functions.clear();

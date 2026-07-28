@@ -4,6 +4,5 @@
     "find_item": {
       "global_array_name": "items"
     }
-  },
-  "version": 1
+  }
 }

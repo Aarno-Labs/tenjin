@@ -1,6 +1,7 @@
 // Metadata handed from xj-prepare-pointertransform to
-// xj-prepare-slicetransform via a JSON side-file in the codebase
-// directory (see XJ_PTR_INDEX_METADATA_FILENAME).
+// xj-prepare-slicetransform via a JSON side-file. The driver
+// (cli/translation_preparation.py) chooses the path and passes it to
+// both tools via their --metadata-out/--metadata-in flags.
 //
 // The pointer pass records, for every pointer it rewrote as an index,
 // the facts that identify the rewrite in the transformed source: the
@@ -21,10 +22,6 @@
 #include <vector>
 
 namespace xj {
-
-constexpr const char *XJ_PTR_INDEX_METADATA_FILENAME =
-    "tenjin_ptr_index_metadata.json";
-constexpr int XJ_PTR_INDEX_METADATA_VERSION = 1;
 
 struct PtrIndexPointerRecord {
     std::string name;      // pointer variable name
