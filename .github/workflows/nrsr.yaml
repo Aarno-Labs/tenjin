@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, macos-14, macos-15]
+        runner: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
