@@ -908,6 +908,7 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 110 s
+@pytest.mark.skip(reason="needs updated clang-refold")
 def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     """Translate Megalania's compressor and require it to behave exactly as the C
     build does: byte-identical compressed output on several inputs, and matching
