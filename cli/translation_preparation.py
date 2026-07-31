@@ -818,7 +818,7 @@ def run_preparation_passes(
         # Then, all shared libraries
         for cmd in profile_compdb.commands:
             if cmd.output is not None and (
-                targets_from_intercept.is_likely_shared_object_path(cmd.output)
+                targets_from_intercept.shared_object_basename(cmd.output) is not None
             ):
                 runcmd(cmd)
 

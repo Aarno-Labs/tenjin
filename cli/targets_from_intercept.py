@@ -6,6 +6,8 @@ import os.path
 import bencodepy  # type: ignore
 
 import intercept_exec
+from hermetic import xj_llvm_root
+import repo_root
 
 
 # Path.resolve() resolves symlinks, but we want to preserve them
@@ -178,8 +180,14 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
         elif arg[-2:] == ".a" and ei.output != arg:
             ei.rest_inputs.append(arg)
 
-        elif is_likely_shared_object_path(arg) and not arg.startswith("-Wl,"):
-            ei.rest_inputs.append(arg)
+        elif (name := shared_object_basename(arg)) and not arg.startswith("-Wl,"):
+            if is_system_lib(arg):
+                # System libraries should be passed through to Cargo for linking.
+                ei.libs.append(name)
+            else:
+                # Non-system libraries are assumed to be the project's own libraries,
+                # and should become local Cargo crate dependencies.
+                ei.rest_inputs.append(arg)
 
         else:
             ei.args.shared.append(arg)
@@ -187,11 +195,19 @@ def convert_intercepted_entry(entry: intercept_exec.InterceptedCommandInfo) -> I
     return ei
 
 
-def is_likely_shared_object_path(path: str) -> bool:
+def is_system_lib(path: str) -> bool:
+    if path.startswith(xj_llvm_root(repo_root.localdir()).as_posix()):
+        return True
+    return path.startswith("/usr/lib") or path.startswith("/lib")
+
+
+def shared_object_basename(path: str) -> str | None:
     # Versioned shared libraries can have filenames like "libfoo.so.1.2.3"
-    return (
-        path.endswith(".so") or ".so." in path or path.endswith(".dylib") or path.endswith(".dll")
-    )
+    if path.endswith(".so") or ".so." in path:
+        return Path(path).name.split(".so", 1)[0]
+    if path.endswith(".dylib") or path.endswith(".dll"):
+        return Path(path).name
+    return None
 
 
 def extract_MD_format_dependencies(depfile_path: Path) -> list[str]:
