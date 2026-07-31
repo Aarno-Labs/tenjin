@@ -1446,15 +1446,26 @@ impl Translation<'_> {
             // should be translated to
             // assert!(FOO)
             //
+            // The C idiom of tacking a message onto the condition,
+            // assert(FOO && "message")
+            // becomes the two-argument form,
+            // assert!(FOO, "message")
+            //
             // Note that in C the asserted expression must have integral type,
             // but in Rust the asserted expression is of boolean type. That mismatch
             // is why we recognize this case pre-conversion.
-            let expr = self.convert_condition(ctx.used(), true, cargs[0])?;
+            let (ccond, opt_message) = match self.recognize_assert_condition_message(cargs[0]) {
+                Some((ccond, message)) => (ccond, Some(message)),
+                None => (cargs[0], None),
+            };
+            let expr = self.convert_condition(ctx.used(), true, ccond)?;
             return expr
                 .and_then(|expr| {
+                    let mut mac_args = vec![expr];
+                    mac_args.extend(opt_message);
                     Ok(WithStmts::new_val(mk().mac_expr(mk().mac(
                         mk().path("assert"),
-                        mac_call_exprs_tt(vec![expr]),
+                        mac_call_exprs_tt(mac_args),
                         MacroDelimiter::Paren(Default::default()),
                     ))))
                 })
@@ -1462,6 +1473,30 @@ impl Translation<'_> {
         }
 
         Ok(None)
+    }
+
+    /// Recognizes the C idiom `COND && "message"`, returning the condition along with
+    /// the message as a Rust string literal suitable for use as a format string.
+    fn recognize_assert_condition_message(&self, expr: CExprId) -> Option<(CExprId, Box<Expr>)> {
+        let CExprKind::Binary(_, CBinOp::And, lhs, rhs, _, _) = self
+            .ast_context
+            .index(self.c_strip_implicit_casts(expr))
+            .kind
+        else {
+            return None;
+        };
+
+        // Only narrow (byte-per-character) literals can be reproduced as Rust string literals.
+        let Some(CLiteral::String(bytes, 1)) =
+            self.get_string_lit(self.c_strip_implicit_casts(rhs))
+        else {
+            return None;
+        };
+
+        let message = std::str::from_utf8(bytes).ok()?;
+        // The message is used as a format string by `assert!`, so braces must be escaped.
+        let message = message.replace('{', "{{").replace('}', "}}");
+        Some((lhs, mk().lit_expr(message.as_str())))
     }
 
     #[allow(clippy::borrowed_box)]

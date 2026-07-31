@@ -27,3 +27,19 @@ pub extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
         }
     });
 }
+#[no_mangle]
+pub extern "C" fn assert_plain(mut x: ::core::ffi::c_int) {
+    assert!(x > 0);
+}
+#[no_mangle]
+pub extern "C" fn assert_msg(mut x: ::core::ffi::c_int) {
+    assert!(x > 0, "x must be positive");
+}
+#[no_mangle]
+pub extern "C" fn assert_msg_chained(mut x: ::core::ffi::c_int, mut y: ::core::ffi::c_int) {
+    assert!(x > 0 && y > 0, "both must be positive");
+}
+#[no_mangle]
+pub extern "C" fn assert_msg_braces(mut x: ::core::ffi::c_int) {
+    assert!(x > 0, "x must not be {{0}}");
+}

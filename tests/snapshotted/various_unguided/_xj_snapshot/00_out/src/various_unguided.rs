@@ -1,6 +1,7 @@
 extern "C" {
     fn isatty(_: ::core::ffi::c_int) -> ::core::ffi::c_int;
     fn puts(_: *const ::core::ffi::c_char) -> ::core::ffi::c_int;
+    fn assert(_: bool);
 }
 pub const STDIN_FILENO: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 pub const STDOUT_FILENO: ::core::ffi::c_int = 1 as ::core::ffi::c_int;
@@ -28,6 +29,25 @@ pub unsafe extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
             }) as *const core::ffi::c_char,
         )
     });
+}
+#[no_mangle]
+pub unsafe extern "C" fn assert_plain(mut x: ::core::ffi::c_int) {
+    assert!(x > 0 as ::core::ffi::c_int);
+}
+#[no_mangle]
+pub unsafe extern "C" fn assert_msg(mut x: ::core::ffi::c_int) {
+    assert!(x > 0 as ::core::ffi::c_int, "x must be positive");
+}
+#[no_mangle]
+pub unsafe extern "C" fn assert_msg_chained(mut x: ::core::ffi::c_int, mut y: ::core::ffi::c_int) {
+    assert!(
+        x > 0 as ::core::ffi::c_int && y > 0 as ::core::ffi::c_int,
+        "both must be positive"
+    );
+}
+#[no_mangle]
+pub unsafe extern "C" fn assert_msg_braces(mut x: ::core::ffi::c_int) {
+    assert!(x > 0 as ::core::ffi::c_int, "x must not be {{0}}");
 }
 unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
     if ptr.is_null() {
