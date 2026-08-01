@@ -652,10 +652,13 @@ def cook_pkg_config_placeholders_within(target: Path) -> None:
         if "/outputs" not in data:
             continue
 
-        pc_file.write_text(
-            data.replace("/outputs", lib_dir.parent.resolve().as_posix()),
-            encoding="utf-8",
-        )
+        data = data.replace("/outputs", lib_dir.parent.resolve().as_posix())
+        # Most .pc files are installed in xj-more-deps, but GMP is placed in
+        # xj-more-deps/gmp-6.3.0, and its .pc file has prefix=/outputs/gmp-6.3.0
+        # so its file currently has prefix=/.../xj-more-deps/gmp-6.3.0/gmp-6.3.0
+        data = data.replace("gmp-6.3.0/gmp-6.3.0", "gmp-6.3.0")
+
+        pc_file.write_text(data, encoding="utf-8")
 
 
 def want_10j_more_deps():
