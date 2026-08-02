@@ -1083,6 +1083,79 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.slow  # expected runtime: 120 seconds
+def test_silentbicycle__guff(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/silentbicycle/guff.git", "a6f11ad8973e83dcb9650c256cdee3caf87a12ca"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # temporary hack
+    tenjin_fixtures.monkeypatch.setenv("XJ_EXTRA_PRREPARATION_PASSES", "0")
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make guff",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    input_str = "\n".join([
+        "218",
+        "212",
+        "210",
+        "196",
+        "136",
+        "81",
+        "75",
+        "67",
+        "49",
+        "16",
+    ])
+    # (tmp_resultsdir / "in_1").write_text(input_str)
+
+    target_out = tmp_resultsdir / "final" / "target" / "debug"
+    rs_guff = target_out / "main"
+    if not rs_guff.exists():
+        rs_guff = target_out / "main_nolines"
+
+    guff_out_1: str = hermetic.run(
+        [str(rs_guff), "-d", "40x20"],
+        input=input_str.encode(encoding="utf-8"),
+        check=True,
+        capture_output=True,
+    ).stdout.decode(encoding="utf-8")
+
+    assert guff_out_1.splitlines() == [
+        "    x: [0 - 9]    y: [0 - 218] -- 0: #",
+        "+                                       ",
+        "#                                       ",
+        "|   #   #                               ",
+        "|            #                          ",
+        "|                                       ",
+        "+                                       ",
+        "|                                       ",
+        "|                                       ",
+        "|                #                      ",
+        "|                                       ",
+        "+                                       ",
+        "|                                       ",
+        "|                    #                  ",
+        "|                        #              ",
+        "|                             #         ",
+        "+                                 #     ",
+        "|                                       ",
+        "|                                       ",
+        "|                                     # ",
+        "+----+----+----+----+----+----+----+----",
+    ]
+
+
 @pytest.mark.slow  # expected runtime: 700 seconds (~12 minutes, up to the xfail below)
 @pytest.mark.skip(
     reason="file(1) does not yet translate end-to-end: refold emits valid C for all 27 "
