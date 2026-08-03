@@ -1156,6 +1156,34 @@ def test_silentbicycle__guff(tenjin_fixtures: TenjinFixtures):
     ]
 
 
+@pytest.mark.slow  # expected runtime: 120 seconds
+def test_atomicobject__odo(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/atomicobject/odo.git", "be7f07b2f0f363ec3c69d86d2be98822ae0acb2c"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    shutil.copyfile(
+        tmp_resultsdir / "final" / "target" / "debug" / "main",
+        tmp_codebase / "odo",
+    )
+
+    cp = hermetic.run(["./test_odo"], capture_output=True, check=True, cwd=tmp_codebase)
+    assert cp.stdout.decode("utf-8") == "all tests passed\n"
+
+
 @pytest.mark.slow  # expected runtime: 700 seconds (~12 minutes, up to the xfail below)
 @pytest.mark.skip(
     reason="file(1) does not yet translate end-to-end: refold emits valid C for all 27 "
