@@ -2097,16 +2097,7 @@ def run_preparation_passes(
         return cp
 
     def prep_pointertransform(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        """Pointer arithmetic reduction + RustSlice signature reshaping.
-
-        One preparation pass, two modular tools run back to back:
-        xj-prepare-pointertransform rewrites moving pointers as integer
-        indices and records per-pointer facts in a metadata side-file;
-        xj-prepare-slicetransform then detects RustSlice candidates from
-        the transformed C plus those facts and reshapes signatures, bodies
-        and call sites. The side-file is internal to this pass and deleted
-        before it finishes, so no other pass ever observes it.
-        """
+        """Pointer arithmetic reduction + RustSlice signature reshaping."""
         ptr_builddir = hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
         slice_builddir = hermetic.xj_prepare_slicetransform_build_dir(repo_root.localdir())
         for builddir in (ptr_builddir, slice_builddir):

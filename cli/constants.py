@@ -30,10 +30,9 @@ WANT = {
 
 XJ_GUIDANCE_FILENAME = "xj-guidance.json"
 
-# Side-file handed from xj-prepare-pointertransform to
+# Results handed from xj-prepare-pointertransform to
 # xj-prepare-slicetransform. Keep in sync with
-# xj-prepare-support/PtrIndexMetadata.h.
-PTR_INDEX_METADATA_FILENAME = "tenjin_ptr_index_metadata.json"
+PTR_INDEX_METADATA_FILENAME = "xj-ptrindex.json"
 
 # Subdirectory of hermetic.xj_llvm_root()
 SYSROOT_NAME = "sysroot"
