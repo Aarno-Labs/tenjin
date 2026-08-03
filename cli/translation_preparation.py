@@ -305,19 +305,40 @@ def compute_build_info_in(
 GENERATED_SOURCE_SUFFIXES = {".h", ".c", ".inc", ".i"}
 
 
+def is_generated_source_file(relative_path: Path) -> bool:
+    """Whether a generated file should be copied into the prepared codebase.
+
+    In addition to the usual source-like suffixes, XJ_GENERATED_SOURCES may name
+    semicolon-separated, codebase-relative paths.  This accommodates generated
+    build prerequisites such as extensionless helper executables that must be
+    available when intercepted commands are replayed for coverage.
+    """
+    if relative_path.suffix in GENERATED_SOURCE_SUFFIXES:
+        return True
+
+    extra_paths = {
+        Path(path.strip()).as_posix()
+        for path in os.environ.get("XJ_GENERATED_SOURCES", "").split(";")
+        if path.strip()
+    }
+    return relative_path.as_posix() in extra_paths
+
+
 def copy_new_source_files_back(
     codebase: Path,
     builddir: Path,
 ):
     """Copy newly created source files from the build directory back to the original codebase."""
-    for new_file in builddir.rglob("*.*"):
-        if new_file.suffix not in GENERATED_SOURCE_SUFFIXES:
+    for new_file in builddir.rglob("*"):
+        if not new_file.is_file():
             continue
         relative_path = new_file.relative_to(builddir)
+        if not is_generated_source_file(relative_path):
+            continue
         dest_file = codebase / relative_path
         if not dest_file.exists():
             dest_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(new_file, dest_file)
+            shutil.copy2(new_file, dest_file)
 
 
 def snapshot_codebase_files(root: Path) -> set[RelativeFilePathStr]:
@@ -351,10 +372,11 @@ def relocate_generated_files(
         if not src.is_file():
             continue
 
-        if Path(rel).suffix in GENERATED_SOURCE_SUFFIXES:
+        relative_path = Path(rel)
+        if is_generated_source_file(relative_path):
             dest_current = current_codebase / rel
             dest_current.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, dest_current)
+            shutil.copy2(src, dest_current)
 
         dest_build = builddir / rel
         dest_build.parent.mkdir(parents=True, exist_ok=True)

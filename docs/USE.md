@@ -431,6 +431,13 @@ File: /PATH/TO/xj-cdr/final/src/xj_covset_demo_nolines.rs
 Total covered lines: 24 / 25 = 96.00%
 ```
 
+## Tenjin's Environment Variables
+
+- `XJ_GENERATED_SOURCES`: a semicolon-separated list of paths to be treated
+  as generated sources (e.g. created via `--prebuildcmd`). You might need
+  to set this if you see translation fail in `c_02_build_coverage`.
+
+
 # Edge Cases
 
 Tenjin strives to support a large subset of C, but there are some
