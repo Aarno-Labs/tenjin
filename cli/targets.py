@@ -252,6 +252,11 @@ class BuildInfo:
 
         # Sanity check: ensure no duplicate target keys
         def cmd_target_key(link_cmd: targets_from_intercept.InterceptedCommand) -> str:
+            if not link_cmd.output and link_cmd.compile_only and len(link_cmd.c_inputs) == 1:
+                # If it's a compile-only command with a single input file and no
+                # explicitly provided output files, treat it as though it had an
+                # output file based on the input file name.
+                link_cmd.output = Path(link_cmd.c_inputs[0]).with_suffix(".o").as_posix()
             return link_cmd.output if link_cmd.output else "unknown"
 
         def cmd_invokes_ld(c: targets_from_intercept.InterceptedCommand) -> bool:
