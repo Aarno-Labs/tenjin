@@ -20,6 +20,14 @@ import hermetic
 from provisioning import download
 
 
+def sha256hex(filepath: Path) -> str:
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        while chunk := f.read(8192):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def suckless_sbase_git_clone() -> Path:
     return cached_git_clone_at_commit(
         "git://git.suckless.org/sbase", "004a51426e42d42150a746dc113ad86fb3fbed3c"
@@ -1082,6 +1090,67 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 220 seconds
+def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/brk/zopfli.git", "87b306de5260bfb8197feee89c81b9195447ffc6"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make zopfli",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    help_output: bytes = hermetic.run(
+        [tmp_resultsdir / "final" / "target" / "debug" / "zopfli_bin", "-h"],
+        capture_output=True,
+    ).stderr
+
+    assert (
+        help_output
+        == b"""Usage: zopfli [OPTION]... FILE...
+  -h    gives this help
+  -c    write the result on standard output, instead of disk filename + '.gz'
+  -v    verbose mode
+  --i#  perform # iterations (default 15). More gives more compression but is slower. Examples: --i10, --i50, --i1000
+  --gzip        output to gzip format (default)
+  --zlib        output to zlib format instead of gzip
+  --deflate     output to deflate format instead of gzip
+  --splitlast   ignored, left for backwards compatibility
+"""
+    )
+
+    # Currently panics on a misaligned pointer dereference
+    run_cargo_on_final(
+        tmp_resultsdir / "final", ["run", "--", (tmp_codebase / "COPYING").as_posix()]
+    )
+
+    def reset_gzip_mtime(path: Path) -> None:
+        """Overwrite the MTIME field in a gzip file's header, in place."""
+
+        GZIP_MAGIC = b"\x1f\x8b"
+        MTIME_OFFSET = 4
+
+        with path.open("r+b") as f:
+            if f.read(2) != GZIP_MAGIC:
+                raise ValueError(f"{path} is not a gzip file")
+            f.seek(MTIME_OFFSET)
+            f.write(b"\x00\x00\x00\x00")
+
+    assert (
+        sha256hex(tmp_codebase / "COPYING")
+        == "018b1cb87efdf7a04c2fcc13d57ed63f62149113fb207b27ea13430d64f13513"
+    )
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
