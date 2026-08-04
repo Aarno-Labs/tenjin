@@ -433,9 +433,30 @@ Total covered lines: 24 / 25 = 96.00%
 
 ## Tenjin's Environment Variables
 
+You may set these to modify how Tenjin goes about translating
+a particular codebase.
+
+### Diagnostics and environment discovery
+
+- `XJ_SHOW_CMDS=1`: echo each command Tenjin runs.
+
+### Translation inputs and build configuration
+
 - `XJ_GENERATED_SOURCES`: a semicolon-separated list of paths to be treated
   as generated sources (e.g. created via `--prebuildcmd`). You might need
   to set this if you see translation fail in `c_02_build_coverage`.
+- `XJ_CMAKE_PRESET`: for CMake projects, the preset name to pass as
+  `--preset=...` when configuring the codebase under translation.
+
+### Controlling which passes run
+
+- `XJ_EXTRA_PREPARATION_PASSES=0`: disable preprocessor refolding.
+- `XJ_SKIP_UNUNSAFE=1`: skip the "un-unsafe" improvement pass, which removes
+  unnecessary `unsafe` from the translated Rust.
+- `XJ_REFOLD_CHECK`: if set (to any non-empty value), run `clang-refold
+  --check` after refolding to verify the refold map against the preprocessed
+  source.
+
 
 
 # Edge Cases
