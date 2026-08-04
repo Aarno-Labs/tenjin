@@ -254,7 +254,8 @@ impl<'c> Translation<'c> {
                 // If we've been given guidance about what constitutes the public API of the
                 // code we're translating, we can use it to refine what functions are marked `extern`.
                 // Some common types like `String` and `Vec` are not FFI-safe.
-                let fn_needs_abi_preservation =
+                // Variadic functions must be marked `extern "C"` (or extern "C-unwind").
+                let fn_needs_abi_preservation = is_variadic ||
                     if let Some(api) = &self.parsed_guidance.borrow().public_api {
                         api.contains(name)
                     } else {

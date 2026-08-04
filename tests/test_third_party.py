@@ -1226,6 +1226,57 @@ def test_silentbicycle__guff(tenjin_fixtures: TenjinFixtures):
     ]
 
 
+@pytest.mark.slow  # expected runtime: 9 seconds
+def test_silentbicycle__rollavg(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/silentbicycle/rollavg.git", "30ccedee7dcc499bb07d26cd78f539bb550deeb8"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # Inject missing header; getopt does not come via unistd.h in strict c99 mode.
+    r_c = tmp_codebase / "rollavg.c"
+    r_c.write_text("#include <getopt.h>\n" + r_c.read_text())
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make rollavg",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    input_str = "\n".join([
+        "10",
+        "88",
+        "93",
+        "02",
+        "1",
+        "12000",
+    ])
+
+    rollavg_out_1: str = hermetic.run(
+        [str(tmp_resultsdir / "final" / "target" / "debug" / "rollavg")],
+        input=input_str.encode(encoding="utf-8"),
+        check=True,
+        capture_output=True,
+    ).stdout.decode(encoding="utf-8")
+
+    assert (
+        rollavg_out_1
+        == """10.000000
+51.052631
+66.531357
+47.766792
+36.346607
+2589.633301
+"""
+    )
+
+
 @pytest.mark.slow  # expected runtime: 120 seconds
 def test_atomicobject__odo(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
