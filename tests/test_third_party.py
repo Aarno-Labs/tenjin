@@ -1277,6 +1277,40 @@ def test_silentbicycle__rollavg(tenjin_fixtures: TenjinFixtures):
     )
 
 
+@pytest.mark.slow  # expected runtime: 9 seconds
+def test_silentbicycle__skel(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/silentbicycle/skel.git", "5efbd30682abbe519008885e241b6498d01381f9"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    (tmp_codebase / "build").mkdir(exist_ok=False)
+    shutil.copy2(
+        tmp_resultsdir / "final" / "target" / "debug" / "main",
+        tmp_codebase / "build" / "skel",
+    )
+
+    cp = hermetic.run(
+        [str(tmp_codebase / "test" / "run_tests")],
+        cwd=tmp_codebase.as_posix(),
+        check=True,
+        capture_output=True,
+    )
+    assert cp.stdout == b"...................tests complete\n"
+
+
 @pytest.mark.slow  # expected runtime: 120 seconds
 def test_atomicobject__odo(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
