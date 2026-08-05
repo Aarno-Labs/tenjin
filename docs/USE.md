@@ -488,6 +488,8 @@ limitations to its support:
 - Tenjin doesn't yet handle codebases which build multiple distinct
   libraries with the same initial stem (e.g. `libfoo.so.1.2.3` and also `libfoo.so.1.7.9`, which share the initial stem `libfoo`) at the same time.
 
+- Removing `static` from top-level variables in `main()` may improve translation. This is safe to do if the variables are initialized and are not accessed from signal handlers, `setjmp`/`longjmp`, `setvbuf`, `atexit`/`at_quick_exit`, or other threads.
+
 # Error Cases
 
 * If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`

@@ -741,7 +741,7 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(reason="This test fails the cclyzer globals-localization phase")
+@pytest.mark.skip(reason="This test fails the cclyzer globals-localization phase")
 def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
 
