@@ -4,9 +4,17 @@
       "file": "assign_from_ptr.c",
       "pointers": [
         {
-          "base_text": "p",
+          "base_text": "buf",
+          "handle_source": "buf",
+          "index_var": "q_index_xj",
+          "mode": "collapse",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "buf",
           "index_var": "p_index_xj",
-          "mode": "handle",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         }

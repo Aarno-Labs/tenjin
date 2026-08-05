@@ -77,6 +77,14 @@ enum class PointerAccessKind {
     AssignPtr,          // p = <expr>;               → p = <expr>; p_index = 0;
     AssignPtrOffset,    // p = <expr> + n;           → p = <expr>; p_index = n;
 
+    // The pointer appears as the base of *another* tracked pointer's
+    // initializer (`T *p = q + 1;` seen from q's side). The enclosing
+    // declaration is rewritten as a whole by the other pointer, which
+    // inherits this one's index, so this occurrence needs no edit of its
+    // own — and must not be mistaken for an unrecognized shape, which
+    // would reject an otherwise perfectly transformable pointer.
+    NoRewrite,
+
     // --- Pointer arithmetic on the pointer itself -------------------------
     Increment,          // p++ / ++p                 → p_index++ / ++p_index
     Decrement,          // p-- / --p                 → p_index-- / --p_index

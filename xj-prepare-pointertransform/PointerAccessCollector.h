@@ -42,6 +42,11 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
                         std::vector<PointerAccess> &access_list,
                         PointerCandidate &candidate);
 
+    // If `DRE` is the base of a *different* tracked pointer's
+    // initializer (the `q` in `T *p = q + 1;`), return that pointer.
+    const VarDecl *inheritingPointerFor(const DeclRefExpr *DRE,
+                                        const VarDecl *PtrVar);
+
     // Record `BO` as a reseat: an assignment giving the pointer a whole
     // new base rather than moving it within the current one. Marks the
     // candidate collapse-ineligible (there is no single base text left to
