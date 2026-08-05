@@ -480,6 +480,15 @@ namespace xj
                     continue;
                 if (P.param_index >= 0)
                     continue;
+                // A handle-mode local indexes *itself*, so its base_text
+                // names a local and the parameter lookup below could never
+                // match it anyway. Saying so outright keeps the invariant
+                // testable instead of incidental: a frozen local is not a
+                // slice root today. Admitting one means following
+                // handle_source back to the parameter it descends from,
+                // which is deferred along with parameter-driven roots.
+                if (P.mode == kModeHandle)
+                    continue;
                 // A non-constant offset applied to the index means the
                 // pointer's reach past idx is unknowable statically, so no
                 // sound slice bounds exist for it.

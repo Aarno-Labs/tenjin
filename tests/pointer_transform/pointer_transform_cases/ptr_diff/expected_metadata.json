@@ -5,7 +5,9 @@
       "pointers": [
         {
           "base_text": "buf",
+          "handle_source": "buf",
           "index_var": "r_index_xj",
+          "mode": "collapse",
           "name": "r",
           "param_index": -1
         }

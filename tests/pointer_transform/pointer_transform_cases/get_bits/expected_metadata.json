@@ -6,6 +6,7 @@
         {
           "base_text": "p",
           "index_var": "p_index_xj",
+          "mode": "handle",
           "name": "p",
           "param_index": 0
         }

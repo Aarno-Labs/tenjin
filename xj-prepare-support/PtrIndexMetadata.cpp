@@ -14,6 +14,10 @@ static llvm::json::Object pointerToJson(const PtrIndexPointerRecord &R) {
     O["index_var"] = R.index_var;
     O["param_index"] = R.param_index;
     O["base_text"] = R.base_text;
+    O["mode"] = R.mode.empty() ? kModeCollapse : R.mode;
+    // Written only when known, to keep the side-file free of empty strings.
+    if (!R.handle_source.empty())
+        O["handle_source"] = R.handle_source;
     return O;
 }
 
@@ -27,6 +31,8 @@ static bool pointerFromJson(const llvm::json::Object &O,
     R.index_var = IndexVar->str();
     R.param_index = static_cast<int>(O.getInteger("param_index").value_or(-1));
     R.base_text = O.getString("base_text").value_or("").str();
+    R.mode = O.getString("mode").value_or(kModeCollapse).str();
+    R.handle_source = O.getString("handle_source").value_or("").str();
     return true;
 }
 

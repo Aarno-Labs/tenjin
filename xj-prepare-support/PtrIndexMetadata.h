@@ -21,9 +21,25 @@ namespace xj
         std::string index_var; // companion index variable name, "" if none
         int param_index = -1;  // position among the function's params, -1 if local
         // Source text of the base array this pointer indexes into (e.g. "buf",
-        // "bs->buf"). Empty when the pointer is its own base (a parameter).
+        // "bs->buf"). For a frozen handle this is the pointer's own name,
+        // which is how the rewritten source spells every access.
         std::string base_text;
+
+        // How the pointer was rewritten: "collapse" (pointer deleted, base
+        // substituted at each access) or "handle" (pointer retained frozen,
+        // indexing itself). Absent means "collapse".
+        std::string mode;
+
+        // Name of the variable a handle was initialized from, when the
+        // initializer is a bare variable reference. Lets a consumer tell
+        // that a handle-mode local descends from a parameter. Empty when
+        // unknown; nothing reads it yet.
+        std::string handle_source;
     };
+
+    // Values for PtrIndexPointerRecord::mode.
+    inline constexpr const char *kModeCollapse = "collapse";
+    inline constexpr const char *kModeHandle = "handle";
 
     struct PtrIndexFunctionRecord
     {

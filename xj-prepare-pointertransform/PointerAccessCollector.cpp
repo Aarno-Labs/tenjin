@@ -128,6 +128,16 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
     while (const auto *CSCE = dyn_cast<CStyleCastExpr>(Init))
         Init = CSCE->getSubExpr()->IgnoreParenImpCasts();
 
+    // Record where a handle's initial base came from, when it is simply
+    // another variable. Consumers use it to tell that a handle-mode local
+    // descends from a parameter; it plays no part in this tool's rewrite.
+    // The bare-DeclRef form is deliberate — anything more elaborate is not
+    // a name a consumer could resolve.
+    if (const auto *InitDRE = dyn_cast<DeclRefExpr>(Init)) {
+        if (isa<VarDecl>(InitDRE->getDecl()))
+            candidate.handle_source = InitDRE->getDecl()->getNameAsString();
+    }
+
     // Case 1: NULL — no base array yet, will be encoded as -1.
     if (isNullExpr(Init)) {
         PointerAccess pa;
