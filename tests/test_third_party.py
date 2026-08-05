@@ -1162,7 +1162,7 @@ def test_silentbicycle__guff(tenjin_fixtures: TenjinFixtures):
     translation_preparation.copy_codebase(codebase, tmp_codebase)
 
     # temporary hack
-    tenjin_fixtures.monkeypatch.setenv("XJ_EXTRA_PRREPARATION_PASSES", "0")
+    tenjin_fixtures.monkeypatch.setenv("XJ_EXTRA_PREPARATION_PASSES", "0")
 
     translation.do_translate(
         translation_types.TranslationFlags.simple(
