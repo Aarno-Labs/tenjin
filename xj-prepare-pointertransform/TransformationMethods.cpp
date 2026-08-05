@@ -68,15 +68,23 @@ bool FunctionAccessAnalyzer::generateTransformation(
     const VarDecl *PtrVar,
     PointerCandidate &candidate,
     std::vector<PointerAccess> &accesses,
-    ASTContext &Ctx) {
+    ASTContext &Ctx,
+    TransformMode mode) {
 
     SourceManager &SM = Ctx.getSourceManager();
     const LangOptions &LO = Ctx.getLangOpts();
     Stmt *Body = FD->getBody();
 
+    // In handle mode the pointer is retained and becomes its own base, so
+    // accesses read `p[p_index]` and the declaration is left alone (the
+    // index declaration is *inserted* alongside it rather than replacing
+    // it). This is exactly the shape parameters have always been given.
+    const bool handle_mode = (mode == TransformMode::Handle);
+
     std::string ptr_name = PtrVar->getNameAsString();
     std::string index_name = ptr_name + "_index_xj";
-    std::string base_array = safeBase(candidate.base_array_text);
+    std::string base_array =
+        handle_mode ? ptr_name : safeBase(candidate.base_array_text);
 
     // Note: the body is always rewritten in *plain* form — base params
     // kept, indices counted from the original base, comparisons against
@@ -100,31 +108,33 @@ bool FunctionAccessAnalyzer::generateTransformation(
             return false;
         }
 
-        // Build the replacement declaration
-        std::string init_value;
-        bool found_init = false;
-        for (const auto &access : accesses) {
-            switch (access.kind) {
-            case PointerAccessKind::InitNull:
-                init_value = "-1";
-                found_init = true;
-                break;
-            case PointerAccessKind::InitArray:
-                init_value = "0";
-                found_init = true;
-                break;
-            case PointerAccessKind::InitArrayOffset:
-                init_value = access.offset_text;
-                found_init = true;
-                break;
-            default:
-                break;
+        // Build the replacement declaration. In handle mode the pointer
+        // keeps its initializer, so it already points where it should and
+        // the index always starts at 0; only collapse mode has to fold the
+        // initializer into an index value.
+        std::string init_value = "0";
+        if (!handle_mode) {
+            bool found_init = false;
+            for (const auto &access : accesses) {
+                switch (access.kind) {
+                case PointerAccessKind::InitNull:
+                    init_value = "-1";
+                    found_init = true;
+                    break;
+                case PointerAccessKind::InitArray:
+                    init_value = "0";
+                    found_init = true;
+                    break;
+                case PointerAccessKind::InitArrayOffset:
+                    init_value = access.offset_text;
+                    found_init = true;
+                    break;
+                default:
+                    break;
+                }
+                if (found_init) break;
             }
-            if (found_init) break;
         }
-
-        if (!found_init)
-            init_value = "0";
 
         // Check if this DeclStmt has multiple declarators
         bool multi_decl = false;
@@ -139,7 +149,10 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         std::string replacement = "int " + index_name + " = " + init_value + ";";
 
-        if (multi_decl) {
+        // Handle mode never replaces the declaration — the pointer stays
+        // as the handle — so it takes the same insert-after path that a
+        // multi-declarator DeclStmt already needs.
+        if (multi_decl || handle_mode) {
             // Multi-declarator: keep the DeclStmt intact (PtrVar becomes unused)
             // and insert the index declaration on a new line after it
             SourceLocation DeclEnd = DS->getEndLoc();
@@ -186,22 +199,26 @@ bool FunctionAccessAnalyzer::generateTransformation(
         e.text = insertion;
         edits.push_back(e);
 
-        // The transformation assumes that the base array of a parameter is the parameter itself
-        assert((candidate.base_array_text.empty() ||
+        // A parameter is always its own base: its incoming value is the
+        // base, so there is nothing else it could collapse onto.
+        assert((handle_mode || candidate.base_array_text.empty() ||
                 candidate.base_array_text == ptr_name) &&
                "parameter base override would discard a live distinct base");
         base_array = ptr_name;
     }
 
-    // When the pointer variable is itself retained as the base array (a
-    // parameter used as its own base), the offset index starts at 0 and only
-    // ever advances, so its -1 sentinel never models a NULL pointer. The
-    // pointer's null-ness still lives in the retained pointer variable, so
-    // NULL tests (!p, p == NULL, p = NULL, if (p)) must stay on the original
-    // pointer rather than be rewritten against the index. (The -1 sentinel
-    // only encodes NULL in the full-replacement case where the pointer
-    // variable is removed and the index becomes the whole pointer value.)
-    bool ptr_retained = candidate.is_parameter && (base_array == ptr_name);
+    // When the pointer variable is retained as its own base, the index
+    // starts at 0 and only ever advances, so a -1 sentinel would never
+    // model a NULL pointer. The pointer's null-ness still lives in the
+    // retained variable, so NULL tests (!p, p == NULL, p = NULL, if (p))
+    // must stay on the pointer rather than be rewritten against the index.
+    // (The -1 sentinel only encodes NULL in collapse mode, where the
+    // pointer variable is removed and the index becomes the whole value.)
+    //
+    // This has always been true of parameters; handle mode is that same
+    // arrangement generalized to any pointer that cannot collapse.
+    bool ptr_retained =
+        handle_mode || (candidate.is_parameter && (base_array == ptr_name));
 
     // ---- Step 2: rewrite each access ---------------------------------
     // One case per PointerAccessKind. Each case looks up the relevant

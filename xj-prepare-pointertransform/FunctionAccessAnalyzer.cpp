@@ -150,8 +150,11 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
         printAccesses(VD, state.accesses, Ctx);
 
         std::string error;
-        if (!validatePointerCandidate(VD, state.candidate, state.accesses,
-                                      Ctx, error)) {
+        // Globals stay on the collapse path for now; handle mode for
+        // file-scope pointers is deferred (they bypass transformPointerVar
+        // and emit no metadata).
+        if (validatePointerCandidate(VD, state.candidate, state.accesses,
+                                     Ctx, error) == TransformMode::Reject) {
             gLog.error = error;
             logFailedPointer(VD, Ctx, error);
             if (VERBOSE)
@@ -247,7 +250,8 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             auto &candidate = analysis.tracked_pointers[PtrVar];
             auto &access_list = pair.second;
             std::string error;
-            if (validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error))
+            if (validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error) !=
+                TransformMode::Reject)
                 will_transform.insert(PtrVar);
         }
 
@@ -446,7 +450,9 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
     printAccesses(PtrVar, accesses, Ctx);
 
     std::string error;
-    if (!validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error)) {
+    TransformMode mode =
+        validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error);
+    if (mode == TransformMode::Reject) {
         gLog.error = error;
         logFailedPointer(PtrVar, Ctx, error);
         if (VERBOSE)
@@ -456,7 +462,7 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
 
     g_pointers_found++;
 
-    if (generateTransformation(FD, PtrVar, candidate, accesses, Ctx)) {
+    if (generateTransformation(FD, PtrVar, candidate, accesses, Ctx, mode)) {
         gLog.replacedPointer = true;
         g_pointers_replaced++;
         SourceManager &SM = Ctx.getSourceManager();

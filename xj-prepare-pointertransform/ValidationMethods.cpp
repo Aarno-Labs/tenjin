@@ -1,15 +1,17 @@
-// ValidationMethods.cpp — gatekeeper for the pointer-to-index rewrite.
+// ValidationMethods.cpp — decides how (or whether) a pointer is rewritten.
 //
-// Each check below either confirms a property the rewriter relies on
-// (single base array, constant offsets, ...) or rules out a pattern
-// the rewriter can't safely reproduce (address-of, writes through
-// const, type punning, ...). On the first failed check we set `error`
-// to a human-readable reason and return false — that string ends up
-// in the [FAILED] log line.
+// Checks fall into two groups. Some rule out a pattern the rewriter
+// cannot reproduce in *any* mode (address-of, macro locations, shapes we
+// don't recognize); those return TransformMode::Reject with `error` set
+// to a human-readable reason, which ends up in the [FAILED] log line.
+// The rest establish that the base expression is stable enough to be
+// substituted as text at every access site — the precondition for
+// collapse mode. Failing one of those is not fatal: it means the pointer
+// must keep its handle instead, so it yields TransformMode::Handle.
 
 #include "FunctionAccessAnalyzer.h"
 
-bool FunctionAccessAnalyzer::validatePointerCandidate(
+TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
     const VarDecl *PtrVar,
     PointerCandidate &candidate,
     std::vector<PointerAccess> &accesses,
@@ -18,7 +20,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
 
     if (accesses.empty()) {
         error = "No accesses found";
-        return false;
+        return TransformMode::Reject;
     }
 
     // Any single Unknown access disqualifies the pointer — it means the
@@ -26,7 +28,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
     for (const auto &access : accesses) {
         if (access.kind == PointerAccessKind::Unknown) {
             error = "Unknown access pattern";
-            return false;
+            return TransformMode::Reject;
         }
     }
 
@@ -35,7 +37,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
     for (const auto &access : accesses) {
         if (access.kind == PointerAccessKind::AddressOf) {
             error = "Pointer address taken (&p)";
-            return false;
+            return TransformMode::Reject;
         }
     }
 
@@ -44,7 +46,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
     for (const auto &access : accesses) {
         if (access.kind == PointerAccessKind::Comparison) {
             error = "Pointer used in unresolvable comparison";
-            return false;
+            return TransformMode::Reject;
         }
     }
 
@@ -53,7 +55,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
     // *(p - 1) are fine — they were folded into min/max_relative_offset.
     if (!candidate.constant_offsets) {
         error = "Pointer has non-constant dereference offset";
-        return false;
+        return TransformMode::Reject;
     }
 
     // Require at least one mutation (++/--/+=/-=) or one indexed
@@ -97,7 +99,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
 
     if (!has_mutation && !has_array_assignment) {
         error = "No array-like usage (no mutations or indexed assignments)";
-        return false;
+        return TransformMode::Reject;
     }
 
     // Beyond mutation, also require at least one *use* of the value
@@ -132,7 +134,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
     }
     if (!has_meaningful_use && !has_mutation) {
         error = "Pointer never dereferenced or used (only init + comparison)";
-        return false;
+        return TransformMode::Reject;
     }
 
     // Reject type-punning casts. e.g. `float *p = (float *)int_buf;`
@@ -153,7 +155,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
             error = "Pointer pointee type (" + ptrPointee.getAsString() +
                 ") differs from base array element type (" +
                 baseElem.getAsString() + ")";
-            return false;
+            return TransformMode::Reject;
         }
     }
 
@@ -184,7 +186,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
             }
             if (has_write) {
                 error = "Pointer writes through const-qualified base";
-                return false;
+                return TransformMode::Reject;
             }
         }
     }
@@ -197,7 +199,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         size_t paren_pos = candidate.base_array_text.find('(');
         if (paren_pos != std::string::npos && paren_pos > 0) {
             error = "Base array is a function call return value";
-            return false;
+            return TransformMode::Reject;
         }
     }
 
@@ -336,13 +338,13 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
                 error = "Base expression '" + base_text +
                         "' depends on '" + finder.mutated_lhs +
                         "', which is mutated within the function";
-                return false;
+                return TransformMode::Reject;
             }
             if (finder.addr_escaped) {
                 error = "Base expression '" + base_text +
                         "' has its address taken via '&" + finder.escaped_text +
                         "', so it may be mutated indirectly within the function";
-                return false;
+                return TransformMode::Reject;
             }
         }
     }
@@ -366,7 +368,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         }
         if (access.loc.isMacroID()) {
             error = "Pointer used inside macro expansion";
-            return false;
+            return TransformMode::Reject;
         }
     }
 
@@ -396,7 +398,7 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
     {
         error = "Parameter reseated to a different base array (incoming "
                 "argument is an uncaptured second base)";
-        return false;
+        return TransformMode::Reject;
     }
 
     // If we still don't have a base, the only salvageable case is a
@@ -416,10 +418,10 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
             candidate.base_array_text = PtrVar->getNameAsString();
         } else {
             error = "Could not determine base array";
-            return false;
+            return TransformMode::Reject;
         }
     }
 
     gLog.foundPointer = true;
-    return true;
+    return TransformMode::Collapse;
 }

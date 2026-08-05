@@ -133,6 +133,20 @@ enum class PointerAccessKind {
     Unknown                 // any pattern we don't recognize — reject
 };
 
+// How a pointer will be rewritten, decided by validatePointerCandidate.
+//
+//   Collapse — the pointer variable is deleted and every access becomes
+//              `<base source text>[p_index]`. Preferred: it removes the
+//              raw pointer entirely and leaves a bound comparison the
+//              slice pass can anchor on. Requires the base to be spelled
+//              the same way everywhere.
+//   Handle   — the pointer variable is retained as a frozen handle (never
+//              advanced by pointer arithmetic) and accesses become
+//              `p[p_index]`. Requires nothing of the base, so it covers
+//              reseats and unstable bases that Collapse cannot express.
+//   Reject   — not rewritten at all.
+enum class TransformMode { Reject, Collapse, Handle };
+
 // One pointer the tool is considering rewriting. Populated by
 // PointerAccessCollector and refined as more accesses are classified.
 //
