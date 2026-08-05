@@ -5,7 +5,6 @@
       "pointers": [
         {
           "base_text": "buf",
-          "handle_source": "buf",
           "index_var": "r_index_xj",
           "mode": "collapse",
           "name": "r",
@@ -13,7 +12,6 @@
         },
         {
           "base_text": "buf",
-          "handle_source": "buf",
           "index_var": "w_index_xj",
           "mode": "collapse",
           "name": "w",

@@ -484,10 +484,10 @@ namespace xj
                 // names a local and the parameter lookup below could never
                 // match it anyway. Saying so outright keeps the invariant
                 // testable instead of incidental: a frozen local is not a
-                // slice root today. Admitting one means following
-                // handle_source back to the parameter it descends from,
-                // which is deferred along with parameter-driven roots.
-                if (P.mode == kModeHandle)
+                // slice root today. Admitting one means tracing the handle
+                // back to the parameter it was initialized from, which is
+                // deferred along with parameter-driven roots.
+                if (P.mode == PtrIndexMode::Handle)
                     continue;
                 // A non-constant offset applied to the index means the
                 // pointer's reach past idx is unknowable statically, so no

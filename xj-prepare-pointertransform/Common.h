@@ -184,12 +184,6 @@ struct PointerCandidate {
     // Routes the pointer to handle mode instead of rejecting it.
     bool collapse_ineligible = false;
 
-    // Name of the variable this pointer's handle was initialized from, when
-    // the initializer is a bare DeclRef. Reserved for the deferred slice-root
-    // work, which needs to know that a handle-mode local descends from a
-    // parameter; nothing in this tool reads it.
-    std::string handle_source;
-
     bool constant_offsets = true;  // false if any *(p + variable) was seen
 };
 

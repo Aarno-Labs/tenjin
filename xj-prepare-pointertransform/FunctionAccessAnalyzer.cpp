@@ -634,9 +634,9 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                 rec.base_text = (mode == TransformMode::Handle)
                                     ? rec.name
                                     : candidate.base_array_text;
-                rec.mode = (mode == TransformMode::Handle) ? xj::kModeHandle
-                                                           : xj::kModeCollapse;
-                rec.handle_source = candidate.handle_source;
+                rec.mode = (mode == TransformMode::Handle)
+                               ? xj::PtrIndexMode::Handle
+                               : xj::PtrIndexMode::Collapse;
                 fnRec->pointers.push_back(std::move(rec));
             }
         }

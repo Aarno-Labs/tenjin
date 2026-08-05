@@ -15,6 +15,18 @@
 namespace xj
 {
 
+    // How a pointer was rewritten.
+    //
+    //   Collapse — the pointer variable was deleted and each access became
+    //              `<base>[index]`, with base substituted as source text.
+    //   Handle   — the pointer variable was retained, frozen, and indexes
+    //              itself, so base_text is its own name.
+    enum class PtrIndexMode
+    {
+        Collapse,
+        Handle,
+    };
+
     struct PtrIndexPointerRecord
     {
         std::string name;      // pointer variable name
@@ -25,21 +37,9 @@ namespace xj
         // which is how the rewritten source spells every access.
         std::string base_text;
 
-        // How the pointer was rewritten: "collapse" (pointer deleted, base
-        // substituted at each access) or "handle" (pointer retained frozen,
-        // indexing itself). Absent means "collapse".
-        std::string mode;
-
-        // Name of the variable a handle was initialized from, when the
-        // initializer is a bare variable reference. Lets a consumer tell
-        // that a handle-mode local descends from a parameter. Empty when
-        // unknown; nothing reads it yet.
-        std::string handle_source;
+        // How the pointer was rewritten.
+        PtrIndexMode mode = PtrIndexMode::Collapse;
     };
-
-    // Values for PtrIndexPointerRecord::mode.
-    inline constexpr const char *kModeCollapse = "collapse";
-    inline constexpr const char *kModeHandle = "handle";
 
     struct PtrIndexFunctionRecord
     {

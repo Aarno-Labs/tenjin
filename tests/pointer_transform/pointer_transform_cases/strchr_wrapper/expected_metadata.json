@@ -5,7 +5,6 @@
       "pointers": [
         {
           "base_text": "s",
-          "handle_source": "s",
           "index_var": "p_index_xj",
           "mode": "collapse",
           "name": "p",
