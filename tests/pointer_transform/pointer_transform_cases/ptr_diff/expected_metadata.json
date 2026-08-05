@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "compact@ptr_diff.c": {
+      "file": "ptr_diff.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "r_index_xj",
+          "name": "r",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}
