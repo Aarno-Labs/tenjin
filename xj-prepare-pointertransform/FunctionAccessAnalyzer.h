@@ -59,12 +59,14 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     void printAccesses(const VarDecl *VD, const std::vector<PointerAccess> &seq,
                        ASTContext &Ctx);
 
-    // Defined in ValidationMethods.cpp.
-    bool validatePointerCandidate(const VarDecl *PtrVar,
-                                  PointerCandidate &candidate,
-                                  std::vector<PointerAccess> &accesses,
-                                  ASTContext &Ctx,
-                                  std::string &error);
+    // Defined in ValidationMethods.cpp. Returns the mode this pointer
+    // should be rewritten in, or TransformMode::Reject (with `error` set)
+    // if it should be left alone.
+    TransformMode validatePointerCandidate(const VarDecl *PtrVar,
+                                           PointerCandidate &candidate,
+                                           std::vector<PointerAccess> &accesses,
+                                           ASTContext &Ctx,
+                                           std::string &error);
 
     // Defined in TransformationMethods.cpp.
     // generateTransformation: rewrite a single local pointer in place.
@@ -72,7 +74,8 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
                                 const VarDecl *PtrVar,
                                 PointerCandidate &candidate,
                                 std::vector<PointerAccess> &accesses,
-                                ASTContext &Ctx);
+                                ASTContext &Ctx,
+                                TransformMode mode);
 
     // generateGlobalTransformation: same idea but for a file-scope
     // pointer (visited from every function that uses it).
