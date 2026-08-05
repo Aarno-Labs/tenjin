@@ -1130,7 +1130,6 @@ def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
 """
     )
 
-    # Currently panics on a misaligned pointer dereference
     run_cargo_on_final(
         tmp_resultsdir / "final", ["run", "--", (tmp_codebase / "COPYING").as_posix()]
     )
@@ -1150,6 +1149,13 @@ def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
     assert (
         sha256hex(tmp_codebase / "COPYING")
         == "018b1cb87efdf7a04c2fcc13d57ed63f62149113fb207b27ea13430d64f13513"
+    )
+
+    reset_gzip_mtime(tmp_codebase / "COPYING.gz")
+
+    assert (
+        sha256hex(tmp_codebase / "COPYING.gz")
+        == "c7d0f6d70256238349e9f682d7d1362a832cc955b653cee712b8a1db92a15acd"
     )
 
 
