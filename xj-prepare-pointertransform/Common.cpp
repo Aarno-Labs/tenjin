@@ -110,6 +110,7 @@ const char *pointerAccessKindToString(PointerAccessKind kind) {
     case PointerAccessKind::AssignArrayOffset: return "AssignArrayOffset";
     case PointerAccessKind::AssignPtr: return "AssignPtr";
     case PointerAccessKind::NoRewrite: return "NoRewrite";
+    case PointerAccessKind::MaterializeUse: return "MaterializeUse";
     case PointerAccessKind::PtrDiffBase: return "PtrDiffBase";
     case PointerAccessKind::Increment: return "Increment";
     case PointerAccessKind::Decrement: return "Decrement";
