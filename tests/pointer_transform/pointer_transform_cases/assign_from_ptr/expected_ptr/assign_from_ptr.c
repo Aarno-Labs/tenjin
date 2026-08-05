@@ -8,7 +8,8 @@ static int windows(const int *buf, int n) {
     int s = 0;
     for (int i = 0; i + 1 < n; i++) {
         const int *p = q + 1;
-        s += *p - *q;
+        int p_index_xj = 0;
+        s += p[p_index_xj] - *q;
         q++;
     }
     return s;

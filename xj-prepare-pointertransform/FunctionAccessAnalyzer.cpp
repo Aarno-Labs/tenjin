@@ -486,7 +486,14 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                 rec.param_index = -1;
                 if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
                     rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
-                rec.base_text = candidate.base_array_text;
+                // A frozen handle is its own base, and that is how the
+                // rewritten source spells every access. Recording the
+                // pre-transform base text would describe code that no
+                // longer exists — the slice pass matches subscript bases
+                // against this string.
+                rec.base_text = (mode == TransformMode::Handle)
+                                    ? rec.name
+                                    : candidate.base_array_text;
                 fnRec->pointers.push_back(std::move(rec));
             }
         }

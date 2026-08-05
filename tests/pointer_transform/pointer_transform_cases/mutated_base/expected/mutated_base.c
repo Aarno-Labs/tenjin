@@ -10,9 +10,10 @@ typedef struct {
 
 static void emit(Sink *s, const unsigned char *src, int n) {
     unsigned char *dst = s->out;
+    int dst_index_xj = 0;
     int i = 0;
     while (i < n) {
-        *dst++ = src[i];
+        dst[dst_index_xj++] = src[i];
         i++;
     }
     s->out += n;

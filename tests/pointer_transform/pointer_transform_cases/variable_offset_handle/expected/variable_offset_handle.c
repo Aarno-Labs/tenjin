@@ -5,11 +5,11 @@
  * base collapse) and merely fails to qualify as a slice, since no sound
  * static bound exists. */
 static int gather(const int *buf, int n, int stride) {
-    const int *p = buf;
+    int p_index_xj = 0;
     int s = 0;
     for (int i = 0; i + stride < n; i++) {
-        s += *(p + stride);
-        p++;
+        s += buf[p_index_xj + stride];
+        p_index_xj++;
     }
     return s;
 }

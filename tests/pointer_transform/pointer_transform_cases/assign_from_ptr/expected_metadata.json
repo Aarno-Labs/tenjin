@@ -1,3 +1,15 @@
 {
-  "functions": {}
+  "functions": {
+    "windows@assign_from_ptr.c": {
+      "file": "assign_from_ptr.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
 }
