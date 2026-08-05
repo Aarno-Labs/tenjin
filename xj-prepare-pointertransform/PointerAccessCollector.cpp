@@ -383,9 +383,15 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                                              const VarDecl *PtrVar,
                                              std::vector<PointerAccess> &access_list,
                                              PointerCandidate &candidate) {
-    if (inheritingPointerFor(DRE, PtrVar)) {
+    if (const VarDecl *Inheritor = inheritingPointerFor(DRE, PtrVar)) {
+        // field_name names the pointer that owns the enclosing
+        // declaration. Suppressing this edit is only safe if that pointer
+        // actually rewrites the declaration; if it does not, this pointer
+        // must be left alone too, or collapsing it would delete a name the
+        // surviving declaration still refers to.
         access_list.push_back({PointerAccessKind::NoRewrite, DRE->getLocation(),
-                               DRE, nullptr, "", "", "", ""});
+                               DRE, nullptr, "",
+                               Inheritor->getNameAsString(), "", ""});
         return;
     }
 
