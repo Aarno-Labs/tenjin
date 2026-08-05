@@ -334,6 +334,17 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 auto &other_cand = analysis.tracked_pointers[OtherVD];
                 std::string other_base = other_cand.base_array_text;
                 std::string other_idx = OtherVD->getNameAsString() + "_index_xj";
+
+                // Same base on both sides: the pointers cancel and the
+                // comparison is between the two indices. Leaving
+                // field_name empty selects the index form downstream.
+                if (!other_base.empty() &&
+                    other_base == candidate.base_array_text) {
+                    acc.field_name.clear();
+                    acc.operand_text = other_idx;
+                    continue;
+                }
+
                 std::string rhs = other_base.empty() ?
                     other_idx : other_base + " + " + other_idx;
                 acc.field_name = candidate.base_array_text;
