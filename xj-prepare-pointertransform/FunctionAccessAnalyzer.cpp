@@ -428,6 +428,34 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             }
         }
 
+        // A reference suppressed as NoRewrite is only safe if the pointer
+        // owning the enclosing declaration actually rewrote it. When that
+        // pointer was rejected, or was transformed without inheriting,
+        // the declaration survives verbatim and still names this pointer
+        // — so this one has to stay a pointer as well. Collapsing it
+        // would delete the declaration it is named from.
+        for (auto &pair : analysis.accesses) {
+            const VarDecl *PtrVar = pair.first;
+            if (!will_transform.count(PtrVar))
+                continue;
+            for (const auto &acc : pair.second) {
+                if (acc.kind != PointerAccessKind::NoRewrite)
+                    continue;
+                bool owner_inherited = false;
+                for (const VarDecl *Inh : inherited) {
+                    if (Inh->getNameAsString() == acc.field_name) {
+                        owner_inherited = true;
+                        break;
+                    }
+                }
+                if (!owner_inherited) {
+                    will_transform.erase(PtrVar);
+                    modes.erase(PtrVar);
+                    break;
+                }
+            }
+        }
+
         // Reject pointers whose init/assign offset references another
         // pointer that will also be transformed. The init edit would use
         // stale source text for the offset, conflicting with the inner
