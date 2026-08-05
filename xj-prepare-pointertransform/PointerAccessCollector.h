@@ -42,6 +42,17 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
                         std::vector<PointerAccess> &access_list,
                         PointerCandidate &candidate);
 
+    // Record `BO` as a reseat: an assignment giving the pointer a whole
+    // new base rather than moving it within the current one. Marks the
+    // candidate collapse-ineligible (there is no single base text left to
+    // substitute) and appends an AssignPtr access. Falls back to Unknown
+    // when the assignment is used for its value, since the rewrite turns
+    // it into a comma expression whose value is the index, not the
+    // pointer.
+    void markReseat(PointerCandidate &candidate,
+                    std::vector<PointerAccess> &access_list,
+                    const BinaryOperator *BO, DeclRefExpr *DRE);
+
     // True if `E` is a null pointer constant: 0, NULL, or ((void*)0).
     bool isNullExpr(const Expr *E);
 

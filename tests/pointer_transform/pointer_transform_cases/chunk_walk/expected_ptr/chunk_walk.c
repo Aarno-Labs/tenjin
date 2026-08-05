@@ -10,17 +10,18 @@ typedef struct Node {
 
 static int walk(Node *nodes, int n) {
     Node *p = nodes;
+    int p_index_xj = 0;
     int sum = 0;
 
     for (int i = 0; i < n; i++) {
-        sum += p->value;
-        p++;
+        sum += p[p_index_xj].value;
+        p_index_xj++;
     }
 
-    p = nodes;
+    (p = nodes, p_index_xj = 0);
     while (p) {
-        sum += p->value;
-        p = p->next;
+        sum += p[p_index_xj].value;
+        (p = p[p_index_xj].next, p_index_xj = 0);
     }
     return sum;
 }

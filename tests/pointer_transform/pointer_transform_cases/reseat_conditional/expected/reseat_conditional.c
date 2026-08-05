@@ -6,11 +6,12 @@
  * index at the reseat. */
 static int scan(const int *primary, const int *fallback, int n, int use_fb) {
     const int *p = primary;
+    int p_index_xj = 0;
     if (use_fb)
-        p = fallback;
+        (p = fallback, p_index_xj = 0);
     int total = 0;
     for (int i = 0; i < n; i++)
-        total += *p++;
+        total += p[p_index_xj++];
     return total;
 }
 
