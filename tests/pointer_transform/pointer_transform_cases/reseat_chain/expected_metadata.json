@@ -1,0 +1,23 @@
+{
+  "functions": {
+    "chain@reseat_chain.c": {
+      "file": "reseat_chain.c",
+      "pointers": [
+        {
+          "base_text": "p1",
+          "index_var": "p2_index_xj",
+          "mode": "collapse",
+          "name": "p2",
+          "param_index": -1
+        },
+        {
+          "base_text": "p1",
+          "index_var": "p3_index_xj",
+          "mode": "collapse",
+          "name": "p3",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

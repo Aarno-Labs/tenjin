@@ -20,11 +20,24 @@ namespace xj
     //   Collapse — the pointer variable was deleted and each access became
     //              `<base>[index]`, with base substituted as source text.
     //   Handle   — the pointer variable was retained, frozen, and indexes
-    //              itself, so base_text is its own name.
+    //              itself, so base_text is its own name. It is never
+    //              assigned after its declaration.
+    //   Reseated — as Handle, but the pointer is also assigned somewhere
+    //              in the body: `p = q`, `p = p->next`, `p = NULL`.
+    //
+    // Handle and Reseated produce the same shape of code; they are
+    // separate because only the second is unsafe to reshape into a slice.
+    // A slice couples a pointer with a length, and reshaping the handle
+    // makes every assignment to it a write to the slice's pointer that
+    // leaves the length describing the previous buffer. A pointer frozen
+    // merely because it is a parameter, or because its base expression
+    // was not stable enough to substitute, has no such assignment and is
+    // perfectly sliceable.
     enum class PtrIndexMode
     {
         Collapse,
         Handle,
+        Reseated,
     };
 
     struct PtrIndexPointerRecord

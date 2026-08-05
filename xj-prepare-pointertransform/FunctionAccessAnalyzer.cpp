@@ -384,9 +384,30 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             if (!Src)
                 continue;
 
+            // Only a collapsed source can be inherited from. A frozen
+            // source keeps its declaration, and its *value* is its base —
+            // its position lives in its index. `p1 = p0 + 1` would
+            // therefore be read verbatim as base + 1 rather than
+            // base + p0_index_xj + 1, silently placing p1 wherever p0
+            // started instead of where it had reached.
+            //
+            // Every other context that reads a frozen pointer's value
+            // already materializes it: a call argument becomes
+            // `p + p_index_xj` via PassedToFunc, a comparison resolves
+            // through ComparisonExpr, a return through ReturnPtr. This
+            // initializer is the exception only because the reference is
+            // suppressed as NoRewrite, on the assumption that the
+            // enclosing declaration gets rewritten wholesale — which is
+            // true of a collapsed source and false of a frozen one.
+            // Materializing it here would lift the restriction; until
+            // then, leaving the pair alone is correct. The dependent
+            // guard below drops the source too, since its reference in
+            // this initializer is then rewritten by nobody.
+            if (modes[Src] != TransformMode::Collapse)
+                continue;
+
             const std::string src_index = Src->getNameAsString() + "_index_xj";
             auto &src_cand = analysis.tracked_pointers[Src];
-            const bool src_is_handle = modes[Src] == TransformMode::Handle;
 
             bool changed = false;
             for (auto &acc : pair.second) {
@@ -412,9 +433,8 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             if (!changed)
                 continue;
 
-            candidate.base_array_text =
-                src_is_handle ? Src->getNameAsString() : src_cand.base_array_text;
-            candidate.base_array = src_is_handle ? nullptr : src_cand.base_array;
+            candidate.base_array_text = src_cand.base_array_text;
+            candidate.base_array = src_cand.base_array;
 
             std::string error;
             TransformMode remode = validatePointerCandidate(
@@ -587,6 +607,31 @@ void FunctionAccessAnalyzer::printAccesses(const VarDecl *VD,
     }
 }
 
+// True if any access assigns to the pointer after its declaration.
+//
+// Under handle mode the pointer *is* the handle, so such an assignment
+// survives verbatim into the output as a write to the handle itself.
+// Under collapse mode it does not — the pointer is gone and the
+// assignment has become an index update — which is why this only
+// distinguishes the two handle modes. Initializers are not assignments:
+// they establish the handle rather than move it.
+static bool assignsPointerAfterDecl(const std::vector<PointerAccess> &accesses) {
+    for (const auto &access : accesses) {
+        switch (access.kind) {
+        case PointerAccessKind::AssignPtr:
+        case PointerAccessKind::AssignArray:
+        case PointerAccessKind::AssignArrayOffset:
+        case PointerAccessKind::AssignAddrOf:
+        case PointerAccessKind::AssignNull:
+        case PointerAccessKind::AssignFromAllowedFunc:
+            return true;
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
 // Validate-and-rewrite one local pointer. Bumps the per-file counters
 // and emits the [REPLACED] / [FAILED] log entries.
 void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
@@ -634,9 +679,12 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                 rec.base_text = (mode == TransformMode::Handle)
                                     ? rec.name
                                     : candidate.base_array_text;
-                rec.mode = (mode == TransformMode::Handle)
-                               ? xj::PtrIndexMode::Handle
-                               : xj::PtrIndexMode::Collapse;
+                if (mode != TransformMode::Handle)
+                    rec.mode = xj::PtrIndexMode::Collapse;
+                else if (assignsPointerAfterDecl(accesses))
+                    rec.mode = xj::PtrIndexMode::Reseated;
+                else
+                    rec.mode = xj::PtrIndexMode::Handle;
                 fnRec->pointers.push_back(std::move(rec));
             }
         }

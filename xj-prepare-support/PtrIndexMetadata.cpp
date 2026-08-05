@@ -12,13 +12,23 @@ namespace xj {
 // directions cannot drift apart.
 static constexpr llvm::StringLiteral kModeCollapseText = "collapse";
 static constexpr llvm::StringLiteral kModeHandleText = "handle";
+static constexpr llvm::StringLiteral kModeReseatedText = "reseated";
 
 static llvm::StringRef modeToString(PtrIndexMode M) {
-    return M == PtrIndexMode::Handle ? kModeHandleText : kModeCollapseText;
+    switch (M) {
+    case PtrIndexMode::Handle:   return kModeHandleText;
+    case PtrIndexMode::Reseated: return kModeReseatedText;
+    case PtrIndexMode::Collapse: break;
+    }
+    return kModeCollapseText;
 }
 
 static PtrIndexMode modeFromString(llvm::StringRef S) {
-    return S == kModeHandleText ? PtrIndexMode::Handle : PtrIndexMode::Collapse;
+    if (S == kModeHandleText)
+        return PtrIndexMode::Handle;
+    if (S == kModeReseatedText)
+        return PtrIndexMode::Reseated;
+    return PtrIndexMode::Collapse;
 }
 
 static llvm::json::Object pointerToJson(const PtrIndexPointerRecord &R) {
