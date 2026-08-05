@@ -882,12 +882,13 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                             offset_str = arith_text.substr(pos + ptr_text.length());
 
                         // Try to evaluate the entire +/- chain as a
-                        // compile-time constant. If we can, fold it
-                        // into the candidate's min/max offset bounds
-                        // (used later by RustSlice lookback/lookahead).
-                        // If any term is non-constant, mark the
-                        // candidate as having a variable offset, which
-                        // disqualifies it during validation.
+                        // compile-time constant. If any term is
+                        // non-constant, record that the pointer reaches a
+                        // statically unknowable distance past its index.
+                        // The slice pass re-derives the actual lookback /
+                        // lookahead bounds from the rewritten AST
+                        // (SliceDetector::computeOffsetBounds), so nothing
+                        // here needs to accumulate them.
                         bool is_const_offset = true;
                         int const_offset = 0;
 
@@ -914,14 +915,8 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                                 CurBO = nullptr;
                         }
 
-                        if (is_const_offset) {
-                            if (const_offset < candidate.min_relative_offset)
-                                candidate.min_relative_offset = const_offset;
-                            if (const_offset > candidate.max_relative_offset)
-                                candidate.max_relative_offset = const_offset;
-                        } else {
+                        if (!is_const_offset)
                             candidate.constant_offsets = false;
-                        }
 
                         // Read or write of *(p ± expr)?
                         const Stmt *DerefParent = skipTransparentParents(DerefUO, Ctx);

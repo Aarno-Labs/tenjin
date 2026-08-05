@@ -64,6 +64,19 @@ enum class PointerAccessKind {
     AssignArray,        // p = arr;                  → p_index = 0;
     AssignArrayOffset,  // p = arr + n;              → p_index = n;
 
+    // --- Reseats (handle mode only) ---------------------------------------
+    // A reseat assigns a whole new base to the pointer rather than moving
+    // it within the current one. Base collapse cannot express these — there
+    // is no single base text to substitute — so they mark the pointer
+    // collapse-ineligible and are rewritten with the pointer retained as a
+    // frozen handle. The index is *inherited*: `q_index + (x)` when the RHS
+    // is another tracked pointer, 0 otherwise. `p = p->next` needs no kind
+    // of its own — the RHS `p` is a separate DeclRefExpr that classifies
+    // independently as ArrowAccess, and its RHS root is not a bare tracked
+    // pointer, so the uniform rule already yields index 0.
+    AssignPtr,          // p = <expr>;               → p = <expr>; p_index = 0;
+    AssignPtrOffset,    // p = <expr> + n;           → p = <expr>; p_index = n;
+
     // --- Pointer arithmetic on the pointer itself -------------------------
     Increment,          // p++ / ++p                 → p_index++ / ++p_index
     Decrement,          // p-- / --p                 → p_index-- / --p_index
@@ -122,17 +135,35 @@ enum class PointerAccessKind {
 
 // One pointer the tool is considering rewriting. Populated by
 // PointerAccessCollector and refined as more accesses are classified.
+//
+// Two rewrite modes exist (see TransformMode in FunctionAccessAnalyzer.h):
+//   - Collapse: the pointer variable is deleted and every access becomes
+//     `<base source text>[p_index]`. The base is a *syntactic* fact
+//     re-substituted at each site, so it must be textually valid and stable
+//     across the whole function.
+//   - Handle: the pointer variable is retained as a frozen handle and every
+//     access becomes `p[p_index]`. The base is a *runtime value*, so nothing
+//     is required of its spelling.
+// Collapse is preferred wherever it is provable; `collapse_ineligible`
+// records that one of the base-stability facts it depends on does not hold.
 struct PointerCandidate {
     const VarDecl *ptr_var;
     const Expr *base_array;        // AST node the base array was extracted from
     std::string base_array_text;   // source text of the base, e.g. "users", "bs->buf"
     bool is_parameter;             // true if this pointer is a function parameter
 
-    // Lookback / lookahead bounds, computed from constant *(p ± k) accesses.
-    // Used by the RustSlice transform to extend slice bounds at call sites.
-    int min_relative_offset = 0;   // most-negative constant offset seen (e.g. -1)
-    int max_relative_offset = 0;   // most-positive constant offset seen (e.g. +2)
-    bool constant_offsets = true;  // false if any *(p + variable) was seen → reject
+    // Set when a base-stability fact fails: a second, textually different
+    // assignment source, or a base expression we cannot safely re-spell.
+    // Routes the pointer to handle mode instead of rejecting it.
+    bool collapse_ineligible = false;
+
+    // Name of the variable this pointer's handle was initialized from, when
+    // the initializer is a bare DeclRef. Reserved for the deferred slice-root
+    // work, which needs to know that a handle-mode local descends from a
+    // parameter; nothing in this tool reads it.
+    std::string handle_source;
+
+    bool constant_offsets = true;  // false if any *(p + variable) was seen
 };
 
 // One classified use of a tracked pointer. The combination of `kind` and
