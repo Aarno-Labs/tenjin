@@ -726,6 +726,25 @@ bool FunctionAccessAnalyzer::generateTransformation(
         case PointerAccessKind::NoRewrite:
             break;
 
+        // ---- p - base -> p_index ----
+        // Collapse only: with the pointer frozen it is its own base, so
+        // the distance is whatever the index already says and there is no
+        // subtraction left in the source to rewrite.
+        case PointerAccessKind::PtrDiffBase: {
+            if (handle_mode) break;
+            const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
+            if (!BO) break;
+
+            Edit e;
+            e.type = Edit::Replace;
+            e.offset = SM.getFileOffset(BO->getBeginLoc());
+            e.start = BO->getBeginLoc();
+            e.end = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
+            e.text = index_name;
+            edits.push_back(e);
+            break;
+        }
+
         // ---- Comparison null: p == NULL -> p_index == -1 ----
         // ---- Comparison expr: p < arr+n -> p_index < n ----
         case PointerAccessKind::ComparisonNull:

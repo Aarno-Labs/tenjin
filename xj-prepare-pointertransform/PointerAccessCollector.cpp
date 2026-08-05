@@ -614,6 +614,22 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
     // ---- BinaryOperator: comparisons, assignments, compound assigns,
     //                       pointer arithmetic --------------------------
     if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(Parent)) {
+        // p - base -> p_index. A pointer's distance from its own base is
+        // exactly its index, so the subtraction disappears. Restricted to
+        // the captured base spelled the same way, which is the common
+        // `(int)(w - buf)` length computation; any other subtraction
+        // falls through to the shapes below.
+        if (BO->getOpcode() == BO_Sub && !candidate.base_array_text.empty() &&
+            (BO->getLHS()->IgnoreParenImpCasts() == DRE ||
+             BO->getLHS()->IgnoreParenImpCasts() == OutermostDRE) &&
+            BO->getRHS()->IgnoreParenImpCasts()->getType()->isPointerType() &&
+            getSourceText(BO->getRHS()->IgnoreParenImpCasts(), SM, LO) ==
+                candidate.base_array_text) {
+            access_list.push_back({PointerAccessKind::PtrDiffBase,
+                                   BO->getBeginLoc(), DRE, BO, "", "", "", ""});
+            return;
+        }
+
         // Comparison: p == NULL, p < end, p < arr + n, p >= arr, ...
         // We try several shapes in order of specificity, falling back
         // to the unresolvable "Comparison" kind if none of them apply.

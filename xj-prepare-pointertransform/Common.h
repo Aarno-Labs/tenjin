@@ -85,6 +85,11 @@ enum class PointerAccessKind {
     // would reject an otherwise perfectly transformable pointer.
     NoRewrite,
 
+    // p - base, where base is this pointer's own base spelled exactly as
+    // captured. The distance from a pointer to its base is its index, so
+    // the whole subtraction collapses to p_index.
+    PtrDiffBase,
+
     // --- Pointer arithmetic on the pointer itself -------------------------
     Increment,          // p++ / ++p                 → p_index++ / ++p_index
     Decrement,          // p-- / --p                 → p_index-- / --p_index

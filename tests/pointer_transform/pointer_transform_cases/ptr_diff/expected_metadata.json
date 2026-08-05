@@ -10,6 +10,14 @@
           "mode": "collapse",
           "name": "r",
           "param_index": -1
+        },
+        {
+          "base_text": "buf",
+          "handle_source": "buf",
+          "index_var": "w_index_xj",
+          "mode": "collapse",
+          "name": "w",
+          "param_index": -1
         }
       ]
     }

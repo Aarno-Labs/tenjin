@@ -5,18 +5,18 @@
  * rather than being rebuilt as pointer expressions. */
 static int compact(int *buf, int n) {
     int r_index_xj = 0;
-    int *w = buf;
+    int w_index_xj = 0;
     int moved = 0;
     for (int i = 0; i < n; i++) {
         if (buf[r_index_xj]) {
-            *w = buf[r_index_xj];
-            if (r_index_xj > (w - buf))
+            buf[w_index_xj] = buf[r_index_xj];
+            if (r_index_xj > w_index_xj)
                 moved++;
-            w++;
+            w_index_xj++;
         }
         r_index_xj++;
     }
-    return (int)(w - buf) * 10 + moved;
+    return (int)(w_index_xj) * 10 + moved;
 }
 
 int main(void) {
