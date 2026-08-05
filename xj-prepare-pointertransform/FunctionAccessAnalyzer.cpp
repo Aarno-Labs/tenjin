@@ -341,13 +341,99 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             }
         }
 
+        // Index inheritance: `T *p = q + x;` where q is itself rewritten
+        // as an index. p's position is q's position plus x, so p takes
+        // over q's base and its initial index becomes `q_index_xj + (x)`.
+        //
+        // Which base p adopts depends on how q was rewritten: a collapsed
+        // q has been deleted, so p must name whatever q indexed into; a
+        // frozen q is still there and is its own base. Either way the
+        // offset carries q's index, which is the whole point — reading
+        // `q + x` verbatim after q stops moving would capture q's
+        // starting position rather than its current one.
+        //
+        // Re-validating p afterwards is sound here, unlike re-validating
+        // to *decide* a mode: the candidate changed because this fixup
+        // changed it, and p is now judged against its real base (`buf`,
+        // stable) instead of a moving pointer, which is what lets it
+        // collapse at all.
+        std::set<const VarDecl *> inherited;
+        for (auto &pair : analysis.accesses) {
+            const VarDecl *PtrVar = pair.first;
+            if (!will_transform.count(PtrVar))
+                continue;
+            auto &candidate = analysis.tracked_pointers[PtrVar];
+            if (candidate.base_array_text.empty())
+                continue;
+
+            const VarDecl *Src = nullptr;
+            for (const auto &other : analysis.tracked_pointers) {
+                if (other.first != PtrVar &&
+                    other.first->getNameAsString() == candidate.base_array_text &&
+                    other.first->getType()->isPointerType() &&
+                    will_transform.count(other.first)) {
+                    Src = other.first;
+                    break;
+                }
+            }
+            if (!Src)
+                continue;
+
+            const std::string src_index = Src->getNameAsString() + "_index_xj";
+            auto &src_cand = analysis.tracked_pointers[Src];
+            const bool src_is_handle = modes[Src] == TransformMode::Handle;
+
+            bool changed = false;
+            for (auto &acc : pair.second) {
+                switch (acc.kind) {
+                case PointerAccessKind::InitArray:
+                case PointerAccessKind::AssignArray:
+                    // `p = q` — p starts exactly where q is.
+                    acc.kind = (acc.kind == PointerAccessKind::InitArray)
+                                   ? PointerAccessKind::InitArrayOffset
+                                   : PointerAccessKind::AssignArrayOffset;
+                    acc.offset_text = src_index;
+                    changed = true;
+                    break;
+                case PointerAccessKind::InitArrayOffset:
+                case PointerAccessKind::AssignArrayOffset:
+                    acc.offset_text = src_index + " + (" + acc.offset_text + ")";
+                    changed = true;
+                    break;
+                default:
+                    break;
+                }
+            }
+            if (!changed)
+                continue;
+
+            candidate.base_array_text =
+                src_is_handle ? Src->getNameAsString() : src_cand.base_array_text;
+            candidate.base_array = src_is_handle ? nullptr : src_cand.base_array;
+
+            std::string error;
+            TransformMode remode = validatePointerCandidate(
+                PtrVar, candidate, pair.second, Ctx, error);
+            if (remode == TransformMode::Reject) {
+                will_transform.erase(PtrVar);
+                modes.erase(PtrVar);
+            } else {
+                modes[PtrVar] = remode;
+                inherited.insert(PtrVar);
+            }
+        }
+
         // Reject pointers whose init/assign offset references another
         // pointer that will also be transformed. The init edit would use
         // stale source text for the offset, conflicting with the inner
-        // pointer's transformation.
+        // pointer's transformation. Pointers handled by the inheritance
+        // fixup above are exempt: their offset no longer names the other
+        // pointer, it names that pointer's index.
         for (auto &pair : analysis.accesses) {
             const VarDecl *PtrVar = pair.first;
             if (will_transform.find(PtrVar) == will_transform.end())
+                continue;
+            if (inherited.count(PtrVar))
                 continue;
             for (const auto &acc : pair.second) {
                 if (acc.kind != PointerAccessKind::InitArrayOffset &&

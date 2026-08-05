@@ -343,10 +343,52 @@ void PointerAccessCollector::markReseat(PointerCandidate &candidate,
                            DRE, BO, "", "", "", ""});
 }
 
+// True if `DRE` sits inside the initializer of a *different* tracked
+// pointer — the `q` in `T *p = q + 1;`. That declaration is rewritten as
+// a unit by p, which inherits q's index, so this occurrence needs no edit
+// and must not fall through to the Unknown catch-all: doing so would
+// reject q entirely, which is what used to make an inherited
+// initializer cost both pointers their rewrite.
+const VarDecl *PointerAccessCollector::inheritingPointerFor(const DeclRefExpr *DRE,
+                                                            const VarDecl *PtrVar) {
+    auto Start = Ctx.getParents(*DRE);
+    if (Start.empty())
+        return nullptr;
+    DynTypedNode Node = Start[0];
+    while (true) {
+        if (const auto *VD = Node.get<VarDecl>()) {
+            if (VD != PtrVar && tracked_pointers.count(VD))
+                return VD;
+            return nullptr;
+        }
+        const Stmt *S = Node.get<Stmt>();
+        // Only walk out through pointer arithmetic and transparent nodes;
+        // anything else means the reference is not simply the base of an
+        // initializer.
+        if (!S || !isa<ImplicitCastExpr, ParenExpr, CStyleCastExpr,
+                       BinaryOperator>(S))
+            return nullptr;
+        if (const auto *BO = dyn_cast<BinaryOperator>(S)) {
+            if (BO->getOpcode() != BO_Add && BO->getOpcode() != BO_Sub)
+                return nullptr;
+        }
+        auto Parents = Ctx.getParents(*S);
+        if (Parents.empty())
+            return nullptr;
+        Node = Parents[0];
+    }
+}
+
 void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                                              const VarDecl *PtrVar,
                                              std::vector<PointerAccess> &access_list,
                                              PointerCandidate &candidate) {
+    if (inheritingPointerFor(DRE, PtrVar)) {
+        access_list.push_back({PointerAccessKind::NoRewrite, DRE->getLocation(),
+                               DRE, nullptr, "", "", "", ""});
+        return;
+    }
+
     const Stmt *OutermostDRE = DRE; // top of the transparent wrapper chain over DRE
     const Stmt *Parent = skipTransparentParentsOf(DRE, Ctx, OutermostDRE);
     if (!Parent) {

@@ -720,6 +720,11 @@ bool FunctionAccessAnalyzer::generateTransformation(
             break;
         }
 
+        // The enclosing declaration is rewritten by the pointer that
+        // inherits this one's index; nothing to do here.
+        case PointerAccessKind::NoRewrite:
+            break;
+
         // ---- Comparison null: p == NULL -> p_index == -1 ----
         // ---- Comparison expr: p < arr+n -> p_index < n ----
         case PointerAccessKind::ComparisonNull:
