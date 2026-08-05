@@ -249,16 +249,35 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         }
 
         // Pre-validation: determine which pointers will actually be
-        // transformed so that cross-pointer comparisons can be resolved.
+        // transformed, and in which mode, so that cross-pointer
+        // comparisons can be resolved.
+        //
+        // Each pointer is judged exactly once and the verdict carried to
+        // the rewrite. Re-validating later would re-judge a candidate the
+        // fixups below have since altered, and the modes are not
+        // interchangeable: a pointer demoted to Handle for an unstable
+        // base looks perfectly collapsible once its base has been
+        // rewritten to its own name, and collapse would then delete the
+        // declaration out from under its accesses.
         std::set<const VarDecl *> will_transform;
+        std::map<const VarDecl *, TransformMode> modes;
         for (auto &pair : analysis.accesses) {
             const VarDecl *PtrVar = pair.first;
             auto &candidate = analysis.tracked_pointers[PtrVar];
             auto &access_list = pair.second;
             std::string error;
-            if (validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error) !=
-                TransformMode::Reject)
+            TransformMode mode =
+                validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error);
+            if (mode != TransformMode::Reject) {
                 will_transform.insert(PtrVar);
+                modes[PtrVar] = mode;
+            } else {
+                gLog.error = error;
+                logFailedPointer(PtrVar, Ctx, error);
+                if (VERBOSE)
+                    llvm::outs() << "[Skip] " << PtrVar->getNameAsString()
+                                 << ": " << error << "\n";
+            }
         }
 
         // Fix up ComparisonExpr accesses that reference another pointer
@@ -375,19 +394,25 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
 
         // First pass: param-bounded pointers
         for (const VarDecl *PtrVar : rust_slice_candidates) {
+            auto mit = modes.find(PtrVar);
+            if (mit == modes.end())
+                continue;
             auto &access_list = analysis.accesses[PtrVar];
             auto &candidate = analysis.tracked_pointers[PtrVar];
-            transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
+            transformPointerVar(FD, PtrVar, candidate, access_list, Ctx, mit->second);
         }
 
         // Second pass: remaining pointers. Skip pointers removed from
         // will_transform by init conflict detection.
         for (const VarDecl *PtrVar : other_pointers) {
-            auto &access_list = analysis.accesses[PtrVar];
-            auto &candidate = analysis.tracked_pointers[PtrVar];
+            auto mit = modes.find(PtrVar);
+            if (mit == modes.end())
+                continue;
             if (will_transform.find(PtrVar) == will_transform.end())
                 continue;
-            transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
+            auto &access_list = analysis.accesses[PtrVar];
+            auto &candidate = analysis.tracked_pointers[PtrVar];
+            transformPointerVar(FD, PtrVar, candidate, access_list, Ctx, mit->second);
         }
     }
 }
@@ -449,22 +474,12 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                                                   const VarDecl *PtrVar,
                                                   PointerCandidate &candidate,
                                                   std::vector<PointerAccess> &accesses,
-                                                  ASTContext &Ctx) {
-    if (accesses.empty())
+                                                  ASTContext &Ctx,
+                                                  TransformMode mode) {
+    if (accesses.empty() || mode == TransformMode::Reject)
         return;
 
     printAccesses(PtrVar, accesses, Ctx);
-
-    std::string error;
-    TransformMode mode =
-        validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error);
-    if (mode == TransformMode::Reject) {
-        gLog.error = error;
-        logFailedPointer(PtrVar, Ctx, error);
-        if (VERBOSE)
-            llvm::outs() << "[Skip] " << PtrVar->getNameAsString() << ": " << error << "\n";
-        return;
-    }
 
     g_pointers_found++;
 
