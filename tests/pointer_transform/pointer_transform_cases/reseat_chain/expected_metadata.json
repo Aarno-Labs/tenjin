@@ -4,17 +4,17 @@
       "file": "reseat_chain.c",
       "pointers": [
         {
-          "base_text": "p1",
-          "index_var": "p2_index_xj",
-          "mode": "collapse",
-          "name": "p2",
+          "base_text": "p0",
+          "index_var": "p0_index_xj",
+          "mode": "reseated",
+          "name": "p0",
           "param_index": -1
         },
         {
-          "base_text": "p1",
-          "index_var": "p3_index_xj",
-          "mode": "collapse",
-          "name": "p3",
+          "base_text": "p2",
+          "index_var": "p2_index_xj",
+          "mode": "handle",
+          "name": "p2",
           "param_index": -1
         }
       ]

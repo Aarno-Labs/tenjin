@@ -384,27 +384,55 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             if (!Src)
                 continue;
 
-            // Only a collapsed source can be inherited from. A frozen
-            // source keeps its declaration, and its *value* is its base —
-            // its position lives in its index. `p1 = p0 + 1` would
-            // therefore be read verbatim as base + 1 rather than
-            // base + p0_index_xj + 1, silently placing p1 wherever p0
-            // started instead of where it had reached.
+            // Only a collapsed source can be *inherited* from. A frozen
+            // source keeps its declaration and its value is its base — its
+            // position lives in its index — so `p1 = p0 + 1` read verbatim
+            // means base + 1 rather than base + p0_index_xj + 1, placing
+            // p1 wherever p0 started instead of where it had reached.
             //
-            // Every other context that reads a frozen pointer's value
-            // already materializes it: a call argument becomes
-            // `p + p_index_xj` via PassedToFunc, a comparison resolves
-            // through ComparisonExpr, a return through ReturnPtr. This
-            // initializer is the exception only because the reference is
-            // suppressed as NoRewrite, on the assumption that the
-            // enclosing declaration gets rewritten wholesale — which is
-            // true of a collapsed source and false of a frozen one.
-            // Materializing it here would lift the restriction; until
-            // then, leaving the pair alone is correct. The dependent
-            // guard below drops the source too, since its reference in
-            // this initializer is then rewritten by nobody.
-            if (modes[Src] != TransformMode::Collapse)
+            // Such a source is materialized instead: its reference in the
+            // initializer becomes `(p0 + p0_index_xj)`, which is what
+            // every other context reading a frozen pointer's value already
+            // does — call arguments via PassedToFunc, comparisons via
+            // ComparisonExpr, returns via ReturnPtr. This position is the
+            // odd one out only because the reference was suppressed as
+            // NoRewrite, on the assumption that the enclosing declaration
+            // is rewritten wholesale; true of a collapsed source, false of
+            // a frozen one. Both pointers then transform independently:
+            // there is no index to inherit, because the owner starts
+            // wherever that materialized expression points.
+            if (modes[Src] != TransformMode::Collapse) {
+                // Not when the two share a DeclStmt. The source's index is
+                // declared after the whole statement, so the owner's
+                // initializer would name it before it exists.
+                const DeclStmt *SrcDS = findDeclStmtForVar(Src, FD->getBody());
+                const DeclStmt *OwnDS = findDeclStmtForVar(PtrVar, FD->getBody());
+                if (SrcDS && SrcDS == OwnDS)
+                    continue;
+
+                const std::string owner = PtrVar->getNameAsString();
+                for (auto &acc : analysis.accesses[Src]) {
+                    if (acc.kind == PointerAccessKind::NoRewrite &&
+                        acc.field_name == owner)
+                        acc.kind = PointerAccessKind::MaterializeUse;
+                }
+
+                // The owner must not collapse onto the source: the source
+                // is frozen but still moves *logically*, so substituting
+                // its name at each access would read a position that
+                // drifts. Force the handle and re-judge.
+                candidate.collapse_ineligible = true;
+                std::string error;
+                TransformMode remode = validatePointerCandidate(
+                    PtrVar, candidate, pair.second, Ctx, error);
+                if (remode == TransformMode::Reject) {
+                    will_transform.erase(PtrVar);
+                    modes.erase(PtrVar);
+                } else {
+                    modes[PtrVar] = remode;
+                }
                 continue;
+            }
 
             const std::string src_index = Src->getNameAsString() + "_index_xj";
             auto &src_cand = analysis.tracked_pointers[Src];

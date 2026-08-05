@@ -85,6 +85,21 @@ enum class PointerAccessKind {
     // would reject an otherwise perfectly transformable pointer.
     NoRewrite,
 
+    // The pointer's *value* is read in a context that keeps the
+    // surrounding expression, so the reference is replaced in place by
+    // `(base + index)`. A frozen pointer's value is its base — its
+    // position lives in the index — so a bare reference would report
+    // where it started rather than where it has reached.
+    //
+    // Parenthesized, unlike PassedToFunc's bare `base + index`: an
+    // argument slot binds looser than anything this can appear inside,
+    // but `(char *)p` would otherwise become `(char *)p + index`, which
+    // scales the offset by the wrong type.
+    //
+    // Only produced after validation, by the materialization fixup in
+    // transformAllFunctions.
+    MaterializeUse,
+
     // p - base, where base is this pointer's own base spelled exactly as
     // captured. The distance from a pointer to its base is its index, so
     // the whole subtraction collapses to p_index.

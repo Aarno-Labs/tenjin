@@ -726,6 +726,24 @@ bool FunctionAccessAnalyzer::generateTransformation(
         case PointerAccessKind::NoRewrite:
             break;
 
+        // ---- p -> (base + p_index), in place ----
+        // Parenthesized so the surrounding expression keeps its meaning;
+        // see the kind's comment for the cast hazard.
+        case PointerAccessKind::MaterializeUse: {
+            SourceLocation StartLoc = access.expr->getBeginLoc();
+            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
+                access.expr->getEndLoc(), 0, SM, LO);
+
+            Edit e;
+            e.type = Edit::Replace;
+            e.offset = SM.getFileOffset(StartLoc);
+            e.start = StartLoc;
+            e.end = EndLoc;
+            e.text = "(" + base_array + " + " + index_name + ")";
+            edits.push_back(e);
+            break;
+        }
+
         // ---- p - base -> p_index ----
         // Collapse only: with the pointer frozen it is its own base, so
         // the distance is whatever the index already says and there is no

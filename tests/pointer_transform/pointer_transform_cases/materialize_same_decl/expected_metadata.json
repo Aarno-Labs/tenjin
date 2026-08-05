@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "f@materialize_same_decl.c": {
+      "file": "materialize_same_decl.c",
+      "pointers": [
+        {
+          "base_text": "r",
+          "index_var": "q_index_xj",
+          "mode": "collapse",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}
