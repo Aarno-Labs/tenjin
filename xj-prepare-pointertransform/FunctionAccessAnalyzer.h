@@ -49,11 +49,12 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // Emit a [FAILED] log entry plus update gLog/per-file state.
     void logFailedPointer(const VarDecl *VD, ASTContext &Ctx, const std::string &error);
 
-    // Validate + rewrite one local pointer (the simple within-function path).
+    // Rewrite one local pointer in the mode transformAllFunctions already
+    // decided for it (the simple within-function path).
     void transformPointerVar(const FunctionDecl *FD, const VarDecl *PtrVar,
                              PointerCandidate &candidate,
                              std::vector<PointerAccess> &accesses,
-                             ASTContext &Ctx);
+                             ASTContext &Ctx, TransformMode mode);
 
     // Debug dump of an access list (only fires when VERBOSE).
     void printAccesses(const VarDecl *VD, const std::vector<PointerAccess> &seq,
