@@ -886,6 +886,32 @@ impl ConversionContext {
                     self.processed_nodes.insert(new_id, TYPE);
                 }
 
+                TypeTag::TagCountAttributedType => {
+                    let ty_id = from_value(ty_node.extras[0].clone())
+                        .expect("Count attributed type child not found");
+                    let ty = self.visit_qualified_type(ty_id);
+
+                    let kind = match expect_opt_str(&ty_node.extras[1])
+                        .flatten()
+                        .expect("Count attributed type kind missing")
+                    {
+                        "counted_by" => CountAttributedKind::CountedBy,
+                        "sized_by" => CountAttributedKind::SizedBy,
+                        "counted_by_or_null" => CountAttributedKind::CountedByOrNull,
+                        "sized_by_or_null" => CountAttributedKind::SizedByOrNull,
+                        other => panic!("Unknown CountAttributedType kind: {}", other),
+                    };
+
+                    let count_expr = expect_opt_u64(&ty_node.extras[2])
+                        .expect("Count attributed type count expr field missing")
+                        .map(|id| self.visit_expr(id as ClangId));
+
+                    let ty =
+                        CTypeKind::Attributed(ty, Some(Attribute::CountedBy(kind, count_expr)));
+                    self.add_type(new_id, not_located(ty));
+                    self.processed_nodes.insert(new_id, TYPE);
+                }
+
                 TypeTag::TagConstantArrayType => {
                     let element_id = from_value(ty_node.extras[0].clone()).expect("element id");
                     let element = self.visit_type(element_id);
@@ -977,7 +1003,20 @@ impl ConversionContext {
             // Convert the node
             let node: &AstNode = match untyped_context.ast_nodes.get(&node_id) {
                 Some(x) => x,
-                None => return,
+                None => {
+                    // Unsupported exporter visitors can omit child nodes. The
+                    // placeholder is intentionally untyped/unlocated; if it is
+                    // translated, it reports an unsupported expression instead
+                    // of hiding the invalid AST behind a later missing-id panic.
+                    if expected_ty & EXPR != 0 {
+                        self.add_expr(new_id, not_located(CExprKind::BadExpr));
+                        self.processed_nodes.insert(new_id, EXPR);
+                    } else if expected_ty & OTHER_STMT != 0 {
+                        self.add_stmt(new_id, not_located(CStmtKind::BadStmt));
+                        self.processed_nodes.insert(new_id, OTHER_STMT);
+                    }
+                    return;
+                }
             };
 
             if expected_ty & EXPR != 0 {
@@ -1029,9 +1068,14 @@ impl ConversionContext {
                     let decls = node
                         .children
                         .iter()
-                        .map(|decl| {
+                        .filter_map(|decl| {
                             let decl_id = decl.expect("Decl not found in decl-statement");
-                            self.visit_decl(decl_id)
+                            // See the missing-node placeholder above; this also
+                            // handles old AST dumps with omitted LabelDecl nodes.
+                            untyped_context
+                                .ast_nodes
+                                .contains_key(&decl_id)
+                                .then(|| self.visit_decl(decl_id))
                         })
                         .collect();
 
