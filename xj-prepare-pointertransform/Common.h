@@ -441,3 +441,26 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 
 // Debug helper: stringify a PointerAccessKind for trace logs.
 const char *pointerAccessKindToString(PointerAccessKind kind);
+
+// ============================================================================
+// Index variable naming
+// ============================================================================
+//
+// Every rewritten pointer gets a companion index variable. The name is
+// assigned once, up front, rather than derived at each use site, because
+// an index does not always share its pointer's scope: a pointer declared
+// in a for-init has its index placed before the whole loop, where it
+// outlives the pointer. Two same-named pointers in different scopes would
+// then put two identically-named indices in one block — a redefinition,
+// or worse a silent resolution to the wrong one.
+//
+// assignIndexNames() takes one function's pointers in source order and
+// hands out `p_index_xj`, then `p_index_xj_1`, `p_index_xj_2`, ... on
+// collision. The first pointer of a given name keeps the plain form, so
+// the common case reads exactly as before.
+void assignIndexNames(const std::vector<const VarDecl *> &ptrs);
+
+// The index name for `VD`. Falls back to the plain convention for
+// pointers that never went through assignIndexNames (file-scope ones,
+// which are rewritten on their own path).
+const std::string &indexNameFor(const VarDecl *VD);
