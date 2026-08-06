@@ -78,8 +78,11 @@ enum class PointerAccessKind {
     // separate offset kind because after the rewrite there is no offset
     // left to account for.
     //
-    // `p = p->next` needs no kind of its own — its RHS `p` is a separate
-    // DeclRefExpr that classifies independently as ArrowAccess.
+    // A tracked pointer inside the RHS is a separate DeclRefExpr, classified
+    // and rewritten on its own (MaterializeUse → `(q_base + q_index)`), so
+    // its position reaches the new pointer through the assigned value rather
+    // than through the index. `p = p->next` likewise needs no kind of its
+    // own — its RHS `p` is an ArrowAccess.
     AssignPtr,          // p = <expr>[ + n];         → (p = <expr>[ + n], p_index = 0);
 
     // The pointer appears as the base of *another* tracked pointer's

@@ -683,7 +683,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // Handle mode only — the kind is never produced otherwise. The
         // assignment stays put, so the pointer absorbs the whole RHS — an
         // offset in it included — and the index restarts at 0 rather than
-        // taking the offset's value.
+        // taking the offset's value. A tracked pointer inside the RHS
+        // carries its own position across through MaterializeUse.
         case PointerAccessKind::AssignPtr: {
             if (!handle_mode) break;
             const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
