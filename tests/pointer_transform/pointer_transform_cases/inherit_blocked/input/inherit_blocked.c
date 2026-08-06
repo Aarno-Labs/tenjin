@@ -1,9 +1,11 @@
 #include <stdio.h>
 
 /* `p` is initialized from `q`, but `p` itself cannot be transformed (its
- * address is taken). `q` must therefore stay a pointer too: collapsing it
- * would delete its declaration while `p = q` still names it. Guards the
- * inheritance path against transforming only half of a pair. */
+ * address is taken), so nothing rewrites `p`'s declaration wholesale.
+ * `q`'s reference inside it therefore has to be materialized rather than
+ * suppressed — leaving it bare would name a variable collapse deletes.
+ * Only half the pair transforms, which is fine; what must not happen is
+ * `q` being collapsed with its name left behind. */
 static int guarded(const int *buf, int n) {
     const int *q = buf;
     const int *p = q;

@@ -5,10 +5,11 @@
  * that index before it exists, so this pair must be left alone. */
 static int f(int *a, int *b, int n) {
     int *p = a;
+    int p_index_xj = 0;
     if (n < 0)
-        p = b;
-    p++;
-    int *r = p, *q = r + 1;
+        (p = b, p_index_xj = 0);
+    p_index_xj++;
+    int *r = (p + p_index_xj), *q = r + 1;
     int q_index_xj = 1;
     return *r + r[q_index_xj];
 }

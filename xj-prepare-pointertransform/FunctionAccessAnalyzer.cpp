@@ -402,25 +402,13 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             // there is no index to inherit, because the owner starts
             // wherever that materialized expression points.
             if (modes[Src] != TransformMode::Collapse) {
-                // Not when the two share a DeclStmt. The source's index is
-                // declared after the whole statement, so the owner's
-                // initializer would name it before it exists.
-                const DeclStmt *SrcDS = findDeclStmtForVar(Src, FD->getBody());
-                const DeclStmt *OwnDS = findDeclStmtForVar(PtrVar, FD->getBody());
-                if (SrcDS && SrcDS == OwnDS)
-                    continue;
-
-                const std::string owner = PtrVar->getNameAsString();
-                for (auto &acc : analysis.accesses[Src]) {
-                    if (acc.kind == PointerAccessKind::NoRewrite &&
-                        acc.field_name == owner)
-                        acc.kind = PointerAccessKind::MaterializeUse;
-                }
-
                 // The owner must not collapse onto the source: the source
                 // is frozen but still moves *logically*, so substituting
                 // its name at each access would read a position that
-                // drifts. Force the handle and re-judge.
+                // drifts. Force the handle and re-judge. The source's
+                // reference in this initializer is materialized by the
+                // sweep below, which covers every reference no wholesale
+                // rewrite is going to consume.
                 candidate.collapse_ineligible = true;
                 std::string error;
                 TransformMode remode = validatePointerCandidate(
@@ -476,31 +464,64 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             }
         }
 
-        // A reference suppressed as NoRewrite is only safe if the pointer
-        // owning the enclosing declaration actually rewrote it. When that
-        // pointer was rejected, or was transformed without inheriting,
-        // the declaration survives verbatim and still names this pointer
-        // — so this one has to stay a pointer as well. Collapsing it
-        // would delete the declaration it is named from.
+        // Materialize every reference that no wholesale rewrite is going
+        // to consume.
+        //
+        // A reference is suppressed as NoRewrite on the assumption that
+        // the pointer owning the enclosing declaration replaces that
+        // declaration outright, which happens exactly when the owner
+        // inherits this pointer's index. Suppression is only about edit
+        // overlap: an inner replacement inside text that is itself being
+        // replaced would be dropped by applyEdits, taking the wholesale
+        // rewrite with it.
+        //
+        // When the owner does not inherit, the declaration survives and
+        // the reference has to say what it always meant — the pointer's
+        // value, `(base + index)`. Materializing is always sound, for a
+        // collapsed pointer as much as a frozen one. The only reason this
+        // used to drop the pointer instead is that MaterializeUse did not
+        // exist yet; dropping cost every second link of a derivation
+        // chain its rewrite.
         for (auto &pair : analysis.accesses) {
             const VarDecl *PtrVar = pair.first;
             if (!will_transform.count(PtrVar))
                 continue;
-            for (const auto &acc : pair.second) {
+            for (auto &acc : pair.second) {
                 if (acc.kind != PointerAccessKind::NoRewrite)
                     continue;
+
                 bool owner_inherited = false;
+                const VarDecl *Owner = nullptr;
                 for (const VarDecl *Inh : inherited) {
                     if (Inh->getNameAsString() == acc.field_name) {
                         owner_inherited = true;
                         break;
                     }
                 }
-                if (!owner_inherited) {
+                if (owner_inherited)
+                    continue;
+
+                for (const auto &other : analysis.tracked_pointers) {
+                    if (other.first->getNameAsString() == acc.field_name) {
+                        Owner = other.first;
+                        break;
+                    }
+                }
+
+                // Sharing a DeclStmt is the one case materialization
+                // cannot serve: this pointer's index is declared after the
+                // whole statement, so the owner's initializer would name
+                // it before it exists. Leave the pointer alone instead.
+                const DeclStmt *OwnDS =
+                    Owner ? findDeclStmtForVar(Owner, FD->getBody()) : nullptr;
+                const DeclStmt *SelfDS = findDeclStmtForVar(PtrVar, FD->getBody());
+                if (OwnDS && OwnDS == SelfDS) {
                     will_transform.erase(PtrVar);
                     modes.erase(PtrVar);
                     break;
                 }
+
+                acc.kind = PointerAccessKind::MaterializeUse;
             }
         }
 
@@ -540,12 +561,28 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 if (!InitStmt) continue;
                 bool has_conflict = false;
                 // Walk the init to find DeclRefExprs to other transformed pointers
+                const std::string self_name = PtrVar->getNameAsString();
                 std::function<void(const Stmt *)> checkRefs = [&](const Stmt *S) {
                     if (has_conflict || !S) return;
                     if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
                         if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                            if (VD != PtrVar && will_transform.count(VD))
-                                has_conflict = true;
+                            if (VD != PtrVar && will_transform.count(VD)) {
+                                // Not stale if that pointer's reference in
+                                // this very initializer is being
+                                // materialized: the text is rewritten to
+                                // `(base + index)`, which is exactly the
+                                // value the offset needs.
+                                bool materialized = false;
+                                for (const auto &oacc : analysis.accesses[VD]) {
+                                    if (oacc.kind == PointerAccessKind::MaterializeUse &&
+                                        oacc.field_name == self_name) {
+                                        materialized = true;
+                                        break;
+                                    }
+                                }
+                                if (!materialized)
+                                    has_conflict = true;
+                            }
                         }
                     }
                     for (const Stmt *Child : S->children())

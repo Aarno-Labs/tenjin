@@ -11,7 +11,8 @@ static int f(int *a, int *b, int n) {
         (p = b, p_index_xj = 0);
     p_index_xj++;
     int *q = (p + p_index_xj) + 1;
-    return p[p_index_xj] + *q;
+    int q_index_xj = 0;
+    return p[p_index_xj] + q[q_index_xj];
 }
 
 int main(void) {

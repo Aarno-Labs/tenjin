@@ -11,10 +11,12 @@ static int chain(int *a, int *b, int n) {
         (p0 = b, p0_index_xj = 0);
     p0_index_xj++;
     int *p1 = (p0 + p0_index_xj) + 1;
-    int *p2 = p1 + 1;
+    int p1_index_xj = 0;
+    int *p2 = (p1 + p1_index_xj) + 1;
     int p2_index_xj = 0;
     int *p3 = (p2 + p2_index_xj) + 1;
-    return p0[p0_index_xj] + *p1 + p2[p2_index_xj] + *p3;
+    int p3_index_xj = 0;
+    return p0[p0_index_xj] + p1[p1_index_xj] + p2[p2_index_xj] + p3[p3_index_xj];
 }
 
 int main(void) {
