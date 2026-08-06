@@ -9,8 +9,8 @@ typedef struct Node {
 } Node;
 
 static int walk(Node *nodes, int n) {
-    Node *p = nodes;
     int p_index_xj = 0;
+    Node *p = nodes;
     int sum = 0;
 
     for (int i = 0; i < n; i++) {

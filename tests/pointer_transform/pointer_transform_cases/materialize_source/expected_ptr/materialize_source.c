@@ -5,13 +5,13 @@
  * as `(p + p_index_xj) + 1` — otherwise q lands where p started rather
  * than where it had reached. Both pointers should transform. */
 static int f(int *a, int *b, int n) {
-    int *p = a;
     int p_index_xj = 0;
+    int *p = a;
     if (n < 0)
         (p = b, p_index_xj = 0);
     p_index_xj++;
-    int *q = (p + p_index_xj) + 1;
     int q_index_xj = 0;
+    int *q = (p + p_index_xj) + 1;
     return p[p_index_xj] + q[q_index_xj];
 }
 

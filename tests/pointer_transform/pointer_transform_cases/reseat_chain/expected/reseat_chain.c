@@ -5,17 +5,17 @@
  * where its source actually is at that moment, not on where its source
  * started, so the chain has to carry the source's index through. */
 static int chain(int *a, int *b, int n) {
-    int *p0 = a;
     int p0_index_xj = 0;
+    int *p0 = a;
     if (n < 0)
         (p0 = b, p0_index_xj = 0);
     p0_index_xj++;
-    int *p1 = (p0 + p0_index_xj) + 1;
     int p1_index_xj = 0;
-    int *p2 = (p1 + p1_index_xj) + 1;
+    int *p1 = (p0 + p0_index_xj) + 1;
     int p2_index_xj = 0;
-    int *p3 = (p2 + p2_index_xj) + 1;
+    int *p2 = (p1 + p1_index_xj) + 1;
     int p3_index_xj = 0;
+    int *p3 = (p2 + p2_index_xj) + 1;
     return p0[p0_index_xj] + p1[p1_index_xj] + p2[p2_index_xj] + p3[p3_index_xj];
 }
 

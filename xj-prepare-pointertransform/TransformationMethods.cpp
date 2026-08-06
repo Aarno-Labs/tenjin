@@ -82,7 +82,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
     const bool handle_mode = (mode == TransformMode::Handle);
 
     std::string ptr_name = PtrVar->getNameAsString();
-    std::string index_name = ptr_name + "_index_xj";
+    std::string index_name = indexNameFor(PtrVar);
     std::string base_array =
         handle_mode ? ptr_name : safeBase(candidate.base_array_text);
 
@@ -150,9 +150,39 @@ bool FunctionAccessAnalyzer::generateTransformation(
         std::string replacement = "int " + index_name + " = " + init_value + ";";
 
         // Handle mode never replaces the declaration — the pointer stays
-        // as the handle — so it takes the same insert-after path that a
-        // multi-declarator DeclStmt already needs.
-        if (multi_decl || handle_mode) {
+        // as the handle — so the index is declared alongside it, *before*
+        // the statement rather than after.
+        //
+        // Before, so the index is in scope for the rest of that statement:
+        // a later declarator's initializer may name it, which is what lets
+        // `int *r = p, *q = r + 1;` materialize r. And anchored on the
+        // nearest position that accepts a statement, since a for-init
+        // DeclStmt has no "after" — that slot is the loop condition.
+        //
+        // The anchor must execute exactly as often as the declaration it
+        // precedes, which is why the index is not hoisted further: a
+        // pointer declared in a loop body is re-initialized every
+        // iteration and its index has to restart with it.
+        if (handle_mode) {
+            const Stmt *Anchor = DS;
+            auto Parents = Ctx.getParents(*DS);
+            if (!Parents.empty()) {
+                if (const auto *FS = Parents[0].get<ForStmt>()) {
+                    if (FS->getInit() == DS)
+                        Anchor = FS;
+                }
+            }
+
+            SourceLocation Start = Anchor->getBeginLoc();
+            std::string indent = getIndentBeforeLoc(Start, SM).str();
+
+            Edit e;
+            e.type = Edit::InsertBefore;
+            e.offset = SM.getFileOffset(Start);
+            e.start = Start;
+            e.text = replacement + "\n" + indent;
+            edits.push_back(e);
+        } else if (multi_decl) {
             // Multi-declarator: keep the DeclStmt intact (PtrVar becomes unused)
             // and insert the index declaration on a new line after it
             SourceLocation DeclEnd = DS->getEndLoc();
@@ -1067,7 +1097,7 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
     const LangOptions &LO = Ctx.getLangOpts();
 
     std::string ptr_name = PtrVar->getNameAsString();
-    std::string index_name = ptr_name + "_index_xj";
+    std::string index_name = indexNameFor(PtrVar);
     std::string base_array = safeBase(candidate.base_array_text);
 
     std::vector<Edit> edits;

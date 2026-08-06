@@ -204,6 +204,23 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
 
         m_edited_ranges.clear();
 
+        // Name every index up front, in source order so the assignment is
+        // reproducible. Sorting by location rather than iterating the map
+        // matters: the map is keyed by VarDecl address, which is
+        // allocation order and not a property of the source.
+        {
+            SourceManager &SM = Ctx.getSourceManager();
+            std::vector<const VarDecl *> ptrs;
+            for (const auto &pair : analysis.accesses)
+                ptrs.push_back(pair.first);
+            std::sort(ptrs.begin(), ptrs.end(),
+                      [&](const VarDecl *A, const VarDecl *B) {
+                          return SM.isBeforeInTranslationUnit(A->getLocation(),
+                                                              B->getLocation());
+                      });
+            assignIndexNames(ptrs);
+        }
+
         // Two-pass edit ordering: pointers whose bound comparison
         // resolves against a parameter are rewritten first, so that when
         // two pointers' comparison rewrites overlap, the param-bounded
@@ -327,7 +344,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 // base + index <op> other_base + other_index
                 auto &other_cand = analysis.tracked_pointers[OtherVD];
                 std::string other_base = other_cand.base_array_text;
-                std::string other_idx = OtherVD->getNameAsString() + "_index_xj";
+                std::string other_idx = indexNameFor(OtherVD);
 
                 // Same base on both sides: the pointers cancel and the
                 // comparison is between the two indices. Leaving
@@ -422,7 +439,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 continue;
             }
 
-            const std::string src_index = Src->getNameAsString() + "_index_xj";
+            const std::string src_index = indexNameFor(Src);
             auto &src_cand = analysis.tracked_pointers[Src];
 
             bool changed = false;
@@ -508,14 +525,18 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                     }
                 }
 
-                // Sharing a DeclStmt is the one case materialization
-                // cannot serve: this pointer's index is declared after the
-                // whole statement, so the owner's initializer would name
-                // it before it exists. Leave the pointer alone instead.
+                // A collapsed pointer sharing a DeclStmt with its owner is
+                // the one case materialization cannot serve: its index is
+                // declared *after* the whole statement (the initializer
+                // may depend on names bound within it, so it cannot move),
+                // and the owner's initializer would reach it too early. A
+                // frozen pointer's index now precedes the statement, so it
+                // is fine.
                 const DeclStmt *OwnDS =
                     Owner ? findDeclStmtForVar(Owner, FD->getBody()) : nullptr;
                 const DeclStmt *SelfDS = findDeclStmtForVar(PtrVar, FD->getBody());
-                if (OwnDS && OwnDS == SelfDS) {
+                if (OwnDS && OwnDS == SelfDS &&
+                    modes[PtrVar] == TransformMode::Collapse) {
                     will_transform.erase(PtrVar);
                     modes.erase(PtrVar);
                     break;
@@ -732,7 +753,7 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
             if (xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(FD, Ctx)) {
                 xj::PtrIndexPointerRecord rec;
                 rec.name = PtrVar->getNameAsString();
-                rec.index_var = rec.name + "_index_xj";
+                rec.index_var = indexNameFor(PtrVar);
                 rec.param_index = -1;
                 if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
                     rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());

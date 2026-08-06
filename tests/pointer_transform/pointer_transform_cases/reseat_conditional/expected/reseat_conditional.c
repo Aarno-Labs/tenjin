@@ -5,8 +5,8 @@
  * pointer outright; the frozen-handle scheme keeps `p` and resets its
  * index at the reseat. */
 static int scan(const int *primary, const int *fallback, int n, int use_fb) {
-    const int *p = primary;
     int p_index_xj = 0;
+    const int *p = primary;
     if (use_fb)
         (p = fallback, p_index_xj = 0);
     int total = 0;

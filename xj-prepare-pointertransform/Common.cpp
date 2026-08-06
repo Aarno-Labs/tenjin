@@ -98,6 +98,30 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
     return getSourceText(E->getSourceRange(), SM, LO);
 }
 
+// Index names, keyed by the pointer's declaration. See Common.h.
+static std::map<const VarDecl *, std::string> g_index_names;
+
+void assignIndexNames(const std::vector<const VarDecl *> &ptrs) {
+    std::set<std::string> used;
+    for (const VarDecl *VD : ptrs) {
+        const std::string base = VD->getNameAsString() + "_index_xj";
+        std::string name = base;
+        for (unsigned n = 1; used.count(name); n++)
+            name = base + "_" + std::to_string(n);
+        used.insert(name);
+        g_index_names[VD] = name;
+    }
+}
+
+const std::string &indexNameFor(const VarDecl *VD) {
+    auto it = g_index_names.find(VD);
+    if (it != g_index_names.end())
+        return it->second;
+    return g_index_names
+        .emplace(VD, VD->getNameAsString() + "_index_xj")
+        .first->second;
+}
+
 // Stringify a PointerAccessKind for verbose / debug output.
 const char *pointerAccessKindToString(PointerAccessKind kind) {
     switch (kind) {

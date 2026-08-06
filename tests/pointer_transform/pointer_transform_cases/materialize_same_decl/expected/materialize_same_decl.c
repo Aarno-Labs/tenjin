@@ -1,22 +1,28 @@
 #include <stdio.h>
 
-/* `p` and `q` share a DeclStmt, so p's index variable is declared after
- * the whole statement. Materializing p inside q's initializer would name
- * that index before it exists, so this pair must be left alone. */
+/* `r` and `q` share a DeclStmt, and `q`'s initializer names `r`. Since
+ * `r` is frozen, that reference has to be materialized as
+ * `(r + r_index_xj)` — inside the very statement `r` is declared in. That
+ * only works because a frozen pointer's index is declared *before* the
+ * statement rather than after it. */
 static int f(int *a, int *b, int n) {
-    int *p = a;
-    int p_index_xj = 0;
+    int q_index_xj = 0;
+    int r_index_xj = 0;
+    int *r = a, *q = (r + r_index_xj) + 1;
     if (n < 0)
-        (p = b, p_index_xj = 0);
-    p_index_xj++;
-    int *r = (p + p_index_xj), *q = r + 1;
-    int q_index_xj = 1;
-    return *r + r[q_index_xj];
+        (r = b, r_index_xj = 0);
+    int s = 0;
+    for (int i = 0; i + 1 < n; i++) {
+        s += r[r_index_xj] + q[q_index_xj];
+        r_index_xj++;
+        q_index_xj++;
+    }
+    return s;
 }
 
 int main(void) {
-    int a[4] = {1, 2, 4, 8};
-    int b[4] = {10, 20, 40, 80};
-    printf("%d %d\n", f(a, b, 1), f(a, b, -1));
+    int a[5] = {1, 2, 4, 8, 16};
+    int b[5] = {10, 20, 40, 80, 160};
+    printf("%d %d\n", f(a, b, 4), f(a, b, -4));
     return 0;
 }
