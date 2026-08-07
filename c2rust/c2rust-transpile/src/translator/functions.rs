@@ -142,7 +142,7 @@ impl<'c> Translation<'c> {
                     let new_var = self
                         .renamer
                         .borrow_mut()
-                        .insert(decl_id, var.as_str())
+                        .insert(decl_id, var.as_str(), Namespaces::values())
                         .unwrap_or_else(|| {
                             panic!(
                                 "Failed to insert argument '{}' while converting '{}'",

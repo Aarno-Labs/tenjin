@@ -43,7 +43,7 @@ use crate::c_ast::iterators::{DFExpr, SomeId};
 use crate::c_ast::*;
 use crate::cfg;
 use crate::convert_type::TypeConverter;
-use crate::renamer::Renamer;
+use crate::renamer::{Namespaces, Renamer};
 use crate::with_stmts::WithStmts;
 use crate::{c_ast, format_translation_err};
 use crate::{ExternCrate, TranspilerConfig};
@@ -661,7 +661,7 @@ pub struct Translation<'c> {
     parent_fn_map: HashMap<CDeclId, CDeclId>,
     parent_expr_map: HashMap<CExprId, CExprId>,
     type_converter: RefCell<TypeConverter>,
-    renamer: RefCell<Renamer<CDeclId>>,
+    renamer: Rc<RefCell<Renamer<CDeclId>>>,
     zero_inits: RefCell<ZeroInits>,
     function_context: RefCell<FuncContext>,
     potential_flexible_array_members: RefCell<IndexSet<CDeclId>>,
@@ -826,7 +826,10 @@ fn prefix_names(translation: &mut Translation, prefix: &str) {
 
                 name.insert_str(0, prefix);
 
-                translation.renamer.borrow_mut().insert(decl_id, name);
+                translation
+                    .renamer
+                    .borrow_mut()
+                    .insert(decl_id, name, Namespaces::values());
             }
             CDeclKind::Variable {
                 ref mut ident,
@@ -1272,33 +1275,29 @@ pub fn translate(
         // in the presence of typedefs.
         t.ast_context.bubble_expr_types();
 
-        enum Name<'a> {
-            Var(&'a str),
-            Type(&'a str),
-            Anonymous,
-            None,
-        }
-
-        fn some_type_name(s: Option<&str>) -> Name<'_> {
-            match s {
-                None => Name::Anonymous,
-                Some(r) => Name::Type(r),
-            }
-        }
-
         // Used for testing; so that we don't overlap with C function names
         if let Some(ref prefix) = t.tcfg.prefix_function_names {
             prefix_names(&mut t, prefix);
         }
 
+        fn ns_for_decl(decl_kind: &CDeclKind) -> Namespaces {
+            use CDeclKind::*;
+            match decl_kind {
+                // Tuple structs are in both namespaces.
+                Enum { .. } => Namespaces::types() | Namespaces::values(),
+                Struct { .. } | Union { .. } | Typedef { .. } => Namespaces::types(),
+                Function { .. } | EnumConstant { .. } | Variable { .. } | MacroObject { .. } => {
+                    Namespaces::values()
+                }
+                _ => Namespaces::none(),
+            }
+        }
+
         for (&decl_id, &subdecl_id) in &t.ast_context.prenamed_decls {
             if let CDeclKind::Typedef { ref name, .. } = t.ast_context[decl_id].kind {
-                t.type_converter
-                    .borrow_mut()
-                    .declare_decl_name(decl_id, name);
-                t.type_converter
-                    .borrow_mut()
-                    .alias_decl_name(subdecl_id, decl_id);
+                let ns = ns_for_decl(&t.ast_context[subdecl_id].kind);
+                t.renamer.borrow_mut().insert(decl_id, name, ns);
+                t.renamer.borrow_mut().alias(subdecl_id, &decl_id);
             }
         }
 
@@ -1311,36 +1310,24 @@ pub fn translate(
 
         // Populate renamer with top-level names
         for (&decl_id, decl) in t.ast_context.iter_decls() {
-            use CDeclKind::*;
-            let decl_name = match decl.kind {
-                _ if contains(&t.ast_context.prenamed_decls, &decl_id) => Name::None,
-                Struct { ref name, .. } => some_type_name(name.as_ref().map(String::as_str)),
-                Enum { ref name, .. } => some_type_name(name.as_ref().map(String::as_str)),
-                Union { ref name, .. } => some_type_name(name.as_ref().map(String::as_str)),
-                Typedef { ref name, .. } => Name::Type(name),
-                Function { ref name, .. } => Name::Var(name),
-                EnumConstant { ref name, .. } => Name::Var(name),
-                Variable { ref ident, .. } if t.ast_context.c_decls_top.contains(&decl_id) => {
-                    Name::Var(ident)
-                }
-                MacroObject { ref name, .. } => Name::Var(name),
-                _ => Name::None,
-            };
-            match decl_name {
-                Name::None => (),
-                Name::Anonymous => {
-                    t.type_converter
-                        .borrow_mut()
-                        .declare_decl_name(decl_id, "C2Rust_Unnamed");
-                }
-                Name::Type(name) => {
-                    t.type_converter
-                        .borrow_mut()
-                        .declare_decl_name(decl_id, name);
-                }
-                Name::Var(name) => {
-                    t.renamer.borrow_mut().insert(decl_id, name);
-                }
+            if contains(&t.ast_context.prenamed_decls, &decl_id) {
+                continue;
+            }
+
+            if matches!(decl.kind, CDeclKind::Variable { .. })
+                && !t.ast_context.c_decls_top.contains(&decl_id)
+            {
+                continue;
+            }
+
+            let ns = ns_for_decl(&decl.kind);
+
+            if !ns.is_empty() {
+                let name = &decl
+                    .kind
+                    .get_name()
+                    .map_or("C2Rust_Unnamed", String::as_str);
+                t.renamer.borrow_mut().insert(decl_id, name, ns);
             }
         }
 
@@ -2819,7 +2806,8 @@ impl<'c> Translation<'c> {
         parent_expr_map: HashMap<CExprId, CExprId>,
     ) -> Self {
         let comment_context = CommentContext::new(&mut ast_context);
-        let type_converter = TypeConverter::new(tcfg);
+        let renamer = Rc::new(RefCell::new(Renamer::keywords_and_prelude()));
+        let type_converter = TypeConverter::new(tcfg, renamer.clone());
 
         let main_file = ast_context
             .find_file_id(main_file)
@@ -2833,8 +2821,7 @@ impl<'c> Translation<'c> {
             tcfg,
             parsed_guidance: RefCell::new(ParsedGuidance::new(tcfg.guidance_json.clone())),
             type_overrides: RefCell::new(HashMap::new()),
-            // TODO: Use Renamer::value_namespace() for most renamings.
-            renamer: RefCell::new(Renamer::global_value_namespace()),
+            renamer,
             zero_inits: RefCell::new(IndexMap::new()),
             function_context: RefCell::new(FuncContext::new()),
             potential_flexible_array_members: RefCell::new(IndexSet::new()),
@@ -3168,7 +3155,7 @@ impl<'c> Translation<'c> {
         let fn_name = self
             .renamer
             .borrow_mut()
-            .pick_name("c2rust_run_static_initializers");
+            .pick_name("c2rust_run_static_initializers", Namespaces::values());
         let fn_ty = ReturnType::Default;
         let fn_decl = mk().fn_decl(fn_name.clone(), vec![], None, fn_ty.clone());
         let fn_bare_decl = (vec![], None, fn_ty);
@@ -3696,7 +3683,10 @@ impl<'c> Translation<'c> {
             }
         }
 
-        let current_block_ident = self.renamer.borrow_mut().pick_name("c2rust_current_block");
+        let current_block_ident = self
+            .renamer
+            .borrow_mut()
+            .pick_name("c2rust_current_block", Namespaces::values());
         let current_block = mk().ident_expr(&current_block_ident);
         let mut stmts: Vec<Stmt> = lifted_stmts;
         if cfg::structures::has_multiple(&relooped) {
@@ -3912,7 +3902,7 @@ impl<'c> Translation<'c> {
                 let ident2 = self
                     .renamer
                     .borrow_mut()
-                    .insert_root(decl_id, ident)
+                    .insert_root(decl_id, ident, Namespaces::values())
                     .ok_or_else(|| {
                         TranslationError::generic(
                             "Unable to rename function scoped static initializer",
@@ -3942,6 +3932,12 @@ impl<'c> Translation<'c> {
         };
 
         match self.ast_context.index(decl_id).kind {
+            // These are emitted globally in `translate`.
+            CDeclKind::Struct { .. }
+            | CDeclKind::Union { .. }
+            | CDeclKind::Enum { .. }
+            | CDeclKind::Typedef { .. } => Ok(cfg::DeclStmtInfo::new(vec![], vec![], vec![])),
+
             CDeclKind::Variable {
                 has_static_duration: false,
                 has_thread_duration: false,
@@ -3966,7 +3962,7 @@ impl<'c> Translation<'c> {
                 let rust_name = self
                     .renamer
                     .borrow_mut()
-                    .insert(decl_id, ident)
+                    .insert(decl_id, ident, Namespaces::values())
                     .unwrap_or_else(|| panic!("Failed to insert variable '{ident}'"));
 
                 if self.ast_context.is_va_list(typ.ctype) {
@@ -4140,7 +4136,10 @@ impl<'c> Translation<'c> {
 
             ref decl => {
                 let inserted = if let Some(ident) = decl.get_name() {
-                    self.renamer.borrow_mut().insert(decl_id, ident).is_some()
+                    self.renamer
+                        .borrow_mut()
+                        .insert(decl_id, ident, Namespaces::values())
+                        .is_some()
                 } else {
                     false
                 };
@@ -4148,39 +4147,29 @@ impl<'c> Translation<'c> {
                 // TODO: We need this because we can have multiple 'extern' decls of the same variable.
                 //       When we do, we must make sure to insert into the renamer the first time, and
                 //       then skip subsequent times.
-                use CDeclKind::*;
-                let skip = match decl {
-                    Variable { .. } => !inserted,
-                    Struct { .. } => true,
-                    Union { .. } => true,
-                    Enum { .. } => true,
-                    Typedef { .. } => true,
-                    _ => false,
+                if matches!(decl, CDeclKind::Variable { .. }) && !inserted {
+                    return Ok(cfg::DeclStmtInfo::new(vec![], vec![], vec![]));
+                }
+
+                use ConvertedDecl::*;
+                let items = match self.convert_decl(ctx, decl_id)? {
+                    Item(item) => vec![item],
+                    ForeignItem(item) => {
+                        vec![mk()
+                            .unsafety(extern_block_unsafety(self.tcfg.edition))
+                            .extern_("C")
+                            .foreign_items(vec![*item])]
+                    }
+                    Items(items) => items,
+                    NoItem => return Ok(cfg::DeclStmtInfo::empty()),
                 };
 
-                if skip {
-                    Ok(cfg::DeclStmtInfo::new(vec![], vec![], vec![]))
-                } else {
-                    use ConvertedDecl::*;
-                    let items = match self.convert_decl(ctx, decl_id)? {
-                        Item(item) => vec![item],
-                        ForeignItem(item) => {
-                            vec![mk()
-                                .unsafety(extern_block_unsafety(self.tcfg.edition))
-                                .extern_("C")
-                                .foreign_items(vec![*item])]
-                        }
-                        Items(items) => items,
-                        NoItem => return Ok(cfg::DeclStmtInfo::empty()),
-                    };
-
-                    let item_stmt = |item| mk().item_stmt(item);
-                    Ok(cfg::DeclStmtInfo::new(
-                        items.iter().cloned().map(item_stmt).collect(),
-                        vec![],
-                        items.into_iter().map(item_stmt).collect(),
-                    ))
-                }
+                let item_stmt = |item| mk().item_stmt(item);
+                Ok(cfg::DeclStmtInfo::new(
+                    items.iter().cloned().map(item_stmt).collect(),
+                    vec![],
+                    items.into_iter().map(item_stmt).collect(),
+                ))
             }
         }
     }
@@ -4444,7 +4433,7 @@ impl<'c> Translation<'c> {
                             let name = self
                                 .renamer
                                 .borrow_mut()
-                                .insert(CDeclId(expr_id.0), "vla")
+                                .insert(CDeclId(expr_id.0), "vla", Namespaces::values())
                                 .unwrap(); // try using declref name?
                                            // TODO: store the name corresponding to expr_id
 
@@ -4787,178 +4776,9 @@ impl<'c> Translation<'c> {
                 }
             }
 
-            DeclRef(qual_ty, decl_id, lrvalue) => {
-                let decl = &self
-                    .ast_context
-                    .get_decl(&decl_id)
-                    .ok_or_else(|| format_err!("Missing declref {:?}", decl_id))?
-                    .kind;
-                if ctx.expanding_macro.is_some() {
-                    // TODO Determining which declarations have been declared within the scope of the const macro expr
-                    // vs. which are out-of-scope of the const macro is non-trivial,
-                    // so for now, we don't allow const macros referencing any declarations.
-                    return Err(format_translation_err!(
-                        self.ast_context.display_loc(src_loc),
-                        "Cannot yet refer to declarations in a const expr",
-                    ));
-
-                    #[allow(unreachable_code)] // TODO temporary (see above).
-                    if let CDeclKind::Variable {
-                        has_static_duration: true,
-                        ..
-                    } = decl
-                    {
-                        return Err(format_translation_err!(
-                            self.ast_context.display_loc(src_loc),
-                            "Cannot refer to static duration variable in a const expression",
-                        ));
-                    }
-                }
-
-                let varname = decl.get_name().expect("expected variable name").to_owned();
-                let rustname = self
-                    .renamer
-                    .borrow_mut()
-                    .get(&decl_id)
-                    .ok_or_else(|| format_err!("name not declared: '{}'", varname))?;
-
-                if let Some(fnname) = &self.function_context.borrow().name {
-                    // XREF:TENJIN-GUIDANCE-STRAWMAN
-                    log::trace!(
-                        "Expr::DeclRef {:?} with name {} in function {}, decl =\n\n{:?}\n\n",
-                        decl_id,
-                        varname,
-                        fnname,
-                        decl,
-                    );
-                }
-
-                // Import the referenced global decl into our submodule
-                if self.tcfg.reorganize_definitions {
-                    self.add_import(decl_id, &rustname);
-                    // match decl {
-                    //     CDeclKind::Variable { is_defn: false, .. } => {}
-                    //     _ => self.add_import(decl_id, &rustname),
-                    // }
-                }
-
-                let mut val = mk().path_expr(vec![rustname]);
-                let mut set_unsafe = false;
-
-                match decl {
-                    CDeclKind::EnumConstant { .. } => {
-                        // If the variable is actually an `EnumConstant`, we need to add a cast to
-                        // the expected integral type.
-                        val = self.convert_cast_from_enum(qual_ty.ctype, val)?;
-                    }
-
-                    CDeclKind::Function { parameters, .. } => {
-                        // If we are referring to a function and need its address, we
-                        // need to cast it to fn() to ensure that it has a real address.
-                        if ctx.needs_address() {
-                            let ty = self.convert_type(qual_ty.ctype)?;
-                            let actual_ty = self
-                                .type_converter
-                                .borrow_mut()
-                                .knr_function_type_with_parameters(
-                                    &self.ast_context,
-                                    qual_ty.ctype,
-                                    parameters,
-                                    &self.parsed_guidance.borrow(),
-                                )?;
-                            if let Some(actual_ty) = actual_ty {
-                                if actual_ty != ty {
-                                    // If we're casting a concrete function to
-                                    // a K&R function pointer type, use transmute
-                                    self.import_type(qual_ty.ctype);
-
-                                    val = transmute_expr(actual_ty, ty, val);
-                                    set_unsafe = true;
-                                }
-                            } else {
-                                let decl_kind = &self.ast_context[decl_id].kind;
-                                let kind_with_declared_args =
-                                    self.ast_context.fn_decl_ty_with_declared_args(decl_kind);
-
-                                if let Some(ty) = self
-                                    .ast_context
-                                    .try_type_for_kind(&kind_with_declared_args)
-                                    .map(CQualTypeId::new)
-                                {
-                                    let ty = self.convert_type(ty.ctype)?;
-                                    val = mk().cast_expr(val, ty);
-                                } else {
-                                    val = mk().cast_expr(val, ty);
-                                }
-                            }
-                        }
-                    }
-
-                    CDeclKind::Variable {
-                        has_static_duration,
-                        has_thread_duration,
-                        ..
-                    } => {
-                        // Accessing a static variable is unsafe.
-                        // In the current nightly, this applies also to taking a raw pointer,
-                        // but this requirement was removed in later versions of the
-                        // `raw_ref_op` feature.
-                        if (*has_static_duration || *has_thread_duration)
-                            && (self.tcfg.edition < Edition2024 || !ctx.needs_address())
-                        {
-                            set_unsafe = true;
-                        }
-                    }
-
-                    _ => {}
-                }
-
-                if let CTypeKind::VariableArray(..) =
-                    self.ast_context.resolve_type(qual_ty.ctype).kind
-                {
-                    // XREF:array_decay
-                    val = mk().method_call_expr(val, "as_mut_ptr", vec![]);
-                } else if let Some(var_guided_type) = self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, decl_id)
-                {
-                    let context_is_slice_or_array = ctx_guided_type
-                        .as_ref()
-                        .map(|t| t.is_slice_or_array_ref())
-                        .unwrap_or(false);
-
-                    // If the context expects a slice/array ref, do not coerce
-                    if var_guided_type.is_slice_or_array_ref()
-                        && !context_is_slice_or_array
-                        && !self.wrapped_with_array_decay(expr_id)
-                        && !self.wrapped_with_subscript_base(expr_id)
-                    {
-                        let method = if var_guided_type.is_exclusive_borrow() {
-                            "as_mut_ptr"
-                        } else {
-                            "as_ptr"
-                        };
-                        // Apply compatible coercions for behavioral equivalence,
-                        // unless we'd end up adding a redundant/conflicting cast.
-                        // XREF:array_decay
-                        val = mk().method_call_expr(val, method, vec![]);
-                    }
-                    // For types which do not have known compatible coercions, we leave the
-                    // variable reference as-is, and rely on the Rust compiler to notify the
-                    // user of any cases in which subsequent rewrites were unable to produce
-                    // a type-correct program.
-                }
-
-                let mut val = WithStmts::new_val(val).merge_unsafe(set_unsafe);
-
-                if lrvalue.is_rvalue() {
-                    val =
-                        self.make_cast(ctx, qual_ty, override_ty.unwrap_or(qual_ty), val, &None)?;
-                }
-
-                Ok(val)
-            }
+            DeclRef(result_type_id, decl_id, lrvalue) => self
+                .convert_decl_ref(ctx, override_ty, result_type_id, decl_id, lrvalue)
+                .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             OffsetOf(ty, ref kind) => match kind {
                 OffsetOfKind::Constant(val) => Ok(WithStmts::new_val(self.mk_int_lit(
@@ -5043,13 +4863,12 @@ impl<'c> Translation<'c> {
                 matches!(expr_kind, CExprKind::ExplicitCast(..)),
             ),
 
-            Unary(type_id, op, arg, _lrvalue) => {
-                let val =
-                    self.convert_unary_operator(ctx, op, override_ty.unwrap_or(type_id), arg)?;
+            Unary(result_type_id, op, arg, _lrvalue) => {
+                let val = self.convert_unary_operator(ctx, override_ty, result_type_id, op, arg)?;
 
                 // if the context wants a different type, add a cast
                 if let Some(expected_ty) = override_ty {
-                    if expected_ty != type_id {
+                    if expected_ty != result_type_id {
                         let ty = self.convert_type(expected_ty.ctype)?;
                         return Ok(val.map(|val| mk().cast_expr(val, ty)));
                     }
@@ -5119,7 +4938,7 @@ impl<'c> Translation<'c> {
                     let lhs = self
                         .convert_expr(ctx.used(), lhs, None)?
                         .merge_unsafe(rhs.is_unsafe());
-                    let fresh_name = self.renamer.borrow_mut().fresh();
+                    let fresh_name = self.renamer.borrow_mut().fresh(Namespaces::values());
 
                     lhs.and_then_try(|lhs| {
                         let fresh_stmt = mk().local_stmt(Box::new(mk().local(
@@ -5141,10 +4960,11 @@ impl<'c> Translation<'c> {
                 }
             }
 
-            Binary(type_id, op, lhs, rhs, opt_lhs_type_id, opt_res_type_id) => self
+            Binary(result_type_id, op, lhs, rhs, opt_lhs_type_id, opt_res_type_id) => self
                 .convert_binary_expr(
                     ctx,
-                    override_ty.unwrap_or(type_id),
+                    override_ty,
+                    result_type_id,
                     op,
                     lhs,
                     rhs,
@@ -5321,6 +5141,178 @@ impl<'c> Translation<'c> {
         )
     }
 
+    fn convert_decl_ref(
+        &self,
+        ctx: ExprContext,
+        expected_type_id: Option<CQualTypeId>,
+        result_type_id: CQualTypeId,
+        decl_id: CDeclId,
+        lrvalue: LRValue,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let decl = &self
+            .ast_context
+            .get_decl(&decl_id)
+            .ok_or_else(|| format_err!("Missing declref {:?}", decl_id))?
+            .kind;
+        if ctx.expanding_macro.is_some() {
+            // TODO Determining which declarations have been declared within the scope of the const macro expr
+            // vs. which are out-of-scope of the const macro is non-trivial,
+            // so for now, we don't allow const macros referencing any declarations.
+            return Err(format_translation_err!(
+                None,
+                "Cannot yet refer to declarations in a const expr",
+            ));
+
+            #[allow(unreachable_code)] // TODO temporary (see above).
+            if let CDeclKind::Variable {
+                has_static_duration: true,
+                ..
+            } = decl
+            {
+                return Err(format_translation_err!(
+                    None,
+                    "Cannot refer to static duration variable in a const expression",
+                ));
+            }
+        }
+
+        if let CDeclKind::EnumConstant { .. } = decl {
+            return self.convert_enum_constant_decl_ref(
+                ctx,
+                expected_type_id.unwrap_or(result_type_id),
+                decl_id,
+            );
+        }
+
+        let varname = decl.get_name().expect("expected variable name").to_owned();
+        let rustname = self
+            .renamer
+            .borrow_mut()
+            .get(&decl_id)
+            .ok_or_else(|| format_err!("name not declared: '{}'", varname))?;
+
+        // Import the referenced global decl into our submodule
+        self.add_import(decl_id, &rustname);
+        // match decl {
+        //     CDeclKind::Variable { is_defn: false, .. } => {}
+        //     _ => self.add_import(decl_id, &rustname),
+        // }
+
+        let mut val = mk().path_expr(vec![rustname]);
+        let mut set_unsafe = false;
+
+        match decl {
+            CDeclKind::Function { parameters, .. } => {
+                // If we are referring to a function and need its address, we
+                // need to cast it to fn() to ensure that it has a real address.
+                if ctx.needs_address() {
+                    let ty = self.convert_type(result_type_id.ctype)?;
+                    let actual_ty = self
+                        .type_converter
+                        .borrow_mut()
+                        .knr_function_type_with_parameters(
+                            &self.ast_context,
+                            result_type_id.ctype,
+                            parameters,
+                            &self.parsed_guidance.borrow(),
+                        )?;
+                    if let Some(actual_ty) = actual_ty {
+                        if actual_ty != ty {
+                            // If we're casting a concrete function to
+                            // a K&R function pointer type, use transmute
+                            self.import_type(result_type_id.ctype);
+
+                            val = transmute_expr(actual_ty, ty, val);
+                            set_unsafe = true;
+                        }
+                    } else {
+                        let decl_kind = &self.ast_context[decl_id].kind;
+                        let kind_with_declared_args =
+                            self.ast_context.fn_decl_ty_with_declared_args(decl_kind);
+
+                        if let Some(ty) = self
+                            .ast_context
+                            .try_type_for_kind(&kind_with_declared_args)
+                            .map(CQualTypeId::new)
+                        {
+                            let ty = self.convert_type(ty.ctype)?;
+                            val = mk().cast_expr(val, ty);
+                        } else {
+                            val = mk().cast_expr(val, ty);
+                        }
+                    }
+                }
+            }
+
+            CDeclKind::Variable {
+                has_static_duration,
+                has_thread_duration,
+                ..
+            } => {
+                // Accessing a static variable is unsafe.
+                // In the current nightly, this applies also to taking a raw pointer,
+                // but this requirement was removed in later versions of the
+                // `raw_ref_op` feature.
+                if (*has_static_duration || *has_thread_duration)
+                    && (self.tcfg.edition < Edition2024 || !ctx.needs_address())
+                {
+                    set_unsafe = true;
+                }
+            }
+
+            _ => {}
+        }
+
+        if let CTypeKind::VariableArray(..) = self.ast_context.resolve_type(qual_ty.ctype).kind {
+            // XREF:array_decay
+            val = mk().method_call_expr(val, "as_mut_ptr", vec![]);
+        } else if let Some(var_guided_type) = self
+            .parsed_guidance
+            .borrow_mut()
+            .query_decl_type(self, decl_id)
+        {
+            let context_is_slice_or_array = ctx_guided_type
+                .as_ref()
+                .map(|t| t.is_slice_or_array_ref())
+                .unwrap_or(false);
+
+            // If the context expects a slice/array ref, do not coerce
+            if var_guided_type.is_slice_or_array_ref()
+                && !context_is_slice_or_array
+                && !self.wrapped_with_array_decay(expr_id)
+                && !self.wrapped_with_subscript_base(expr_id)
+            {
+                let method = if var_guided_type.is_exclusive_borrow() {
+                    "as_mut_ptr"
+                } else {
+                    "as_ptr"
+                };
+                // Apply compatible coercions for behavioral equivalence,
+                // unless we'd end up adding a redundant/conflicting cast.
+                // XREF:array_decay
+                val = mk().method_call_expr(val, method, vec![]);
+            }
+            // For types which do not have known compatible coercions, we leave the
+            // variable reference as-is, and rely on the Rust compiler to notify the
+            // user of any cases in which subsequent rewrites were unable to produce
+            // a type-correct program.
+        }
+
+        let mut val = WithStmts::new_val(val).merge_unsafe(set_unsafe);
+
+        if lrvalue.is_rvalue() {
+            val = self.make_cast(
+                ctx,
+                result_type_id,
+                expected_type_id.unwrap_or(result_type_id),
+                val,
+                &None,
+            )?;
+        }
+
+        Ok(val)
+    }
+
     pub fn convert_constant(&self, constant: ConstIntExpr) -> TranslationResult<Box<Expr>> {
         let expr = match constant {
             ConstIntExpr::U(n) => mk().lit_expr(mk().int_unsuffixed_lit(n as u128)),
@@ -5381,7 +5373,10 @@ impl<'c> Translation<'c> {
                 let result_id = substmt_ids[n - 1];
 
                 let name = format!("<stmt-expr_{:?}>", compound_stmt_id);
-                let lbl_ident = self.renamer.borrow_mut().pick_name("c2rust_label");
+                let lbl_ident = self
+                    .renamer
+                    .borrow_mut()
+                    .pick_name("c2rust_label", Namespaces::values());
                 let lbl = cfg::Label::FromC(compound_stmt_id, Some(Rc::from(lbl_ident)));
 
                 let mut stmts = match self.ast_context[result_id].kind {
@@ -5460,23 +5455,11 @@ impl<'c> Translation<'c> {
         ctx_guided_type: &Option<tenjin::GuidedType>,
         is_explicit: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        // A reference must be decayed if a bitcast is required. Const casts in
-        // LLVM 8 are now NoOp casts, so we need to include it as well.
-        match kind {
-            CastKind::IntegralToBoolean
-            | CastKind::FloatingToBoolean
-            | CastKind::PointerToBoolean => {
-                return self.convert_condition(ctx, true, expr);
-            }
-            CastKind::BitCast | CastKind::PointerToIntegral | CastKind::NoOp => {
-                ctx.decay_ref = DecayRef::Yes
-            }
-            CastKind::ArrayToPointerDecay
-            | CastKind::FunctionToPointerDecay
-            | CastKind::BuiltinFnToFnPtr => {
-                ctx.needs_address = true;
-            }
-            _ => {}
+        if matches!(
+            kind,
+            CastKind::IntegralToBoolean | CastKind::FloatingToBoolean | CastKind::PointerToBoolean
+        ) {
+            return self.convert_condition(ctx, true, expr);
         }
 
         let expr_kind = &self.ast_context.index_unwrap_parens(expr).kind;
@@ -5501,6 +5484,21 @@ impl<'c> Translation<'c> {
                     return self.convert_expr_guided(ctx, expr, Some(target_ty), ctx_guided_type);
                 }
             }
+        }
+
+        // TODO(tenjin): these decays probably need to be elided when given guidance
+        match kind {
+            // A reference must be decayed if a bitcast is required. Const casts in
+            // LLVM 8 are now NoOp casts, so we need to include it as well.
+            CastKind::BitCast | CastKind::PointerToIntegral | CastKind::NoOp => {
+                ctx.decay_ref = DecayRef::Yes
+            }
+            CastKind::ArrayToPointerDecay
+            | CastKind::FunctionToPointerDecay
+            | CastKind::BuiltinFnToFnPtr => {
+                ctx.needs_address = true;
+            }
+            _ => {}
         }
 
         let mut val = self.convert_expr_guided(ctx, expr, None, ctx_guided_type)?;
@@ -5614,25 +5612,17 @@ impl<'c> Translation<'c> {
         }
 
         match kind {
-            CastKind::BitCast | CastKind::NoOp => self.convert_pointer_to_pointer_cast(
-                source_cty.ctype,
-                target_cty.ctype,
-                val,
-                expr,
-                None,
-            ),
-
-            CastKind::IntegralToPointer => {
-                self.convert_integral_to_pointer_cast(ctx, source_cty.ctype, target_cty.ctype, val)
+            CastKind::BitCast | CastKind::NoOp => {
+                self.convert_pointer_to_pointer_cast(source_cty, target_cty, val, expr, None)
             }
 
-            CastKind::PointerToIntegral => self.convert_pointer_to_integral_cast(
-                ctx,
-                source_cty.ctype,
-                target_cty.ctype,
-                val,
-                expr,
-            ),
+            CastKind::IntegralToPointer => {
+                self.convert_integral_to_pointer_cast(ctx, source_cty, target_cty, val)
+            }
+
+            CastKind::PointerToIntegral => {
+                self.convert_pointer_to_integral_cast(ctx, source_cty, target_cty, val, expr)
+            }
 
             CastKind::IntegralCast
             | CastKind::FloatingCast
@@ -5666,17 +5656,18 @@ impl<'c> Translation<'c> {
                     self.ast_context[source_cty.ctype].kind
                 {
                     self.f128_cast_to(val, target_ty_kind)
-                } else if let &CTypeKind::Enum(enum_decl_id) = target_ty_kind {
-                    // Casts targeting `enum` types...
-                    val.try_map(|val| {
-                        self.convert_cast_to_enum(ctx, target_cty.ctype, enum_decl_id, expr, val)
+                } else if let &CTypeKind::Enum(enum_id) = target_ty_kind {
+                    val.and_then_try(|val| {
+                        self.convert_cast_to_enum(ctx, source_cty, enum_id, expr, val)
                     })
                 } else if target_ty_kind.is_floating_type() && source_ty_kind.is_bool() {
                     Ok(val.map(|val| {
                         mk().cast_expr(mk().cast_expr(val, mk().path_ty(vec!["u8"])), target_ty)
                     }))
-                } else if let &CTypeKind::Enum(..) = source_ty_kind {
-                    val.try_map(|val| self.convert_cast_from_enum(target_cty.ctype, val))
+                } else if let &CTypeKind::Enum(enum_id) = source_ty_kind {
+                    val.and_then_try(|val| {
+                        self.convert_cast_from_enum(ctx, enum_id, target_cty, val)
+                    })
                 } else {
                     Ok(val.map(|val| tenjin::cast_expr_guided(val, target_ty, guided_type)))
                 }
@@ -5984,8 +5975,7 @@ impl<'c> Translation<'c> {
                 field.map(|field| mk().struct_expr(vec![name], vec![field]))
             }
 
-            // Transmute the number `0` into the enum type
-            CDeclKind::Enum { .. } => self.convert_enum_zero_initializer(type_id),
+            CDeclKind::Enum { .. } => self.convert_enum_zero_initializer(decl_id),
 
             _ => {
                 return Err(TranslationError::generic(
@@ -6102,7 +6092,7 @@ impl<'c> Translation<'c> {
             }
 
             let val = if ty.is_enum() {
-                mk().cast_expr(val, mk().path_ty(vec!["u64"]))
+                self.integer_from_enum(val)
             } else {
                 val
             };

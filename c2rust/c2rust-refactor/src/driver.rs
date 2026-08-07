@@ -2,6 +2,7 @@
 //! `rustc_driver::run_compiler`.
 
 use rustc_ast::ast;
+use rustc_ast::node_id::NodeMap;
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, TokenKind};
 use rustc_ast::tokenstream::TokenTree;
@@ -13,9 +14,11 @@ use rustc_ast::{
 use rustc_codegen_ssa::traits::CodegenBackend;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
+use rustc_data_structures::unord::UnordMap;
 use rustc_driver;
 use rustc_errors::PResult;
 use rustc_errors::{DiagnosticBuilder, ErrorGuaranteed};
+use rustc_hir::def::{PartialRes, PerNS, Res};
 use rustc_index::vec::IndexVec;
 use rustc_interface::interface;
 use rustc_interface::{util, Config};
@@ -26,7 +29,7 @@ use rustc_parse::parser::attr::InnerAttrPolicy;
 use rustc_parse::parser::{AttemptLocalParseRecovery, ForceCollect, Parser};
 use rustc_session::config::Input;
 use rustc_session::config::Options as SessionOptions;
-use rustc_session::{self, Session};
+use rustc_session::{self, CompilerIO, Session};
 use rustc_span::def_id::LocalDefId;
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::SyntaxContext;
@@ -70,8 +73,10 @@ impl<'a, 'tcx: 'a> RefactorCtxt<'a, 'tcx> {
         sess: &'a Session,
         max_node_id: NodeId,
         map: hir_map::Map<'tcx>,
+        partial_res_map: UnordMap<NodeId, PartialRes>,
         node_id_to_def_id: FxHashMap<NodeId, LocalDefId>,
         def_id_to_node_id: IndexVec<LocalDefId, NodeId>,
+        import_res_map: NodeMap<PerNS<Option<Res<NodeId>>>>,
         tcx: GenerationalTyCtxt<'tcx>,
         span_maps: AstSpanMaps,
     ) -> RefactorCtxt<'a, 'tcx> {
@@ -80,8 +85,10 @@ impl<'a, 'tcx: 'a> RefactorCtxt<'a, 'tcx> {
             Some(HirMap::new(
                 max_node_id,
                 map,
+                partial_res_map,
                 node_id_to_def_id,
                 def_id_to_node_id,
+                import_res_map,
                 span_maps,
             )),
             Some(tcx),
@@ -89,7 +96,7 @@ impl<'a, 'tcx: 'a> RefactorCtxt<'a, 'tcx> {
     }
 }
 
-/// Sysroot adjustment: if the sysroot is unset, and args[0] is an absolute path, use args[0] to
+/// Sysroot adjustment: if the sysroot is unset, and `args[0]` is an absolute path, use `args[0]` to
 /// infer a sysroot.  Rustc's own sysroot detection (filesearch::get_or_default_sysroot) uses
 /// env::current_exe, which will point to c2rust-refactor, not rustc.
 fn maybe_set_sysroot(mut sopts: SessionOptions, args: &[String]) -> SessionOptions {
@@ -119,10 +126,10 @@ pub fn clone_config(config: &interface::Config) -> interface::Config {
         // CheckCfg does not implement Default
         crate_check_cfg: Default::default(),
         input,
-        input_path: config.input_path.clone(),
         output_file: config.output_file.clone(),
         output_dir: config.output_dir.clone(),
         file_loader: None,
+        locale_resources: rustc_driver::DEFAULT_LOCALE_RESOURCES,
         lint_caps: config.lint_caps.clone(),
         parse_sess_created: None,
         register_lints: None,
@@ -148,18 +155,17 @@ pub fn create_config(args: &[String]) -> interface::Config {
         "expected exactly one input file, but found: {:?}",
         matches.free
     );
-    let input_path = Some(Path::new(&matches.free[0]).to_owned());
-    let input = Input::File(input_path.as_ref().unwrap().clone());
+    let input = Input::File(Path::new(&matches.free[0]).to_owned());
 
     interface::Config {
         opts: sopts,
         crate_cfg: cfg,
         crate_check_cfg: check_cfg,
         input,
-        input_path,
         output_file,
         output_dir,
         file_loader: None,
+        locale_resources: rustc_driver::DEFAULT_LOCALE_RESOURCES,
         lint_caps: Default::default(),
         parse_sess_created: None,
         register_lints: None,
@@ -169,7 +175,6 @@ pub fn create_config(args: &[String]) -> interface::Config {
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn run_compiler<F, R>(
     mut config: interface::Config,
     file_loader: Option<Box<dyn FileLoader + Send + Sync>>,
@@ -187,7 +192,6 @@ where
     interface::run_compiler(config, f)
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn run_refactoring<F, R>(
     mut config: interface::Config,
     cmd_reg: Registry,
@@ -212,11 +216,6 @@ where
 pub struct Compiler {
     pub sess: Lrc<Session>,
     pub codegen_backend: Lrc<Box<dyn CodegenBackend>>,
-    input: Input,
-    input_path: Option<PathBuf>,
-    output_dir: Option<PathBuf>,
-    output_file: Option<PathBuf>,
-    temps_dir: Option<PathBuf>,
     register_lints: Option<Box<dyn Fn(&Session, &mut LintStore) + Send + Sync>>,
     override_queries:
         Option<fn(&Session, &mut ty::query::Providers, &mut ty::query::ExternProviders)>,
@@ -228,12 +227,24 @@ pub fn make_compiler(
 ) -> interface::Compiler {
     let mut config = clone_config(config);
     config.file_loader = Some(Box::new(ArcFileIO(file_io)));
+    let temps_dir = config
+        .opts
+        .unstable_opts
+        .temps_dir
+        .as_ref()
+        .map(PathBuf::from);
     let (sess, codegen_backend) = util::create_session(
         config.opts,
         config.crate_cfg,
         config.crate_check_cfg,
+        config.locale_resources,
         config.file_loader,
-        config.input_path.clone(),
+        CompilerIO {
+            input: config.input,
+            output_dir: config.output_dir,
+            output_file: config.output_file,
+            temps_dir,
+        },
         config.lint_caps,
         config.make_codegen_backend,
         config.registry,
@@ -244,22 +255,10 @@ pub fn make_compiler(
     sess.source_map()
         .new_source_file(FileName::Custom("<dummy>".to_string()), " ".to_string());
 
-    let temps_dir = sess
-        .opts
-        .unstable_opts
-        .temps_dir
-        .as_ref()
-        .map(|o| PathBuf::from(&o));
-
     let compiler = Compiler {
         sess: sess.into(),
         codegen_backend: codegen_backend.into(),
-        input: config.input,
-        input_path: config.input_path,
-        output_dir: config.output_dir,
-        output_file: config.output_file,
         override_queries: config.override_queries,
-        temps_dir,
         register_lints: config.register_lints,
     };
 
@@ -281,7 +280,6 @@ pub fn emit_and_panic(mut db: DiagnosticBuilder<ErrorGuaranteed>, what: &str) ->
 }
 
 // Helper functions for parsing source code in an existing `Session`.
-#[cfg_attr(feature = "profile", flame)]
 pub fn parse_expr(sess: &Session, src: &str) -> P<Expr> {
     let mut p = make_parser(sess, src);
     match p.parse_expr() {
@@ -293,7 +291,6 @@ pub fn parse_expr(sess: &Session, src: &str) -> P<Expr> {
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn parse_pat(sess: &Session, src: &str) -> P<Pat> {
     let mut p = make_parser(sess, src);
     // TODO: do we want to allow top-level or-patterns here?
@@ -306,7 +303,6 @@ pub fn parse_pat(sess: &Session, src: &str) -> P<Pat> {
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn parse_ty(sess: &Session, src: &str) -> P<Ty> {
     let mut p = make_parser(sess, src);
     match p.parse_ty() {
@@ -318,7 +314,6 @@ pub fn parse_ty(sess: &Session, src: &str) -> P<Ty> {
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn parse_stmts(sess: &Session, src: &str) -> Vec<Stmt> {
     let mut p = make_parser(sess, src);
     let mut stmts = Vec::new();
@@ -335,12 +330,11 @@ pub fn parse_stmts(sess: &Session, src: &str) -> Vec<Stmt> {
     stmts
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn parse_items(sess: &Session, src: &str) -> Vec<P<Item>> {
     let mut p = make_parser(sess, src);
     let mut items = Vec::new();
     loop {
-        match p.parse_item(ForceCollect::No) {
+        match p.parse_item(ForceCollect::Yes) {
             Ok(Some(mut item)) => {
                 remove_paren(&mut item);
                 items.push(item.lone());
@@ -352,35 +346,32 @@ pub fn parse_items(sess: &Session, src: &str) -> Vec<P<Item>> {
     items
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn parse_impl_items(sess: &Session, src: &str) -> Vec<P<AssocItem>> {
     // TODO: rustc no longer exposes `parse_impl_item_`. `parse_item` is a hacky
     // workaround that may cause suboptimal error messages.
     let mut p = make_parser(sess, &format!("impl ! {{ {} }}", src));
     match p.parse_item(ForceCollect::No) {
         Ok(item) => match item.expect("expected to find an item").into_inner().kind {
-            ItemKind::Impl(box ast::Impl { items, .. }) => items,
+            ItemKind::Impl(box ast::Impl { items, .. }) => items.into_iter().collect(),
             _ => panic!("expected to find an impl item"),
         },
         Err(db) => emit_and_panic(db, "impl items"),
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn parse_foreign_items(sess: &Session, src: &str) -> Vec<P<ForeignItem>> {
     // TODO: rustc no longer exposes a method for parsing ForeignItems. `parse_item` is a hacky
     // workaround that may cause suboptimal error messages.
     let mut p = make_parser(sess, &format!("extern {{ {} }}", src));
     match p.parse_item(ForceCollect::No) {
         Ok(item) => match item.expect("expected to find an item").into_inner().kind {
-            ItemKind::ForeignMod(fm) => fm.items,
+            ItemKind::ForeignMod(fm) => fm.items.into_iter().collect(),
             _ => panic!("expected to find a foreignmod item"),
         },
         Err(db) => emit_and_panic(db, "foreign items"),
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn parse_block(sess: &Session, src: &str) -> P<Block> {
     let mut p = make_parser(sess, src);
 
@@ -421,7 +412,6 @@ fn parse_arg_inner<'a>(p: &mut Parser<'a>) -> PResult<'a, Param> {
     })
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn parse_arg(sess: &Session, src: &str) -> Param {
     let mut p = make_parser(sess, src);
     match parse_arg_inner(&mut p) {
@@ -433,7 +423,6 @@ pub fn parse_arg(sess: &Session, src: &str) -> Param {
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn run_parser<F, R>(sess: &Session, src: &str, f: F) -> R
 where
     F: for<'a> FnOnce(&mut Parser<'a>) -> PResult<'a, R>,
@@ -445,7 +434,6 @@ where
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn run_parser_tts<F, R>(sess: &Session, tts: Vec<TokenTree>, f: F) -> R
 where
     F: for<'a> FnOnce(&mut Parser<'a>) -> PResult<'a, R>,
@@ -461,7 +449,6 @@ where
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn try_run_parser<F, R>(sess: &Session, src: &str, f: F) -> Option<R>
 where
     F: for<'a> FnOnce(&mut Parser<'a>) -> PResult<'a, R>,
@@ -476,7 +463,6 @@ where
     }
 }
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn try_run_parser_tts<F, R>(sess: &Session, tts: Vec<TokenTree>, f: F) -> Option<R>
 where
     F: for<'a> FnOnce(&mut Parser<'a>) -> PResult<'a, R>,

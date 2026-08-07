@@ -11,6 +11,7 @@ use crate::c_ast::{
     CUnOp, MemberKind,
 };
 use crate::diagnostics::TranslationResult;
+use crate::renamer::Namespaces;
 use crate::translator::variadic::mk_va_list_ty;
 use crate::translator::{ConvertedDecl, ExprContext, Translation, PADDING_SUFFIX};
 use crate::with_stmts::WithStmts;
@@ -298,6 +299,7 @@ impl<'a> Translation<'a> {
                     field_name,
                     bytes,
                     attrs,
+                    single_bitfield: _,
                 } => {
                     let ty = mk().array_ty(
                         mk().ident_ty("u8"),
@@ -545,7 +547,8 @@ impl<'a> Translation<'a> {
 
                 // Now we must use the bitfield methods to initialize bitfields
                 for (field_name, val) in bitfield_inits {
-                    let field_name_setter = format!("set_{}", field_name);
+                    let plain_field_name = field_name.strip_prefix("r#").unwrap_or(&field_name);
+                    let field_name_setter = format!("set_{}", plain_field_name);
                     let struct_ident = mk().ident_expr("init");
                     is_unsafe |= val.is_unsafe();
                     let val = val
@@ -737,7 +740,8 @@ impl<'a> Translation<'a> {
                     .borrow()
                     .resolve_field_name(None, field_id)
                     .ok_or("Could not find bitfield name")?;
-                let setter_name = format!("set_{}", field_name);
+                let plain_field_name = field_name.strip_prefix("r#").unwrap_or(&field_name);
+                let setter_name = format!("set_{}", plain_field_name);
                 let lhs_expr_read = mk().method_call_expr(lhs_expr.clone(), field_name, Vec::new());
                 // Allow the value of this assignment to be used as the RHS of other assignments
                 let val = lhs_expr_read.clone();
@@ -776,7 +780,10 @@ impl<'a> Translation<'a> {
                         stmts.push(mk().semi_stmt(method_call));
                     }
                     _ if contains_block(&param_expr) => {
-                        let name = self.renamer.borrow_mut().pick_name("c2rust_rhs");
+                        let name = self
+                            .renamer
+                            .borrow_mut()
+                            .pick_name("c2rust_rhs", Namespaces::values());
                         let name_ident = mk().mutbl().ident_pat(name.clone());
                         let temporary_stmt = mk().local(name_ident, None, Some(param_expr.clone()));
                         let assignment_expr = mk().method_call_expr(
@@ -937,11 +944,13 @@ impl<'a> Translation<'a> {
                     Some(FieldType::BitfieldGroup {
                         start_bit,
                         field_name: ref mut name,
+                        ref mut single_bitfield,
                         ref mut bytes,
                         ref mut attrs,
                     }) => {
+                        *single_bitfield = false;
                         name.push('_');
-                        name.push_str(&field_name);
+                        name.push_str(field_name.strip_prefix("r#").unwrap_or(&field_name));
 
                         let end_bit = platform_bit_offset + bitfield_width;
 
@@ -984,6 +993,7 @@ impl<'a> Translation<'a> {
                         last_bitfield_group = Some(FieldType::BitfieldGroup {
                             start_bit: platform_bit_offset,
                             field_name,
+                            single_bitfield: true,
                             bytes,
                             attrs,
                         });
@@ -995,7 +1005,17 @@ impl<'a> Translation<'a> {
         }
 
         // Find leftover bitfield group at end: it's all set
-        if let Some(field_group) = last_bitfield_group.take() {
+        if let Some(mut field_group) = last_bitfield_group.take() {
+            if let FieldType::BitfieldGroup {
+                ref mut field_name,
+                single_bitfield: false,
+                ..
+            } = field_group
+            {
+                if let Some(s) = field_name.strip_prefix("r#") {
+                    *field_name = s.to_string();
+                }
+            };
             reorganized_fields.push(field_group);
 
             // Packed structs can cause platform_byte_size < next_byte_pos
@@ -1136,6 +1156,7 @@ enum FieldType {
     BitfieldGroup {
         start_bit: u64,
         field_name: String,
+        single_bitfield: bool,
         bytes: u64,
         attrs: Vec<(String, Box<Type>, String)>,
     }, // 64 bytes

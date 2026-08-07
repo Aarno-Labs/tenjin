@@ -10,8 +10,10 @@ use c2rust_ast_builder::mk;
 use c2rust_rust_tools::RustEdition;
 use failure::format_err;
 use indexmap::IndexSet;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
+use std::rc::Rc;
 use syn::*;
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
@@ -23,7 +25,7 @@ enum FieldKey {
 pub struct TypeConverter {
     pub edition: RustEdition,
     pub translate_valist: bool,
-    renamer: Renamer<CDeclId>,
+    renamer: Rc<RefCell<Renamer<CDeclId>>>,
     fields: HashMap<CDeclId, Renamer<FieldKey>>,
     suffix_names: HashMap<(CDeclId, &'static str), String>,
     features: HashSet<&'static str>,
@@ -31,11 +33,11 @@ pub struct TypeConverter {
 }
 
 impl TypeConverter {
-    pub fn new(tcfg: &TranspilerConfig) -> TypeConverter {
+    pub fn new(tcfg: &TranspilerConfig, renamer: Rc<RefCell<Renamer<CDeclId>>>) -> TypeConverter {
         TypeConverter {
             edition: tcfg.edition,
             translate_valist: tcfg.translate_valist,
-            renamer: Renamer::type_namespace(),
+            renamer,
             fields: HashMap::new(),
             suffix_names: HashMap::new(),
             features: HashSet::new(),
@@ -55,26 +57,18 @@ impl TypeConverter {
         &self.extern_crates
     }
 
-    pub fn declare_decl_name(&mut self, decl_id: CDeclId, name: &str) -> String {
-        self.renamer
-            .insert(decl_id, name)
-            .expect("Name already assigned")
-    }
-
-    pub fn alias_decl_name(&mut self, new_decl_id: CDeclId, old_decl_id: CDeclId) {
-        self.renamer.alias(new_decl_id, &old_decl_id)
-    }
-
     pub fn resolve_decl_name(&self, decl_id: CDeclId) -> Option<String> {
-        self.renamer.get(&decl_id)
+        self.renamer.borrow().get(&decl_id)
     }
 
     pub fn resolve_decl_suffix_name(&mut self, decl_id: CDeclId, suffix: &'static str) -> &str {
         let key = (decl_id, suffix);
         self.suffix_names.entry(key).or_insert_with(|| {
-            let name = self.renamer.get(&decl_id);
+            let name = self.renamer.borrow().get(&decl_id);
             let name = name.as_deref().unwrap_or("Unnamed");
-            self.renamer.pick_name(&format!("C2Rust_{name}_{suffix}"))
+            self.renamer
+                .borrow_mut()
+                .pick_name(&format!("C2Rust_{name}_{suffix}"), Namespaces::types())
         })
     }
 
@@ -93,7 +87,7 @@ impl TypeConverter {
         self.fields
             .entry(record_id)
             .or_insert_with(Renamer::keywords)
-            .insert(FieldKey::Field(field_id), name)
+            .insert(FieldKey::Field(field_id), name, Namespaces::values())
             .expect("Field already declared")
     }
 
@@ -106,7 +100,9 @@ impl TypeConverter {
         if let Some(name) = field.get(&key) {
             name
         } else {
-            field.insert(key, "c2rust_padding").unwrap()
+            field
+                .insert(key, "c2rust_padding", Namespaces::values())
+                .unwrap()
         }
     }
 

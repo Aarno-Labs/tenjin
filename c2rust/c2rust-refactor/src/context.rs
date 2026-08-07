@@ -2,26 +2,29 @@ use log::{trace, warn};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
+use rustc_ast::node_id::NodeMap;
 use rustc_ast::ptr::P;
 use rustc_ast::{
     AssocItem, Expr, ExprKind, FnDecl, FnRetTy, ForeignItem, ForeignItemKind, Item, ItemKind,
-    NodeId, Path, QSelf, UseTreeKind, DUMMY_NODE_ID,
+    NodeId, Path, QSelf, UseTreeKind, VariantData, DUMMY_NODE_ID,
 };
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::unord::UnordMap;
 use rustc_errors::{DiagnosticBuilder, Level};
-use rustc_hir::def::{DefKind, Namespace, Res};
+use rustc_hir::def::{DefKind, Namespace, PartialRes, PerNS, Res};
 use rustc_hir::def_id::{CrateNum, DefId, LocalDefId};
 use rustc_hir::{self as hir, BodyId, HirId, Node};
 use rustc_index::vec::IndexVec;
 use rustc_middle::hir::{map as hir_map, nested_filter};
 use rustc_middle::ty::subst::InternalSubsts;
-use rustc_middle::ty::{FnSig, ParamEnv, PolyFnSig, Ty, TyCtxt, TyKind};
+use rustc_middle::ty::{EarlyBinder, FnSig, ParamEnv, PolyFnSig, Ty, TyCtxt, TyKind};
 use rustc_session::config::CrateType;
 use rustc_session::Session;
 use rustc_span::Span;
+use smallvec::{smallvec, SmallVec};
 
 use crate::ast_builder::mk;
-use crate::ast_manip::util::{is_export_attr, namespace};
+use crate::ast_manip::util::is_export_attr;
 use crate::ast_manip::{
     child_slot, AstEquiv, AstSpanMaps, NodeContextKey, NodeSpan, SpanNodeKind, StructuralContext,
 };
@@ -328,6 +331,9 @@ pub struct HirMap<'hir> {
 
     node_id_to_def_id: FxHashMap<NodeId, LocalDefId>,
     def_id_to_node_id: IndexVec<LocalDefId, NodeId>,
+    import_res_map: NodeMap<PerNS<Option<Res<NodeId>>>>,
+    hir_id_to_def_id: FxHashMap<HirId, LocalDefId>,
+    partial_res_map: UnordMap<NodeId, PartialRes>,
 
     span_to_hir_map: SpanToHirMap,
     /// Tie-breaker map keyed by (span, NodeContextKey) for nodes that share spans
@@ -339,10 +345,29 @@ impl<'hir> HirMap<'hir> {
     pub fn new(
         max_node_id: NodeId,
         map: hir_map::Map<'hir>,
+        partial_res_map: UnordMap<NodeId, PartialRes>,
         node_id_to_def_id: FxHashMap<NodeId, LocalDefId>,
         def_id_to_node_id: IndexVec<LocalDefId, NodeId>,
+        import_res_map: NodeMap<PerNS<Option<Res<NodeId>>>>,
         ast_span_maps: AstSpanMaps,
     ) -> Self {
+        // `hir::Map::opt_local_def_id` used to provide this reverse lookup.  In
+        // the current HIR representation, owner and non-owner definitions are
+        // both recorded in the crate's `owners` table, so rebuild the complete
+        // map here.  Looking only at `id.owner` loses definitions such as enum
+        // variants, fields, and generic parameters, which share their item's
+        // owner but have distinct `LocalDefId`s.
+        let mut hir_id_to_def_id = FxHashMap::default();
+        for (def_id, owner) in map.krate().owners.iter_enumerated() {
+            let hir_id = match *owner {
+                hir::MaybeOwner::Owner(_) => HirId::make_owner(def_id),
+                hir::MaybeOwner::NonOwner(hir_id) => hir_id,
+                hir::MaybeOwner::Phantom => continue,
+            };
+            let old = hir_id_to_def_id.insert(hir_id, def_id);
+            debug_assert!(old.is_none(), "multiple definitions for {hir_id:?}");
+        }
+
         let mut mapper = SpanToHirMapper::new(map, &def_id_to_node_id);
         map.visit_all_item_likes_in_crate(&mut mapper);
         let (span_to_hir_map, context_to_hir_map) = mapper.into_maps();
@@ -350,8 +375,11 @@ impl<'hir> HirMap<'hir> {
         Self {
             map,
             max_node_id,
+            partial_res_map,
             node_id_to_def_id,
             def_id_to_node_id,
+            import_res_map,
+            hir_id_to_def_id,
             span_to_hir_map,
             context_to_hir_map,
             ast_span_maps,
@@ -443,7 +471,7 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
     }
 
     pub fn opt_adjusted_node_type(&self, id: NodeId) -> Option<Ty<'tcx>> {
-        let hir_id = self.hir_map().node_to_hir_id(id);
+        let hir_id = self.hir_map().opt_node_to_hir_id(id)?;
         if let Some(def_id) = self.hir_map().opt_local_def_id(hir_id) {
             return Some(self.def_type(def_id.to_def_id()));
         }
@@ -464,7 +492,7 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
     }
 
     pub fn def_type(&self, id: DefId) -> Ty<'tcx> {
-        self.ty_ctxt().type_of(id)
+        self.ty_ctxt().type_of(id).subst_identity()
     }
 
     /// Build a `Path` referring to a particular def.  This method returns an
@@ -473,7 +501,7 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
         reflect::reflect_def_path(self.ty_ctxt(), id).1
     }
 
-    pub fn def_qpath(&self, id: DefId) -> (Option<QSelf>, Path) {
+    pub fn def_qpath(&self, id: DefId) -> (Option<P<QSelf>>, Path) {
         reflect::reflect_def_path(self.ty_ctxt(), id)
     }
 
@@ -488,7 +516,7 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
                         .hir_to_node_id(self.hir_map().get_parent_node(hir_id)),
                 )
             }
-            Some(Node::Item(item)) => self.hir_map().local_def_id(item.hir_id()).to_def_id(),
+            Some(Node::Item(item)) => item.owner_id.def_id.to_def_id(),
             _ => self.hir_map().local_def_id_from_node_id(id).to_def_id(),
         }
     }
@@ -639,7 +667,7 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
                     if let Some(&TyKind::FnPtr(sig)) =
                         tables.expr_ty_adjusted_opt(func_hir).map(|ty| ty.kind())
                     {
-                        poly_sig = sig;
+                        poly_sig = EarlyBinder(sig);
                     // No substs.  fn ptrs can't be generic over anything but late-bound
                     // regions, and late-bound regions don't show up in the substs.
 
@@ -689,6 +717,7 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
             _ => return None,
         }
 
+        let poly_sig = poly_sig.subst_identity();
         let unsubst_fn_sig = tcx.erase_late_bound_regions(poly_sig);
         let fn_sig = if let Some(substs) = substs {
             tcx.subst_and_normalize_erasing_regions(substs, ParamEnv::empty(), unsubst_fn_sig)
@@ -709,6 +738,9 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
     }
 
     pub fn try_resolve_expr_hir(&self, e: &Expr) -> Option<Res> {
+        if let Some(res) = self.hir_map().opt_ast_res(e.id) {
+            return Some(res);
+        }
         let node = match_or!([self.hir_map().find(e.id)] Some(x) => x;
                              return None);
         let e = match_or!([node] hir::Node::Expr(e) => e;
@@ -721,6 +753,9 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
     }
 
     pub fn try_resolve_ty_hir(&self, t: &rustc_ast::Ty) -> Option<Res> {
+        if let Some(res) = self.hir_map().opt_ast_res(t.id) {
+            return Some(res);
+        }
         let node = match_or!([self.hir_map().find(t.id)] Some(x) => x;
                              return None);
         let t = match_or!([node] hir::Node::Ty(t) => t;
@@ -733,6 +768,9 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
     }
 
     pub fn try_resolve_pat_hir(&self, p: &rustc_ast::Pat) -> Option<Res> {
+        if let Some(res) = self.hir_map().opt_ast_res(p.id) {
+            return Some(res);
+        }
         let node = match_or!([self.hir_map().find(p.id)] Some(x) => x;
                              return None);
         let p = match_or!([node] hir::Node::Pat(p) => p;
@@ -770,7 +808,7 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
 
     /// Attempt to resolve a `Use` item id to the `hir::Path` of the imported
     /// item. The given item _must_ be a `Use`.
-    pub fn resolve_use_id(&self, id: NodeId) -> &hir::Path {
+    pub fn resolve_use_id(&self, id: NodeId) -> &hir::UsePath {
         let hir_node = self
             .hir_map()
             .find(id)
@@ -782,11 +820,54 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
 
     /// Attempt to resolve a `Use` item id to the `hir::Path` of the imported
     /// item. The given item _must_ be a `Use`.
-    pub fn try_resolve_use_id(&self, id: NodeId) -> Option<&hir::Path> {
+    pub fn try_resolve_use_id(&self, id: NodeId) -> Option<&hir::UsePath> {
         let hir_node = self.hir_map().find(id)?;
         let hir_item = expect!([hir_node] hir::Node::Item(i) => i);
         let path = expect!([&hir_item.kind] hir::ItemKind::Use(path, _) => path);
         Some(path)
+    }
+
+    /// Return every resolution of a simple import, paired with the namespace
+    /// in which rustc resolved it.
+    ///
+    /// The old HIR keeps only one of these resolutions on `hir::Path::res`,
+    /// while the resolver map retains all three.  Keep the resolver's
+    /// type/value/macro ordering so callers never have to infer a namespace
+    /// from the selected HIR resolution.
+    pub fn resolved_imports(&self, id: NodeId) -> SmallVec<[(Namespace, Res<NodeId>); 3]> {
+        let Some(resolutions) = self.hir_map().import_res_map.get(&id) else {
+            return smallvec![];
+        };
+        let mut result = SmallVec::new();
+        for (namespace, resolution) in [
+            (Namespace::TypeNS, &resolutions.type_ns),
+            (Namespace::ValueNS, &resolutions.value_ns),
+            (Namespace::MacroNS, &resolutions.macro_ns),
+        ] {
+            if let Some(resolution) = resolution {
+                if !matches!(resolution, Res::Err) {
+                    result.push((namespace, *resolution));
+                }
+            }
+        }
+        result
+    }
+
+    /// Return every resolution of a simple AST `use`, including resolutions
+    /// stored under the supplemental NodeIds used by the old lowering shape.
+    pub fn resolved_imports_for_item(
+        &self,
+        item: &Item,
+    ) -> SmallVec<[(Namespace, Res<NodeId>); 3]> {
+        let tree = match &item.kind {
+            ItemKind::Use(tree) => tree,
+            _ => return smallvec![],
+        };
+        if matches!(tree.kind, UseTreeKind::Simple(_)) {
+            self.resolved_imports(item.id)
+        } else {
+            smallvec![]
+        }
     }
 
     /// Compare two items for type compatibility under the C definition.
@@ -829,28 +910,41 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
         self.sess.crate_types().contains(&CrateType::Executable)
     }
 
-    pub fn item_namespace(&self, item: &Item) -> Option<Namespace> {
+    /// Return every namespace the given item occupies.
+    ///
+    /// A simple `use` may resolve in the type, value, and macro namespaces at
+    /// once. Most other named items occupy exactly one namespace. Results
+    /// preserve rustc's type/value/macro order and contain no duplicates. An
+    /// empty result means the item does not occupy a tracked namespace.
+    pub fn item_namespaces(&self, item: &Item) -> SmallVec<[Namespace; 3]> {
         match &item.kind {
             ItemKind::Use(tree) => {
                 // Nested uses should be already split apart
                 if let UseTreeKind::Nested(..) = &tree.kind {
-                    None
+                    smallvec![]
                 } else {
-                    let path = self.try_resolve_use_id(item.id)?;
-                    namespace(&path.res)
+                    self.resolved_imports_for_item(item)
+                        .into_iter()
+                        .map(|(namespace, _)| namespace)
+                        .collect()
                 }
             }
 
             // Extern headers cannot contain impls
-            ItemKind::Impl(..) => None,
+            ItemKind::Impl(..) => smallvec![],
 
-            ItemKind::ForeignMod(_) => None,
+            ItemKind::ForeignMod(_) => smallvec![],
 
             ItemKind::Static(..) | ItemKind::Const(..) | ItemKind::Fn(..) => {
-                Some(Namespace::ValueNS)
+                smallvec![Namespace::ValueNS]
             }
 
-            _ => Some(Namespace::TypeNS),
+            // Tuple and unit structs occupy both namespaces: the type itself and its constructor.
+            ItemKind::Struct(VariantData::Tuple(..) | VariantData::Unit(..), _) => {
+                smallvec![Namespace::TypeNS, Namespace::ValueNS]
+            }
+
+            _ => smallvec![Namespace::TypeNS],
         }
     }
 
@@ -893,6 +987,16 @@ impl<'a, 'tcx> RefactorCtxt<'a, 'tcx> {
 // applicable, first. We only validate the NodeId if the method returns an
 // Option. If it can panic, it will just panic on an invalid NodeId.
 impl<'hir> HirMap<'hir> {
+    fn opt_ast_res(&self, id: NodeId) -> Option<Res> {
+        let result = self
+            .partial_res_map
+            .get(&id)?
+            .full_res()?
+            .apply_id(|id| self.opt_node_to_hir_id(id).ok_or(()))
+            .ok();
+        result
+    }
+
     /// Map a crate NodeId to HirId, if possible. Only accepts NodeIds that were
     /// in the originally parsed crate.
     #[inline]
@@ -965,8 +1069,7 @@ impl<'hir> HirMap<'hir> {
         // `analysis::mark_related_types` (marks land on the wrong `NodeId`), and
         // `transform::retype` (changed-def rewrites miss their targets) among others, so the missing
         // fingerprint shows up whenever macro/derive expansions give several HIR nodes the same span.
-        self.map
-            .opt_local_def_id(id)
+        self.opt_local_def_id(id)
             .and_then(|id| self.def_id_to_node_id.get(id))
             .copied()
             .unwrap_or_else(|| panic!("Could not find a NodeId for HirId: {:?}", id))
@@ -1001,11 +1104,11 @@ impl<'hir> HirMap<'hir> {
     }
 
     pub fn get_parent_node(&self, id: HirId) -> HirId {
-        self.map.get_parent_node(id)
+        self.map.parent_id(id)
     }
 
     pub fn opt_local_def_id(&self, id: HirId) -> Option<LocalDefId> {
-        self.map.opt_local_def_id(id)
+        self.hir_id_to_def_id.get(&id).copied()
     }
 
     pub fn maybe_body_owned_by(&self, id: LocalDefId) -> Option<BodyId> {
@@ -1017,7 +1120,8 @@ impl<'hir> HirMap<'hir> {
     }
 
     pub fn local_def_id(&self, id: HirId) -> LocalDefId {
-        self.map.local_def_id(id)
+        self.opt_local_def_id(id)
+            .unwrap_or_else(|| panic!("HirId is not a definition: {:?}", id))
     }
 
     pub fn local_def_id_to_hir_id(&self, def_id: LocalDefId) -> HirId {
@@ -1114,20 +1218,20 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
                 }
             }
 
-            (Const(def1, ty1, expr1), Const(def2, ty2, expr2)) => {
+            (Const(ci1), Const(ci2)) => {
                 match (
                     self.cx.opt_node_type(item1.id),
                     self.cx.opt_node_type(item2.id),
                 ) {
                     (Some(ty1), Some(ty2)) => {
                         self.structural_eq_tys(ty1, ty2)
-                            && expr1.unnamed_equiv(expr2)
-                            && def1.unnamed_equiv(def2)
+                            && ci1.expr.unnamed_equiv(&ci2.expr)
+                            && ci1.defaultness.unnamed_equiv(&ci2.defaultness)
                     }
                     _ => {
-                        self.structural_eq_ast_tys(ty1, ty2, match_vis)
-                            && expr1.unnamed_equiv(expr2)
-                            && def1.unnamed_equiv(def2)
+                        self.structural_eq_ast_tys(&ci1.ty, &ci2.ty, match_vis)
+                            && ci1.expr.unnamed_equiv(&ci2.expr)
+                            && ci1.defaultness.unnamed_equiv(&ci2.defaultness)
                     }
                 }
             }
@@ -1213,8 +1317,8 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
             }
 
             _ => {
-                if self.cx.item_namespace(item1) == Some(Namespace::TypeNS)
-                    && self.cx.item_namespace(item2) == Some(Namespace::TypeNS)
+                if self.cx.item_namespaces(item1).contains(&Namespace::TypeNS)
+                    && self.cx.item_namespaces(item2).contains(&Namespace::TypeNS)
                 {
                     match (
                         self.cx.opt_node_type(item1.id),
@@ -1251,19 +1355,19 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
         }
 
         match (&item1.kind, &item2.kind) {
-            (Const(def1, ty1, expr1), Const(def2, ty2, expr2)) => match (
+            (Const(const1), Const(const2)) => match (
                 self.cx.opt_node_type(item1.id),
                 self.cx.opt_node_type(item2.id),
             ) {
                 (Some(ty1), Some(ty2)) => {
                     self.structural_eq_tys(ty1, ty2)
-                        && expr1.unnamed_equiv(expr2)
-                        && def1.unnamed_equiv(def2)
+                        && const1.expr.unnamed_equiv(&const2.expr)
+                        && const1.defaultness.unnamed_equiv(&const2.defaultness)
                 }
                 _ => {
-                    self.structural_eq_ast_tys(ty1, ty2, match_vis)
-                        && expr1.unnamed_equiv(expr2)
-                        && def1.unnamed_equiv(def2)
+                    self.structural_eq_ast_tys(&const1.ty, &const2.ty, match_vis)
+                        && const1.expr.unnamed_equiv(&const2.expr)
+                        && const1.defaultness.unnamed_equiv(&const2.defaultness)
                 }
             },
 
@@ -1274,6 +1378,16 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
     /// Compare two function declarations for equivalent argument and return types,
     /// ignoring argument names.
     pub fn compatible_fn_prototypes(&self, decl1: &FnDecl, decl2: &FnDecl) -> bool {
+        // `zip` below stops at the shorter parameter list, so the lengths have
+        // to be compared separately. Otherwise a declaration is compatible
+        // with any other one that merely extends it, which is exactly the
+        // shape an unprototyped `int f()` and a prototyped `int f(int)` take
+        // after translation. A trailing `...` is a `CVarArgs` parameter, so
+        // this covers a variadic/non-variadic mismatch too.
+        if decl1.inputs.len() != decl2.inputs.len() {
+            return false;
+        }
+
         let mut args = decl1.inputs.iter().zip(decl2.inputs.iter());
         if !args.all(|(arg1, arg2)| self.structural_eq_ast_tys(&arg1.ty, &arg2.ty, true)) {
             return false;
@@ -1438,8 +1552,8 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
             }
 
             (TyKind::Array(ty1, n1), TyKind::Array(ty2, n2)) => {
-                let len1 = n1.try_eval_usize(tcx, ParamEnv::empty());
-                let len2 = n2.try_eval_usize(tcx, ParamEnv::empty());
+                let len1 = n1.try_eval_target_usize(tcx, ParamEnv::empty());
+                let len2 = n2.try_eval_target_usize(tcx, ParamEnv::empty());
                 // We allow 0 length arrays to match any length arrays. This
                 // isn't exactly the C definition of compatible extern global
                 // array types with global array definitions, but it should be
@@ -1654,8 +1768,8 @@ impl<'a, 'tcx, 'b> TypeCompare<'a, 'tcx, 'b> {
             }
 
             (TyKind::Array(ty1, n1), TyKind::Array(ty2, n2)) => {
-                let len1 = n1.try_eval_usize(tcx, ParamEnv::empty());
-                let len2 = n2.try_eval_usize(tcx, ParamEnv::empty());
+                let len1 = n1.try_eval_target_usize(tcx, ParamEnv::empty());
+                let len2 = n2.try_eval_target_usize(tcx, ParamEnv::empty());
                 // We allow 0 length arrays to match any length arrays. This
                 // isn't exactly the C definition of compatible extern global
                 // array types with global array definitions, but it should be

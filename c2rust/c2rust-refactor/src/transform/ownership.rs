@@ -286,15 +286,15 @@ fn parens(ts: Vec<TokenTree>) -> TokenTree {
     )
 }
 
-fn delimited(ts: Vec<TokenTree>) -> MacArgs {
-    MacArgs::Delimited(
-        DelimSpan::dummy(),
-        MacDelimiter::Parenthesis,
-        ts.into_iter().collect::<TokenStream>(),
-    )
+fn delimited(ts: Vec<TokenTree>) -> AttrArgs {
+    AttrArgs::Delimited(DelimArgs {
+        dspan: DelimSpan::dummy(),
+        delim: MacDelimiter::Parenthesis,
+        tokens: ts.into_iter().collect::<TokenStream>(),
+    })
 }
 
-fn make_attr(name: &str, args: MacArgs) -> Attribute {
+fn make_attr(name: &str, args: AttrArgs) -> Attribute {
     Attribute {
         id: AttrId::from_u32(0),
         style: AttrStyle::Outer,
@@ -362,7 +362,7 @@ fn do_split_variants(st: &CommandState, cx: &RefactorCtxt, label: Symbol) {
                 return smallvec![fl];
             }
 
-            let path_str = cx.ty_ctxt().def_path(def_id).to_string_no_crate_verbose();
+            let path_str = ownership::def_path_string_no_crate(cx.ty_ctxt(), def_id);
 
             // For consistency, we run the split logic even for funcs with only one mono.  This way
             // the "1 variant, N monos" case is handled here, and the "N variants, N monos" case is
@@ -481,8 +481,8 @@ fn rename_callee(e: &mut P<Expr>, new_name: &str) {
             seg.ident = mk().ident(new_name);
         }
 
-        ExprKind::MethodCall(ref mut seg, _, _, _) => {
-            seg.ident = mk().ident(new_name);
+        ExprKind::MethodCall(ref mut call) => {
+            call.seg.ident = mk().ident(new_name);
         }
 
         _ => panic!("rename_callee: unexpected expr kind: {:?}", e),

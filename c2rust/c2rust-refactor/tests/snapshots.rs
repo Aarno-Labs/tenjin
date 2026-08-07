@@ -452,6 +452,35 @@ fn test_reorganize_assoc_items() {
         .test();
 }
 
+/// The inputs don't compile standalone because the `bitfield` attribute
+/// comes from the `c2rust_bitfields` derive crate, which isn't available
+/// to plain `rustc` here.
+#[test]
+fn test_reorganize_bitfield_ty() {
+    refactor("reorganize_definitions")
+        .named("reorganize_bitfield_ty.rs")
+        .expect_compile_error(true)
+        .test();
+}
+
+/// Two foreign declarations of the same function that differ in the number
+/// of parameters are not interchangeable and must not be merged.
+#[test]
+fn test_reorganize_foreign_fn_arity() {
+    refactor("reorganize_definitions")
+        .named("reorganize_foreign_fn_arity.rs")
+        .test();
+}
+
+/// A foreign item, `static` or `fn`, that is renamed to avoid a collision must
+/// keep naming the symbol it linked against before the rename.
+#[test]
+fn test_reorganize_foreign_item_rename() {
+    refactor("reorganize_definitions")
+        .named("reorganize_foreign_item_rename.rs")
+        .test();
+}
+
 #[test]
 fn test_reorganize_foreign_types() {
     refactor("reorganize_definitions")
@@ -460,9 +489,37 @@ fn test_reorganize_foreign_types() {
 }
 
 #[test]
+fn test_reorganize_identical_data_enums() {
+    refactor("reorganize_definitions")
+        .named("reorganize_identical_data_enums.rs")
+        .test();
+}
+
+#[test]
 fn test_reorganize_forward_decl_with_local_definition() {
     refactor("reorganize_definitions")
         .named("reorganize_forward_decl_with_local_definition.rs")
+        .test();
+}
+
+#[test]
+fn test_reorganize_multi_namespace() {
+    refactor("reorganize_definitions")
+        .named("reorganize_multi_namespace.rs")
+        .test();
+}
+
+#[test]
+fn test_reorganize_self_import_destination() {
+    refactor("reorganize_definitions")
+        .named("reorganize_self_import_destination.rs")
+        .test();
+}
+
+#[test]
+fn test_reorganize_split_namespace_imports() {
+    refactor("reorganize_definitions")
+        .named("reorganize_split_namespace_imports.rs")
         .test();
 }
 
@@ -483,15 +540,11 @@ fn test_struct_merge_updates() {
         .test();
 }
 
-/// TODO Broken
-/// `f(x)` doesn't become `x + 1`.
 #[test]
 fn test_test_f_plus_one() {
     refactor("test_f_plus_one").test();
 }
 
-/// TODO Broken
-/// `2` doesn't become `1 + 1`.
 #[test]
 fn test_test_one_plus_one() {
     refactor("test_one_plus_one").test();
@@ -499,9 +552,7 @@ fn test_test_one_plus_one() {
 
 #[test]
 fn test_test_reflect() {
-    refactor("test_reflect")
-        .new_expect_compile_error(true)
-        .test();
+    refactor("test_reflect").test();
 }
 
 #[test]

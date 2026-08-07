@@ -13,7 +13,6 @@
     let_chains,
     never_type
 )]
-#![cfg_attr(feature = "profile", feature(proc_macro_hygiene))]
 
 extern crate rustc_arena;
 extern crate rustc_ast;
@@ -184,7 +183,6 @@ pub struct Options {
 
 /// Try to find the rustup installation that provides the rustc at the given path.  The input path
 /// should be normalized already.
-#[cfg_attr(feature = "profile", flame)]
 fn get_rustup_path(rustc: &Path) -> Option<PathBuf> {
     use std::ffi::OsStr;
     use std::fs;
@@ -207,7 +205,6 @@ fn get_rustup_path(rustc: &Path) -> Option<PathBuf> {
     None
 }
 
-#[cfg_attr(feature = "profile", flame)]
 fn get_rustc_executable(path: &Path) -> String {
     use std::process::{Command, Stdio};
 
@@ -228,7 +225,6 @@ fn get_rustc_executable(path: &Path) -> String {
     resolved.to_str().unwrap().to_owned()
 }
 
-#[cfg_attr(feature = "profile", flame)]
 fn get_rustc_arg_strings(src: RustcArgSource) -> Vec<RustcArgs> {
     match src {
         RustcArgSource::CmdLine(mut args) => {
@@ -278,7 +274,6 @@ fn setup_cargo<'cfg>(config: &'cfg Config) -> (CompileOptions, Workspace<'cfg>) 
     (compile_opts, ws)
 }
 
-#[cfg_attr(feature = "profile", flame)]
 fn get_rustc_cargo_args(target_type: CargoTarget) -> Vec<RustcArgs> {
     let config = cargo_config();
     let (compile_opts, ws) = setup_cargo(&config);
@@ -428,7 +423,6 @@ fn init() {
 
 static INIT: Once = Once::new();
 
-#[cfg_attr(feature = "profile", flame)]
 pub fn lib_main(opts: Options) -> interface::Result<()> {
     INIT.call_once(init);
     rustc_driver::catch_fatal_errors(move || main_impl(opts)).and_then(|x| x)
@@ -459,7 +453,10 @@ fn main_impl(opts: Options) -> interface::Result<()> {
             let config = driver::create_config(&rustc_args.args);
             driver::run_compiler(config, None, |compiler| {
                 compiler.enter(|queries| {
-                    let expanded_crate = queries.expansion().unwrap().take().0;
+                    let expanded_crate = queries
+                        .global_ctxt()
+                        .unwrap()
+                        .enter(|tcx| tcx.resolver_for_lowering(()).borrow().1.clone());
                     for c in &opts.cursors {
                         let kind_result =
                             c.kind.clone().map_or(Ok(pick_node::NodeKind::Any), |s| {
@@ -547,15 +544,5 @@ fn main_impl(opts: Options) -> interface::Result<()> {
         }
     }
 
-    dump_profile();
-
     Ok(())
 }
-
-#[cfg(feature = "profile")]
-fn dump_profile() {
-    flame::dump_html(&mut std::fs::File::create("flame-graph.html").unwrap()).unwrap();
-}
-
-#[cfg(not(feature = "profile"))]
-fn dump_profile() {}

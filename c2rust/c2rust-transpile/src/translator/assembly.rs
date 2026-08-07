@@ -899,7 +899,10 @@ impl Translation<'_> {
 
                     // Convert `x` into `let c2rust_output = &raw mut x; *x`
                     self.use_feature("raw_ref_op");
-                    let output_name = self.renamer.borrow_mut().pick_name("c2rust_output");
+                    let output_name = self
+                        .renamer
+                        .borrow_mut()
+                        .pick_name("c2rust_output", Namespaces::values());
                     let output_local = mk().local(
                         mk().ident_pat(&output_name),
                         None,
@@ -908,7 +911,10 @@ impl Translation<'_> {
                     stmts.push(mk().local_stmt(Box::new(output_local)));
 
                     // `let mut c2rust_inner;`
-                    let inner_name = self.renamer.borrow_mut().pick_name("c2rust_inner");
+                    let inner_name = self
+                        .renamer
+                        .borrow_mut()
+                        .pick_name("c2rust_inner", Namespaces::values());
                     let inner_local = mk().local(mk().ident_pat(&inner_name), None, None);
                     stmts.push(mk().local_stmt(Box::new(inner_local)));
 
@@ -940,7 +946,10 @@ impl Translation<'_> {
 
                     let (output_name, inner_name) = operand_renames.get(tied_operand).unwrap();
 
-                    let input_name = self.renamer.borrow_mut().pick_name("c2rust_input");
+                    let input_name = self
+                        .renamer
+                        .borrow_mut()
+                        .pick_name("c2rust_input", Namespaces::values());
                     let input_local = mk().local(mk().ident_pat(&input_name), None, Some(in_expr));
                     stmts.push(mk().local_stmt(Box::new(input_local)));
 

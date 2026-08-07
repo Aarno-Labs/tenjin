@@ -2652,7 +2652,7 @@ impl Translation<'_> {
                 .borrow()
                 .query_ffi_in_conversion(name, var);
             let ffi_wrapper_arg_name = if var.is_empty() {
-                self.renamer.borrow_mut().fresh()
+                self.renamer.borrow_mut().fresh(Namespaces::values())
             } else {
                 var.clone()
             };
