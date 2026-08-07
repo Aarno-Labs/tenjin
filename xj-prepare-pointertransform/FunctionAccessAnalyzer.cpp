@@ -394,14 +394,30 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             if (candidate.base_array_text.empty())
                 continue;
 
+            // Resolve the source from the base *expression*, not from its
+            // spelling. `base_array` is the node the base was extracted
+            // from — for `T *p = q + 1` the DeclRefExpr for q — so the
+            // decl is already in hand. Matching `base_array_text` against
+            // pointer names instead would pick whichever same-named
+            // pointer the map yields first, which for two `q`s in nested
+            // or sibling scopes is the wrong one: p would inherit an index
+            // belonging to a different variable, or one whose block has
+            // already closed.
+            //
+            // This is not a widening. An explicit cast in the base
+            // (`(int *)q + 1`) survives IgnoreParenImpCasts and fails the
+            // dyn_cast, exactly as its spelling failed the name
+            // comparison; and base_array is non-null whenever
+            // base_array_text is, since every write sets both.
             const VarDecl *Src = nullptr;
-            for (const auto &other : analysis.tracked_pointers) {
-                if (other.first != PtrVar &&
-                    other.first->getNameAsString() == candidate.base_array_text &&
-                    other.first->getType()->isPointerType() &&
-                    will_transform.count(other.first)) {
-                    Src = other.first;
-                    break;
+            if (const Expr *Base = candidate.base_array) {
+                if (const auto *DRE =
+                        dyn_cast<DeclRefExpr>(Base->IgnoreParenImpCasts())) {
+                    if (const auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                        if (VD != PtrVar && VD->getType()->isPointerType() &&
+                            will_transform.count(VD))
+                            Src = VD;
+                    }
                 }
             }
             if (!Src)
@@ -513,23 +529,12 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 if (acc.kind != PointerAccessKind::NoRewrite)
                     continue;
 
-                bool owner_inherited = false;
-                const VarDecl *Owner = nullptr;
-                for (const VarDecl *Inh : inherited) {
-                    if (Inh->getNameAsString() == acc.field_name) {
-                        owner_inherited = true;
-                        break;
-                    }
-                }
-                if (owner_inherited)
+                // The owner travels on the record, so both questions —
+                // did it inherit, and which DeclStmt is it in — are
+                // answered without searching by name.
+                const VarDecl *Owner = acc.owner_ptr;
+                if (Owner && inherited.count(Owner))
                     continue;
-
-                for (const auto &other : analysis.tracked_pointers) {
-                    if (other.first->getNameAsString() == acc.field_name) {
-                        Owner = other.first;
-                        break;
-                    }
-                }
 
                 // A collapsed pointer sharing a DeclStmt with its owner is
                 // the one case materialization cannot serve: its index is
@@ -588,7 +593,6 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 if (!InitStmt) continue;
                 bool has_conflict = false;
                 // Walk the init to find DeclRefExprs to other transformed pointers
-                const std::string self_name = PtrVar->getNameAsString();
                 std::function<void(const Stmt *)> checkRefs = [&](const Stmt *S) {
                     if (has_conflict || !S) return;
                     if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
@@ -598,11 +602,15 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                                 // this very initializer is being
                                 // materialized: the text is rewritten to
                                 // `(base + index)`, which is exactly the
-                                // value the offset needs.
+                                // value the offset needs. Keyed on the
+                                // owning decl — a same-named pointer's
+                                // materialized reference is a different
+                                // initializer and says nothing about this
+                                // one.
                                 bool materialized = false;
                                 for (const auto &oacc : analysis.accesses[VD]) {
                                     if (oacc.kind == PointerAccessKind::MaterializeUse &&
-                                        oacc.field_name == self_name) {
+                                        oacc.owner_ptr == PtrVar) {
                                         materialized = true;
                                         break;
                                     }
@@ -691,6 +699,8 @@ void FunctionAccessAnalyzer::printAccesses(const VarDecl *VD,
             llvm::outs() << " offset=" << access.offset_text;
         if (!access.field_name.empty())
             llvm::outs() << " field=" << access.field_name;
+        if (access.owner_ptr)
+            llvm::outs() << " owner=" << access.owner_ptr->getNameAsString();
         if (!access.subscript_text.empty())
             llvm::outs() << " subscript=" << access.subscript_text;
         if (!access.operand_text.empty())
