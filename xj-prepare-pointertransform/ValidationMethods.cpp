@@ -424,22 +424,14 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
             findDeclStmtForVar(PtrVar, EnclosingFD->getBody());
         if (isMultiDeclarator(DS) && forStmtInitializedBy(DS, Ctx)) {
             std::set<const Decl *> bound(DS->decl_begin(), DS->decl_end());
-            std::string referenced;
 
-            std::function<void(const Stmt *)> findBoundRef = [&](const Stmt *S) {
-                if (!S || !referenced.empty())
-                    return;
-                if (const auto *DRE = dyn_cast<DeclRefExpr>(S)) {
-                    if (bound.count(DRE->getDecl()))
-                        referenced = DRE->getDecl()->getNameAsString();
-                }
-                for (const Stmt *Child : S->children())
-                    findBoundRef(Child);
-            };
-            findBoundRef(PtrVar->getInit());
+            const DeclRefExpr *Ref =
+                findRefIf(PtrVar->getInit(),
+                          [&](const Decl *D) { return bound.count(D) > 0; });
 
-            if (!referenced.empty()) {
-                demote("index initializer references '" + referenced +
+            if (Ref) {
+                demote("index initializer references '" +
+                       Ref->getDecl()->getNameAsString() +
                        "', declared in the same for-init, so it cannot be "
                        "hoisted out of the loop header");
             }

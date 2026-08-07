@@ -230,6 +230,23 @@ struct PointerAccess {
     // the map happens to yield first. That is the same distinction
     // assignIndexNames exists to make, on the other side of it.
     const VarDecl *owner_ptr = nullptr;
+
+    // The expression `offset_text` was snapshotted from — the other half of
+    // the same pairing `base_array` makes with `base_array_text`. Null when
+    // the text is synthesized rather than copied: the inheritance fixup
+    // builds `q_index_xj + (...)`, which names an index variable and
+    // corresponds to no node.
+    //
+    // `offset_text` is pasted verbatim into the output, so whether the
+    // rewrite invalidates it is a question about the nodes it came from,
+    // not about its spelling. Anything that has to inspect the offset —
+    // init-conflict detection is the one caller today — resolves it here
+    // rather than guessing which expression the access refers to.
+    //
+    // Note the fields above are set positionally by aggregate
+    // initialization at ~40 sites; this one and owner_ptr are set by name,
+    // which is why they come last.
+    const Expr *offset_expr = nullptr;
 };
 
 // ============================================================================
@@ -437,6 +454,15 @@ inline const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx) {
 // Find the DeclStmt that introduces `VD` inside `FunctionBody`. Used to
 // position rewrites at the variable's declaration line.
 const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody);
+
+// The first DeclRefExpr in `S`'s subtree whose referenced Decl satisfies
+// `pred`, or null if there is none. Pre-order, and stops at the first hit.
+//
+// Both callers are asking the same question of a pasted-through expression:
+// does it name something this rewrite is about to invalidate? Returning the
+// reference rather than a bool lets them name the offender in the diagnostic.
+const DeclRefExpr *findRefIf(const Stmt *S,
+                             llvm::function_ref<bool(const Decl *)> pred);
 
 // The ForStmt whose init clause is `DS`, or null when `DS` is an ordinary
 // statement-level declaration.

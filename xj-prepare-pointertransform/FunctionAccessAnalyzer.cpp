@@ -560,74 +560,52 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             }
         }
 
-        // Reject pointers whose init/assign offset references another
-        // pointer that will also be transformed. The init edit would use
-        // stale source text for the offset, conflicting with the inner
-        // pointer's transformation. Pointers handled by the inheritance
-        // fixup above are exempt: their offset no longer names the other
-        // pointer, it names that pointer's index.
+        // Reject pointers whose init/assign offset names another pointer
+        // that is also being transformed.
+        //
+        // The offset is source text snapshotted at collect time and pasted
+        // back out at edit time, so a name in it that the rewrite invalidates
+        // is pasted stale — and a collapsed pointer's declaration is deleted
+        // outright, leaving text that names nothing. The pointer is dropped
+        // rather than rewritten wrong.
+        //
+        // Only the *offset* is pasted, so only the offset is checked.
+        // `offset_expr` is the node the text came from, which is the whole
+        // question: which expression to look at is a property of the access,
+        // not of the pointer, and reconstructing it from the pointer got both
+        // available answers wrong. Checking the enclosing initializer instead
+        // also swept in the base, whose reference index inheritance already
+        // handles — the false positives that produced were then suppressed by
+        // an exemption that trusted an inner MaterializeUse rewrite to survive
+        // a wholesale replacement of the text containing it. It does not:
+        // applyEdits drops the overlapping inner edit. Narrowing to the offset
+        // retires that exemption and the `inherited` one together.
+        //
+        // A null offset_expr means the text was synthesized, not copied — the
+        // inheritance fixup's `q_index_xj + (...)`, which names an index
+        // variable and cannot go stale. Nothing to check.
         for (auto &pair : analysis.accesses) {
             const VarDecl *PtrVar = pair.first;
             if (!modes.count(PtrVar))
-                continue;
-            if (inherited.count(PtrVar))
                 continue;
             for (const auto &acc : pair.second) {
                 if (acc.kind != PointerAccessKind::InitArrayOffset &&
                     acc.kind != PointerAccessKind::AssignAddrOf &&
                     acc.kind != PointerAccessKind::AssignArrayOffset)
                     continue;
-                // Check if any other transformed pointer appears in the
-                // init expression's subtree
-                const Stmt *InitStmt = acc.enclosing_stmt;
-                if (!InitStmt) {
-                    // For declarations, use the VarDecl's init
-                    if (PtrVar->hasInit())
-                        InitStmt = PtrVar->getInit();
-                }
-                if (!InitStmt && acc.expr) {
-                    // For separate assignments (AssignAddrOf, AssignArrayOffset),
-                    // walk up from the DeclRefExpr to find the BinaryOperator
-                    // and check its RHS for references to other transformed ptrs
-                    const Stmt *P = skipTransparentParents(acc.expr, Ctx);
-                    if (const BinaryOperator *BO = dyn_cast_or_null<BinaryOperator>(P))
-                        InitStmt = BO->getRHS();
-                }
-                if (!InitStmt) continue;
-                bool has_conflict = false;
-                // Walk the init to find DeclRefExprs to other transformed pointers
-                std::function<void(const Stmt *)> checkRefs = [&](const Stmt *S) {
-                    if (has_conflict || !S) return;
-                    if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
-                        if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                            if (VD != PtrVar && modes.count(VD)) {
-                                // Not stale if that pointer's reference in
-                                // this very initializer is being
-                                // materialized: the text is rewritten to
-                                // `(base + index)`, which is exactly the
-                                // value the offset needs. Keyed on the
-                                // owning decl — a same-named pointer's
-                                // materialized reference is a different
-                                // initializer and says nothing about this
-                                // one.
-                                bool materialized = false;
-                                for (const auto &oacc : analysis.accesses[VD]) {
-                                    if (oacc.kind == PointerAccessKind::MaterializeUse &&
-                                        oacc.owner_ptr == PtrVar) {
-                                        materialized = true;
-                                        break;
-                                    }
-                                }
-                                if (!materialized)
-                                    has_conflict = true;
-                            }
-                        }
-                    }
-                    for (const Stmt *Child : S->children())
-                        checkRefs(Child);
-                };
-                checkRefs(InitStmt);
-                if (has_conflict) {
+                if (!acc.offset_expr)
+                    continue;
+                const DeclRefExpr *Conflict =
+                    findRefIf(acc.offset_expr, [&](const Decl *D) {
+                        const auto *VD = dyn_cast<VarDecl>(D);
+                        return VD && VD != PtrVar && modes.count(VD);
+                    });
+                if (Conflict) {
+                    logFailedPointer(PtrVar, Ctx,
+                                     "offset names '" +
+                                         Conflict->getDecl()->getNameAsString() +
+                                         "', which is also being rewritten, so "
+                                         "the offset text would go stale");
                     modes.erase(PtrVar);
                     break;
                 }
