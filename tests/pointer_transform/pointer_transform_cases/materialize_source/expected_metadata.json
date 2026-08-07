@@ -1,0 +1,23 @@
+{
+  "functions": {
+    "f@materialize_source.c": {
+      "file": "materialize_source.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj",
+          "mode": "reseated",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "q",
+          "index_var": "q_index_xj",
+          "mode": "handle",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "f@init_offset_names_transformed_ptr.c": {
+      "file": "init_offset_names_transformed_ptr.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "mode": "collapse",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

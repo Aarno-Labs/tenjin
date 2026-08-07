@@ -169,6 +169,7 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
         pa.expr = Init;
         pa.enclosing_stmt = nullptr;
         pa.offset_text = index_text;
+        pa.offset_expr = ASE->getIdx();
         access_list.push_back(pa);
         return;
     }
@@ -193,6 +194,7 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
                 pa.expr = Init;
                 pa.enclosing_stmt = nullptr;
                 pa.offset_text = getSourceText(BO->getRHS(), SM, LO);
+                pa.offset_expr = BO->getRHS();
                 access_list.push_back(pa);
                 return;
             }
@@ -316,10 +318,93 @@ static const Stmt *skipTransparentParentsOf(const Stmt *S, ASTContext &Ctx,
 // ArraySubscriptExpr, BinaryOperator, CallExpr, ReturnStmt, ...). The
 // final fallback emits Unknown, which causes validation to reject the
 // pointer.
+// A reseat gives the pointer a whole new base. Collapse mode cannot
+// express it — there is no single base text to substitute at the access
+// sites — but handle mode can: the assignment is left exactly where it
+// is and the index is reset alongside it.
+//
+// The rewrite is a comma expression, `(p = rhs, p_index_xj = 0)`, so the
+// assignment must be in statement position; if its value is consumed the
+// comma yields the index instead of the pointer. A parent that is a Stmt
+// but not an Expr is exactly statement position, and it also covers the
+// clause slots of if/while/for, where a bare insertion after the
+// assignment would land outside the clause.
+void PointerAccessCollector::markReseat(PointerCandidate &candidate,
+                                        std::vector<PointerAccess> &access_list,
+                                        const BinaryOperator *BO,
+                                        DeclRefExpr *DRE) {
+    const Stmt *Parent = skipTransparentParents(BO, Ctx);
+    if (!Parent || isa<Expr>(Parent)) {
+        access_list.push_back({PointerAccessKind::Unknown, BO->getBeginLoc(),
+                               DRE, nullptr, "", "", "", ""});
+        return;
+    }
+
+    candidate.collapse_ineligible = true;
+    access_list.push_back({PointerAccessKind::AssignPtr, BO->getBeginLoc(),
+                           DRE, BO, "", "", "", ""});
+}
+
+// True if `DRE` sits inside the initializer of a *different* tracked
+// pointer — the `q` in `T *p = q + 1;`. That declaration is rewritten as
+// a unit by p, which inherits q's index, so this occurrence needs no edit
+// and must not fall through to the Unknown catch-all: doing so would
+// reject q entirely, which is what used to make an inherited
+// initializer cost both pointers their rewrite.
+const VarDecl *PointerAccessCollector::inheritingPointerFor(const DeclRefExpr *DRE,
+                                                            const VarDecl *PtrVar) {
+    auto Start = Ctx.getParents(*DRE);
+    if (Start.empty())
+        return nullptr;
+    DynTypedNode Node = Start[0];
+    while (true) {
+        if (const auto *VD = Node.get<VarDecl>()) {
+            if (VD != PtrVar && tracked_pointers.count(VD))
+                return VD;
+            return nullptr;
+        }
+        const Stmt *S = Node.get<Stmt>();
+        // Only walk out through pointer arithmetic and transparent nodes;
+        // anything else means the reference is not simply the base of an
+        // initializer.
+        if (!S || !isa<ImplicitCastExpr, ParenExpr, CStyleCastExpr,
+                       BinaryOperator>(S))
+            return nullptr;
+        if (const auto *BO = dyn_cast<BinaryOperator>(S)) {
+            if (BO->getOpcode() != BO_Add && BO->getOpcode() != BO_Sub)
+                return nullptr;
+        }
+        auto Parents = Ctx.getParents(*S);
+        if (Parents.empty())
+            return nullptr;
+        Node = Parents[0];
+    }
+}
+
 void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                                              const VarDecl *PtrVar,
                                              std::vector<PointerAccess> &access_list,
                                              PointerCandidate &candidate) {
+    if (const VarDecl *Inheritor = inheritingPointerFor(DRE, PtrVar)) {
+        // owner_ptr is the pointer that owns the enclosing declaration.
+        // Suppressing this edit is only safe if that pointer actually
+        // rewrites the declaration; if it does not, this pointer must be
+        // left alone too, or collapsing it would delete a name the
+        // surviving declaration still refers to.
+        //
+        // Recorded as the decl, not its name: the owner is looked up again
+        // by every consumer of this record, and a name does not identify a
+        // pointer.
+        PointerAccess pa;
+        pa.kind = PointerAccessKind::NoRewrite;
+        pa.loc = DRE->getLocation();
+        pa.expr = DRE;
+        pa.enclosing_stmt = nullptr;
+        pa.owner_ptr = Inheritor;
+        access_list.push_back(pa);
+        return;
+    }
+
     const Stmt *OutermostDRE = DRE; // top of the transparent wrapper chain over DRE
     const Stmt *Parent = skipTransparentParentsOf(DRE, Ctx, OutermostDRE);
     if (!Parent) {
@@ -535,6 +620,22 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
     // ---- BinaryOperator: comparisons, assignments, compound assigns,
     //                       pointer arithmetic --------------------------
     if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(Parent)) {
+        // p - base -> p_index. A pointer's distance from its own base is
+        // exactly its index, so the subtraction disappears. Restricted to
+        // the captured base spelled the same way, which is the common
+        // `(int)(w - buf)` length computation; any other subtraction
+        // falls through to the shapes below.
+        if (BO->getOpcode() == BO_Sub && !candidate.base_array_text.empty() &&
+            (BO->getLHS()->IgnoreParenImpCasts() == DRE ||
+             BO->getLHS()->IgnoreParenImpCasts() == OutermostDRE) &&
+            BO->getRHS()->IgnoreParenImpCasts()->getType()->isPointerType() &&
+            getSourceText(BO->getRHS()->IgnoreParenImpCasts(), SM, LO) ==
+                candidate.base_array_text) {
+            access_list.push_back({PointerAccessKind::PtrDiffBase,
+                                   BO->getBeginLoc(), DRE, BO, "", "", "", ""});
+            return;
+        }
+
         // Comparison: p == NULL, p < end, p < arr + n, p >= arr, ...
         // We try several shapes in order of specificity, falling back
         // to the unresolvable "Comparison" kind if none of them apply.
@@ -701,23 +802,20 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                     const auto *ASE = cast<ArraySubscriptExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
                     if (baseIsUnsafe(ASE->getBase()->IgnoreParenImpCasts(), is_global) ||
                         baseIsUnsafe(ASE->getIdx(), is_global)) {
-                        access_list.push_back({PointerAccessKind::Unknown,
-                                               BO->getBeginLoc(), DRE, nullptr,
-                                               "", "", "", ""});
+                        markReseat(candidate, access_list, BO, DRE);
                         return;
                     }
                     if (candidate.base_array_text.empty()) {
                         candidate.base_array_text = base_text;
                         candidate.base_array = RHS;
                     } else if (base_text != candidate.base_array_text) {
-                        access_list.push_back({PointerAccessKind::Unknown,
-                                               BO->getBeginLoc(), DRE, nullptr,
-                                               "", "", "", ""});
+                        markReseat(candidate, access_list, BO, DRE);
                         return;
                     }
                     access_list.push_back({PointerAccessKind::AssignAddrOf,
                                            BO->getBeginLoc(), DRE, nullptr,
                                            index_text, "", "", ""});
+                    access_list.back().offset_expr = ASE->getIdx();
                     return;
                 }
 
@@ -728,9 +826,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                         const Expr *AddLHS = AddBO->getLHS()->IgnoreParenImpCasts();
                         if (baseIsUnsafe(AddLHS, is_global) ||
                             baseIsUnsafe(AddBO->getRHS(), is_global)) {
-                            access_list.push_back({PointerAccessKind::Unknown,
-                                                   BO->getBeginLoc(), DRE, nullptr,
-                                                   "", "", "", ""});
+                            markReseat(candidate, access_list, BO, DRE);
                             return;
                         }
                         std::string rhs_base = getSourceText(AddLHS, SM, LO);
@@ -739,14 +835,13 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                             candidate.base_array_text = rhs_base;
                             candidate.base_array = AddLHS;
                         } else if (rhs_base != candidate.base_array_text) {
-                            access_list.push_back({PointerAccessKind::Unknown,
-                                                   BO->getBeginLoc(), DRE, nullptr,
-                                                   "", "", "", ""});
+                            markReseat(candidate, access_list, BO, DRE);
                             return;
                         }
                         access_list.push_back({PointerAccessKind::AssignArrayOffset,
                                                BO->getBeginLoc(), DRE, nullptr,
                                                rhs_offset, "", "", ""});
+                        access_list.back().offset_expr = AddBO->getRHS();
                         return;
                     }
                 }
@@ -802,10 +897,9 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                         // RHS has a side effect (e.g. `p = argv[n++]`) or,
                         // for a global pointer, references a local — pasting
                         // it at every access site would duplicate the side
-                        // effect or paste an out-of-scope name.
-                        access_list.push_back({PointerAccessKind::Unknown,
-                                               BO->getBeginLoc(), DRE, nullptr,
-                                               "", "", "", ""});
+                        // effect or paste an out-of-scope name. A reseat
+                        // pastes it nowhere: the assignment stays put.
+                        markReseat(candidate, access_list, BO, DRE);
                         return;
                     }
                     std::string rhs_text = getSourceText(RHS, SM, LO);
@@ -815,10 +909,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                     } else if (rhs_text != candidate.base_array_text) {
                         // Different source — the pointer is being reseated
                         // (e.g. a linked-list walk like `p = p->next`).
-                        // We can't represent that as a single index.
-                        access_list.push_back({PointerAccessKind::Unknown,
-                                               BO->getBeginLoc(), DRE, nullptr,
-                                               "", "", "", ""});
+                        markReseat(candidate, access_list, BO, DRE);
                         return;
                     }
                     access_list.push_back({PointerAccessKind::AssignArray,
@@ -882,12 +973,13 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                             offset_str = arith_text.substr(pos + ptr_text.length());
 
                         // Try to evaluate the entire +/- chain as a
-                        // compile-time constant. If we can, fold it
-                        // into the candidate's min/max offset bounds
-                        // (used later by RustSlice lookback/lookahead).
-                        // If any term is non-constant, mark the
-                        // candidate as having a variable offset, which
-                        // disqualifies it during validation.
+                        // compile-time constant. If any term is
+                        // non-constant, record that the pointer reaches a
+                        // statically unknowable distance past its index.
+                        // The slice pass re-derives the actual lookback /
+                        // lookahead bounds from the rewritten AST
+                        // (SliceDetector::computeOffsetBounds), so nothing
+                        // here needs to accumulate them.
                         bool is_const_offset = true;
                         int const_offset = 0;
 
@@ -914,14 +1006,8 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                                 CurBO = nullptr;
                         }
 
-                        if (is_const_offset) {
-                            if (const_offset < candidate.min_relative_offset)
-                                candidate.min_relative_offset = const_offset;
-                            if (const_offset > candidate.max_relative_offset)
-                                candidate.max_relative_offset = const_offset;
-                        } else {
+                        if (!is_const_offset)
                             candidate.constant_offsets = false;
-                        }
 
                         // Read or write of *(p ± expr)?
                         const Stmt *DerefParent = skipTransparentParents(DerefUO, Ctx);

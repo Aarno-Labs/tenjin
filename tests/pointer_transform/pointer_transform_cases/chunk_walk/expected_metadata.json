@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "walk@chunk_walk.c": {
+      "file": "chunk_walk.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj",
+          "mode": "reseated",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

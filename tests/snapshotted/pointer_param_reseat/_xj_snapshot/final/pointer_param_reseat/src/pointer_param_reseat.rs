@@ -13,19 +13,21 @@ use ::pointer_param_reseat;
 use ::std::process::ExitCode;
 #[no_mangle]
 pub unsafe extern "C" fn write_not_null(mut dest: *mut ::core::ffi::c_int) -> ::core::ffi::c_int {
+    let mut dest_index_xj = 0 as ::core::ffi::c_int;
     let mut buf: [::core::ffi::c_int; 4] = [0; 4];
     if dest.is_null() {
         dest = &raw mut buf as *mut ::core::ffi::c_int;
+        dest_index_xj = 0;
     }
-    let c2rust_fresh0 = dest;
-    dest = dest.offset(1);
-    *c2rust_fresh0 = 1;
-    let c2rust_fresh1 = dest;
-    dest = dest.offset(1);
-    *c2rust_fresh1 = 2;
-    let c2rust_fresh2 = dest;
-    dest = dest.offset(1);
-    *c2rust_fresh2 = 3;
+    let c2rust_fresh0 = dest_index_xj;
+    dest_index_xj += 1;
+    *dest.offset(c2rust_fresh0 as isize) = 1;
+    let c2rust_fresh1 = dest_index_xj;
+    dest_index_xj += 1;
+    *dest.offset(c2rust_fresh1 as isize) = 2;
+    let c2rust_fresh2 = dest_index_xj;
+    dest_index_xj += 1;
+    *dest.offset(c2rust_fresh2 as isize) = 3;
     buf[0] + buf[1] + buf[2]
 }
 unsafe fn main_0() -> ::core::ffi::c_int {

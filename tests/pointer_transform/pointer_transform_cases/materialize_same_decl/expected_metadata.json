@@ -1,0 +1,23 @@
+{
+  "functions": {
+    "f@materialize_same_decl.c": {
+      "file": "materialize_same_decl.c",
+      "pointers": [
+        {
+          "base_text": "r",
+          "index_var": "r_index_xj",
+          "mode": "reseated",
+          "name": "r",
+          "param_index": -1
+        },
+        {
+          "base_text": "q",
+          "index_var": "q_index_xj",
+          "mode": "handle",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

@@ -65,6 +65,42 @@ const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody) {
     return finder.Found;
 }
 
+// Plain recursion rather than a RecursiveASTVisitor: the callers hand in a
+// bare subexpression, not a whole body, and want to stop at the first hit.
+const DeclRefExpr *findRefIf(const Stmt *S,
+                             llvm::function_ref<bool(const Decl *)> pred) {
+    if (!S)
+        return nullptr;
+    if (const auto *DRE = dyn_cast<DeclRefExpr>(S)) {
+        if (pred(DRE->getDecl()))
+            return DRE;
+    }
+    for (const Stmt *Child : S->children()) {
+        if (const DeclRefExpr *Hit = findRefIf(Child, pred))
+            return Hit;
+    }
+    return nullptr;
+}
+
+// The ForStmt `DS` is the init clause of, if any. Only the init clause
+// counts: a DeclStmt in the loop *body* is an ordinary statement with an
+// ordinary position after it.
+const ForStmt *forStmtInitializedBy(const DeclStmt *DS, ASTContext &Ctx) {
+    if (!DS)
+        return nullptr;
+    auto Parents = Ctx.getParents(*DS);
+    if (Parents.empty())
+        return nullptr;
+    const auto *FS = Parents[0].get<ForStmt>();
+    if (FS && FS->getInit() == DS)
+        return FS;
+    return nullptr;
+}
+
+bool isMultiDeclarator(const DeclStmt *DS) {
+    return DS && !DS->isSingleDecl();
+}
+
 // Return the run of spaces/tabs at the start of the line containing
 // `Loc`, so emitted code (typedefs, wrappers) lines up with the
 // surrounding source.
@@ -98,6 +134,30 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
     return getSourceText(E->getSourceRange(), SM, LO);
 }
 
+// Index names, keyed by the pointer's declaration. See Common.h.
+static std::map<const VarDecl *, std::string> g_index_names;
+
+void assignIndexNames(const std::vector<const VarDecl *> &ptrs) {
+    std::set<std::string> used;
+    for (const VarDecl *VD : ptrs) {
+        const std::string base = VD->getNameAsString() + "_index_xj";
+        std::string name = base;
+        for (unsigned n = 1; used.count(name); n++)
+            name = base + "_" + std::to_string(n);
+        used.insert(name);
+        g_index_names[VD] = name;
+    }
+}
+
+const std::string &indexNameFor(const VarDecl *VD) {
+    auto it = g_index_names.find(VD);
+    if (it != g_index_names.end())
+        return it->second;
+    return g_index_names
+        .emplace(VD, VD->getNameAsString() + "_index_xj")
+        .first->second;
+}
+
 // Stringify a PointerAccessKind for verbose / debug output.
 const char *pointerAccessKindToString(PointerAccessKind kind) {
     switch (kind) {
@@ -108,6 +168,10 @@ const char *pointerAccessKindToString(PointerAccessKind kind) {
     case PointerAccessKind::AssignAddrOf: return "AssignAddrOf";
     case PointerAccessKind::AssignArray: return "AssignArray";
     case PointerAccessKind::AssignArrayOffset: return "AssignArrayOffset";
+    case PointerAccessKind::AssignPtr: return "AssignPtr";
+    case PointerAccessKind::NoRewrite: return "NoRewrite";
+    case PointerAccessKind::MaterializeUse: return "MaterializeUse";
+    case PointerAccessKind::PtrDiffBase: return "PtrDiffBase";
     case PointerAccessKind::Increment: return "Increment";
     case PointerAccessKind::Decrement: return "Decrement";
     case PointerAccessKind::PlusAssign: return "PlusAssign";

@@ -23,6 +23,17 @@
 // runs on this tool's output (valid, index-rewritten C) plus the
 // per-pointer metadata records.
 
+// Pointers that will be transformed, and how.
+//
+// This is the single authority on both questions: membership means "will
+// be transformed", and the mapped value is how. A parallel set of the
+// same keys used to ride alongside it, and the two could fall out of
+// step — one removal site dropped a pointer from the set but left its
+// mode behind, and the first rewrite loop consulted only the mode, so the
+// pointer was rewritten after being rejected. One container cannot
+// disagree with itself.
+using TransformModeMap = std::map<const VarDecl *, TransformMode>;
+
 class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
   public:
     explicit FunctionAccessAnalyzer(Rewriter &R);
@@ -49,22 +60,25 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // Emit a [FAILED] log entry plus update gLog/per-file state.
     void logFailedPointer(const VarDecl *VD, ASTContext &Ctx, const std::string &error);
 
-    // Validate + rewrite one local pointer (the simple within-function path).
+    // Rewrite one local pointer in the mode transformAllFunctions already
+    // decided for it (the simple within-function path).
     void transformPointerVar(const FunctionDecl *FD, const VarDecl *PtrVar,
                              PointerCandidate &candidate,
                              std::vector<PointerAccess> &accesses,
-                             ASTContext &Ctx);
+                             ASTContext &Ctx, TransformMode mode);
 
     // Debug dump of an access list (only fires when VERBOSE).
     void printAccesses(const VarDecl *VD, const std::vector<PointerAccess> &seq,
                        ASTContext &Ctx);
 
-    // Defined in ValidationMethods.cpp.
-    bool validatePointerCandidate(const VarDecl *PtrVar,
-                                  PointerCandidate &candidate,
-                                  std::vector<PointerAccess> &accesses,
-                                  ASTContext &Ctx,
-                                  std::string &error);
+    // Defined in ValidationMethods.cpp. Returns the mode this pointer
+    // should be rewritten in, or TransformMode::Reject (with `error` set)
+    // if it should be left alone.
+    TransformMode validatePointerCandidate(const VarDecl *PtrVar,
+                                           PointerCandidate &candidate,
+                                           std::vector<PointerAccess> &accesses,
+                                           ASTContext &Ctx,
+                                           std::string &error);
 
     // Defined in TransformationMethods.cpp.
     // generateTransformation: rewrite a single local pointer in place.
@@ -72,7 +86,8 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
                                 const VarDecl *PtrVar,
                                 PointerCandidate &candidate,
                                 std::vector<PointerAccess> &accesses,
-                                ASTContext &Ctx);
+                                ASTContext &Ctx,
+                                TransformMode mode);
 
     // generateGlobalTransformation: same idea but for a file-scope
     // pointer (visited from every function that uses it).
@@ -86,7 +101,42 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     void applyEdits(std::vector<Edit> &edits, SourceManager &SM);
 
     // ---- Cross-function transformation phase --------------------------
+    // transformAllFunctions walks every analyzed function; transformFunction
+    // runs the rewrite pipeline for one of them. The pipeline steps below
+    // are members because they need validatePointerCandidate,
+    // logFailedPointer or transformPointerVar; the remaining steps are
+    // file-static helpers in FunctionAccessAnalyzer.cpp.
     void transformAllFunctions(ASTContext &Ctx);
+    void transformFunction(const FunctionDecl *FD, FunctionAnalysis &analysis,
+                           ASTContext &Ctx);
+
+    // Judge every pointer once, into the mode it will be rewritten in.
+    TransformModeMap decideTransformModes(FunctionAnalysis &analysis,
+                                          ASTContext &Ctx);
+
+    // Re-judge a pointer whose candidate a fixup just changed, updating
+    // `modes` with the new verdict. True if it survived. Sound only after
+    // a fixup — see the note on decideTransformModes for why re-judging
+    // is otherwise forbidden.
+    bool revalidateAfterFixup(const VarDecl *PtrVar, PointerCandidate &candidate,
+                              std::vector<PointerAccess> &accesses,
+                              TransformModeMap &modes, ASTContext &Ctx);
+
+    // Fold a rewritten source pointer's index into the pointers derived
+    // from it. Returns the pointers that inherited.
+    std::set<const VarDecl *> inheritIndices(FunctionAnalysis &analysis,
+                                             TransformModeMap &modes,
+                                             ASTContext &Ctx);
+
+    // Drop pointers whose pasted offset text the rewrite would invalidate.
+    void rejectStaleOffsets(FunctionAnalysis &analysis, TransformModeMap &modes,
+                            ASTContext &Ctx);
+
+    // Rewrite the pointers in `order` that survived into `modes`.
+    void emitPointerRewrites(const FunctionDecl *FD, FunctionAnalysis &analysis,
+                             const TransformModeMap &modes,
+                             const std::vector<const VarDecl *> &order,
+                             ASTContext &Ctx);
 
     // ---- Metadata export for xj-prepare-slicetransform ----------------
     // Look up (or create) the metadata record for FD; nullptr when a

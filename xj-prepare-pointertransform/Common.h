@@ -64,6 +64,55 @@ enum class PointerAccessKind {
     AssignArray,        // p = arr;                  → p_index = 0;
     AssignArrayOffset,  // p = arr + n;              → p_index = n;
 
+    // --- Reseats (handle mode only) ---------------------------------------
+    // A reseat assigns a whole new base to the pointer rather than moving
+    // it within the current one. Base collapse cannot express these — there
+    // is no single base text to substitute — so they mark the pointer
+    // collapse-ineligible and are rewritten with the pointer retained as a
+    // frozen handle.
+    //
+    // The assignment survives verbatim inside a comma expression, so the
+    // pointer absorbs the *entire* RHS — any offset included. The index
+    // therefore always restarts at 0, exactly as AssignArray,
+    // AssignArrayOffset and AssignAddrOf do in handle mode. There is no
+    // separate offset kind because after the rewrite there is no offset
+    // left to account for.
+    //
+    // A tracked pointer inside the RHS is a separate DeclRefExpr, classified
+    // and rewritten on its own (MaterializeUse → `(q_base + q_index)`), so
+    // its position reaches the new pointer through the assigned value rather
+    // than through the index. `p = p->next` likewise needs no kind of its
+    // own — its RHS `p` is an ArrowAccess.
+    AssignPtr,          // p = <expr>[ + n];         → (p = <expr>[ + n], p_index = 0);
+
+    // The pointer appears as the base of *another* tracked pointer's
+    // initializer (`T *p = q + 1;` seen from q's side). The enclosing
+    // declaration is rewritten as a whole by the other pointer, which
+    // inherits this one's index, so this occurrence needs no edit of its
+    // own — and must not be mistaken for an unrecognized shape, which
+    // would reject an otherwise perfectly transformable pointer.
+    NoRewrite,
+
+    // The pointer's *value* is read in a context that keeps the
+    // surrounding expression, so the reference is replaced in place by
+    // `(base + index)`. A frozen pointer's value is its base — its
+    // position lives in the index — so a bare reference would report
+    // where it started rather than where it has reached.
+    //
+    // Parenthesized, unlike PassedToFunc's bare `base + index`: an
+    // argument slot binds looser than anything this can appear inside,
+    // but `(char *)p` would otherwise become `(char *)p + index`, which
+    // scales the offset by the wrong type.
+    //
+    // Only produced after validation, by the materialization fixup in
+    // transformAllFunctions.
+    MaterializeUse,
+
+    // p - base, where base is this pointer's own base spelled exactly as
+    // captured. The distance from a pointer to its base is its index, so
+    // the whole subtraction collapses to p_index.
+    PtrDiffBase,
+
     // --- Pointer arithmetic on the pointer itself -------------------------
     Increment,          // p++ / ++p                 → p_index++ / ++p_index
     Decrement,          // p-- / --p                 → p_index-- / --p_index
@@ -120,19 +169,45 @@ enum class PointerAccessKind {
     Unknown                 // any pattern we don't recognize — reject
 };
 
+// How a pointer will be rewritten, decided by validatePointerCandidate.
+//
+//   Collapse — the pointer variable is deleted and every access becomes
+//              `<base source text>[p_index]`. Preferred: it removes the
+//              raw pointer entirely and leaves a bound comparison the
+//              slice pass can anchor on. Requires the base to be spelled
+//              the same way everywhere.
+//   Handle   — the pointer variable is retained as a frozen handle (never
+//              advanced by pointer arithmetic) and accesses become
+//              `p[p_index]`. Requires nothing of the base, so it covers
+//              reseats and unstable bases that Collapse cannot express.
+//   Reject   — not rewritten at all.
+enum class TransformMode { Reject, Collapse, Handle };
+
 // One pointer the tool is considering rewriting. Populated by
 // PointerAccessCollector and refined as more accesses are classified.
+//
+// Two rewrite modes exist (see TransformMode in FunctionAccessAnalyzer.h):
+//   - Collapse: the pointer variable is deleted and every access becomes
+//     `<base source text>[p_index]`. The base is a *syntactic* fact
+//     re-substituted at each site, so it must be textually valid and stable
+//     across the whole function.
+//   - Handle: the pointer variable is retained as a frozen handle and every
+//     access becomes `p[p_index]`. The base is a *runtime value*, so nothing
+//     is required of its spelling.
+// Collapse is preferred wherever it is provable; `collapse_ineligible`
+// records that one of the base-stability facts it depends on does not hold.
 struct PointerCandidate {
     const VarDecl *ptr_var;
     const Expr *base_array;        // AST node the base array was extracted from
     std::string base_array_text;   // source text of the base, e.g. "users", "bs->buf"
     bool is_parameter;             // true if this pointer is a function parameter
 
-    // Lookback / lookahead bounds, computed from constant *(p ± k) accesses.
-    // Used by the RustSlice transform to extend slice bounds at call sites.
-    int min_relative_offset = 0;   // most-negative constant offset seen (e.g. -1)
-    int max_relative_offset = 0;   // most-positive constant offset seen (e.g. +2)
-    bool constant_offsets = true;  // false if any *(p + variable) was seen → reject
+    // Set when a base-stability fact fails: a second, textually different
+    // assignment source, or a base expression we cannot safely re-spell.
+    // Routes the pointer to handle mode instead of rejecting it.
+    bool collapse_ineligible = false;
+
+    bool constant_offsets = true;  // false if any *(p + variable) was seen
 };
 
 // One classified use of a tracked pointer. The combination of `kind` and
@@ -147,6 +222,31 @@ struct PointerAccess {
     std::string field_name;        // ArrowAccess / ArrowWrite
     std::string subscript_text;    // Subscript / SubscriptWrite
     std::string operand_text;      // PlusAssign / MinusAssign / comparison RHS / wrapper extra args
+
+    // NoRewrite / MaterializeUse: the pointer whose declaration encloses
+    // this reference — the `p` in `T *p = q + 1;` recorded on q's access.
+    // A decl and not a name: two same-named pointers in nested or sibling
+    // scopes are distinct owners, and a name comparison picks whichever
+    // the map happens to yield first. That is the same distinction
+    // assignIndexNames exists to make, on the other side of it.
+    const VarDecl *owner_ptr = nullptr;
+
+    // The expression `offset_text` was snapshotted from — the other half of
+    // the same pairing `base_array` makes with `base_array_text`. Null when
+    // the text is synthesized rather than copied: the inheritance fixup
+    // builds `q_index_xj + (...)`, which names an index variable and
+    // corresponds to no node.
+    //
+    // `offset_text` is pasted verbatim into the output, so whether the
+    // rewrite invalidates it is a question about the nodes it came from,
+    // not about its spelling. Anything that has to inspect the offset —
+    // init-conflict detection is the one caller today — resolves it here
+    // rather than guessing which expression the access refers to.
+    //
+    // Note the fields above are set positionally by aggregate
+    // initialization at ~40 sites; this one and owner_ptr are set by name,
+    // which is why they come last.
+    const Expr *offset_expr = nullptr;
 };
 
 // ============================================================================
@@ -355,6 +455,29 @@ inline const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx) {
 // position rewrites at the variable's declaration line.
 const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody);
 
+// The first DeclRefExpr in `S`'s subtree whose referenced Decl satisfies
+// `pred`, or null if there is none. Pre-order, and stops at the first hit.
+//
+// Both callers are asking the same question of a pasted-through expression:
+// does it name something this rewrite is about to invalidate? Returning the
+// reference rather than a bool lets them name the offender in the diagnostic.
+const DeclRefExpr *findRefIf(const Stmt *S,
+                             llvm::function_ref<bool(const Decl *)> pred);
+
+// The ForStmt whose init clause is `DS`, or null when `DS` is an ordinary
+// statement-level declaration.
+//
+// The distinction matters wherever a companion declaration is emitted
+// alongside `DS`: a for-init has no position *after* it that accepts a
+// statement — that slot is the loop condition — so the companion has to be
+// placed before the whole loop instead.
+const ForStmt *forStmtInitializedBy(const DeclStmt *DS, ASTContext &Ctx);
+
+// True if `DS` introduces more than one entity: `int *p = buf, *q = buf + 1;`.
+// Such a declaration cannot be replaced wholesale by one pointer's rewrite,
+// since the other declarators have to survive.
+bool isMultiDeclarator(const DeclStmt *DS);
+
 // Return the leading whitespace (spaces/tabs) on the line containing
 // `Loc`. Used to indent emitted code (wrappers, typedefs) consistently.
 llvm::StringRef getIndentBeforeLoc(SourceLocation Loc, const SourceManager &SM);
@@ -366,3 +489,26 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 
 // Debug helper: stringify a PointerAccessKind for trace logs.
 const char *pointerAccessKindToString(PointerAccessKind kind);
+
+// ============================================================================
+// Index variable naming
+// ============================================================================
+//
+// Every rewritten pointer gets a companion index variable. The name is
+// assigned once, up front, rather than derived at each use site, because
+// an index does not always share its pointer's scope: a pointer declared
+// in a for-init has its index placed before the whole loop, where it
+// outlives the pointer. Two same-named pointers in different scopes would
+// then put two identically-named indices in one block — a redefinition,
+// or worse a silent resolution to the wrong one.
+//
+// assignIndexNames() takes one function's pointers in source order and
+// hands out `p_index_xj`, then `p_index_xj_1`, `p_index_xj_2`, ... on
+// collision. The first pointer of a given name keeps the plain form, so
+// the common case reads exactly as before.
+void assignIndexNames(const std::vector<const VarDecl *> &ptrs);
+
+// The index name for `VD`. Falls back to the plain convention for
+// pointers that never went through assignIndexNames (file-scope ones,
+// which are rewritten on their own path).
+const std::string &indexNameFor(const VarDecl *VD);

@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "scan@reseat_conditional.c": {
+      "file": "reseat_conditional.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj",
+          "mode": "reseated",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}
