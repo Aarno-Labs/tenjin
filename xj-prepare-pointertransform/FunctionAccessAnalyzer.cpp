@@ -150,11 +150,17 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
         printAccesses(VD, state.accesses, Ctx);
 
         std::string error;
-        // Globals stay on the collapse path for now; handle mode for
+        // Globals are collapse-only: generateGlobalTransformation always
+        // deletes the declaration and substitutes base_array_text at every
+        // access, and has no case for AssignPtr. A Handle verdict is the
+        // validator saying that substitution is *not* sound — an unstable
+        // or type-punned base, or a reseat — so it has to skip here. Testing
+        // for Reject instead would let exactly those candidates through to
+        // collapse codegen with the base just judged unsafe. Handle mode for
         // file-scope pointers is deferred (they bypass transformPointerVar
         // and emit no metadata).
         if (validatePointerCandidate(VD, state.candidate, state.accesses,
-                                     Ctx, error) == TransformMode::Reject) {
+                                     Ctx, error) != TransformMode::Collapse) {
             gLog.error = error;
             logFailedPointer(VD, Ctx, error);
             if (VERBOSE)
