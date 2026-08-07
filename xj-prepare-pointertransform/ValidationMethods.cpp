@@ -64,6 +64,23 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
         }
     }
 
+    // A reseat rules out collapse: the pointer's base changes at runtime,
+    // so no single base spelling is valid at every access site.
+    //
+    // markReseat records this on the candidate as collapse_ineligible, and
+    // for a local that is the same fact arriving by a shorter route. It is
+    // not the same for a *global*: the merge in run() keeps the candidate
+    // built from the initializer and drops the per-function one that
+    // markReseat mutated, so the flag never arrives. The accesses always
+    // do. Deriving it here keeps the verdict independent of how the
+    // candidate was assembled.
+    for (const auto &access : accesses) {
+        if (access.kind == PointerAccessKind::AssignPtr) {
+            demote("pointer is reseated to a different base");
+            break;
+        }
+    }
+
     // A non-constant offset (`*(p + var)`) used to be rejected here so
     // that slice bounds stayed computable. That is the slice pass's
     // concern, not this one: SliceDetector::computeOffsetBounds derives
@@ -396,12 +413,15 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
     // separate base to begin with, so handle mode is what it always got,
     // just derived from the verdict now instead of special-cased.
     if (!collapse_ok || candidate.base_array_text.empty()) {
-        if (VERBOSE) {
+        // Report *why* collapse was ruled out even though the verdict is
+        // not a rejection. Callers that can honour a handle ignore this;
+        // the file-scope loop, which has no handle path and so has to
+        // skip, logs it as the pointer's [FAILED] reason.
+        error = collapse_blocker.empty() ? "Could not determine base array"
+                                         : collapse_blocker;
+        if (VERBOSE)
             llvm::outs() << "[Handle] " << PtrVar->getNameAsString() << ": "
-                         << (collapse_blocker.empty() ? "no base captured"
-                                                      : collapse_blocker)
-                         << "\n";
-        }
+                         << error << "\n";
         // Note: this must not rewrite candidate.base_array_text to the
         // pointer's own name, tempting as it is. transformAllFunctions
         // validates every pointer once up front and again inside
