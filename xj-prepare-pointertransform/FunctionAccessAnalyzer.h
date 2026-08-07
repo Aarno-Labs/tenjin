@@ -23,6 +23,17 @@
 // runs on this tool's output (valid, index-rewritten C) plus the
 // per-pointer metadata records.
 
+// Pointers that will be transformed, and how.
+//
+// This is the single authority on both questions: membership means "will
+// be transformed", and the mapped value is how. A parallel set of the
+// same keys used to ride alongside it, and the two could fall out of
+// step — one removal site dropped a pointer from the set but left its
+// mode behind, and the first rewrite loop consulted only the mode, so the
+// pointer was rewritten after being rejected. One container cannot
+// disagree with itself.
+using TransformModeMap = std::map<const VarDecl *, TransformMode>;
+
 class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
   public:
     explicit FunctionAccessAnalyzer(Rewriter &R);
@@ -90,7 +101,34 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     void applyEdits(std::vector<Edit> &edits, SourceManager &SM);
 
     // ---- Cross-function transformation phase --------------------------
+    // transformAllFunctions walks every analyzed function; transformFunction
+    // runs the rewrite pipeline for one of them. The pipeline steps below
+    // are members because they need validatePointerCandidate,
+    // logFailedPointer or transformPointerVar; the remaining steps are
+    // file-static helpers in FunctionAccessAnalyzer.cpp.
     void transformAllFunctions(ASTContext &Ctx);
+    void transformFunction(const FunctionDecl *FD, FunctionAnalysis &analysis,
+                           ASTContext &Ctx);
+
+    // Judge every pointer once, into the mode it will be rewritten in.
+    TransformModeMap decideTransformModes(FunctionAnalysis &analysis,
+                                          ASTContext &Ctx);
+
+    // Fold a rewritten source pointer's index into the pointers derived
+    // from it. Returns the pointers that inherited.
+    std::set<const VarDecl *> inheritIndices(FunctionAnalysis &analysis,
+                                             TransformModeMap &modes,
+                                             ASTContext &Ctx);
+
+    // Drop pointers whose pasted offset text the rewrite would invalidate.
+    void rejectStaleOffsets(FunctionAnalysis &analysis, TransformModeMap &modes,
+                            ASTContext &Ctx);
+
+    // Rewrite the pointers in `order` that survived into `modes`.
+    void emitPointerRewrites(const FunctionDecl *FD, FunctionAnalysis &analysis,
+                             const TransformModeMap &modes,
+                             const std::vector<const VarDecl *> &order,
+                             ASTContext &Ctx);
 
     // ---- Metadata export for xj-prepare-slicetransform ----------------
     // Look up (or create) the metadata record for FD; nullptr when a
