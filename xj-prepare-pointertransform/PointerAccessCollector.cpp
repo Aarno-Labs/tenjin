@@ -169,6 +169,7 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
         pa.expr = Init;
         pa.enclosing_stmt = nullptr;
         pa.offset_text = index_text;
+        pa.offset_expr = ASE->getIdx();
         access_list.push_back(pa);
         return;
     }
@@ -193,6 +194,7 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
                 pa.expr = Init;
                 pa.enclosing_stmt = nullptr;
                 pa.offset_text = getSourceText(BO->getRHS(), SM, LO);
+                pa.offset_expr = BO->getRHS();
                 access_list.push_back(pa);
                 return;
             }
@@ -813,6 +815,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                     access_list.push_back({PointerAccessKind::AssignAddrOf,
                                            BO->getBeginLoc(), DRE, nullptr,
                                            index_text, "", "", ""});
+                    access_list.back().offset_expr = ASE->getIdx();
                     return;
                 }
 
@@ -838,6 +841,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                         access_list.push_back({PointerAccessKind::AssignArrayOffset,
                                                BO->getBeginLoc(), DRE, nullptr,
                                                rhs_offset, "", "", ""});
+                        access_list.back().offset_expr = AddBO->getRHS();
                         return;
                     }
                 }

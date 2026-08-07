@@ -65,6 +65,23 @@ const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody) {
     return finder.Found;
 }
 
+// Plain recursion rather than a RecursiveASTVisitor: the callers hand in a
+// bare subexpression, not a whole body, and want to stop at the first hit.
+const DeclRefExpr *findRefIf(const Stmt *S,
+                             llvm::function_ref<bool(const Decl *)> pred) {
+    if (!S)
+        return nullptr;
+    if (const auto *DRE = dyn_cast<DeclRefExpr>(S)) {
+        if (pred(DRE->getDecl()))
+            return DRE;
+    }
+    for (const Stmt *Child : S->children()) {
+        if (const DeclRefExpr *Hit = findRefIf(Child, pred))
+            return Hit;
+    }
+    return nullptr;
+}
+
 // The ForStmt `DS` is the init clause of, if any. Only the init clause
 // counts: a DeclStmt in the loop *body* is an ordinary statement with an
 // ordinary position after it.
