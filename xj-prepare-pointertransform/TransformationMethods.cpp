@@ -59,6 +59,107 @@ static std::string safeBase(const std::string &base) {
 }
 
 // ============================================================================
+// Placing an index declaration alongside a pointer's declaration
+// ============================================================================
+//
+// Two shapes make "just insert it next to the DeclStmt" wrong.
+//
+// A for-init DeclStmt has no position *after* it that accepts a statement
+// — that slot is the loop condition — so the anchor is the whole ForStmt
+// and the index goes before it. That is as far as it may travel: the
+// anchor has to execute exactly as often as the declaration it precedes,
+// and a pointer declared in a loop body is re-initialized on every
+// iteration, so hoisting to the block or function top would leave a stale
+// index on the second pass. Immediately before the loop, nothing runs in
+// between.
+//
+// And the anchor is only a legal home for a declaration if it sits
+// directly inside a compound statement. As the unbraced substatement of an
+// if / else / while / for / do, or after a label or `case`, C admits a
+// statement but not a declaration — `if (c) int i = 0;` does not parse —
+// and a bare insertion there would also detach the loop from the construct
+// that owns it. Such an anchor gets wrapped in a fresh block instead.
+
+struct DeclAnchor {
+    const Stmt *stmt = nullptr;  // insert before this; null = no legal position
+    bool needs_braces = false;   // ... after wrapping it in a block
+};
+
+static DeclAnchor declAnchorFor(const DeclStmt *DS, ASTContext &Ctx) {
+    DeclAnchor A;
+    const ForStmt *FS = forStmtInitializedBy(DS, Ctx);
+    A.stmt = FS ? static_cast<const Stmt *>(FS) : static_cast<const Stmt *>(DS);
+
+    auto Parents = Ctx.getParents(*A.stmt);
+    if (!Parents.empty() && Parents[0].get<CompoundStmt>())
+        return A;
+
+    // Braces can only be wrapped around the loop. Were the anchor the
+    // DeclStmt itself, a block would scope away the very variable being
+    // declared — but that shape does not arise: a bare DeclStmt outside a
+    // compound statement is not valid C to begin with.
+    if (!FS) {
+        A.stmt = nullptr;
+        return A;
+    }
+    A.needs_braces = true;
+    return A;
+}
+
+// Emit `decl` immediately before the anchor statement. Returns false if
+// there is no position that can hold it, in which case the caller must
+// abandon the rewrite — the edits collected so far are only applied once
+// the whole pointer succeeds.
+//
+// Two pointers wrapping the same loop nest correctly with no coordination
+// between their (separate) edit batches: InsertTextBefore places a later
+// insertion *first* at a location and InsertTextAfterToken places it
+// *last*, so the second pointer's braces enclose the first's.
+static bool emitDeclBefore(const DeclAnchor &A, const std::string &decl,
+                           const SourceManager &SM, const LangOptions &LO,
+                           std::vector<Edit> &edits) {
+    if (!A.stmt)
+        return false;
+
+    SourceLocation Start = A.stmt->getBeginLoc();
+    std::string indent = getIndentBeforeLoc(Start, SM).str();
+
+    Edit open;
+    open.type = Edit::InsertBefore;
+    open.offset = SM.getFileOffset(Start);
+    open.start = Start;
+    open.text = (A.needs_braces ? "{ " : "") + decl + "\n" + indent;
+    edits.push_back(open);
+
+    if (!A.needs_braces)
+        return true;
+
+    // The closing brace goes after the statement's terminating semicolon,
+    // which is not part of the statement when its last token is an
+    // expression: `for (...) s += *p;` ends at `p`. Stopping there would
+    // emit `s += p[i]} ;`, and in an if/else it would strand the `else`.
+    SourceLocation End = A.stmt->getEndLoc();
+    Token last;
+    bool ends_at_terminator =
+        !Lexer::getRawToken(End, last, SM, LO, /*IgnoreWhiteSpace=*/true) &&
+        (last.is(tok::r_brace) || last.is(tok::semi));
+    if (!ends_at_terminator) {
+        auto next = Lexer::findNextToken(End, SM, LO);
+        if (!next || !next->is(tok::semi))
+            return false;
+        End = next->getLocation();
+    }
+
+    Edit close;
+    close.type = Edit::InsertAfterToken;
+    close.offset = SM.getFileOffset(End);
+    close.start = End;
+    close.text = "\n" + indent + "}";
+    edits.push_back(close);
+    return true;
+}
+
+// ============================================================================
 // generateTransformation — rewrite one local pointer (the bread-and-butter
 // case). Walks the access list, builds a vector<Edit>, applies them.
 // ============================================================================
@@ -136,16 +237,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
             }
         }
 
-        // Check if this DeclStmt has multiple declarators
-        bool multi_decl = false;
-        int decl_count = 0;
-        for (const Decl *D : DS->decls()) {
-            decl_count++;
-            if (decl_count > 1) {
-                multi_decl = true;
-                break;
-            }
-        }
+        bool multi_decl = isMultiDeclarator(DS);
+        bool for_init = forStmtInitializedBy(DS, Ctx) != nullptr;
 
         std::string replacement = "int " + index_name + " = " + init_value + ";";
 
@@ -155,33 +248,21 @@ bool FunctionAccessAnalyzer::generateTransformation(
         //
         // Before, so the index is in scope for the rest of that statement:
         // a later declarator's initializer may name it, which is what lets
-        // `int *r = p, *q = r + 1;` materialize r. And anchored on the
-        // nearest position that accepts a statement, since a for-init
-        // DeclStmt has no "after" — that slot is the loop condition.
+        // `int *r = p, *q = r + 1;` materialize r.
         //
-        // The anchor must execute exactly as often as the declaration it
-        // precedes, which is why the index is not hoisted further: a
-        // pointer declared in a loop body is re-initialized every
-        // iteration and its index has to restart with it.
-        if (handle_mode) {
-            const Stmt *Anchor = DS;
-            auto Parents = Ctx.getParents(*DS);
-            if (!Parents.empty()) {
-                if (const auto *FS = Parents[0].get<ForStmt>()) {
-                    if (FS->getInit() == DS)
-                        Anchor = FS;
-                }
+        // Collapse mode joins it there only for a multi-declarator
+        // for-init, where inserting after the DeclStmt would put the index
+        // in the loop-condition slot. Its initializer is not always the
+        // literal 0, so it can only leave the statement when it names
+        // nothing that statement binds — which validation guarantees by
+        // demoting the pointer to a handle when it does.
+        if (handle_mode || (multi_decl && for_init)) {
+            if (!emitDeclBefore(declAnchorFor(DS, Ctx), replacement, SM, LO, edits)) {
+                if (VERBOSE)
+                    llvm::outs() << "[Error] No position for the index of "
+                                 << ptr_name << "\n";
+                return false;
             }
-
-            SourceLocation Start = Anchor->getBeginLoc();
-            std::string indent = getIndentBeforeLoc(Start, SM).str();
-
-            Edit e;
-            e.type = Edit::InsertBefore;
-            e.offset = SM.getFileOffset(Start);
-            e.start = Start;
-            e.text = replacement + "\n" + indent;
-            edits.push_back(e);
         } else if (multi_decl) {
             // Multi-declarator: keep the DeclStmt intact (PtrVar becomes unused)
             // and insert the index declaration on a new line after it

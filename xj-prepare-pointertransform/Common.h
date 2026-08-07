@@ -430,6 +430,20 @@ inline const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx) {
 // position rewrites at the variable's declaration line.
 const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody);
 
+// The ForStmt whose init clause is `DS`, or null when `DS` is an ordinary
+// statement-level declaration.
+//
+// The distinction matters wherever a companion declaration is emitted
+// alongside `DS`: a for-init has no position *after* it that accepts a
+// statement — that slot is the loop condition — so the companion has to be
+// placed before the whole loop instead.
+const ForStmt *forStmtInitializedBy(const DeclStmt *DS, ASTContext &Ctx);
+
+// True if `DS` introduces more than one entity: `int *p = buf, *q = buf + 1;`.
+// Such a declaration cannot be replaced wholesale by one pointer's rewrite,
+// since the other declarators have to survive.
+bool isMultiDeclarator(const DeclStmt *DS);
+
 // Return the leading whitespace (spaces/tabs) on the line containing
 // `Loc`. Used to indent emitted code (wrappers, typedefs) consistently.
 llvm::StringRef getIndentBeforeLoc(SourceLocation Loc, const SourceManager &SM);

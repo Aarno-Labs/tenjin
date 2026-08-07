@@ -65,6 +65,25 @@ const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody) {
     return finder.Found;
 }
 
+// The ForStmt `DS` is the init clause of, if any. Only the init clause
+// counts: a DeclStmt in the loop *body* is an ordinary statement with an
+// ordinary position after it.
+const ForStmt *forStmtInitializedBy(const DeclStmt *DS, ASTContext &Ctx) {
+    if (!DS)
+        return nullptr;
+    auto Parents = Ctx.getParents(*DS);
+    if (Parents.empty())
+        return nullptr;
+    const auto *FS = Parents[0].get<ForStmt>();
+    if (FS && FS->getInit() == DS)
+        return FS;
+    return nullptr;
+}
+
+bool isMultiDeclarator(const DeclStmt *DS) {
+    return DS && !DS->isSingleDecl();
+}
+
 // Return the run of spaces/tabs at the start of the line containing
 // `Loc`, so emitted code (typedefs, wrappers) lines up with the
 // surrounding source.
