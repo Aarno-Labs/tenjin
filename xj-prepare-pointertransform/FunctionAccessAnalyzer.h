@@ -114,6 +114,14 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     TransformModeMap decideTransformModes(FunctionAnalysis &analysis,
                                           ASTContext &Ctx);
 
+    // Re-judge a pointer whose candidate a fixup just changed, updating
+    // `modes` with the new verdict. True if it survived. Sound only after
+    // a fixup — see the note on decideTransformModes for why re-judging
+    // is otherwise forbidden.
+    bool revalidateAfterFixup(const VarDecl *PtrVar, PointerCandidate &candidate,
+                              std::vector<PointerAccess> &accesses,
+                              TransformModeMap &modes, ASTContext &Ctx);
+
     // Fold a rewritten source pointer's index into the pointers derived
     // from it. Returns the pointers that inherited.
     std::set<const VarDecl *> inheritIndices(FunctionAnalysis &analysis,
