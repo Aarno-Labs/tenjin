@@ -790,17 +790,17 @@ bool FunctionAccessAnalyzer::generateTransformation(
             break;
         }
 
-        // ---- Reseat: p = <expr> -> (p = <expr>, p_index = <inherited>) ----
+        // ---- Reseat: p = <expr> -> (p = <expr>, p_index = 0) ----
         // Handle mode only — the kind is never produced otherwise. The
-        // inherited value is q_index + (x) when the RHS is another tracked
-        // pointer and 0 otherwise; the collector leaves operand_text empty
-        // in the 0 case.
+        // assignment stays put, so the pointer absorbs the whole RHS — an
+        // offset in it included — and the index restarts at 0 rather than
+        // taking the offset's value. A tracked pointer inside the RHS
+        // carries its own position across through MaterializeUse.
         case PointerAccessKind::AssignPtr: {
             if (!handle_mode) break;
             const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
             if (!BO) break;
-            emitReseat(BO, access.operand_text.empty() ? "0"
-                                                       : access.operand_text);
+            emitReseat(BO, "0");
             break;
         }
 

@@ -69,13 +69,21 @@ enum class PointerAccessKind {
     // it within the current one. Base collapse cannot express these — there
     // is no single base text to substitute — so they mark the pointer
     // collapse-ineligible and are rewritten with the pointer retained as a
-    // frozen handle. The index is *inherited*: `q_index + (x)` when the RHS
-    // is another tracked pointer, 0 otherwise. `p = p->next` needs no kind
-    // of its own — the RHS `p` is a separate DeclRefExpr that classifies
-    // independently as ArrowAccess, and its RHS root is not a bare tracked
-    // pointer, so the uniform rule already yields index 0.
-    AssignPtr,          // p = <expr>;               → p = <expr>; p_index = 0;
-    AssignPtrOffset,    // p = <expr> + n;           → p = <expr>; p_index = n;
+    // frozen handle.
+    //
+    // The assignment survives verbatim inside a comma expression, so the
+    // pointer absorbs the *entire* RHS — any offset included. The index
+    // therefore always restarts at 0, exactly as AssignArray,
+    // AssignArrayOffset and AssignAddrOf do in handle mode. There is no
+    // separate offset kind because after the rewrite there is no offset
+    // left to account for.
+    //
+    // A tracked pointer inside the RHS is a separate DeclRefExpr, classified
+    // and rewritten on its own (MaterializeUse → `(q_base + q_index)`), so
+    // its position reaches the new pointer through the assigned value rather
+    // than through the index. `p = p->next` likewise needs no kind of its
+    // own — its RHS `p` is an ArrowAccess.
+    AssignPtr,          // p = <expr>[ + n];         → (p = <expr>[ + n], p_index = 0);
 
     // The pointer appears as the base of *another* tracked pointer's
     // initializer (`T *p = q + 1;` seen from q's side). The enclosing
