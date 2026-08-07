@@ -276,7 +276,14 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         // base looks perfectly collapsible once its base has been
         // rewritten to its own name, and collapse would then delete the
         // declaration out from under its accesses.
-        std::set<const VarDecl *> will_transform;
+        //
+        // `modes` is the single authority on both questions: membership
+        // means "will be transformed", and the mapped value is how. A
+        // parallel set of the same keys used to ride alongside it, and the
+        // two could fall out of step — one removal site dropped a pointer
+        // from the set but left its mode behind, and the first rewrite loop
+        // below consulted only the mode, so the pointer was rewritten after
+        // being rejected. One container cannot disagree with itself.
         std::map<const VarDecl *, TransformMode> modes;
         for (auto &pair : analysis.accesses) {
             const VarDecl *PtrVar = pair.first;
@@ -286,7 +293,6 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             TransformMode mode =
                 validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error);
             if (mode != TransformMode::Reject) {
-                will_transform.insert(PtrVar);
                 modes[PtrVar] = mode;
             } else {
                 gLog.error = error;
@@ -303,7 +309,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         for (auto &pair : analysis.accesses) {
             const VarDecl *PtrVar = pair.first;
             auto &candidate = analysis.tracked_pointers[PtrVar];
-            if (will_transform.find(PtrVar) == will_transform.end())
+            if (!modes.count(PtrVar))
                 continue;
             for (auto &acc : pair.second) {
                 if (acc.kind != PointerAccessKind::ComparisonExpr)
@@ -344,7 +350,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 }
                 if (!OtherDRE) continue;
                 const VarDecl *OtherVD = dyn_cast<VarDecl>(OtherDRE->getDecl());
-                if (!OtherVD || will_transform.find(OtherVD) == will_transform.end())
+                if (!OtherVD || !modes.count(OtherVD))
                     continue;
                 // Both pointers will be transformed. Use pointer reconstruction:
                 // base + index <op> other_base + other_index
@@ -388,7 +394,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         std::set<const VarDecl *> inherited;
         for (auto &pair : analysis.accesses) {
             const VarDecl *PtrVar = pair.first;
-            if (!will_transform.count(PtrVar))
+            if (!modes.count(PtrVar))
                 continue;
             auto &candidate = analysis.tracked_pointers[PtrVar];
             if (candidate.base_array_text.empty())
@@ -415,7 +421,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                         dyn_cast<DeclRefExpr>(Base->IgnoreParenImpCasts())) {
                     if (const auto *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
                         if (VD != PtrVar && VD->getType()->isPointerType() &&
-                            will_transform.count(VD))
+                            modes.count(VD))
                             Src = VD;
                     }
                 }
@@ -440,7 +446,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             // a frozen one. Both pointers then transform independently:
             // there is no index to inherit, because the owner starts
             // wherever that materialized expression points.
-            if (modes[Src] != TransformMode::Collapse) {
+            if (modes.at(Src) != TransformMode::Collapse) {
                 // The owner must not collapse onto the source: the source
                 // is frozen but still moves *logically*, so substituting
                 // its name at each access would read a position that
@@ -453,7 +459,6 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 TransformMode remode = validatePointerCandidate(
                     PtrVar, candidate, pair.second, Ctx, error);
                 if (remode == TransformMode::Reject) {
-                    will_transform.erase(PtrVar);
                     modes.erase(PtrVar);
                 } else {
                     modes[PtrVar] = remode;
@@ -495,7 +500,6 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             TransformMode remode = validatePointerCandidate(
                 PtrVar, candidate, pair.second, Ctx, error);
             if (remode == TransformMode::Reject) {
-                will_transform.erase(PtrVar);
                 modes.erase(PtrVar);
             } else {
                 modes[PtrVar] = remode;
@@ -523,7 +527,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         // chain its rewrite.
         for (auto &pair : analysis.accesses) {
             const VarDecl *PtrVar = pair.first;
-            if (!will_transform.count(PtrVar))
+            if (!modes.count(PtrVar))
                 continue;
             for (auto &acc : pair.second) {
                 if (acc.kind != PointerAccessKind::NoRewrite)
@@ -547,8 +551,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                     Owner ? findDeclStmtForVar(Owner, FD->getBody()) : nullptr;
                 const DeclStmt *SelfDS = findDeclStmtForVar(PtrVar, FD->getBody());
                 if (OwnDS && OwnDS == SelfDS &&
-                    modes[PtrVar] == TransformMode::Collapse) {
-                    will_transform.erase(PtrVar);
+                    modes.at(PtrVar) == TransformMode::Collapse) {
                     modes.erase(PtrVar);
                     break;
                 }
@@ -565,7 +568,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         // pointer, it names that pointer's index.
         for (auto &pair : analysis.accesses) {
             const VarDecl *PtrVar = pair.first;
-            if (will_transform.find(PtrVar) == will_transform.end())
+            if (!modes.count(PtrVar))
                 continue;
             if (inherited.count(PtrVar))
                 continue;
@@ -597,7 +600,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                     if (has_conflict || !S) return;
                     if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
                         if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                            if (VD != PtrVar && will_transform.count(VD)) {
+                            if (VD != PtrVar && modes.count(VD)) {
                                 // Not stale if that pointer's reference in
                                 // this very initializer is being
                                 // materialized: the text is rewritten to
@@ -625,7 +628,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 };
                 checkRefs(InitStmt);
                 if (has_conflict) {
-                    will_transform.erase(PtrVar);
+                    modes.erase(PtrVar);
                     break;
                 }
             }
@@ -641,13 +644,12 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
             transformPointerVar(FD, PtrVar, candidate, access_list, Ctx, mit->second);
         }
 
-        // Second pass: remaining pointers. Skip pointers removed from
-        // will_transform by init conflict detection.
+        // Second pass: remaining pointers. Same guard as the first pass —
+        // absence from `modes` covers every way a pointer can have been
+        // dropped, rejection and init-conflict detection alike.
         for (const VarDecl *PtrVar : other_pointers) {
             auto mit = modes.find(PtrVar);
             if (mit == modes.end())
-                continue;
-            if (will_transform.find(PtrVar) == will_transform.end())
                 continue;
             auto &access_list = analysis.accesses[PtrVar];
             auto &candidate = analysis.tracked_pointers[PtrVar];
