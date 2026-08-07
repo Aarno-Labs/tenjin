@@ -214,6 +214,14 @@ struct PointerAccess {
     std::string field_name;        // ArrowAccess / ArrowWrite
     std::string subscript_text;    // Subscript / SubscriptWrite
     std::string operand_text;      // PlusAssign / MinusAssign / comparison RHS / wrapper extra args
+
+    // NoRewrite / MaterializeUse: the pointer whose declaration encloses
+    // this reference — the `p` in `T *p = q + 1;` recorded on q's access.
+    // A decl and not a name: two same-named pointers in nested or sibling
+    // scopes are distinct owners, and a name comparison picks whichever
+    // the map happens to yield first. That is the same distinction
+    // assignIndexNames exists to make, on the other side of it.
+    const VarDecl *owner_ptr = nullptr;
 };
 
 // ============================================================================

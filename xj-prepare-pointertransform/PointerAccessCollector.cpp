@@ -384,14 +384,22 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                                              std::vector<PointerAccess> &access_list,
                                              PointerCandidate &candidate) {
     if (const VarDecl *Inheritor = inheritingPointerFor(DRE, PtrVar)) {
-        // field_name names the pointer that owns the enclosing
-        // declaration. Suppressing this edit is only safe if that pointer
-        // actually rewrites the declaration; if it does not, this pointer
-        // must be left alone too, or collapsing it would delete a name the
+        // owner_ptr is the pointer that owns the enclosing declaration.
+        // Suppressing this edit is only safe if that pointer actually
+        // rewrites the declaration; if it does not, this pointer must be
+        // left alone too, or collapsing it would delete a name the
         // surviving declaration still refers to.
-        access_list.push_back({PointerAccessKind::NoRewrite, DRE->getLocation(),
-                               DRE, nullptr, "",
-                               Inheritor->getNameAsString(), "", ""});
+        //
+        // Recorded as the decl, not its name: the owner is looked up again
+        // by every consumer of this record, and a name does not identify a
+        // pointer.
+        PointerAccess pa;
+        pa.kind = PointerAccessKind::NoRewrite;
+        pa.loc = DRE->getLocation();
+        pa.expr = DRE;
+        pa.enclosing_stmt = nullptr;
+        pa.owner_ptr = Inheritor;
+        access_list.push_back(pa);
         return;
     }
 
