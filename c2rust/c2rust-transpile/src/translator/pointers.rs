@@ -448,19 +448,9 @@ impl<'c> Translation<'c> {
                 ctx.used().decay_ref()
             };
             let pointer_rs = self.convert_expr(pointer_ctx, pointer_id, None)?;
-            let offset_rs = if can_subscript {
-                // Slice indexing will cast directly to usize below; avoid an
-                // unnecessary intermediate pointer-offset cast to isize.
-                self.convert_expr(ctx.used(), offset_id, None)?
-            } else {
-                let target_type_id = self.ast_context.type_for_kind(&CTypeKind::SSize);
-                self.convert_expr_with_cast(
-                    ctx.used(),
-                    CQualTypeId::new(target_type_id),
-                    offset_id,
-                    &None,
-                )?
-            };
+            // `convert_pointer_offset` performs the final usize/isize conversion.
+            // Preserve the source expression here so it does not acquire two casts.
+            let offset_rs = self.convert_expr(ctx.used(), offset_id, None)?;
 
             let mut val = pointer_rs
                 .zip(offset_rs)

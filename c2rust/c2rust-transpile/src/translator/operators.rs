@@ -177,7 +177,7 @@ impl Translation<'_> {
                     let rhs_val = self.convert_expr(rhs_ctx, rhs, Some(rhs_type_id))?;
 
                     lhs_val.zip(rhs_val).and_then_try(|(lhs_val, rhs_val)| {
-                        let lhs_rhs_ids = Some((lhs, rhs));
+                        let lhs_rhs_ids = (Some(lhs), Some(rhs));
                         self.convert_binary_operator(
                             ctx,
                             expr_type_id,
@@ -416,7 +416,7 @@ impl Translation<'_> {
                         rhs_type_id,
                         lhs,
                         rhs,
-                        rhs_id.map(|r| (lhs_id, r)),
+                        (Some(lhs_id), rhs_id),
                     )
                 })?;
 
@@ -500,7 +500,7 @@ impl Translation<'_> {
         rhs_type: CQualTypeId,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
-        lhs_rhs_ids: Option<(CExprId, CExprId)>,
+        lhs_rhs_ids: (Option<CExprId>, Option<CExprId>),
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let is_unsigned_integral_type = self
             .ast_context
@@ -536,15 +536,15 @@ impl Translation<'_> {
                     _ => unreachable!(),
                 };
                 let expr = match lhs_rhs_ids {
-                    Some((lhs_expr_id, _)) if self.ast_context.is_null_expr(lhs_expr_id) => {
+                    (Some(lhs_expr_id), _) if self.ast_context.is_null_expr(lhs_expr_id) => {
                         // TENJIN:TODO: guidance
                         self.convert_pointer_is_null(ctx, rhs_type.ctype, rhs, is_null, &None)?
                     }
-                    Some((_, rhs_expr_id)) if self.ast_context.is_null_expr(rhs_expr_id) => {
+                    (_, Some(rhs_expr_id)) if self.ast_context.is_null_expr(rhs_expr_id) => {
                         // TENJIN:TODO: guidance
                         self.convert_pointer_is_null(ctx, lhs_type.ctype, lhs, is_null, &None)?
                     }
-                    Some((lhs_expr_id, rhs_expr_id)) => {
+                    (Some(lhs_expr_id), Some(rhs_expr_id)) => {
                         let lhs_guided_type = self
                             .parsed_guidance
                             .borrow_mut()
@@ -584,13 +584,9 @@ impl Translation<'_> {
         rhs_type_id: CQualTypeId,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
-        lhs_rhs_ids: Option<(CExprId, CExprId)>,
+        lhs_rhs_ids: (Option<CExprId>, Option<CExprId>),
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let c_lhs = if let Some((lhs_id, _rhs_id)) = lhs_rhs_ids {
-            Some(lhs_id)
-        } else {
-            None
-        };
+        let c_lhs = lhs_rhs_ids.0;
 
         let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
         let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
@@ -622,13 +618,9 @@ impl Translation<'_> {
         rhs_type_id: CQualTypeId,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
-        lhs_rhs_ids: Option<(CExprId, CExprId)>,
+        lhs_rhs_ids: (Option<CExprId>, Option<CExprId>),
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let c_lhs = if let Some((lhs_id, _rhs_id)) = lhs_rhs_ids {
-            Some(lhs_id)
-        } else {
-            None
-        };
+        let c_lhs = lhs_rhs_ids.0;
 
         let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
         let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;

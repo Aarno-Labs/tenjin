@@ -11,7 +11,7 @@ fn run_transpiler() {
     let (_compile_commands_dir, compile_commands) =
         c2rust_transpile::create_temp_compile_commands(&[fixture]);
 
-    let mut cfg = config(Edition2021);
+    let mut cfg = config(Edition2021, Default::default());
     cfg.disable_rustfmt = true;
     cfg.emit_c_decl_map = false;
     cfg.output_dir = Some(output_dir.path().to_owned());

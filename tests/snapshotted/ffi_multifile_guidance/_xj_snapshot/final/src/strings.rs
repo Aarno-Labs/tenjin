@@ -19,8 +19,8 @@ pub mod xj_ffi {
     #[no_mangle]
     pub unsafe extern "C" fn first_byte(s: *const ::core::ffi::c_char) -> ::core::ffi::c_uchar {
         super::first_byte({
-            let __lift_2_931_0 = libc::strlen(s) + 1;
-            std::slice::from_raw_parts(s.cast(), __lift_2_931_0)
+            let __lift_2_922_0 = libc::strlen(s) + 1;
+            std::slice::from_raw_parts(s.cast(), __lift_2_922_0)
         })
     }
     #[no_mangle]

@@ -103,8 +103,8 @@ pub unsafe extern "C" fn entry() {
         as *const [::core::ffi::c_char; 4]
         as *mut [::core::ffi::c_char; 4];
     let mut past_end: *mut ::core::ffi::c_char =
-        (&raw mut static_char_array as *mut ::core::ffi::c_char).offset(9usize as isize);
-    past_end = static_char_ptr.offset(8isize);
+        (&raw mut static_char_array as *mut ::core::ffi::c_char).offset(9);
+    past_end = static_char_ptr.offset(8 as isize);
 }
 #[no_mangle]
 pub unsafe extern "C" fn short_initializer() {
@@ -156,7 +156,7 @@ pub unsafe extern "C" fn variable_length() {
     }
     let vla_2 = length as usize;
     let mut first: *mut ::core::ffi::c_int =
-        nested.as_mut_ptr().offset(1isize * vla_1 as isize) as *mut ::core::ffi::c_int;
+        nested.as_mut_ptr().offset(1 as isize * vla_1 as isize) as *mut ::core::ffi::c_int;
     let vla_3 = length as usize;
     let mut second: *mut ::core::ffi::c_int =
         first.offset(1 as isize * vla_2 as isize) as *mut ::core::ffi::c_int;

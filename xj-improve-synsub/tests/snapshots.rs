@@ -36,6 +36,40 @@ fn outer_paren_stripping() {
 }
 
 #[test]
+fn usize_suffix_is_removed_from_array_subscript_literals() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_usize_array_subscript_literal);
+    check(
+        &rw,
+        "fn demo(a: &[u8]) { let _ = a[0usize]; let _ = a[0_usize]; let _ = a[0xffusize]; }",
+        expect![[r#"
+            fn demo(a: &[u8]) {
+                let _ = a[0];
+                let _ = a[0];
+                let _ = a[0xff];
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn usize_suffix_is_kept_outside_direct_array_subscript_literals() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_usize_array_subscript_literal);
+    check(
+        &rw,
+        "fn demo(a: &[u8]) { let n = 0usize; let _ = a[0u32 as usize]; let _ = a[0usize + 1]; }",
+        expect![[r#"
+            fn demo(a: &[u8]) {
+                let n = 0usize;
+                let _ = a[0u32 as usize];
+                let _ = a[0usize + 1];
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn string_pop_trailing_nul_on_string() {
     let mut rw = Rewriter::new();
     rw.add_stmt_rewrite(Rewriter::rewrite_string_pop_trailing_nul);

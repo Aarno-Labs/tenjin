@@ -16,7 +16,7 @@ pub unsafe extern "C" fn strings_demo() -> ::core::ffi::c_int {
         9 as ::core::ffi::c_uchar,
     ];
     zero_first(&mut buf, 4 as ::core::ffi::c_int);
-    return buf[0 as usize] as ::core::ffi::c_int;
+    return buf[0usize] as ::core::ffi::c_int;
 }
 pub mod xj_ffi {
     #[allow(unused_imports)]

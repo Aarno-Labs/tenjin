@@ -29,7 +29,15 @@ impl Translation<'_> {
             lit_str.push_str(&suffix);
         }
 
-        let mut expr = mk().lit_expr(mk().float_unsuffixed_lit(&lit_str));
+        let lit = match base {
+            // Keep decimal integer tokens represented as `LitInt`. Tenjin's cast
+            // simplification relies on the AST kind to distinguish them from real
+            // floating-point literals. Hexadecimal and octal tokens continue to use
+            // `LitFloat`, which preserves their spelling through syn.
+            IntBase::Dec => mk().int_unsuffixed_lit(lit_str.clone()),
+            IntBase::Hex | IntBase::Oct => mk().float_unsuffixed_lit(&lit_str),
+        };
+        let mut expr = mk().lit_expr(lit);
 
         if negative {
             expr = neg_expr(expr);

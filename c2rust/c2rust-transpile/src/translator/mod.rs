@@ -4777,7 +4777,15 @@ impl<'c> Translation<'c> {
             }
 
             DeclRef(result_type_id, decl_id, lrvalue) => self
-                .convert_decl_ref(ctx, override_ty, result_type_id, decl_id, lrvalue)
+                .convert_decl_ref(
+                    ctx,
+                    expr_id,
+                    override_ty,
+                    result_type_id,
+                    decl_id,
+                    lrvalue,
+                    ctx_guided_type,
+                )
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             OffsetOf(ty, ref kind) => match kind {
@@ -5144,10 +5152,12 @@ impl<'c> Translation<'c> {
     fn convert_decl_ref(
         &self,
         ctx: ExprContext,
+        expr_id: CExprId,
         expected_type_id: Option<CQualTypeId>,
         result_type_id: CQualTypeId,
         decl_id: CDeclId,
         lrvalue: LRValue,
+        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let decl = &self
             .ast_context
@@ -5263,7 +5273,9 @@ impl<'c> Translation<'c> {
             _ => {}
         }
 
-        if let CTypeKind::VariableArray(..) = self.ast_context.resolve_type(qual_ty.ctype).kind {
+        if let CTypeKind::VariableArray(..) =
+            self.ast_context.resolve_type(result_type_id.ctype).kind
+        {
             // XREF:array_decay
             val = mk().method_call_expr(val, "as_mut_ptr", vec![]);
         } else if let Some(var_guided_type) = self

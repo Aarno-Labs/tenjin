@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use c2rust_rust_tools::RustEdition;
 use c2rust_transpile::{ReplaceMode, TranspilerConfig};
 
-fn config(edition: RustEdition, guidance: serde_json::Value) -> TranspilerConfig {
+pub(crate) fn config(edition: RustEdition, guidance: serde_json::Value) -> TranspilerConfig {
     TranspilerConfig {
         dump_untyped_context: false,
         dump_typed_context: false,

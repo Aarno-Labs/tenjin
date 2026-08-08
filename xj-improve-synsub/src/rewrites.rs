@@ -16,6 +16,36 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    /// Rewrite `array[Nusize]` into `array[N]`. Array indexing already constrains
+    /// an unsuffixed integer literal to `usize`, so the suffix is redundant.
+    pub fn rewrite_usize_array_subscript_literal(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Index(index) = expr else {
+            return None;
+        };
+        let Expr::Lit(index_lit) = &*index.index else {
+            return None;
+        };
+        let syn::Lit::Int(int_lit) = &index_lit.lit else {
+            return None;
+        };
+        if int_lit.suffix() != "usize" {
+            return None;
+        }
+
+        let token = int_lit.to_string();
+        let unsuffixed = token.strip_suffix(int_lit.suffix())?.trim_end_matches('_');
+        let mut replacement = index.clone();
+        let mut replacement_lit = index_lit.clone();
+        replacement_lit.lit = syn::Lit::Int(LitInt::new(unsuffixed, int_lit.span()));
+        replacement.index = Box::new(Expr::Lit(replacement_lit));
+
+        Some((Expr::Index(replacement), Depth::Limited(0)))
+    }
+
     /// Rewrite `(_ BINOP1 _) as Y CMP_BINOP3 (_ BINOP2 _) as Y`
     /// into    `(_ BINOP1 _)      CMP_BINOP3 (_ BINOP2 _)`
     pub fn rewrite_casted_literal_comparison(
@@ -1201,8 +1231,10 @@ fn is_array_typed(expr: &Expr, symbols: &SymbolTable) -> bool {
 }
 
 fn is_indexable_typed(expr: &Expr, symbols: &SymbolTable) -> bool {
-    matches!(expr_ident_type(expr, symbols), 
-      Some(ty) if sliceable_type_elt_is(ty, |_| true))
+    matches!(
+        expr_ident_type(expr, symbols),
+        Some(ty) if sliceable_type_elt_is(ty, |_| true)
+    )
 }
 
 fn is_array_type(ty: &syn::Type) -> bool {
