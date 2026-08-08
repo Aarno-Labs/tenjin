@@ -6,6 +6,7 @@
         {
           "base_text": "buf",
           "index_var": "p_index_xj",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         }
@@ -17,6 +18,7 @@
         {
           "base_text": "buf",
           "index_var": "p_index_xj",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         }
@@ -28,6 +30,7 @@
         {
           "base_text": "buf",
           "index_var": "p_index_xj",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         }
