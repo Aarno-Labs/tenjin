@@ -15,6 +15,31 @@ realscr=$(realpath "$script_path")
 tenjdir=$(dirname "$realscr")
 rootdir=$(dirname "$tenjdir")
 
+# Since `10j` is commonly put on the PATH, it's easy to be sitting in one
+# checkout of Tenjin while running another checkout's `10j`. Everything 10j
+# does is relative to its own $rootdir (XREF:find_repo_root_dir_Path in
+# cli/repo_root.py short-circuits to the directory holding this script), so
+# such an invocation would silently operate on the wrong tree. Bail out
+# instead; set XJ_ALLOW_FOREIGN_CWD=1 if that's genuinely what you want.
+if [ -z "${XJ_ALLOW_FOREIGN_CWD:-}" ]; then
+    # Physical path, to match $rootdir, which came from realpath.
+    cwdroot=$(pwd -P)
+    while [ -n "$cwdroot" ] && [ ! -f "$cwdroot/cli/sh/fetch-uv.sh" ]; do
+        # Trimming the last path component with parameter expansion rather than
+        # `dirname` avoids forking once per directory level; this loop runs on
+        # every invocation, including the per-compiler-call `10j intercept-exec`.
+        cwdroot=${cwdroot%/*}
+    done
+
+    if [ -n "$cwdroot" ] && [ "$cwdroot" != "$rootdir" ]; then
+        echo "10j: refusing to run against a different checkout." >&2
+        echo "  this 10j belongs to: $rootdir" >&2
+        echo "  the current dir is inside: $cwdroot" >&2
+        echo "Run ${cwdroot}/cli/10j instead, or set XJ_ALLOW_FOREIGN_CWD=1 to override." >&2
+        exit 1
+    fi
+fi
+
 localuv="${rootdir}/_local/uv-${WANT_UV_VERSION}"
 localcg="${rootdir}/_local/uv-${WANT_UV_VERSION}.toml"
 
