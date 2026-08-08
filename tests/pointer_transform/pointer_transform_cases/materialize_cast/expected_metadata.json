@@ -1,0 +1,23 @@
+{
+  "functions": {
+    "f@materialize_cast.c": {
+      "file": "materialize_cast.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj",
+          "mode": "reseated",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "c",
+          "index_var": "c_index_xj",
+          "mode": "handle",
+          "name": "c",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}
