@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "f@loop_body_decl.c": {
+      "file": "loop_body_decl.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj",
+          "mode": "reseated",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

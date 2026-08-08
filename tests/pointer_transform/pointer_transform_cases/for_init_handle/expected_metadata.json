@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "f@for_init_handle.c": {
+      "file": "for_init_handle.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj",
+          "mode": "reseated",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

@@ -6,14 +6,15 @@
  * only works because a frozen pointer's index is declared *before* the
  * statement rather than after it. */
 static int f(int *a, int *b, int n) {
-    int *r = a, *q = r + 1;
     int q_index_xj = 0;
+    int r_index_xj = 0;
+    int *r = a, *q = (r + r_index_xj) + 1;
     if (n < 0)
-        r = b;
+        (r = b, r_index_xj = 0);
     int s = 0;
     for (int i = 0; i + 1 < n; i++) {
-        s += *r + q[q_index_xj];
-        r++;
+        s += r[r_index_xj] + q[q_index_xj];
+        r_index_xj++;
         q_index_xj++;
     }
     return s;

@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "f@init_conflict_param_bounded.c": {
+      "file": "init_conflict_param_bounded.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "mode": "collapse",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}
