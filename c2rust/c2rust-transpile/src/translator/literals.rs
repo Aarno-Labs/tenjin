@@ -156,6 +156,30 @@ impl Translation<'_> {
         }
     }
 
+    /// Converts a string literal with guidance
+    pub fn convert_string_literal_guided(
+        &self,
+        bytes: &[u8],
+        element_size: u8,
+        g: &Option<GuidedType>,
+    ) -> Option<Box<Expr>> {
+        if let Some(g) = g.as_ref() {
+            if tenjin::type_is_string(&g.parsed) {
+                // XREF:guided_string_sans_cast
+                return Some(self.convert_literal_to_rust_string(bytes, element_size));
+            }
+
+            if tenjin::type_is_str_ref(&g.parsed) {
+                if let Some(s) = self.convert_literal_to_rust_str(bytes, element_size) {
+                    // XREF:guided_str_ref_sans_cast
+                    return Some(s);
+                }
+            }
+        }
+
+        None
+    }
+
     /// Convert a C string literal to a Rust expression via casting a byte array
     pub fn convert_string_literal(
         &self,
@@ -165,14 +189,8 @@ impl Translation<'_> {
         element_size: u8,
         guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        if guided_type
-            .as_ref()
-            .is_some_and(|g| tenjin::type_is_string(&g.parsed))
-        {
-            // XREF:guided_string_sans_cast
-            return Ok(WithStmts::new_val(
-                self.convert_literal_to_rust_string(bytes, element_size),
-            ));
+        if let Some(e) = self.convert_string_literal_guided(bytes, element_size, guided_type) {
+            return Ok(WithStmts::new_val(e));
         }
 
         let bytes_padded = self.string_literal_bytes(ty.ctype, bytes, element_size);

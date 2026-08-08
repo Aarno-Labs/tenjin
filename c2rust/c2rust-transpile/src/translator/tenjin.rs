@@ -391,6 +391,10 @@ pub fn type_is_string(ty: &Type) -> bool {
     type_is_exactly_1_path(ty, "String")
 }
 
+pub fn type_is_str_ref(ty: &Type) -> bool {
+    type_of_ref(ty).is_some_and(|inner| type_is_exactly_1_path(inner, "str"))
+}
+
 pub fn try_type_vec_of(ty: &Type) -> Option<&Type> {
     if let Some(path) = type_get_bare_path(ty) {
         if is_path_exactly_1(path, "Vec") {
@@ -2483,7 +2487,9 @@ impl Translation<'_> {
             } else {
                 // Have target guided type, but no expr guided type.
                 // If target is a borrow, we assume expr was a pointer.
-                if target_guided_type.is_shared_borrow() {
+                if target_guided_type.is_shared_borrow()
+                    && !tenjin::type_is_str_ref(&target_guided_type.parsed)
+                {
                     // XREF:unguided_arg_coerce_asref
                     // Coerce to `.as_ref().unwrap()`
                     let opt = mk().method_call_expr(expr, "as_ref", Vec::<Box<Expr>>::new());

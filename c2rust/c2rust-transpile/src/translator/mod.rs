@@ -2318,7 +2318,7 @@ mod refactor_format {
                     }
 
                     if let Some(g) = x.parsed_guidance.borrow_mut().query_expr_type(x, cexpr) {
-                        if tenjin::type_is_string(&g.parsed) {
+                        if tenjin::type_is_string(&g.parsed) || tenjin::type_is_str_ref(&g.parsed) {
                             // For a variable that's already type String, we can leave it as is.
                             // XREF:guided_cast_str_of_owned_string
                             return e;

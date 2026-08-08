@@ -129,7 +129,10 @@ impl<'c> Translation<'c> {
                 .query_decl_type(self, *decl_id);
 
             if let Some(eg) = expr_guidance {
-                if tenjin::type_is_string(&eg.parsed) || tenjin::type_is_vec(eg.strip_refs()) {
+                if tenjin::type_is_string(&eg.parsed)
+                    || tenjin::type_is_vec(eg.strip_refs())
+                    || tenjin::type_is_str_ref(&eg.parsed)
+                {
                     // XREF:guided_array_decay
                     return Ok(val);
                 }
@@ -170,14 +173,9 @@ impl<'c> Translation<'c> {
             false,
         ) = (arg_expr_kind, arg_is_macro)
         {
-            if guided_type
-                .as_ref()
-                .is_some_and(|g| tenjin::type_is_string(&g.parsed))
-            {
-                // XREF:guided_string_implicit_cast
-                return Ok(WithStmts::new_val(
-                    self.convert_literal_to_rust_string(bytes, element_size),
-                ));
+            // XREF:guided_string_implicit_cast
+            if let Some(e) = self.convert_string_literal_guided(bytes, element_size, guided_type) {
+                return Ok(WithStmts::new_val(e));
             }
 
             if is_array_decay {
