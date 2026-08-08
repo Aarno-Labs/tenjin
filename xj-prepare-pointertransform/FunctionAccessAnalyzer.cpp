@@ -468,6 +468,31 @@ void FunctionAccessAnalyzer::printAccesses(const VarDecl *VD,
     }
 }
 
+// True if any access assigns to the pointer after its declaration.
+//
+// Under handle mode the pointer *is* the handle, so such an assignment
+// survives verbatim into the output as a write to the handle itself.
+// Under collapse mode it does not — the pointer is gone and the
+// assignment has become an index update — which is why this only
+// distinguishes the two handle modes. Initializers are not assignments:
+// they establish the handle rather than move it.
+static bool assignsPointerAfterDecl(const std::vector<PointerAccess> &accesses) {
+    for (const auto &access : accesses) {
+        switch (access.kind) {
+        case PointerAccessKind::AssignPtr:
+        case PointerAccessKind::AssignArray:
+        case PointerAccessKind::AssignArrayOffset:
+        case PointerAccessKind::AssignAddrOf:
+        case PointerAccessKind::AssignNull:
+        case PointerAccessKind::AssignFromAllowedFunc:
+            return true;
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
 // Validate-and-rewrite one local pointer. Bumps the per-file counters
 // and emits the [REPLACED] / [FAILED] log entries.
 void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
@@ -515,6 +540,12 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                 rec.base_text = (mode == TransformMode::Handle)
                                     ? rec.name
                                     : candidate.base_array_text;
+                if (mode != TransformMode::Handle)
+                    rec.mode = xj::PtrIndexMode::Collapse;
+                else if (assignsPointerAfterDecl(accesses))
+                    rec.mode = xj::PtrIndexMode::Reseated;
+                else
+                    rec.mode = xj::PtrIndexMode::Handle;
                 fnRec->pointers.push_back(std::move(rec));
             }
         }

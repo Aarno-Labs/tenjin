@@ -480,6 +480,25 @@ namespace xj
                     continue;
                 if (P.param_index >= 0)
                     continue;
+                // Only a collapsed pointer can anchor a root today.
+                //
+                // A frozen handle indexes *itself*, so its base_text names
+                // a local and the parameter lookup below would usually
+                // miss it — but not always: a handle declared in a nested
+                // block may shadow a pointer parameter, and its own name
+                // would then match that parameter. Checking the mode
+                // outright closes that hole and states the rule instead of
+                // relying on a lookup to fail.
+                //
+                // The two frozen modes are not equally deferrable.
+                // A Handle becomes admissible once the parameter-driven
+                // root work traces it back to the parameter it was
+                // initialized from. A Reseated pointer never does: the
+                // slice would couple a pointer with a length, and the
+                // reseat would reassign that pointer while the length went
+                // on describing the previous buffer.
+                if (P.mode != PtrIndexMode::Collapse)
+                    continue;
                 // A non-constant offset applied to the index means the
                 // pointer's reach past idx is unknowable statically, so no
                 // sound slice bounds exist for it.
