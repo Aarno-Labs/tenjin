@@ -355,6 +355,20 @@ inline const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx) {
 // position rewrites at the variable's declaration line.
 const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody);
 
+// The ForStmt whose init clause is `DS`, or null when `DS` is an ordinary
+// statement-level declaration.
+//
+// The distinction matters wherever a companion declaration is emitted
+// alongside `DS`: a for-init has no position *after* it that accepts a
+// statement — that slot is the loop condition — so the companion has to be
+// placed before the whole loop instead.
+const ForStmt *forStmtInitializedBy(const DeclStmt *DS, ASTContext &Ctx);
+
+// True if `DS` introduces more than one entity: `int *p = buf, *q = buf + 1;`.
+// Such a declaration cannot be replaced wholesale by one pointer's rewrite,
+// since the other declarators have to survive.
+bool isMultiDeclarator(const DeclStmt *DS);
+
 // Return the leading whitespace (spaces/tabs) on the line containing
 // `Loc`. Used to indent emitted code (wrappers, typedefs) consistently.
 llvm::StringRef getIndentBeforeLoc(SourceLocation Loc, const SourceManager &SM);
@@ -366,3 +380,26 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 
 // Debug helper: stringify a PointerAccessKind for trace logs.
 const char *pointerAccessKindToString(PointerAccessKind kind);
+
+// ============================================================================
+// Index variable naming
+// ============================================================================
+//
+// Every rewritten pointer gets a companion index variable. The name is
+// assigned once, up front, rather than derived at each use site, because
+// an index does not always share its pointer's scope: a pointer declared
+// in a multi-declarator for-init has its index placed before the whole
+// loop, where it outlives the pointer. Two same-named pointers in sibling
+// loops would then put two identically-named indices in one block — a
+// redefinition, or worse a silent resolution to the wrong one.
+//
+// assignIndexNames() takes one function's pointers in source order and
+// hands out `p_index_xj`, then `p_index_xj_1`, `p_index_xj_2`, ... on
+// collision. The first pointer of a given name keeps the plain form, so
+// the common case reads exactly as before.
+void assignIndexNames(const std::vector<const VarDecl *> &ptrs);
+
+// The index name for `VD`. Falls back to the plain convention for
+// pointers that never went through assignIndexNames (file-scope ones,
+// which are rewritten on their own path).
+const std::string &indexNameFor(const VarDecl *VD);

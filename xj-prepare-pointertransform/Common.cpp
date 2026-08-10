@@ -65,6 +65,25 @@ const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody) {
     return finder.Found;
 }
 
+// The ForStmt `DS` is the init clause of, if any. Only the init clause
+// counts: a DeclStmt in the loop *body* is an ordinary statement with an
+// ordinary position after it.
+const ForStmt *forStmtInitializedBy(const DeclStmt *DS, ASTContext &Ctx) {
+    if (!DS)
+        return nullptr;
+    auto Parents = Ctx.getParents(*DS);
+    if (Parents.empty())
+        return nullptr;
+    const auto *FS = Parents[0].get<ForStmt>();
+    if (FS && FS->getInit() == DS)
+        return FS;
+    return nullptr;
+}
+
+bool isMultiDeclarator(const DeclStmt *DS) {
+    return DS && !DS->isSingleDecl();
+}
+
 // Return the run of spaces/tabs at the start of the line containing
 // `Loc`, so emitted code (typedefs, wrappers) lines up with the
 // surrounding source.
@@ -96,6 +115,30 @@ std::string getSourceText(SourceRange Range, const SourceManager &SM, const Lang
 
 std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOptions &LO) {
     return getSourceText(E->getSourceRange(), SM, LO);
+}
+
+// Index names, keyed by the pointer's declaration. See Common.h.
+static std::map<const VarDecl *, std::string> g_index_names;
+
+void assignIndexNames(const std::vector<const VarDecl *> &ptrs) {
+    std::set<std::string> used;
+    for (const VarDecl *VD : ptrs) {
+        const std::string base = VD->getNameAsString() + "_index_xj";
+        std::string name = base;
+        for (unsigned n = 1; used.count(name); n++)
+            name = base + "_" + std::to_string(n);
+        used.insert(name);
+        g_index_names[VD] = name;
+    }
+}
+
+const std::string &indexNameFor(const VarDecl *VD) {
+    auto it = g_index_names.find(VD);
+    if (it != g_index_names.end())
+        return it->second;
+    return g_index_names
+        .emplace(VD, VD->getNameAsString() + "_index_xj")
+        .first->second;
 }
 
 // Stringify a PointerAccessKind for verbose / debug output.

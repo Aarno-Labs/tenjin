@@ -201,6 +201,23 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
 
         m_edited_ranges.clear();
 
+        // Name every index up front, in source order so the assignment is
+        // reproducible. Sorting by location rather than iterating the map
+        // matters: the map is keyed by VarDecl address, which is
+        // allocation order and not a property of the source.
+        {
+            SourceManager &SM = Ctx.getSourceManager();
+            std::vector<const VarDecl *> ptrs;
+            for (const auto &pair : analysis.accesses)
+                ptrs.push_back(pair.first);
+            std::sort(ptrs.begin(), ptrs.end(),
+                      [&](const VarDecl *A, const VarDecl *B) {
+                          return SM.isBeforeInTranslationUnit(A->getLocation(),
+                                                              B->getLocation());
+                      });
+            assignIndexNames(ptrs);
+        }
+
         // Two-pass edit ordering: pointers whose bound comparison
         // resolves against a parameter are rewritten first, so that when
         // two pointers' comparison rewrites overlap, the param-bounded
@@ -304,7 +321,7 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                 // base + index <op> other_base + other_index
                 auto &other_cand = analysis.tracked_pointers[OtherVD];
                 std::string other_base = other_cand.base_array_text;
-                std::string other_idx = OtherVD->getNameAsString() + "_index_xj";
+                std::string other_idx = indexNameFor(OtherVD);
                 std::string rhs = other_base.empty() ?
                     other_idx : other_base + " + " + other_idx;
                 acc.field_name = candidate.base_array_text;
@@ -476,7 +493,7 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
             if (xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(FD, Ctx)) {
                 xj::PtrIndexPointerRecord rec;
                 rec.name = PtrVar->getNameAsString();
-                rec.index_var = rec.name + "_index_xj";
+                rec.index_var = indexNameFor(PtrVar);
                 rec.param_index = -1;
                 if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
                     rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
