@@ -1,0 +1,55 @@
+{
+  "functions": {
+    "pairwise@for_init_multi_collapse.c": {
+      "file": "for_init_multi_collapse.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "reinit_each_pass@for_init_multi_collapse.c": {
+      "file": "for_init_multi_collapse.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "statement_level@for_init_multi_collapse.c": {
+      "file": "for_init_multi_collapse.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}
