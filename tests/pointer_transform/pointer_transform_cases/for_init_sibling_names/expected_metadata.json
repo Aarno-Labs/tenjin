@@ -6,24 +6,28 @@
         {
           "base_text": "a",
           "index_var": "p_index_xj",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "p_index_xj_1",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "q_index_xj",
+          "mode": "collapse",
           "name": "q",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "q_index_xj_1",
+          "mode": "collapse",
           "name": "q",
           "param_index": -1
         }
@@ -35,24 +39,28 @@
         {
           "base_text": "a",
           "index_var": "p_index_xj",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "p_index_xj_1",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "q_index_xj",
+          "mode": "collapse",
           "name": "q",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "q_index_xj_1",
+          "mode": "collapse",
           "name": "q",
           "param_index": -1
         }

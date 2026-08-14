@@ -1,0 +1,37 @@
+{
+  "functions": {
+    "chain@reseat_chain.c": {
+      "file": "reseat_chain.c",
+      "pointers": [
+        {
+          "base_text": "p0",
+          "index_var": "p0_index_xj",
+          "mode": "reseated",
+          "name": "p0",
+          "param_index": -1
+        },
+        {
+          "base_text": "p1",
+          "index_var": "p1_index_xj",
+          "mode": "handle",
+          "name": "p1",
+          "param_index": -1
+        },
+        {
+          "base_text": "p2",
+          "index_var": "p2_index_xj",
+          "mode": "handle",
+          "name": "p2",
+          "param_index": -1
+        },
+        {
+          "base_text": "p3",
+          "index_var": "p3_index_xj",
+          "mode": "handle",
+          "name": "p3",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

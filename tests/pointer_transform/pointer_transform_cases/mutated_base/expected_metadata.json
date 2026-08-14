@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "emit@mutated_base.c": {
+      "file": "mutated_base.c",
+      "pointers": [
+        {
+          "base_text": "dst",
+          "index_var": "dst_index_xj",
+          "mode": "handle",
+          "name": "dst",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

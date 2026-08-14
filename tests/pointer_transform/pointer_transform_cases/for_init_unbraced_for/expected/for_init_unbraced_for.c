@@ -34,11 +34,13 @@ static int in_else(int *a, int *b, int n, int c) {
     if (c)
         s = -1;
     else
+        { int p_index_xj = 0;
         for (int *p = a; n > 0; n--) {
             if (n == 2)
-                p = b;
-            s += *p;
-            p++;
+                (p = b, p_index_xj = 0);
+            s += p[p_index_xj];
+            p_index_xj++;
+        }
         }
     return s;
 }

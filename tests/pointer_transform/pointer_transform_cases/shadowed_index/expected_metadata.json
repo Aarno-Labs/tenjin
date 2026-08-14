@@ -1,0 +1,23 @@
+{
+  "functions": {
+    "f@shadowed_index.c": {
+      "file": "shadowed_index.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj",
+          "mode": "reseated",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj_1",
+          "mode": "reseated",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

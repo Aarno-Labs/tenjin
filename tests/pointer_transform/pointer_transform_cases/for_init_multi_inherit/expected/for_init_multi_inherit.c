@@ -12,8 +12,10 @@
  * advances again. */
 static int derived(int *a, int n) {
     int s = 0;
-    for (int *r = a, *q = r + 1; n > 1; n--, r++, q++)
-        s += *r * 10 + *q;
+    int q_index_xj = 0;
+    int r_index_xj = 0;
+    for (int *r = a, *q = r + 1; n > 1; n--, r_index_xj++, q_index_xj++)
+        s += a[r_index_xj] * 10 + q[q_index_xj];
     return s;
 }
 

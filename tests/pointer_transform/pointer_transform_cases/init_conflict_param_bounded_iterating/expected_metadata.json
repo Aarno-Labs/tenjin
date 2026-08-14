@@ -6,6 +6,7 @@
         {
           "base_text": "buf",
           "index_var": "q_index_xj",
+          "mode": "collapse",
           "name": "q",
           "param_index": -1
         }
@@ -17,6 +18,7 @@
         {
           "base_text": "buf",
           "index_var": "q_index_xj",
+          "mode": "collapse",
           "name": "q",
           "param_index": -1
         }

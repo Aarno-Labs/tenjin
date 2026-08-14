@@ -6,12 +6,14 @@
         {
           "base_text": "lo",
           "index_var": "j_index_xj",
+          "mode": "collapse",
           "name": "j",
           "param_index": -1
         },
         {
           "base_text": "lo",
           "index_var": "i_index_xj",
+          "mode": "collapse",
           "name": "i",
           "param_index": -1
         }

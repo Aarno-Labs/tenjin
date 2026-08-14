@@ -1,0 +1,30 @@
+{
+  "functions": {
+    "f@inherit_shadowed.c": {
+      "file": "inherit_shadowed.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "mode": "collapse",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj_1",
+          "mode": "collapse",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "mode": "collapse",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

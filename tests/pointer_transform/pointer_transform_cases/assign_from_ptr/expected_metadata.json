@@ -1,0 +1,23 @@
+{
+  "functions": {
+    "windows@assign_from_ptr.c": {
+      "file": "assign_from_ptr.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "mode": "collapse",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "mode": "collapse",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

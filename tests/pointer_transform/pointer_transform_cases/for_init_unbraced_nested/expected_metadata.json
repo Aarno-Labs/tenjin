@@ -6,12 +6,14 @@
         {
           "base_text": "a",
           "index_var": "p_index_xj",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "q_index_xj",
+          "mode": "collapse",
           "name": "q",
           "param_index": -1
         }
@@ -23,12 +25,14 @@
         {
           "base_text": "a",
           "index_var": "p_index_xj",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "q_index_xj",
+          "mode": "collapse",
           "name": "q",
           "param_index": -1
         }
@@ -40,12 +44,14 @@
         {
           "base_text": "a",
           "index_var": "p_index_xj",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "q_index_xj",
+          "mode": "collapse",
           "name": "q",
           "param_index": -1
         }
@@ -57,13 +63,27 @@
         {
           "base_text": "a",
           "index_var": "p_index_xj",
+          "mode": "collapse",
           "name": "p",
           "param_index": -1
         },
         {
           "base_text": "a",
           "index_var": "q_index_xj",
+          "mode": "collapse",
           "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "labelled_at_depth@for_init_unbraced_nested.c": {
+      "file": "for_init_unbraced_nested.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "p_index_xj",
+          "mode": "reseated",
+          "name": "p",
           "param_index": -1
         }
       ]
