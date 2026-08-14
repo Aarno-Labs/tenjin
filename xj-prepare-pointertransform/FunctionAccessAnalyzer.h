@@ -52,10 +52,9 @@ using TransformModeMap = std::map<const VarDecl *, TransformMode>;
 // rewrites overlap, the param-bounded form wins — applyEdits drops the
 // later of two overlapping edits.
 //
-// The two groups stay separate because they are not treated alike at
-// rewrite time: the verdict map is consulted for `rest` and not for
-// `param_bounded`. That asymmetry is longstanding behavior, preserved
-// here verbatim rather than quietly unified.
+// The two groups differ only in when they are rewritten; both are filtered
+// through the verdict map alike. They stay separate structurally so the
+// ordering rule above has somewhere to live.
 struct EditOrder {
     std::vector<const VarDecl *> param_bounded;
     std::vector<const VarDecl *> rest;
