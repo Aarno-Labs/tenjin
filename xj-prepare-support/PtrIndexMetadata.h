@@ -15,14 +15,43 @@
 namespace xj
 {
 
+    // How a pointer was rewritten.
+    //
+    //   Collapse — the pointer variable was deleted and each access became
+    //              `<base>[index]`, with base substituted as source text.
+    //   Handle   — the pointer variable was retained, frozen, and indexes
+    //              itself, so base_text is its own name. It is never
+    //              assigned after its declaration.
+    //   Reseated — as Handle, but the pointer is also assigned somewhere
+    //              in the body: `p = q`, `p = p->next`, `p = NULL`.
+    //
+    // Handle and Reseated produce the same shape of code; they are
+    // separate because only the second is unsafe to reshape into a slice.
+    // A slice couples a pointer with a length, and reshaping the handle
+    // makes every assignment to it a write to the slice's pointer that
+    // leaves the length describing the previous buffer. A pointer frozen
+    // merely because it is a parameter, or because its base expression
+    // was not stable enough to substitute, has no such assignment and is
+    // perfectly sliceable.
+    enum class PtrIndexMode
+    {
+        Collapse,
+        Handle,
+        Reseated,
+    };
+
     struct PtrIndexPointerRecord
     {
         std::string name;      // pointer variable name
         std::string index_var; // companion index variable name, "" if none
         int param_index = -1;  // position among the function's params, -1 if local
         // Source text of the base array this pointer indexes into (e.g. "buf",
-        // "bs->buf"). Empty when the pointer is its own base (a parameter).
+        // "bs->buf"). For a frozen handle this is the pointer's own name,
+        // which is how the rewritten source spells every access.
         std::string base_text;
+
+        // How the pointer was rewritten.
+        PtrIndexMode mode = PtrIndexMode::Collapse;
     };
 
     struct PtrIndexFunctionRecord

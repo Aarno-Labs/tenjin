@@ -8,12 +8,36 @@
 
 namespace xj {
 
+// The enum's spelling in the side-file. Kept in one place so the two
+// directions cannot drift apart.
+static constexpr llvm::StringLiteral kModeCollapseText = "collapse";
+static constexpr llvm::StringLiteral kModeHandleText = "handle";
+static constexpr llvm::StringLiteral kModeReseatedText = "reseated";
+
+static llvm::StringRef modeToString(PtrIndexMode M) {
+    switch (M) {
+    case PtrIndexMode::Handle:   return kModeHandleText;
+    case PtrIndexMode::Reseated: return kModeReseatedText;
+    case PtrIndexMode::Collapse: break;
+    }
+    return kModeCollapseText;
+}
+
+static PtrIndexMode modeFromString(llvm::StringRef S) {
+    if (S == kModeHandleText)
+        return PtrIndexMode::Handle;
+    if (S == kModeReseatedText)
+        return PtrIndexMode::Reseated;
+    return PtrIndexMode::Collapse;
+}
+
 static llvm::json::Object pointerToJson(const PtrIndexPointerRecord &R) {
     llvm::json::Object O;
     O["name"] = R.name;
     O["index_var"] = R.index_var;
     O["param_index"] = R.param_index;
     O["base_text"] = R.base_text;
+    O["mode"] = modeToString(R.mode);
     return O;
 }
 
@@ -27,6 +51,7 @@ static bool pointerFromJson(const llvm::json::Object &O,
     R.index_var = IndexVar->str();
     R.param_index = static_cast<int>(O.getInteger("param_index").value_or(-1));
     R.base_text = O.getString("base_text").value_or("").str();
+    R.mode = modeFromString(O.getString("mode").value_or(kModeCollapseText));
     return true;
 }
 
