@@ -401,18 +401,17 @@ void FunctionAccessAnalyzer::rejectStaleOffsets(FunctionAnalysis &analysis,
     }
 }
 
-// Step 6.
-//
-// Note the asymmetry between the two groups, which is longstanding behavior
-// and is preserved verbatim: `modes` is consulted for `rest` and not for
-// `param_bounded`. transformPointerVar re-validates the pointer itself, so a
-// param-bounded pointer still cannot be rewritten against a failing verdict —
-// but it *can* be rewritten after rejectStaleOffsets dropped it, since that
-// step's reason is not one validation can see.
+// Step 6. Both groups consult the verdict. transformPointerVar re-validates,
+// which catches a pointer validation itself rejected — but not one that
+// rejectStaleOffsets dropped, because that step's reason (a conflict with
+// another pointer's rewrite) is not a fact validation can see. The map is the
+// only place that knowledge lives.
 void FunctionAccessAnalyzer::emitPointerRewrites(
     const FunctionDecl *FD, FunctionAnalysis &analysis,
     const TransformModeMap &modes, const EditOrder &order, ASTContext &Ctx) {
     for (const VarDecl *PtrVar : order.param_bounded) {
+        if (modes.find(PtrVar) == modes.end())
+            continue;
         auto &access_list = analysis.accesses[PtrVar];
         auto &candidate = analysis.tracked_pointers[PtrVar];
         transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
