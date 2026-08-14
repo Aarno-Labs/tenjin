@@ -150,8 +150,8 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
         printAccesses(VD, state.accesses, Ctx);
 
         std::string error;
-        if (!validatePointerCandidate(VD, state.candidate, state.accesses,
-                                      Ctx, error)) {
+        if (validatePointerCandidate(VD, state.candidate, state.accesses,
+                                     Ctx, error) == TransformMode::Reject) {
             gLog.error = error;
             logFailedPointer(VD, Ctx, error);
             if (VERBOSE)
@@ -189,9 +189,259 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
 }
 
 // ============================================================================
-// transformAllFunctions — rewrite every local pointer that's safe to
-// rewrite, function by function, in plain (base-param-relative) form.
+// The per-function rewrite pipeline
 // ============================================================================
+//
+// transformAllFunctions walks the analyzed functions; transformFunction runs
+// the pipeline for one of them. The steps were previously one 200-line body;
+// they are the same steps, in the same order, with names.
+//
+//   1. assignIndexNamesInSourceOrder  name every index before anything reads one
+//   2. pointersInEditOrder            decide the order rewrites are emitted in
+//   3. decideTransformModes           judge each pointer
+//   4. resolveCrossPointerComparisons restate comparisons naming another pointer
+//   5. rejectStaleOffsets             drop pointers whose pasted offset would rot
+//   6. emitPointerRewrites            rewrite the survivors
+
+// Step 1. Sorting by source location rather than iterating the map matters:
+// the map is keyed by VarDecl address, which is allocation order and not a
+// property of the source, so the names it hands out would not be reproducible.
+static void assignIndexNamesInSourceOrder(const FunctionAnalysis &analysis,
+                                          ASTContext &Ctx) {
+    SourceManager &SM = Ctx.getSourceManager();
+    std::vector<const VarDecl *> ptrs;
+    for (const auto &pair : analysis.accesses)
+        ptrs.push_back(pair.first);
+    std::sort(ptrs.begin(), ptrs.end(),
+              [&](const VarDecl *A, const VarDecl *B) {
+                  return SM.isBeforeInTranslationUnit(A->getLocation(),
+                                                      B->getLocation());
+              });
+    assignIndexNames(ptrs);
+}
+
+// True when the pointer indexes into one of the function's own pointer
+// parameters and has a comparison that can be resolved against it. Those are
+// the pointers whose rewrite the slice pass can anchor on, so they win any
+// overlap against a pointer rewritten later.
+static bool isParamBounded(const FunctionDecl *FD,
+                           const PointerCandidate &candidate,
+                           const std::vector<PointerAccess> &accesses) {
+    if (candidate.is_parameter || FD->getNumParams() == 0)
+        return false;
+
+    bool base_is_param = false;
+    for (unsigned i = 0; i < FD->getNumParams(); i++) {
+        if (FD->getParamDecl(i)->getNameAsString() == candidate.base_array_text &&
+            FD->getParamDecl(i)->getType()->isPointerType()) {
+            base_is_param = true;
+            break;
+        }
+    }
+    if (!base_is_param)
+        return false;
+
+    for (const auto &acc : accesses) {
+        if (acc.kind == PointerAccessKind::ComparisonExpr)
+            return true;
+    }
+    return false;
+}
+
+// Step 2. See EditOrder for why the two groups stay apart.
+static EditOrder pointersInEditOrder(const FunctionDecl *FD,
+                                     FunctionAnalysis &analysis) {
+    EditOrder order;
+    for (auto &pair : analysis.accesses) {
+        const VarDecl *PtrVar = pair.first;
+        if (isParamBounded(FD, analysis.tracked_pointers[PtrVar], pair.second))
+            order.param_bounded.push_back(PtrVar);
+        else
+            order.rest.push_back(PtrVar);
+    }
+    return order;
+}
+
+// Step 3.
+TransformModeMap
+FunctionAccessAnalyzer::decideTransformModes(FunctionAnalysis &analysis,
+                                             ASTContext &Ctx) {
+    TransformModeMap modes;
+    for (auto &pair : analysis.accesses) {
+        const VarDecl *PtrVar = pair.first;
+        auto &candidate = analysis.tracked_pointers[PtrVar];
+        auto &access_list = pair.second;
+
+        std::string error;
+        TransformMode mode =
+            validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error);
+        if (mode != TransformMode::Reject)
+            modes[PtrVar] = mode;
+    }
+    return modes;
+}
+
+// Step 4. A comparison against another pointer that is *also* being rewritten
+// cannot keep naming that pointer — it is about to be deleted. Restate the
+// operand in reconstructed form, `other_base + other_index`.
+static void resolveCrossPointerComparisons(FunctionAnalysis &analysis,
+                                           const TransformModeMap &modes,
+                                           ASTContext &Ctx) {
+    for (auto &pair : analysis.accesses) {
+        const VarDecl *PtrVar = pair.first;
+        auto &candidate = analysis.tracked_pointers[PtrVar];
+        if (modes.find(PtrVar) == modes.end())
+            continue;
+        for (auto &acc : pair.second) {
+            if (acc.kind != PointerAccessKind::ComparisonExpr)
+                continue;
+            // Check if operand_text is "(other - base)" pattern
+            // and the other is also being transformed
+            if (!acc.field_name.empty() &&
+                acc.field_name != candidate.base_array_text)
+                continue; // shape-5 param reconstruction; leave alone
+            // (pointer-form equality records — field_name == base —
+            // fall through: their operand still names the other
+            // pointer and must be reconstructed below if that
+            // pointer is transformed too)
+            // Look for the other pointer in the comparison's parent
+            const Stmt *P = skipTransparentParents(acc.expr, Ctx);
+            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
+            if (!BO) continue;
+            const Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
+            const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
+            const Expr *OtherSide = nullptr;
+            if (const DeclRefExpr *LDRE = dyn_cast<DeclRefExpr>(LHS)) {
+                if (LDRE->getDecl() == PtrVar) OtherSide = RHS;
+            }
+            if (!OtherSide) {
+                if (const DeclRefExpr *RDRE = dyn_cast<DeclRefExpr>(RHS)) {
+                    if (RDRE->getDecl() == PtrVar) OtherSide = LHS;
+                }
+            }
+            if (!OtherSide) continue;
+            // Walk through OtherSide to find a DeclRefExpr to a transformed pointer
+            // Handle both direct refs (e.g., `e`) and expressions (e.g., `buf + len`)
+            const DeclRefExpr *OtherDRE = dyn_cast<DeclRefExpr>(OtherSide);
+            if (!OtherDRE) {
+                // Try to find the pointer in a BinaryOperator (e.g., arr + n)
+                if (const BinaryOperator *AddBO = dyn_cast<BinaryOperator>(OtherSide)) {
+                    OtherDRE = dyn_cast<DeclRefExpr>(AddBO->getLHS()->IgnoreParenImpCasts());
+                }
+            }
+            if (!OtherDRE) continue;
+            const VarDecl *OtherVD = dyn_cast<VarDecl>(OtherDRE->getDecl());
+            if (!OtherVD || modes.find(OtherVD) == modes.end())
+                continue;
+            // Both pointers will be transformed. Use pointer reconstruction:
+            // base + index <op> other_base + other_index
+            auto &other_cand = analysis.tracked_pointers[OtherVD];
+            std::string other_base = other_cand.base_array_text;
+            std::string other_idx = indexNameFor(OtherVD);
+            std::string rhs = other_base.empty() ?
+                other_idx : other_base + " + " + other_idx;
+            acc.field_name = candidate.base_array_text;
+            acc.operand_text = rhs;
+        }
+    }
+}
+
+// Step 5. An offset is source text snapshotted at collect time and pasted
+// back out. If it names another pointer that is also being rewritten, that
+// text describes a variable which will not exist, so this pointer has to be
+// dropped rather than emitted against a stale name.
+void FunctionAccessAnalyzer::rejectStaleOffsets(FunctionAnalysis &analysis,
+                                                TransformModeMap &modes,
+                                                ASTContext &Ctx) {
+    for (auto &pair : analysis.accesses) {
+        const VarDecl *PtrVar = pair.first;
+        if (modes.find(PtrVar) == modes.end())
+            continue;
+        for (const auto &acc : pair.second) {
+            if (acc.kind != PointerAccessKind::InitArrayOffset &&
+                acc.kind != PointerAccessKind::AssignAddrOf &&
+                acc.kind != PointerAccessKind::AssignArrayOffset)
+                continue;
+            // Check if any other transformed pointer appears in the
+            // init expression's subtree
+            const Stmt *InitStmt = acc.enclosing_stmt;
+            if (!InitStmt) {
+                // For declarations, use the VarDecl's init
+                if (PtrVar->hasInit())
+                    InitStmt = PtrVar->getInit();
+            }
+            if (!InitStmt && acc.expr) {
+                // For separate assignments (AssignAddrOf, AssignArrayOffset),
+                // walk up from the DeclRefExpr to find the BinaryOperator
+                // and check its RHS for references to other transformed ptrs
+                const Stmt *P = skipTransparentParents(acc.expr, Ctx);
+                if (const BinaryOperator *BO = dyn_cast_or_null<BinaryOperator>(P))
+                    InitStmt = BO->getRHS();
+            }
+            if (!InitStmt) continue;
+            bool has_conflict = false;
+            // Walk the init to find DeclRefExprs to other transformed pointers
+            std::function<void(const Stmt *)> checkRefs = [&](const Stmt *S) {
+                if (has_conflict || !S) return;
+                if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
+                    if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                        if (VD != PtrVar && modes.count(VD))
+                            has_conflict = true;
+                    }
+                }
+                for (const Stmt *Child : S->children())
+                    checkRefs(Child);
+            };
+            checkRefs(InitStmt);
+            if (has_conflict) {
+                modes.erase(PtrVar);
+                break;
+            }
+        }
+    }
+}
+
+// Step 6.
+//
+// Note the asymmetry between the two groups, which is longstanding behavior
+// and is preserved verbatim: `modes` is consulted for `rest` and not for
+// `param_bounded`. transformPointerVar re-validates the pointer itself, so a
+// param-bounded pointer still cannot be rewritten against a failing verdict —
+// but it *can* be rewritten after rejectStaleOffsets dropped it, since that
+// step's reason is not one validation can see.
+void FunctionAccessAnalyzer::emitPointerRewrites(
+    const FunctionDecl *FD, FunctionAnalysis &analysis,
+    const TransformModeMap &modes, const EditOrder &order, ASTContext &Ctx) {
+    for (const VarDecl *PtrVar : order.param_bounded) {
+        auto &access_list = analysis.accesses[PtrVar];
+        auto &candidate = analysis.tracked_pointers[PtrVar];
+        transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
+    }
+
+    for (const VarDecl *PtrVar : order.rest) {
+        if (modes.find(PtrVar) == modes.end())
+            continue;
+        auto &access_list = analysis.accesses[PtrVar];
+        auto &candidate = analysis.tracked_pointers[PtrVar];
+        transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
+    }
+}
+
+void FunctionAccessAnalyzer::transformFunction(const FunctionDecl *FD,
+                                               FunctionAnalysis &analysis,
+                                               ASTContext &Ctx) {
+    assignIndexNamesInSourceOrder(analysis, Ctx);
+
+    EditOrder order = pointersInEditOrder(FD, analysis);
+
+    TransformModeMap modes = decideTransformModes(analysis, Ctx);
+
+    resolveCrossPointerComparisons(analysis, modes, Ctx);
+
+    rejectStaleOffsets(analysis, modes, Ctx);
+
+    emitPointerRewrites(FD, analysis, modes, order, Ctx);
+}
 
 void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
     for (auto &[FDCanon, analysis] : g_function_analyses) {
@@ -199,203 +449,11 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         if (!FD || !FD->hasBody())
             continue;
 
+        // Overlap tracking is per function: the ranges recorded while
+        // rewriting one function say nothing about the next.
         m_edited_ranges.clear();
 
-        // Name every index up front, in source order so the assignment is
-        // reproducible. Sorting by location rather than iterating the map
-        // matters: the map is keyed by VarDecl address, which is
-        // allocation order and not a property of the source.
-        {
-            SourceManager &SM = Ctx.getSourceManager();
-            std::vector<const VarDecl *> ptrs;
-            for (const auto &pair : analysis.accesses)
-                ptrs.push_back(pair.first);
-            std::sort(ptrs.begin(), ptrs.end(),
-                      [&](const VarDecl *A, const VarDecl *B) {
-                          return SM.isBeforeInTranslationUnit(A->getLocation(),
-                                                              B->getLocation());
-                      });
-            assignIndexNames(ptrs);
-        }
-
-        // Two-pass edit ordering: pointers whose bound comparison
-        // resolves against a parameter are rewritten first, so that when
-        // two pointers' comparison rewrites overlap, the param-bounded
-        // form wins (overlapping later edits are dropped in applyEdits).
-        std::vector<const VarDecl *> rust_slice_candidates;
-        std::vector<const VarDecl *> other_pointers;
-
-        for (auto &pair : analysis.accesses) {
-            const VarDecl *PtrVar = pair.first;
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            auto &access_list = pair.second;
-
-            bool is_rs_candidate = false;
-            if (!candidate.is_parameter && FD->getNumParams() > 0) {
-                bool base_is_param = false;
-                for (unsigned i = 0; i < FD->getNumParams(); i++) {
-                    if (FD->getParamDecl(i)->getNameAsString() == candidate.base_array_text &&
-                        FD->getParamDecl(i)->getType()->isPointerType()) {
-                        base_is_param = true;
-                        break;
-                    }
-                }
-                if (base_is_param) {
-                    for (const auto &acc : access_list) {
-                        if (acc.kind == PointerAccessKind::ComparisonExpr) {
-                            is_rs_candidate = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (is_rs_candidate)
-                rust_slice_candidates.push_back(PtrVar);
-            else
-                other_pointers.push_back(PtrVar);
-        }
-
-        // Pre-validation: determine which pointers will actually be
-        // transformed so that cross-pointer comparisons can be resolved.
-        std::set<const VarDecl *> will_transform;
-        for (auto &pair : analysis.accesses) {
-            const VarDecl *PtrVar = pair.first;
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            auto &access_list = pair.second;
-            std::string error;
-            if (validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error))
-                will_transform.insert(PtrVar);
-        }
-
-        // Fix up ComparisonExpr accesses that reference another pointer
-        // which will also be transformed. Replace operand_text with the
-        // reconstructed pointer form: other_base + other_name_index.
-        for (auto &pair : analysis.accesses) {
-            const VarDecl *PtrVar = pair.first;
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            if (will_transform.find(PtrVar) == will_transform.end())
-                continue;
-            for (auto &acc : pair.second) {
-                if (acc.kind != PointerAccessKind::ComparisonExpr)
-                    continue;
-                // Check if operand_text is "(other - base)" pattern
-                // and the other is also being transformed
-                if (!acc.field_name.empty() &&
-                    acc.field_name != candidate.base_array_text)
-                    continue; // shape-5 param reconstruction; leave alone
-                // (pointer-form equality records — field_name == base —
-                // fall through: their operand still names the other
-                // pointer and must be reconstructed below if that
-                // pointer is transformed too)
-                // Look for the other pointer in the comparison's parent
-                const Stmt *P = skipTransparentParents(acc.expr, Ctx);
-                const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-                if (!BO) continue;
-                const Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
-                const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
-                const Expr *OtherSide = nullptr;
-                if (const DeclRefExpr *LDRE = dyn_cast<DeclRefExpr>(LHS)) {
-                    if (LDRE->getDecl() == PtrVar) OtherSide = RHS;
-                }
-                if (!OtherSide) {
-                    if (const DeclRefExpr *RDRE = dyn_cast<DeclRefExpr>(RHS)) {
-                        if (RDRE->getDecl() == PtrVar) OtherSide = LHS;
-                    }
-                }
-                if (!OtherSide) continue;
-                // Walk through OtherSide to find a DeclRefExpr to a transformed pointer
-                // Handle both direct refs (e.g., `e`) and expressions (e.g., `buf + len`)
-                const DeclRefExpr *OtherDRE = dyn_cast<DeclRefExpr>(OtherSide);
-                if (!OtherDRE) {
-                    // Try to find the pointer in a BinaryOperator (e.g., arr + n)
-                    if (const BinaryOperator *AddBO = dyn_cast<BinaryOperator>(OtherSide)) {
-                        OtherDRE = dyn_cast<DeclRefExpr>(AddBO->getLHS()->IgnoreParenImpCasts());
-                    }
-                }
-                if (!OtherDRE) continue;
-                const VarDecl *OtherVD = dyn_cast<VarDecl>(OtherDRE->getDecl());
-                if (!OtherVD || will_transform.find(OtherVD) == will_transform.end())
-                    continue;
-                // Both pointers will be transformed. Use pointer reconstruction:
-                // base + index <op> other_base + other_index
-                auto &other_cand = analysis.tracked_pointers[OtherVD];
-                std::string other_base = other_cand.base_array_text;
-                std::string other_idx = indexNameFor(OtherVD);
-                std::string rhs = other_base.empty() ?
-                    other_idx : other_base + " + " + other_idx;
-                acc.field_name = candidate.base_array_text;
-                acc.operand_text = rhs;
-            }
-        }
-
-        // Reject pointers whose init/assign offset references another
-        // pointer that will also be transformed. The init edit would use
-        // stale source text for the offset, conflicting with the inner
-        // pointer's transformation.
-        for (auto &pair : analysis.accesses) {
-            const VarDecl *PtrVar = pair.first;
-            if (will_transform.find(PtrVar) == will_transform.end())
-                continue;
-            for (const auto &acc : pair.second) {
-                if (acc.kind != PointerAccessKind::InitArrayOffset &&
-                    acc.kind != PointerAccessKind::AssignAddrOf &&
-                    acc.kind != PointerAccessKind::AssignArrayOffset)
-                    continue;
-                // Check if any other transformed pointer appears in the
-                // init expression's subtree
-                const Stmt *InitStmt = acc.enclosing_stmt;
-                if (!InitStmt) {
-                    // For declarations, use the VarDecl's init
-                    if (PtrVar->hasInit())
-                        InitStmt = PtrVar->getInit();
-                }
-                if (!InitStmt && acc.expr) {
-                    // For separate assignments (AssignAddrOf, AssignArrayOffset),
-                    // walk up from the DeclRefExpr to find the BinaryOperator
-                    // and check its RHS for references to other transformed ptrs
-                    const Stmt *P = skipTransparentParents(acc.expr, Ctx);
-                    if (const BinaryOperator *BO = dyn_cast_or_null<BinaryOperator>(P))
-                        InitStmt = BO->getRHS();
-                }
-                if (!InitStmt) continue;
-                bool has_conflict = false;
-                // Walk the init to find DeclRefExprs to other transformed pointers
-                std::function<void(const Stmt *)> checkRefs = [&](const Stmt *S) {
-                    if (has_conflict || !S) return;
-                    if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
-                        if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                            if (VD != PtrVar && will_transform.count(VD))
-                                has_conflict = true;
-                        }
-                    }
-                    for (const Stmt *Child : S->children())
-                        checkRefs(Child);
-                };
-                checkRefs(InitStmt);
-                if (has_conflict) {
-                    will_transform.erase(PtrVar);
-                    break;
-                }
-            }
-        }
-
-        // First pass: param-bounded pointers
-        for (const VarDecl *PtrVar : rust_slice_candidates) {
-            auto &access_list = analysis.accesses[PtrVar];
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
-        }
-
-        // Second pass: remaining pointers. Skip pointers removed from
-        // will_transform by init conflict detection.
-        for (const VarDecl *PtrVar : other_pointers) {
-            auto &access_list = analysis.accesses[PtrVar];
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            if (will_transform.find(PtrVar) == will_transform.end())
-                continue;
-            transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
-        }
+        transformFunction(FD, analysis, Ctx);
     }
 }
 
@@ -463,7 +521,8 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
     printAccesses(PtrVar, accesses, Ctx);
 
     std::string error;
-    if (!validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error)) {
+    if (validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error) ==
+        TransformMode::Reject) {
         gLog.error = error;
         logFailedPointer(PtrVar, Ctx, error);
         if (VERBOSE)
