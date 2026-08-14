@@ -1,11 +1,13 @@
-// ValidationMethods.cpp — gatekeeper for the pointer-to-index rewrite.
+// ValidationMethods.cpp — decides how (or whether) a pointer is rewritten.
 //
-// Each check below either confirms a property the rewriter relies on
-// (single base array, constant offsets, ...) or rules out a pattern
-// the rewriter can't safely reproduce (address-of, writes through
-// const, type punning, ...). On the first failed check we set `error`
-// to a human-readable reason and return false — that string ends up
-// in the [FAILED] log line.
+// Checks fall into two groups. Some rule out a pattern the rewriter
+// cannot reproduce in *any* mode (address-of, macro locations, shapes we
+// don't recognize); those return TransformMode::Reject with `error` set
+// to a human-readable reason, which ends up in the [FAILED] log line.
+// The rest establish that the base expression is stable enough to be
+// substituted as text at every access site — the precondition for
+// collapse mode. Failing one of those is not fatal: it means the pointer
+// must keep its handle instead, so it yields TransformMode::Handle.
 
 #include "FunctionAccessAnalyzer.h"
 
@@ -39,6 +41,20 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
         return TransformMode::Reject;
     }
 
+    // Collapse eligibility. Every check below that concerns the *base*
+    // expression is asking one question: can this base be substituted as
+    // text at every access site and still mean the same thing? A "no" is
+    // not fatal — it only means the pointer must keep its handle, where
+    // the base is a runtime value and none of this applies.
+    bool collapse_ok = !candidate.collapse_ineligible;
+    std::string collapse_blocker;
+    auto demote = [&](std::string reason) {
+        if (collapse_ok) {
+            collapse_ok = false;
+            collapse_blocker = std::move(reason);
+        }
+    };
+
     // Any single Unknown access disqualifies the pointer — it means the
     // collector hit a syntactic shape we don't have a rewrite for.
     for (const auto &access : accesses) {
@@ -66,13 +82,30 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
         }
     }
 
-    // *(p + var) is rejected because we can't compute slice bounds for
-    // a non-constant offset at compile time. Constant offsets like
-    // *(p - 1) are fine — they were folded into min/max_relative_offset.
-    if (!candidate.constant_offsets) {
-        error = "Pointer has non-constant dereference offset";
-        return TransformMode::Reject;
+    // A reseat rules out collapse: the pointer's base changes at runtime,
+    // so no single base spelling is valid at every access site.
+    //
+    // markReseat records this on the candidate as collapse_ineligible, and
+    // for a local that is the same fact arriving by a shorter route. It is
+    // not the same for a *global*: the merge in run() keeps the candidate
+    // built from the initializer and drops the per-function one that
+    // markReseat mutated, so the flag never arrives. The accesses always
+    // do. Deriving it here keeps the verdict independent of how the
+    // candidate was assembled.
+    for (const auto &access : accesses) {
+        if (access.kind == PointerAccessKind::AssignPtr) {
+            demote("pointer is reseated to a different base");
+            break;
+        }
     }
+
+    // A non-constant offset (`*(p + var)`) used to be rejected here so
+    // that slice bounds stayed computable. That is the slice pass's
+    // concern, not this one: SliceDetector::computeOffsetBounds derives
+    // its own variable_offset flag from the rewritten AST and declines
+    // the candidate itself. Rewriting `*(p + var)` as `base[idx + var]`
+    // is perfectly sound, so we let it through and it simply never
+    // becomes a slice.
 
     // Require at least one mutation (++/--/+=/-=) or one indexed
     // assignment. A pointer that's only ever dereferenced once isn't
@@ -168,10 +201,9 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
             baseElem = Ctx.getAsArrayType(baseType)->getElementType().getUnqualifiedType();
 
         if (!baseElem.isNull() && ptrPointee != baseElem) {
-            error = "Pointer pointee type (" + ptrPointee.getAsString() +
-                ") differs from base array element type (" +
-                baseElem.getAsString() + ")";
-            return TransformMode::Reject;
+            demote("pointee type (" + ptrPointee.getAsString() +
+                   ") differs from base element type (" +
+                   baseElem.getAsString() + ")");
         }
     }
 
@@ -200,10 +232,8 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
                     break;
                 }
             }
-            if (has_write) {
-                error = "Pointer writes through const-qualified base";
-                return TransformMode::Reject;
-            }
+            if (has_write)
+                demote("writes through a const-qualified base");
         }
     }
 
@@ -213,10 +243,8 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
     // which isn't indexable. A leading `(` is just a cast — fine.
     if (!candidate.base_array_text.empty()) {
         size_t paren_pos = candidate.base_array_text.find('(');
-        if (paren_pos != std::string::npos && paren_pos > 0) {
-            error = "Base array is a function call return value";
-            return TransformMode::Reject;
-        }
+        if (paren_pos != std::string::npos && paren_pos > 0)
+            demote("base is a function call return value");
     }
 
     // Reject pointers whose base expression is mutated within the
@@ -351,16 +379,12 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
             BaseMutationFinder finder(SM, LO, PtrVar, baseContains);
             finder.TraverseStmt(EnclosingFD->getBody());
             if (finder.mutated) {
-                error = "Base expression '" + base_text +
-                        "' depends on '" + finder.mutated_lhs +
-                        "', which is mutated within the function";
-                return TransformMode::Reject;
+                demote("base '" + base_text + "' depends on '" +
+                       finder.mutated_lhs + "', which is mutated in the function");
             }
             if (finder.addr_escaped) {
-                error = "Base expression '" + base_text +
-                        "' has its address taken via '&" + finder.escaped_text +
-                        "', so it may be mutated indirectly within the function";
-                return TransformMode::Reject;
+                demote("base '" + base_text + "' has its address taken via '&" +
+                       finder.escaped_text + "', so it may be mutated indirectly");
             }
         }
     }
@@ -388,54 +412,16 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
         }
     }
 
-    // Base-array consistency is largely enforced inline by the
-    // collector (any conflicting base produces an Unknown access,
-    // which we already rejected above). The loop here is kept as a
-    // documentation point for the cases that participate.
-    for (const auto &access : accesses) {
-        switch (access.kind) {
-        case PointerAccessKind::AssignArray:
-        case PointerAccessKind::AssignAddrOf:
-        case PointerAccessKind::AssignArrayOffset:
-            break;  // base was captured/checked at collection time
-        case PointerAccessKind::AssignNull:
-        case PointerAccessKind::InitNull:
-            break;  // NULL is compatible with any base
-        default:
-            break;
-        }
-    }
-
-    // A parameter whose value enters from the caller cannot also serve
-    // as its own index base while being reseated to a *different* array.
+    // A parameter whose value enters from the caller cannot also serve as
+    // its own index base while being reseated to a *different* array: the
+    // incoming argument is a second, uncaptured base. Under a frozen
+    // handle there is no such conflict, since the handle holds whichever
+    // base is current.
     if (candidate.is_parameter &&
         !candidate.base_array_text.empty() &&
         candidate.base_array_text != PtrVar->getNameAsString())
     {
-        error = "Parameter reseated to a different base array (incoming "
-                "argument is an uncaptured second base)";
-        return TransformMode::Reject;
-    }
-
-    // If we still don't have a base, the only salvageable case is a
-    // parameter that gets indexed directly (`p[i]`) — there the
-    // parameter name itself plays the role of the base array.
-    if (candidate.base_array_text.empty()) {
-        bool has_subscript = false;
-        for (const auto &access : accesses) {
-            if (access.kind == PointerAccessKind::Subscript ||
-                access.kind == PointerAccessKind::SubscriptWrite) {
-                has_subscript = true;
-                break;
-            }
-        }
-
-        if (candidate.is_parameter && (has_mutation || has_subscript)) {
-            candidate.base_array_text = PtrVar->getNameAsString();
-        } else {
-            error = "Could not determine base array";
-            return TransformMode::Reject;
-        }
+        demote("parameter reseated to a base other than its incoming argument");
     }
 
     // A pointer in a multi-declarator for-init has its index declared
@@ -471,5 +457,33 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
     }
 
     gLog.foundPointer = true;
+
+    // No base at all — nothing to collapse onto. This subsumes the old
+    // parameter-as-its-own-base fallback: a parameter never had a
+    // separate base to begin with, so handle mode is what it always got,
+    // just derived from the verdict now instead of special-cased.
+    if (!collapse_ok || candidate.base_array_text.empty()) {
+        // Report *why* collapse was ruled out even though the verdict is
+        // not a rejection. Callers that can honour a handle ignore this;
+        // the file-scope loop, which has no handle path and so has to
+        // skip, logs it as the pointer's [FAILED] reason.
+        error = collapse_blocker.empty() ? "Could not determine base array"
+                                         : collapse_blocker;
+        if (VERBOSE)
+            llvm::outs() << "[Handle] " << PtrVar->getNameAsString() << ": "
+                         << error << "\n";
+        // Note: this must not rewrite candidate.base_array_text to the
+        // pointer's own name, tempting as it is. transformAllFunctions
+        // validates every pointer once up front and again inside
+        // transformPointerVar, so a candidate mutated here would be
+        // re-judged against different facts the second time — a base of
+        // "dst" is trivially stable, so the pointer would come back as
+        // Collapse and its declaration would be deleted out from under
+        // the accesses. Validation stays a pure function of the
+        // candidate; the rewriter and the metadata writer each derive the
+        // handle's own-base spelling from the mode instead.
+        return TransformMode::Handle;
+    }
+
     return TransformMode::Collapse;
 }

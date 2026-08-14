@@ -150,8 +150,17 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
         printAccesses(VD, state.accesses, Ctx);
 
         std::string error;
+        // Globals are collapse-only: generateGlobalTransformation always
+        // deletes the declaration and substitutes base_array_text at every
+        // access, and has no case for AssignPtr. A Handle verdict is the
+        // validator saying that substitution is *not* sound — an unstable
+        // or type-punned base, or a reseat — so it has to skip here. Testing
+        // for Reject instead would let exactly those candidates through to
+        // collapse codegen with the base just judged unsafe. Handle mode for
+        // file-scope pointers is deferred (they bypass transformPointerVar
+        // and emit no metadata).
         if (validatePointerCandidate(VD, state.candidate, state.accesses,
-                                     Ctx, error) == TransformMode::Reject) {
+                                     Ctx, error) != TransformMode::Collapse) {
             gLog.error = error;
             logFailedPointer(VD, Ctx, error);
             if (VERBOSE)
@@ -248,21 +257,30 @@ static bool isParamBounded(const FunctionDecl *FD,
     return false;
 }
 
-// Step 2. See EditOrder for why the two groups stay apart.
-static EditOrder pointersInEditOrder(const FunctionDecl *FD,
-                                     FunctionAnalysis &analysis) {
-    EditOrder order;
+// Step 2. Param-bounded pointers go first so that when two pointers'
+// comparison rewrites overlap, the param-bounded form wins — applyEdits
+// drops the later of two overlapping edits. Everything else keeps its
+// relative order behind them.
+static std::vector<const VarDecl *>
+pointersInEditOrder(const FunctionDecl *FD, FunctionAnalysis &analysis) {
+    std::vector<const VarDecl *> param_bounded, rest;
     for (auto &pair : analysis.accesses) {
         const VarDecl *PtrVar = pair.first;
         if (isParamBounded(FD, analysis.tracked_pointers[PtrVar], pair.second))
-            order.param_bounded.push_back(PtrVar);
+            param_bounded.push_back(PtrVar);
         else
-            order.rest.push_back(PtrVar);
+            rest.push_back(PtrVar);
     }
-    return order;
+    param_bounded.insert(param_bounded.end(), rest.begin(), rest.end());
+    return param_bounded;
 }
 
-// Step 3.
+// Step 3. Each pointer is judged exactly once and the verdict carried to
+// the rewrite. Re-validating later would re-judge a candidate the fixups
+// below have since altered, and the modes are not interchangeable: a
+// pointer demoted for an unstable base looks perfectly collapsible once
+// its base has been rewritten to its own name, and collapse would then
+// delete the declaration out from under its accesses.
 TransformModeMap
 FunctionAccessAnalyzer::decideTransformModes(FunctionAnalysis &analysis,
                                              ASTContext &Ctx) {
@@ -275,8 +293,15 @@ FunctionAccessAnalyzer::decideTransformModes(FunctionAnalysis &analysis,
         std::string error;
         TransformMode mode =
             validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error);
-        if (mode != TransformMode::Reject)
+        if (mode != TransformMode::Reject) {
             modes[PtrVar] = mode;
+        } else {
+            gLog.error = error;
+            logFailedPointer(PtrVar, Ctx, error);
+            if (VERBOSE)
+                llvm::outs() << "[Skip] " << PtrVar->getNameAsString()
+                             << ": " << error << "\n";
+        }
     }
     return modes;
 }
@@ -401,28 +426,22 @@ void FunctionAccessAnalyzer::rejectStaleOffsets(FunctionAnalysis &analysis,
     }
 }
 
-// Step 6. Both groups consult the verdict. transformPointerVar re-validates,
-// which catches a pointer validation itself rejected — but not one that
-// rejectStaleOffsets dropped, because that step's reason (a conflict with
-// another pointer's rewrite) is not a fact validation can see. The map is the
-// only place that knowledge lives.
+// Step 6. Both groups consult the verdict map: transformPointerVar no
+// longer re-validates — the mode decided in step 3 is carried to it — so
+// this is the only place a pointer that failed, or that a later step
+// dropped, is filtered out. That also makes the two groups interchangeable
+// at rewrite time, so the order is one flat list again.
 void FunctionAccessAnalyzer::emitPointerRewrites(
     const FunctionDecl *FD, FunctionAnalysis &analysis,
-    const TransformModeMap &modes, const EditOrder &order, ASTContext &Ctx) {
-    for (const VarDecl *PtrVar : order.param_bounded) {
-        if (modes.find(PtrVar) == modes.end())
+    const TransformModeMap &modes, const std::vector<const VarDecl *> &order,
+    ASTContext &Ctx) {
+    for (const VarDecl *PtrVar : order) {
+        auto mit = modes.find(PtrVar);
+        if (mit == modes.end())
             continue;
         auto &access_list = analysis.accesses[PtrVar];
         auto &candidate = analysis.tracked_pointers[PtrVar];
-        transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
-    }
-
-    for (const VarDecl *PtrVar : order.rest) {
-        if (modes.find(PtrVar) == modes.end())
-            continue;
-        auto &access_list = analysis.accesses[PtrVar];
-        auto &candidate = analysis.tracked_pointers[PtrVar];
-        transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
+        transformPointerVar(FD, PtrVar, candidate, access_list, Ctx, mit->second);
     }
 }
 
@@ -431,7 +450,7 @@ void FunctionAccessAnalyzer::transformFunction(const FunctionDecl *FD,
                                                ASTContext &Ctx) {
     assignIndexNamesInSourceOrder(analysis, Ctx);
 
-    EditOrder order = pointersInEditOrder(FD, analysis);
+    std::vector<const VarDecl *> order = pointersInEditOrder(FD, analysis);
 
     TransformModeMap modes = decideTransformModes(analysis, Ctx);
 
@@ -513,25 +532,16 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                                                   const VarDecl *PtrVar,
                                                   PointerCandidate &candidate,
                                                   std::vector<PointerAccess> &accesses,
-                                                  ASTContext &Ctx) {
-    if (accesses.empty())
+                                                  ASTContext &Ctx,
+                                                  TransformMode mode) {
+    if (accesses.empty() || mode == TransformMode::Reject)
         return;
 
     printAccesses(PtrVar, accesses, Ctx);
 
-    std::string error;
-    if (validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error) ==
-        TransformMode::Reject) {
-        gLog.error = error;
-        logFailedPointer(PtrVar, Ctx, error);
-        if (VERBOSE)
-            llvm::outs() << "[Skip] " << PtrVar->getNameAsString() << ": " << error << "\n";
-        return;
-    }
-
     g_pointers_found++;
 
-    if (generateTransformation(FD, PtrVar, candidate, accesses, Ctx)) {
+    if (generateTransformation(FD, PtrVar, candidate, accesses, Ctx, mode)) {
         gLog.replacedPointer = true;
         g_pointers_replaced++;
         SourceManager &SM = Ctx.getSourceManager();
@@ -555,7 +565,14 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                 rec.param_index = -1;
                 if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
                     rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
-                rec.base_text = candidate.base_array_text;
+                // A frozen handle is its own base, and that is how the
+                // rewritten source spells every access. Recording the
+                // pre-transform base text would describe code that no
+                // longer exists — the slice pass matches subscript bases
+                // against this string.
+                rec.base_text = (mode == TransformMode::Handle)
+                                    ? rec.name
+                                    : candidate.base_array_text;
                 fnRec->pointers.push_back(std::move(rec));
             }
         }

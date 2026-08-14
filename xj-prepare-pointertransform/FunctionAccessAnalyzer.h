@@ -23,19 +23,6 @@
 // runs on this tool's output (valid, index-rewritten C) plus the
 // per-pointer metadata records.
 
-// How a pointer will be rewritten, decided by validatePointerCandidate.
-//
-//   Reject   — nothing about this pointer is rewritten.
-//   Collapse — the pointer variable is deleted and every access becomes
-//              `<base source text>[p_index]`. The base is a *syntactic*
-//              fact re-substituted at each access site, so it has to be
-//              textually valid and stable across the whole function.
-//
-// Two values today, so this is exactly the boolean the validator used to
-// return. It is an enum because the verdict is about to gain a third
-// answer, and a bool cannot carry one.
-enum class TransformMode { Reject, Collapse };
-
 // Pointers that will be transformed, and how.
 //
 // This is the single authority on both questions: membership means "will
@@ -44,21 +31,6 @@ enum class TransformMode { Reject, Collapse };
 // modes can fall out of step, and then a pointer dropped from one but
 // left in the other is rewritten after having been rejected.
 using TransformModeMap = std::map<const VarDecl *, TransformMode>;
-
-// The order pointers are rewritten in, split by whether their bound
-// comparison resolves against a parameter.
-//
-// Param-bounded pointers go first so that when two pointers' comparison
-// rewrites overlap, the param-bounded form wins — applyEdits drops the
-// later of two overlapping edits.
-//
-// The two groups differ only in when they are rewritten; both are filtered
-// through the verdict map alike. They stay separate structurally so the
-// ordering rule above has somewhere to live.
-struct EditOrder {
-    std::vector<const VarDecl *> param_bounded;
-    std::vector<const VarDecl *> rest;
-};
 
 class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
   public:
@@ -86,17 +58,20 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // Emit a [FAILED] log entry plus update gLog/per-file state.
     void logFailedPointer(const VarDecl *VD, ASTContext &Ctx, const std::string &error);
 
-    // Validate + rewrite one local pointer (the simple within-function path).
+    // Rewrite one local pointer in the mode transformAllFunctions already
+    // decided for it (the simple within-function path).
     void transformPointerVar(const FunctionDecl *FD, const VarDecl *PtrVar,
                              PointerCandidate &candidate,
                              std::vector<PointerAccess> &accesses,
-                             ASTContext &Ctx);
+                             ASTContext &Ctx, TransformMode mode);
 
     // Debug dump of an access list (only fires when VERBOSE).
     void printAccesses(const VarDecl *VD, const std::vector<PointerAccess> &seq,
                        ASTContext &Ctx);
 
-    // Defined in ValidationMethods.cpp.
+    // Defined in ValidationMethods.cpp. Returns the mode this pointer
+    // should be rewritten in, or TransformMode::Reject (with `error` set)
+    // if it should be left alone.
     TransformMode validatePointerCandidate(const VarDecl *PtrVar,
                                            PointerCandidate &candidate,
                                            std::vector<PointerAccess> &accesses,
@@ -109,7 +84,8 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
                                 const VarDecl *PtrVar,
                                 PointerCandidate &candidate,
                                 std::vector<PointerAccess> &accesses,
-                                ASTContext &Ctx);
+                                ASTContext &Ctx,
+                                TransformMode mode);
 
     // generateGlobalTransformation: same idea but for a file-scope
     // pointer (visited from every function that uses it).
@@ -147,7 +123,8 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // Rewrite the pointers in `order` that survived into `modes`.
     void emitPointerRewrites(const FunctionDecl *FD, FunctionAnalysis &analysis,
                              const TransformModeMap &modes,
-                             const EditOrder &order, ASTContext &Ctx);
+                             const std::vector<const VarDecl *> &order,
+                             ASTContext &Ctx);
 
     // ---- Metadata export for xj-prepare-slicetransform ----------------
     // Look up (or create) the metadata record for FD; nullptr when a

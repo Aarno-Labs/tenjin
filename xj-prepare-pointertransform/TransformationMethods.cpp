@@ -169,15 +169,23 @@ bool FunctionAccessAnalyzer::generateTransformation(
     const VarDecl *PtrVar,
     PointerCandidate &candidate,
     std::vector<PointerAccess> &accesses,
-    ASTContext &Ctx) {
+    ASTContext &Ctx,
+    TransformMode mode) {
 
     SourceManager &SM = Ctx.getSourceManager();
     const LangOptions &LO = Ctx.getLangOpts();
     Stmt *Body = FD->getBody();
 
+    // In handle mode the pointer is retained and becomes its own base, so
+    // accesses read `p[p_index]` and the declaration is left alone (the
+    // index declaration is *inserted* alongside it rather than replacing
+    // it). This is exactly the shape parameters have always been given.
+    const bool handle_mode = (mode == TransformMode::Handle);
+
     std::string ptr_name = PtrVar->getNameAsString();
     std::string index_name = indexNameFor(PtrVar);
-    std::string base_array = safeBase(candidate.base_array_text);
+    std::string base_array =
+        handle_mode ? ptr_name : safeBase(candidate.base_array_text);
 
     // Note: the body is always rewritten in *plain* form — base params
     // kept, indices counted from the original base, comparisons against
@@ -201,47 +209,51 @@ bool FunctionAccessAnalyzer::generateTransformation(
             return false;
         }
 
-        // Build the replacement declaration
-        std::string init_value;
-        bool found_init = false;
-        for (const auto &access : accesses) {
-            switch (access.kind) {
-            case PointerAccessKind::InitNull:
-                init_value = "-1";
-                found_init = true;
-                break;
-            case PointerAccessKind::InitArray:
-                init_value = "0";
-                found_init = true;
-                break;
-            case PointerAccessKind::InitArrayOffset:
-                init_value = access.offset_text;
-                found_init = true;
-                break;
-            default:
-                break;
+        // Build the replacement declaration. In handle mode the pointer
+        // keeps its initializer, so it already points where it should and
+        // the index always starts at 0; only collapse mode has to fold the
+        // initializer into an index value.
+        std::string init_value = "0";
+        if (!handle_mode) {
+            bool found_init = false;
+            for (const auto &access : accesses) {
+                switch (access.kind) {
+                case PointerAccessKind::InitNull:
+                    init_value = "-1";
+                    found_init = true;
+                    break;
+                case PointerAccessKind::InitArray:
+                    init_value = "0";
+                    found_init = true;
+                    break;
+                case PointerAccessKind::InitArrayOffset:
+                    init_value = access.offset_text;
+                    found_init = true;
+                    break;
+                default:
+                    break;
+                }
+                if (found_init) break;
             }
-            if (found_init) break;
         }
-
-        if (!found_init)
-            init_value = "0";
 
         bool multi_decl = isMultiDeclarator(DS);
         bool for_init = forStmtInitializedBy(DS, Ctx) != nullptr;
 
         std::string replacement = "int " + index_name + " = " + init_value + ";";
 
-        if (multi_decl && for_init) {
-            // The index cannot go after this DeclStmt — in a for-init that
-            // slot is the loop condition — and the statement cannot be
-            // replaced in place either, because the other declarators have
-            // to survive. Place it before the whole loop.
-            //
-            // The initializer is not always the literal 0, so this move is
-            // only sound when it names nothing the statement binds;
-            // validation rejects the pointer otherwise, so by the time we
-            // get here the hoist is known to be safe.
+        // Two shapes cannot put the index after the DeclStmt, and both take
+        // the anchor path, which places it before the nearest position that
+        // accepts a statement.
+        //
+        // Handle mode never replaces the declaration — the pointer stays as
+        // the handle — and its index initializer is the literal 0, so it has
+        // no dependencies and can always make that move. A collapsed
+        // multi-declarator for-init has nowhere after the statement to go,
+        // since that slot is the loop condition; its initializer is not
+        // always 0, so the move is only sound when it names nothing the
+        // statement binds, which validation guarantees.
+        if (handle_mode || (multi_decl && for_init)) {
             if (!emitDeclBefore(declAnchorFor(DS, Ctx), replacement, SM, LO, edits)) {
                 if (VERBOSE)
                     llvm::outs() << "[Error] No position for the index of "
@@ -295,22 +307,26 @@ bool FunctionAccessAnalyzer::generateTransformation(
         e.text = insertion;
         edits.push_back(e);
 
-        // The transformation assumes that the base array of a parameter is the parameter itself
-        assert((candidate.base_array_text.empty() ||
+        // A parameter is always its own base: its incoming value is the
+        // base, so there is nothing else it could collapse onto.
+        assert((handle_mode || candidate.base_array_text.empty() ||
                 candidate.base_array_text == ptr_name) &&
                "parameter base override would discard a live distinct base");
         base_array = ptr_name;
     }
 
-    // When the pointer variable is itself retained as the base array (a
-    // parameter used as its own base), the offset index starts at 0 and only
-    // ever advances, so its -1 sentinel never models a NULL pointer. The
-    // pointer's null-ness still lives in the retained pointer variable, so
-    // NULL tests (!p, p == NULL, p = NULL, if (p)) must stay on the original
-    // pointer rather than be rewritten against the index. (The -1 sentinel
-    // only encodes NULL in the full-replacement case where the pointer
-    // variable is removed and the index becomes the whole pointer value.)
-    bool ptr_retained = candidate.is_parameter && (base_array == ptr_name);
+    // When the pointer variable is retained as its own base, the index
+    // starts at 0 and only ever advances, so a -1 sentinel would never
+    // model a NULL pointer. The pointer's null-ness still lives in the
+    // retained variable, so NULL tests (!p, p == NULL, p = NULL, if (p))
+    // must stay on the pointer rather than be rewritten against the index.
+    // (The -1 sentinel only encodes NULL in collapse mode, where the
+    // pointer variable is removed and the index becomes the whole value.)
+    //
+    // This has always been true of parameters; handle mode is that same
+    // arrangement generalized to any pointer that cannot collapse.
+    bool ptr_retained =
+        handle_mode || (candidate.is_parameter && (base_array == ptr_name));
 
     // ---- Step 2: rewrite each access ---------------------------------
     // One case per PointerAccessKind. Each case looks up the relevant
@@ -318,6 +334,39 @@ bool FunctionAccessAnalyzer::generateTransformation(
     // and pushes an Edit covering the right source range. Init kinds
     // were already handled by the declaration rewrite above and are
     // skipped here.
+    //
+    // Handle mode keeps the pointer, so an assignment to it must stay in
+    // the source — collapse mode's habit of replacing the whole
+    // assignment with an index update would leave the handle pointing at
+    // wherever it was last reseated. Instead the assignment is left alone
+    // and an index reset appended: `(p = rhs, p_index = n)`.
+    //
+    // Two insertions rather than one replacement, so rewrites *inside* the
+    // RHS survive. `p = p->next` classifies its RHS `p` independently as
+    // an ArrowAccess, and applyEdits drops a Replace overlapping an
+    // already-applied edit — a replacement spanning the assignment would
+    // either clobber that inner rewrite or be dropped itself. Insertions
+    // never overlap.
+    //
+    // Order matters: RHS evaluated, pointer assigned, index reset last.
+    // `p = p[p_index_xj].next` has to read at the *old* index.
+    auto emitReseat = [&](const BinaryOperator *BO,
+                          const std::string &inherited) {
+        Edit open;
+        open.type = Edit::InsertBefore;
+        open.offset = SM.getFileOffset(BO->getBeginLoc());
+        open.start = BO->getBeginLoc();
+        open.text = "(";
+        edits.push_back(open);
+
+        Edit close;
+        close.type = Edit::InsertAfterToken;
+        close.offset = SM.getFileOffset(BO->getEndLoc());
+        close.start = BO->getEndLoc();
+        close.text = ", " + index_name + " = " + inherited + ")";
+        edits.push_back(close);
+    };
+
     for (const auto &access : accesses) {
         if (access.kind == PointerAccessKind::InitNull ||
             access.kind == PointerAccessKind::InitArray ||
@@ -690,6 +739,13 @@ bool FunctionAccessAnalyzer::generateTransformation(
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
             if (!BO) break;
 
+            // In handle mode the pointer absorbs the whole &arr[i], so it
+            // keeps the assignment and the index restarts at 0.
+            if (handle_mode) {
+                emitReseat(BO, "0");
+                break;
+            }
+
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
                 BO->getEndLoc(), 0, SM, LO);
@@ -710,6 +766,13 @@ bool FunctionAccessAnalyzer::generateTransformation(
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
             if (!BO) break;
 
+            // In handle mode the pointer absorbs the RHS, so it keeps the
+            // assignment and the index simply restarts at 0.
+            if (handle_mode) {
+                emitReseat(BO, "0");
+                break;
+            }
+
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
                 BO->getEndLoc(), 0, SM, LO);
@@ -724,11 +787,32 @@ bool FunctionAccessAnalyzer::generateTransformation(
             break;
         }
 
+        // ---- Reseat: p = <expr> -> (p = <expr>, p_index = 0) ----
+        // Handle mode only — the kind is never produced otherwise. The
+        // assignment stays put, so the pointer absorbs the whole RHS — an
+        // offset in it included — and the index restarts at 0 rather than
+        // taking the offset's value.
+        case PointerAccessKind::AssignPtr: {
+            if (!handle_mode) break;
+            const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
+            if (!BO) break;
+            emitReseat(BO, "0");
+            break;
+        }
+
         // ---- Assign arr + offset: p = arr + off -> p_index = off ----
         case PointerAccessKind::AssignArrayOffset: {
             const Stmt *P = findParent(access.expr);
             const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
             if (!BO) break;
+
+            // In handle mode the pointer absorbs the offset too — it now
+            // points at `arr + off` — so the index restarts at 0 rather
+            // than taking the offset's value.
+            if (handle_mode) {
+                emitReseat(BO, "0");
+                break;
+            }
 
             SourceLocation StartLoc = BO->getBeginLoc();
             SourceLocation EndLoc = Lexer::getLocForEndOfToken(
