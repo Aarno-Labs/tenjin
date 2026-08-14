@@ -11,24 +11,6 @@
 
 #include "FunctionAccessAnalyzer.h"
 
-// The first DeclRefExpr in `S`'s subtree naming one of `bound`, or null.
-// Pre-order, stopping at the first hit. Returning the reference rather
-// than a bool lets the caller name the offender in its diagnostic.
-static const DeclRefExpr *findRefToBound(const Stmt *S,
-                                         const std::set<const Decl *> &bound) {
-    if (!S)
-        return nullptr;
-    if (const auto *DRE = dyn_cast<DeclRefExpr>(S)) {
-        if (bound.count(DRE->getDecl()))
-            return DRE;
-    }
-    for (const Stmt *Child : S->children()) {
-        if (const DeclRefExpr *Found = findRefToBound(Child, bound))
-            return Found;
-    }
-    return nullptr;
-}
-
 TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
     const VarDecl *PtrVar,
     PointerCandidate &candidate,
@@ -424,34 +406,34 @@ TransformMode FunctionAccessAnalyzer::validatePointerCandidate(
         demote("parameter reseated to a base other than its incoming argument");
     }
 
-    // A pointer in a multi-declarator for-init has its index declared
-    // before the whole loop: the position after the DeclStmt is the loop
-    // condition, and the other declarators have to survive, so replacing
-    // the statement in place is not available either.
+    // A collapsed pointer in a multi-declarator for-init has its index
+    // declared before the whole loop: the position after the DeclStmt is
+    // the loop condition, and the other declarators have to survive, so
+    // replacing the statement in place is not available either.
     //
-    // The index initializer is not always the literal 0 — it may be an
-    // offset expression — so hoisting it out of the statement that binds
+    // Handle mode's index initializer is the literal 0 and can always
+    // make that move. A collapse index initializer cannot: it may be an
+    // offset expression, and hoisting it out of the statement that binds
     // the names it references would leave them out of scope
-    // (`for (int i = k, *p = buf + i; ...)`). Reject those; the shapes
-    // that do hoist are then mutually independent, so no ordering between
-    // them is needed.
-    //
-    // Rejecting one pointer is the conservative outcome, and strictly
-    // better than what this code did before the hoist existed: it emitted
-    // the index declaration into the loop-condition slot, which does not
-    // parse, and a prepared file that does not parse costs the whole
-    // codebase its pointer rewrites when the pass rolls back.
+    // (`for (int i = k, *p = buf + i; ...)`) or read an index declared
+    // after it (`for (int *r = a, *q = r + 1; ...)`, where q inherits r's
+    // index). Freezing such a pointer is what keeps the remaining hoists
+    // independent of each other, so no ordering between them is needed.
     if (!candidate.is_parameter && EnclosingFD && EnclosingFD->hasBody()) {
         const DeclStmt *DS =
             findDeclStmtForVar(PtrVar, EnclosingFD->getBody());
         if (isMultiDeclarator(DS) && forStmtInitializedBy(DS, Ctx)) {
             std::set<const Decl *> bound(DS->decl_begin(), DS->decl_end());
-            if (const DeclRefExpr *Ref = findRefToBound(PtrVar->getInit(), bound)) {
-                error = "index initializer references '" +
-                        Ref->getDecl()->getNameAsString() +
-                        "', declared in the same for-init, so it cannot be "
-                        "hoisted out of the loop header";
-                return TransformMode::Reject;
+
+            const DeclRefExpr *Ref =
+                findRefIf(PtrVar->getInit(),
+                          [&](const Decl *D) { return bound.count(D) > 0; });
+
+            if (Ref) {
+                demote("index initializer references '" +
+                       Ref->getDecl()->getNameAsString() +
+                       "', declared in the same for-init, so it cannot be "
+                       "hoisted out of the loop header");
             }
         }
     }

@@ -169,6 +169,7 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
         pa.expr = Init;
         pa.enclosing_stmt = nullptr;
         pa.offset_text = index_text;
+        pa.offset_expr = ASE->getIdx();
         access_list.push_back(pa);
         return;
     }
@@ -193,6 +194,7 @@ void PointerAccessCollector::analyzePointerInit(const Expr *Init,
                 pa.expr = Init;
                 pa.enclosing_stmt = nullptr;
                 pa.offset_text = getSourceText(BO->getRHS(), SM, LO);
+                pa.offset_expr = BO->getRHS();
                 access_list.push_back(pa);
                 return;
             }
@@ -343,10 +345,66 @@ void PointerAccessCollector::markReseat(PointerCandidate &candidate,
                            DRE, BO, "", "", "", ""});
 }
 
+// True if `DRE` sits inside the initializer of a *different* tracked
+// pointer — the `q` in `T *p = q + 1;`. That declaration is rewritten as
+// a unit by p, which inherits q's index, so this occurrence needs no edit
+// and must not fall through to the Unknown catch-all: doing so would
+// reject q entirely, which is what used to make an inherited
+// initializer cost both pointers their rewrite.
+const VarDecl *PointerAccessCollector::inheritingPointerFor(const DeclRefExpr *DRE,
+                                                            const VarDecl *PtrVar) {
+    auto Start = Ctx.getParents(*DRE);
+    if (Start.empty())
+        return nullptr;
+    DynTypedNode Node = Start[0];
+    while (true) {
+        if (const auto *VD = Node.get<VarDecl>()) {
+            if (VD != PtrVar && tracked_pointers.count(VD))
+                return VD;
+            return nullptr;
+        }
+        const Stmt *S = Node.get<Stmt>();
+        // Only walk out through pointer arithmetic and transparent nodes;
+        // anything else means the reference is not simply the base of an
+        // initializer.
+        if (!S || !isa<ImplicitCastExpr, ParenExpr, CStyleCastExpr,
+                       BinaryOperator>(S))
+            return nullptr;
+        if (const auto *BO = dyn_cast<BinaryOperator>(S)) {
+            if (BO->getOpcode() != BO_Add && BO->getOpcode() != BO_Sub)
+                return nullptr;
+        }
+        auto Parents = Ctx.getParents(*S);
+        if (Parents.empty())
+            return nullptr;
+        Node = Parents[0];
+    }
+}
+
 void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                                              const VarDecl *PtrVar,
                                              std::vector<PointerAccess> &access_list,
                                              PointerCandidate &candidate) {
+    if (const VarDecl *Inheritor = inheritingPointerFor(DRE, PtrVar)) {
+        // owner_ptr is the pointer that owns the enclosing declaration.
+        // Suppressing this edit is only safe if that pointer actually
+        // rewrites the declaration; if it does not, this pointer must be
+        // left alone too, or collapsing it would delete a name the
+        // surviving declaration still refers to.
+        //
+        // Recorded as the decl, not its name: the owner is looked up again
+        // by every consumer of this record, and a name does not identify a
+        // pointer.
+        PointerAccess pa;
+        pa.kind = PointerAccessKind::NoRewrite;
+        pa.loc = DRE->getLocation();
+        pa.expr = DRE;
+        pa.enclosing_stmt = nullptr;
+        pa.owner_ptr = Inheritor;
+        access_list.push_back(pa);
+        return;
+    }
+
     const Stmt *OutermostDRE = DRE; // top of the transparent wrapper chain over DRE
     const Stmt *Parent = skipTransparentParentsOf(DRE, Ctx, OutermostDRE);
     if (!Parent) {
@@ -562,6 +620,22 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
     // ---- BinaryOperator: comparisons, assignments, compound assigns,
     //                       pointer arithmetic --------------------------
     if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(Parent)) {
+        // p - base -> p_index. A pointer's distance from its own base is
+        // exactly its index, so the subtraction disappears. Restricted to
+        // the captured base spelled the same way, which is the common
+        // `(int)(w - buf)` length computation; any other subtraction
+        // falls through to the shapes below.
+        if (BO->getOpcode() == BO_Sub && !candidate.base_array_text.empty() &&
+            (BO->getLHS()->IgnoreParenImpCasts() == DRE ||
+             BO->getLHS()->IgnoreParenImpCasts() == OutermostDRE) &&
+            BO->getRHS()->IgnoreParenImpCasts()->getType()->isPointerType() &&
+            getSourceText(BO->getRHS()->IgnoreParenImpCasts(), SM, LO) ==
+                candidate.base_array_text) {
+            access_list.push_back({PointerAccessKind::PtrDiffBase,
+                                   BO->getBeginLoc(), DRE, BO, "", "", "", ""});
+            return;
+        }
+
         // Comparison: p == NULL, p < end, p < arr + n, p >= arr, ...
         // We try several shapes in order of specificity, falling back
         // to the unresolvable "Comparison" kind if none of them apply.
@@ -741,6 +815,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                     access_list.push_back({PointerAccessKind::AssignAddrOf,
                                            BO->getBeginLoc(), DRE, nullptr,
                                            index_text, "", "", ""});
+                    access_list.back().offset_expr = ASE->getIdx();
                     return;
                 }
 
@@ -766,6 +841,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                         access_list.push_back({PointerAccessKind::AssignArrayOffset,
                                                BO->getBeginLoc(), DRE, nullptr,
                                                rhs_offset, "", "", ""});
+                        access_list.back().offset_expr = AddBO->getRHS();
                         return;
                     }
                 }

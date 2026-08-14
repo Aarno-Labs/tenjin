@@ -26,10 +26,12 @@
 // Pointers that will be transformed, and how.
 //
 // This is the single authority on both questions: membership means "will
-// be transformed", and the mapped value is how. Keeping the two together
-// is deliberate — a set of pointers riding alongside a separate map of
-// modes can fall out of step, and then a pointer dropped from one but
-// left in the other is rewritten after having been rejected.
+// be transformed", and the mapped value is how. A parallel set of the
+// same keys used to ride alongside it, and the two could fall out of
+// step — one removal site dropped a pointer from the set but left its
+// mode behind, and the first rewrite loop consulted only the mode, so the
+// pointer was rewritten after being rejected. One container cannot
+// disagree with itself.
 using TransformModeMap = std::map<const VarDecl *, TransformMode>;
 
 class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
@@ -101,20 +103,30 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // ---- Cross-function transformation phase --------------------------
     // transformAllFunctions walks every analyzed function; transformFunction
     // runs the rewrite pipeline for one of them. The pipeline steps below
-    // are members because they need validatePointerCandidate or
-    // transformPointerVar; the remaining steps are file-static helpers in
-    // FunctionAccessAnalyzer.cpp.
+    // are members because they need validatePointerCandidate,
+    // logFailedPointer or transformPointerVar; the remaining steps are
+    // file-static helpers in FunctionAccessAnalyzer.cpp.
     void transformAllFunctions(ASTContext &Ctx);
     void transformFunction(const FunctionDecl *FD, FunctionAnalysis &analysis,
                            ASTContext &Ctx);
 
-    // Judge every pointer, into the mode it will be rewritten in. Pointers
-    // that cannot be rewritten at all are simply absent from the map, so
-    // membership answers "will this be transformed" and the mapped value
-    // answers "how" — one container rather than a set and a mode that can
-    // fall out of step.
+    // Judge every pointer once, into the mode it will be rewritten in.
     TransformModeMap decideTransformModes(FunctionAnalysis &analysis,
                                           ASTContext &Ctx);
+
+    // Re-judge a pointer whose candidate a fixup just changed, updating
+    // `modes` with the new verdict. True if it survived. Sound only after
+    // a fixup — see the note on decideTransformModes for why re-judging
+    // is otherwise forbidden.
+    bool revalidateAfterFixup(const VarDecl *PtrVar, PointerCandidate &candidate,
+                              std::vector<PointerAccess> &accesses,
+                              TransformModeMap &modes, ASTContext &Ctx);
+
+    // Fold a rewritten source pointer's index into the pointers derived
+    // from it. Returns the pointers that inherited.
+    std::set<const VarDecl *> inheritIndices(FunctionAnalysis &analysis,
+                                             TransformModeMap &modes,
+                                             ASTContext &Ctx);
 
     // Drop pointers whose pasted offset text the rewrite would invalidate.
     void rejectStaleOffsets(FunctionAnalysis &analysis, TransformModeMap &modes,

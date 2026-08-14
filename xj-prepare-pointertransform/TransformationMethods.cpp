@@ -253,6 +253,10 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // since that slot is the loop condition; its initializer is not
         // always 0, so the move is only sound when it names nothing the
         // statement binds, which validation guarantees.
+        //
+        // Placing it *before* also puts the index in scope for the rest of
+        // its own statement, so a later declarator's initializer can name
+        // it — which is what lets `int *r = p, *q = r + 1;` materialize r.
         if (handle_mode || (multi_decl && for_init)) {
             if (!emitDeclBefore(declAnchorFor(DS, Ctx), replacement, SM, LO, edits)) {
                 if (VERBOSE)
@@ -791,7 +795,8 @@ bool FunctionAccessAnalyzer::generateTransformation(
         // Handle mode only — the kind is never produced otherwise. The
         // assignment stays put, so the pointer absorbs the whole RHS — an
         // offset in it included — and the index restarts at 0 rather than
-        // taking the offset's value.
+        // taking the offset's value. A tracked pointer inside the RHS
+        // carries its own position across through MaterializeUse.
         case PointerAccessKind::AssignPtr: {
             if (!handle_mode) break;
             const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
@@ -824,6 +829,48 @@ bool FunctionAccessAnalyzer::generateTransformation(
             e.start = StartLoc;
             e.end = EndLoc;
             e.text = index_name + " = " + access.offset_text;
+            edits.push_back(e);
+            break;
+        }
+
+        // The enclosing declaration is rewritten by the pointer that
+        // inherits this one's index; nothing to do here.
+        case PointerAccessKind::NoRewrite:
+            break;
+
+        // ---- p -> (base + p_index), in place ----
+        // Parenthesized so the surrounding expression keeps its meaning;
+        // see the kind's comment for the cast hazard.
+        case PointerAccessKind::MaterializeUse: {
+            SourceLocation StartLoc = access.expr->getBeginLoc();
+            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
+                access.expr->getEndLoc(), 0, SM, LO);
+
+            Edit e;
+            e.type = Edit::Replace;
+            e.offset = SM.getFileOffset(StartLoc);
+            e.start = StartLoc;
+            e.end = EndLoc;
+            e.text = "(" + base_array + " + " + index_name + ")";
+            edits.push_back(e);
+            break;
+        }
+
+        // ---- p - base -> p_index ----
+        // Collapse only: with the pointer frozen it is its own base, so
+        // the distance is whatever the index already says and there is no
+        // subtraction left in the source to rewrite.
+        case PointerAccessKind::PtrDiffBase: {
+            if (handle_mode) break;
+            const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
+            if (!BO) break;
+
+            Edit e;
+            e.type = Edit::Replace;
+            e.offset = SM.getFileOffset(BO->getBeginLoc());
+            e.start = BO->getBeginLoc();
+            e.end = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
+            e.text = index_name;
             edits.push_back(e);
             break;
         }
@@ -1132,7 +1179,7 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
     const LangOptions &LO = Ctx.getLangOpts();
 
     std::string ptr_name = PtrVar->getNameAsString();
-    std::string index_name = ptr_name + "_index_xj";
+    std::string index_name = indexNameFor(PtrVar);
     std::string base_array = safeBase(candidate.base_array_text);
 
     std::vector<Edit> edits;

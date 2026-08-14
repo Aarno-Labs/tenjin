@@ -3,7 +3,9 @@
 //
 //   1. Driver: constructor, run() (per-function analysis), and
 //      onEndOfTranslationUnit() (the phase orchestrator).
-//   2. transformAllFunctions — plain index rewriting.
+//   2. Per-function transform pipeline — the eight steps that turn one
+//      function's analysis snapshot into index rewrites. See the comment
+//      on transformFunction for the algorithm.
 //   3. Helpers — transformPointerVar, metadataRecordFor, applyEdits, etc.
 //
 // All actual source rewriting is deferred to onEndOfTranslationUnit so
@@ -198,23 +200,104 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
 }
 
 // ============================================================================
-// The per-function rewrite pipeline
+// Per-function transform pipeline — rewrite every local pointer that's safe
+// to rewrite, function by function, in plain (base-param-relative) form.
 // ============================================================================
 //
-// transformAllFunctions walks the analyzed functions; transformFunction runs
-// the pipeline for one of them. The steps were previously one 200-line body;
-// they are the same steps, in the same order, with names.
-//
-//   1. assignIndexNamesInSourceOrder  name every index before anything reads one
-//   2. pointersInEditOrder            decide the order rewrites are emitted in
-//   3. decideTransformModes           judge each pointer
-//   4. resolveCrossPointerComparisons restate comparisons naming another pointer
-//   5. rejectStaleOffsets             drop pointers whose pasted offset would rot
-//   6. emitPointerRewrites            rewrite the survivors
+// The steps below run in the order they are defined. Those that need no
+// member state are file-static and declared here as a table of contents;
+// the rest are members (they call validatePointerCandidate,
+// logFailedPointer or transformPointerVar).
 
-// Step 1. Sorting by source location rather than iterating the map matters:
+// Step 1: hand out index names, in source order.
+static void assignIndexNamesInSourceOrder(const FunctionAnalysis &analysis,
+                                          ASTContext &Ctx);
+
+// Step 2: put the pointers in the order their edits should be applied.
+static std::vector<const VarDecl *>
+pointersInEditOrder(const FunctionDecl *FD, FunctionAnalysis &analysis);
+
+// Step 4: restate comparisons that name another transformed pointer.
+static void resolveCrossPointerComparisons(FunctionAnalysis &analysis,
+                                           const TransformModeMap &modes,
+                                           ASTContext &Ctx);
+
+// Step 6: turn suppressed references into explicit `(base + index)` reads.
+static void materializeSuppressedRefs(const FunctionDecl *FD,
+                                      FunctionAnalysis &analysis,
+                                      TransformModeMap &modes,
+                                      const std::set<const VarDecl *> &inherited);
+
+// The VarDecl `E` names, if `E` is a plain reference to one. Null for any
+// other expression shape — notably an explicit cast (`(int *)q`), which
+// survives IgnoreParenImpCasts and fails the dyn_cast. That is the intent
+// wherever this is used: a cast base is not the same variable.
+static const VarDecl *referencedVar(const Expr *E) {
+    const auto *DRE = dyn_cast<DeclRefExpr>(E->IgnoreParenImpCasts());
+    return DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
+}
+
+void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
+    for (auto &[FDCanon, analysis] : g_function_analyses) {
+        const FunctionDecl *FD = analysis.FD;
+        if (!FD || !FD->hasBody())
+            continue;
+
+        // Overlap tracking is per function: the ranges recorded while
+        // rewriting one function say nothing about the next.
+        m_edited_ranges.clear();
+
+        transformFunction(FD, analysis, Ctx);
+    }
+}
+
+// Rewrite one function's pointers, working from the analysis snapshot run()
+// left in g_function_analyses.
+//
+// The pipeline:
+//
+//   1. Name indices — every tracked pointer gets its `_index_xj` name.
+//   2. Order by edit priority — param-bounded pointers first.
+//   3. Decide modes — judge each pointer once into Collapse/Handle/Reject.
+//   4. Resolve cross-pointer comparisons — restate an operand naming
+//      another transformed pointer in index form.
+//   5. Inherit indices — `T *p = q + x` with q collapsed: p adopts q's base
+//      and picks up q's index.
+//   6. Materialize suppressed references — a NoRewrite reference whose
+//      owner did not inherit has to say `(base + index)` after all.
+//   7. Reject stale offsets — drop pointers whose pasted offset text the
+//      rewrite would invalidate.
+//   8. Emit — rewrite the survivors, in the order from step 2.
+//
+// Steps 4-7 mutate the access records and the mode map; 1-2 only read.
+//
+// Ordering constraint: step 2 must precede step 5. The ordering reads
+// `base_array_text` and index inheritance overwrites it, so ordering
+// afterwards would give some pointers the wrong edit priority.
+void FunctionAccessAnalyzer::transformFunction(const FunctionDecl *FD,
+                                               FunctionAnalysis &analysis,
+                                               ASTContext &Ctx) {
+    assignIndexNamesInSourceOrder(analysis, Ctx);
+
+    std::vector<const VarDecl *> order = pointersInEditOrder(FD, analysis);
+
+    TransformModeMap modes = decideTransformModes(analysis, Ctx);
+
+    resolveCrossPointerComparisons(analysis, modes, Ctx);
+
+    std::set<const VarDecl *> inherited = inheritIndices(analysis, modes, Ctx);
+
+    materializeSuppressedRefs(FD, analysis, modes, inherited);
+
+    rejectStaleOffsets(analysis, modes, Ctx);
+
+    emitPointerRewrites(FD, analysis, modes, order, Ctx);
+}
+
+// Step 1. Name every index up front, in source order so the assignment is
+// reproducible. Sorting by location rather than iterating the map matters:
 // the map is keyed by VarDecl address, which is allocation order and not a
-// property of the source, so the names it hands out would not be reproducible.
+// property of the source.
 static void assignIndexNamesInSourceOrder(const FunctionAnalysis &analysis,
                                           ASTContext &Ctx) {
     SourceManager &SM = Ctx.getSourceManager();
@@ -229,70 +312,75 @@ static void assignIndexNamesInSourceOrder(const FunctionAnalysis &analysis,
     assignIndexNames(ptrs);
 }
 
-// True when the pointer indexes into one of the function's own pointer
-// parameters and has a comparison that can be resolved against it. Those are
-// the pointers whose rewrite the slice pass can anchor on, so they win any
-// overlap against a pointer rewritten later.
+// True if this pointer indexes into one of `FD`'s pointer parameters and is
+// bounded by a comparison — the two facts that make its comparison rewrite
+// the one worth keeping when two of them overlap.
+//
+// A pointer that is itself a parameter is excluded: it has no base to
+// resolve against the signature.
 static bool isParamBounded(const FunctionDecl *FD,
                            const PointerCandidate &candidate,
                            const std::vector<PointerAccess> &accesses) {
-    if (candidate.is_parameter || FD->getNumParams() == 0)
+    if (candidate.is_parameter)
         return false;
 
-    bool base_is_param = false;
-    for (unsigned i = 0; i < FD->getNumParams(); i++) {
-        if (FD->getParamDecl(i)->getNameAsString() == candidate.base_array_text &&
-            FD->getParamDecl(i)->getType()->isPointerType()) {
-            base_is_param = true;
-            break;
-        }
-    }
+    auto params = FD->parameters();
+    bool base_is_param =
+        std::any_of(params.begin(), params.end(), [&](const ParmVarDecl *P) {
+            return P->getNameAsString() == candidate.base_array_text &&
+                   P->getType()->isPointerType();
+        });
     if (!base_is_param)
         return false;
 
-    for (const auto &acc : accesses) {
-        if (acc.kind == PointerAccessKind::ComparisonExpr)
-            return true;
-    }
-    return false;
+    return std::any_of(accesses.begin(), accesses.end(),
+                       [](const PointerAccess &acc) {
+                           return acc.kind == PointerAccessKind::ComparisonExpr;
+                       });
 }
 
-// Step 2. Param-bounded pointers go first so that when two pointers'
-// comparison rewrites overlap, the param-bounded form wins — applyEdits
-// drops the later of two overlapping edits. Everything else keeps its
-// relative order behind them.
+// Step 2. Edit ordering: pointers whose bound comparison resolves against a
+// parameter are rewritten first, so that when two pointers' comparison
+// rewrites overlap, the param-bounded form wins (overlapping later edits
+// are dropped in applyEdits).
 static std::vector<const VarDecl *>
 pointersInEditOrder(const FunctionDecl *FD, FunctionAnalysis &analysis) {
     std::vector<const VarDecl *> param_bounded, rest;
-    for (auto &pair : analysis.accesses) {
-        const VarDecl *PtrVar = pair.first;
-        if (isParamBounded(FD, analysis.tracked_pointers[PtrVar], pair.second))
+    for (auto &[PtrVar, accesses] : analysis.accesses) {
+        if (isParamBounded(FD, analysis.tracked_pointers[PtrVar], accesses))
             param_bounded.push_back(PtrVar);
         else
             rest.push_back(PtrVar);
     }
+    // Param-bounded first; everything else keeps its relative order behind
+    // them.
     param_bounded.insert(param_bounded.end(), rest.begin(), rest.end());
     return param_bounded;
 }
 
-// Step 3. Each pointer is judged exactly once and the verdict carried to
-// the rewrite. Re-validating later would re-judge a candidate the fixups
-// below have since altered, and the modes are not interchangeable: a
-// pointer demoted for an unstable base looks perfectly collapsible once
-// its base has been rewritten to its own name, and collapse would then
-// delete the declaration out from under its accesses.
+// Step 3. Pre-validation: determine which pointers will actually be
+// transformed, and in which mode, so that cross-pointer comparisons can be
+// resolved.
+//
+// Each pointer is judged exactly once and the verdict carried to the
+// rewrite. Re-validating later would re-judge a candidate the fixups
+// downstream have since altered, and the modes are not interchangeable: a
+// pointer demoted to Handle for an unstable base looks perfectly
+// collapsible once its base has been rewritten to its own name, and
+// collapse would then delete the declaration out from under its accesses.
+//
+// The two later re-validations (in inheritIndices) are the exception, and
+// sound for the reason given there: the candidate changed because the
+// fixup changed it.
 TransformModeMap
 FunctionAccessAnalyzer::decideTransformModes(FunctionAnalysis &analysis,
                                              ASTContext &Ctx) {
     TransformModeMap modes;
-    for (auto &pair : analysis.accesses) {
-        const VarDecl *PtrVar = pair.first;
+    for (auto &[PtrVar, accesses] : analysis.accesses) {
         auto &candidate = analysis.tracked_pointers[PtrVar];
-        auto &access_list = pair.second;
-
         std::string error;
         TransformMode mode =
-            validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error);
+            validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error);
         if (mode != TransformMode::Reject) {
             modes[PtrVar] = mode;
         } else {
@@ -306,18 +394,73 @@ FunctionAccessAnalyzer::decideTransformModes(FunctionAnalysis &analysis,
     return modes;
 }
 
-// Step 4. A comparison against another pointer that is *also* being rewritten
-// cannot keep naming that pointer — it is about to be deleted. Restate the
-// operand in reconstructed form, `other_base + other_index`.
+// Re-judge a pointer whose candidate one of the fixups just changed, and
+// record the new verdict. Returns whether it survived.
+//
+// Unlike the judgement above this one is repeatable, because the thing it
+// re-reads is the thing the caller just rewrote.
+bool FunctionAccessAnalyzer::revalidateAfterFixup(
+    const VarDecl *PtrVar, PointerCandidate &candidate,
+    std::vector<PointerAccess> &accesses, TransformModeMap &modes,
+    ASTContext &Ctx) {
+    std::string error;
+    TransformMode mode =
+        validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error);
+    if (mode == TransformMode::Reject) {
+        modes.erase(PtrVar);
+        return false;
+    }
+    modes[PtrVar] = mode;
+    return true;
+}
+
+// The pointer on the far side of the comparison `acc` sits in, if that
+// pointer is also being transformed. Null otherwise.
+//
+// Handles both a direct reference (`p < e`) and one inside an addition
+// (`p < buf + len`).
+static const VarDecl *otherTransformedPointerIn(const PointerAccess &acc,
+                                                const VarDecl *Self,
+                                                const TransformModeMap &modes,
+                                                ASTContext &Ctx) {
+    const Stmt *P = skipTransparentParents(acc.expr, Ctx);
+    const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
+    if (!BO)
+        return nullptr;
+
+    // Whichever side isn't `Self` is the side to inspect.
+    auto refersToSelf = [&](const Expr *E) { return referencedVar(E) == Self; };
+    const Expr *OtherSide = nullptr;
+    if (refersToSelf(BO->getLHS()))
+        OtherSide = BO->getRHS();
+    else if (refersToSelf(BO->getRHS()))
+        OtherSide = BO->getLHS();
+    if (!OtherSide)
+        return nullptr;
+
+    const VarDecl *Other = referencedVar(OtherSide);
+    if (!Other) {
+        // Try to find the pointer in a BinaryOperator (e.g., arr + n)
+        if (const auto *AddBO =
+                dyn_cast<BinaryOperator>(OtherSide->IgnoreParenImpCasts()))
+            Other = referencedVar(AddBO->getLHS());
+    }
+    if (!Other || !modes.count(Other))
+        return nullptr;
+    return Other;
+}
+
+// Step 4. Fix up ComparisonExpr accesses that reference another pointer
+// which will also be transformed. Replace operand_text with the
+// reconstructed pointer form: other_base + other_name_index.
 static void resolveCrossPointerComparisons(FunctionAnalysis &analysis,
                                            const TransformModeMap &modes,
                                            ASTContext &Ctx) {
-    for (auto &pair : analysis.accesses) {
-        const VarDecl *PtrVar = pair.first;
+    for (auto &[PtrVar, accesses] : analysis.accesses) {
         auto &candidate = analysis.tracked_pointers[PtrVar];
-        if (modes.find(PtrVar) == modes.end())
+        if (!modes.count(PtrVar))
             continue;
-        for (auto &acc : pair.second) {
+        for (auto &acc : accesses) {
             if (acc.kind != PointerAccessKind::ComparisonExpr)
                 continue;
             // Check if operand_text is "(other - base)" pattern
@@ -329,40 +472,27 @@ static void resolveCrossPointerComparisons(FunctionAnalysis &analysis,
             // fall through: their operand still names the other
             // pointer and must be reconstructed below if that
             // pointer is transformed too)
-            // Look for the other pointer in the comparison's parent
-            const Stmt *P = skipTransparentParents(acc.expr, Ctx);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO) continue;
-            const Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
-            const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
-            const Expr *OtherSide = nullptr;
-            if (const DeclRefExpr *LDRE = dyn_cast<DeclRefExpr>(LHS)) {
-                if (LDRE->getDecl() == PtrVar) OtherSide = RHS;
-            }
-            if (!OtherSide) {
-                if (const DeclRefExpr *RDRE = dyn_cast<DeclRefExpr>(RHS)) {
-                    if (RDRE->getDecl() == PtrVar) OtherSide = LHS;
-                }
-            }
-            if (!OtherSide) continue;
-            // Walk through OtherSide to find a DeclRefExpr to a transformed pointer
-            // Handle both direct refs (e.g., `e`) and expressions (e.g., `buf + len`)
-            const DeclRefExpr *OtherDRE = dyn_cast<DeclRefExpr>(OtherSide);
-            if (!OtherDRE) {
-                // Try to find the pointer in a BinaryOperator (e.g., arr + n)
-                if (const BinaryOperator *AddBO = dyn_cast<BinaryOperator>(OtherSide)) {
-                    OtherDRE = dyn_cast<DeclRefExpr>(AddBO->getLHS()->IgnoreParenImpCasts());
-                }
-            }
-            if (!OtherDRE) continue;
-            const VarDecl *OtherVD = dyn_cast<VarDecl>(OtherDRE->getDecl());
-            if (!OtherVD || modes.find(OtherVD) == modes.end())
+            const VarDecl *OtherVD =
+                otherTransformedPointerIn(acc, PtrVar, modes, Ctx);
+            if (!OtherVD)
                 continue;
+
             // Both pointers will be transformed. Use pointer reconstruction:
             // base + index <op> other_base + other_index
             auto &other_cand = analysis.tracked_pointers[OtherVD];
             std::string other_base = other_cand.base_array_text;
             std::string other_idx = indexNameFor(OtherVD);
+
+            // Same base on both sides: the pointers cancel and the
+            // comparison is between the two indices. Leaving
+            // field_name empty selects the index form downstream.
+            if (!other_base.empty() &&
+                other_base == candidate.base_array_text) {
+                acc.field_name.clear();
+                acc.operand_text = other_idx;
+                continue;
+            }
+
             std::string rhs = other_base.empty() ?
                 other_idx : other_base + " + " + other_idx;
             acc.field_name = candidate.base_array_text;
@@ -371,54 +501,242 @@ static void resolveCrossPointerComparisons(FunctionAnalysis &analysis,
     }
 }
 
-// Step 5. An offset is source text snapshotted at collect time and pasted
-// back out. If it names another pointer that is also being rewritten, that
-// text describes a variable which will not exist, so this pointer has to be
-// dropped rather than emitted against a stale name.
+// The pointer `candidate`'s base is derived from, if that pointer is also
+// being transformed. Null otherwise.
+//
+// Resolve the source from the base *expression*, not from its spelling.
+// `base_array` is the node the base was extracted from — for `T *p = q + 1`
+// the DeclRefExpr for q — so the decl is already in hand. Matching
+// `base_array_text` against pointer names instead would pick whichever
+// same-named pointer the map yields first, which for two `q`s in nested or
+// sibling scopes is the wrong one: p would inherit an index belonging to a
+// different variable, or one whose block has already closed.
+//
+// This is not a widening. An explicit cast in the base (`(int *)q + 1`) is
+// rejected by referencedVar, exactly as its spelling failed the name
+// comparison; and base_array is non-null whenever base_array_text is, since
+// every write sets both.
+static const VarDecl *inheritanceSourceFor(const PointerCandidate &candidate,
+                                           const VarDecl *Self,
+                                           const TransformModeMap &modes) {
+    if (!candidate.base_array)
+        return nullptr;
+    const VarDecl *Src = referencedVar(candidate.base_array);
+    if (!Src || Src == Self || !Src->getType()->isPointerType() ||
+        !modes.count(Src))
+        return nullptr;
+    return Src;
+}
+
+// Step 5. Index inheritance: `T *p = q + x;` where q is itself rewritten
+// as an index. p's position is q's position plus x, so p takes over q's
+// base and its initial index becomes `q_index_xj + (x)`.
+//
+// Which base p adopts depends on how q was rewritten: a collapsed q has
+// been deleted, so p must name whatever q indexed into; a frozen q is
+// still there and is its own base. Either way the offset carries q's
+// index, which is the whole point — reading `q + x` verbatim after q stops
+// moving would capture q's starting position rather than its current one.
+//
+// Re-validating p afterwards is sound here, unlike re-validating to
+// *decide* a mode: the candidate changed because this fixup changed it,
+// and p is now judged against its real base (`buf`, stable) instead of a
+// moving pointer, which is what lets it collapse at all.
+//
+// Returns the pointers that actually inherited — step 6 needs to know,
+// since inheriting is exactly what consumes the source's reference.
+std::set<const VarDecl *>
+FunctionAccessAnalyzer::inheritIndices(FunctionAnalysis &analysis,
+                                       TransformModeMap &modes,
+                                       ASTContext &Ctx) {
+    std::set<const VarDecl *> inherited;
+    for (auto &[PtrVar, accesses] : analysis.accesses) {
+        if (!modes.count(PtrVar))
+            continue;
+        auto &candidate = analysis.tracked_pointers[PtrVar];
+        if (candidate.base_array_text.empty())
+            continue;
+
+        const VarDecl *Src = inheritanceSourceFor(candidate, PtrVar, modes);
+        if (!Src)
+            continue;
+
+        // Only a collapsed source can be *inherited* from. A frozen
+        // source keeps its declaration and its value is its base — its
+        // position lives in its index — so `p1 = p0 + 1` read verbatim
+        // means base + 1 rather than base + p0_index_xj + 1, placing
+        // p1 wherever p0 started instead of where it had reached.
+        //
+        // Such a source is materialized instead: its reference in the
+        // initializer becomes `(p0 + p0_index_xj)`, which is what
+        // every other context reading a frozen pointer's value already
+        // does — call arguments via PassedToFunc, comparisons via
+        // ComparisonExpr, returns via ReturnPtr. This position is the
+        // odd one out only because the reference was suppressed as
+        // NoRewrite, on the assumption that the enclosing declaration
+        // is rewritten wholesale; true of a collapsed source, false of
+        // a frozen one. Both pointers then transform independently:
+        // there is no index to inherit, because the owner starts
+        // wherever that materialized expression points.
+        if (modes.at(Src) != TransformMode::Collapse) {
+            // The owner must not collapse onto the source: the source
+            // is frozen but still moves *logically*, so substituting
+            // its name at each access would read a position that
+            // drifts. Force the handle and re-judge. The source's
+            // reference in this initializer is materialized by step 6,
+            // which covers every reference no wholesale rewrite is
+            // going to consume.
+            candidate.collapse_ineligible = true;
+            revalidateAfterFixup(PtrVar, candidate, accesses, modes, Ctx);
+            continue;
+        }
+
+        const std::string src_index = indexNameFor(Src);
+        auto &src_cand = analysis.tracked_pointers[Src];
+
+        bool changed = false;
+        for (auto &acc : accesses) {
+            switch (acc.kind) {
+            case PointerAccessKind::InitArray:
+            case PointerAccessKind::AssignArray:
+                // `p = q` — p starts exactly where q is.
+                acc.kind = (acc.kind == PointerAccessKind::InitArray)
+                               ? PointerAccessKind::InitArrayOffset
+                               : PointerAccessKind::AssignArrayOffset;
+                acc.offset_text = src_index;
+                changed = true;
+                break;
+            case PointerAccessKind::InitArrayOffset:
+            case PointerAccessKind::AssignArrayOffset:
+                acc.offset_text = src_index + " + (" + acc.offset_text + ")";
+                changed = true;
+                break;
+            default:
+                break;
+            }
+        }
+        if (!changed)
+            continue;
+
+        candidate.base_array_text = src_cand.base_array_text;
+        candidate.base_array = src_cand.base_array;
+
+        if (revalidateAfterFixup(PtrVar, candidate, accesses, modes, Ctx))
+            inherited.insert(PtrVar);
+    }
+    return inherited;
+}
+
+// Step 6. Materialize every reference that no wholesale rewrite is going
+// to consume.
+//
+// A reference is suppressed as NoRewrite on the assumption that the
+// pointer owning the enclosing declaration replaces that declaration
+// outright, which happens exactly when the owner inherits this pointer's
+// index. Suppression is only about edit overlap: an inner replacement
+// inside text that is itself being replaced would be dropped by
+// applyEdits, taking the wholesale rewrite with it.
+//
+// When the owner does not inherit, the declaration survives and the
+// reference has to say what it always meant — the pointer's value,
+// `(base + index)`. Materializing is always sound, for a collapsed pointer
+// as much as a frozen one. The only reason this used to drop the pointer
+// instead is that MaterializeUse did not exist yet; dropping cost every
+// second link of a derivation chain its rewrite.
+static void materializeSuppressedRefs(const FunctionDecl *FD,
+                                      FunctionAnalysis &analysis,
+                                      TransformModeMap &modes,
+                                      const std::set<const VarDecl *> &inherited) {
+    for (auto &[PtrVar, accesses] : analysis.accesses) {
+        if (!modes.count(PtrVar))
+            continue;
+        for (auto &acc : accesses) {
+            if (acc.kind != PointerAccessKind::NoRewrite)
+                continue;
+
+            // The owner travels on the record, so both questions —
+            // did it inherit, and which DeclStmt is it in — are
+            // answered without searching by name.
+            const VarDecl *Owner = acc.owner_ptr;
+            if (Owner && inherited.count(Owner))
+                continue;
+
+            // A collapsed pointer sharing a DeclStmt with its owner is
+            // the one case materialization cannot serve: its index is
+            // declared *after* the whole statement (the initializer
+            // may depend on names bound within it, so it cannot move),
+            // and the owner's initializer would reach it too early. A
+            // frozen pointer's index now precedes the statement, so it
+            // is fine.
+            const DeclStmt *OwnDS =
+                Owner ? findDeclStmtForVar(Owner, FD->getBody()) : nullptr;
+            const DeclStmt *SelfDS = findDeclStmtForVar(PtrVar, FD->getBody());
+            if (OwnDS && OwnDS == SelfDS &&
+                modes.at(PtrVar) == TransformMode::Collapse) {
+                modes.erase(PtrVar);
+                break;
+            }
+
+            acc.kind = PointerAccessKind::MaterializeUse;
+        }
+    }
+}
+
+// The reference in `acc`'s offset text that the rewrite would invalidate,
+// or null when the offset is safe to paste back out.
+//
+// Only the *offset* is pasted, so only the offset is checked.
+// `offset_expr` is the node the text came from, which is the whole
+// question: which expression to look at is a property of the access,
+// not of the pointer, and reconstructing it from the pointer got both
+// available answers wrong. Checking the enclosing initializer instead
+// also swept in the base, whose reference index inheritance already
+// handles — the false positives that produced were then suppressed by
+// an exemption that trusted an inner MaterializeUse rewrite to survive
+// a wholesale replacement of the text containing it. It does not:
+// applyEdits drops the overlapping inner edit. Narrowing to the offset
+// retires that exemption and the `inherited` one together.
+//
+// A null offset_expr means the text was synthesized, not copied — the
+// inheritance fixup's `q_index_xj + (...)`, which names an index
+// variable and cannot go stale. Nothing to check.
+static const DeclRefExpr *staleOffsetRefIn(const PointerAccess &acc,
+                                           const VarDecl *Self,
+                                           const TransformModeMap &modes) {
+    if (acc.kind != PointerAccessKind::InitArrayOffset &&
+        acc.kind != PointerAccessKind::AssignAddrOf &&
+        acc.kind != PointerAccessKind::AssignArrayOffset)
+        return nullptr;
+    if (!acc.offset_expr)
+        return nullptr;
+    return findRefIf(acc.offset_expr, [&](const Decl *D) {
+        const auto *VD = dyn_cast<VarDecl>(D);
+        return VD && VD != Self && modes.count(VD);
+    });
+}
+
+// Step 7. Reject pointers whose init/assign offset names another pointer
+// that is also being transformed.
+//
+// The offset is source text snapshotted at collect time and pasted back
+// out at edit time, so a name in it that the rewrite invalidates is pasted
+// stale — and a collapsed pointer's declaration is deleted outright,
+// leaving text that names nothing. The pointer is dropped rather than
+// rewritten wrong.
 void FunctionAccessAnalyzer::rejectStaleOffsets(FunctionAnalysis &analysis,
                                                 TransformModeMap &modes,
                                                 ASTContext &Ctx) {
-    for (auto &pair : analysis.accesses) {
-        const VarDecl *PtrVar = pair.first;
-        if (modes.find(PtrVar) == modes.end())
+    for (auto &[PtrVar, accesses] : analysis.accesses) {
+        if (!modes.count(PtrVar))
             continue;
-        for (const auto &acc : pair.second) {
-            if (acc.kind != PointerAccessKind::InitArrayOffset &&
-                acc.kind != PointerAccessKind::AssignAddrOf &&
-                acc.kind != PointerAccessKind::AssignArrayOffset)
-                continue;
-            // Check if any other transformed pointer appears in the
-            // init expression's subtree
-            const Stmt *InitStmt = acc.enclosing_stmt;
-            if (!InitStmt) {
-                // For declarations, use the VarDecl's init
-                if (PtrVar->hasInit())
-                    InitStmt = PtrVar->getInit();
-            }
-            if (!InitStmt && acc.expr) {
-                // For separate assignments (AssignAddrOf, AssignArrayOffset),
-                // walk up from the DeclRefExpr to find the BinaryOperator
-                // and check its RHS for references to other transformed ptrs
-                const Stmt *P = skipTransparentParents(acc.expr, Ctx);
-                if (const BinaryOperator *BO = dyn_cast_or_null<BinaryOperator>(P))
-                    InitStmt = BO->getRHS();
-            }
-            if (!InitStmt) continue;
-            bool has_conflict = false;
-            // Walk the init to find DeclRefExprs to other transformed pointers
-            std::function<void(const Stmt *)> checkRefs = [&](const Stmt *S) {
-                if (has_conflict || !S) return;
-                if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
-                    if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                        if (VD != PtrVar && modes.count(VD))
-                            has_conflict = true;
-                    }
-                }
-                for (const Stmt *Child : S->children())
-                    checkRefs(Child);
-            };
-            checkRefs(InitStmt);
-            if (has_conflict) {
+        for (const auto &acc : accesses) {
+            if (const DeclRefExpr *Conflict =
+                    staleOffsetRefIn(acc, PtrVar, modes)) {
+                logFailedPointer(PtrVar, Ctx,
+                                 "offset names '" +
+                                     Conflict->getDecl()->getNameAsString() +
+                                     "', which is also being rewritten, so "
+                                     "the offset text would go stale");
                 modes.erase(PtrVar);
                 break;
             }
@@ -426,11 +744,12 @@ void FunctionAccessAnalyzer::rejectStaleOffsets(FunctionAnalysis &analysis,
     }
 }
 
-// Step 6. Both groups consult the verdict map: transformPointerVar no
-// longer re-validates — the mode decided in step 3 is carried to it — so
-// this is the only place a pointer that failed, or that a later step
-// dropped, is filtered out. That also makes the two groups interchangeable
-// at rewrite time, so the order is one flat list again.
+// Step 8. Rewrite the pointers in `order`, skipping those that did not
+// survive into `modes`.
+//
+// Absence from `modes` covers every way a pointer can have been dropped —
+// rejection at step 3, re-judging during inheritance, and stale-offset
+// detection alike — so this one guard is the whole eligibility test.
 void FunctionAccessAnalyzer::emitPointerRewrites(
     const FunctionDecl *FD, FunctionAnalysis &analysis,
     const TransformModeMap &modes, const std::vector<const VarDecl *> &order,
@@ -442,36 +761,6 @@ void FunctionAccessAnalyzer::emitPointerRewrites(
         auto &access_list = analysis.accesses[PtrVar];
         auto &candidate = analysis.tracked_pointers[PtrVar];
         transformPointerVar(FD, PtrVar, candidate, access_list, Ctx, mit->second);
-    }
-}
-
-void FunctionAccessAnalyzer::transformFunction(const FunctionDecl *FD,
-                                               FunctionAnalysis &analysis,
-                                               ASTContext &Ctx) {
-    assignIndexNamesInSourceOrder(analysis, Ctx);
-
-    std::vector<const VarDecl *> order = pointersInEditOrder(FD, analysis);
-
-    TransformModeMap modes = decideTransformModes(analysis, Ctx);
-
-    resolveCrossPointerComparisons(analysis, modes, Ctx);
-
-    rejectStaleOffsets(analysis, modes, Ctx);
-
-    emitPointerRewrites(FD, analysis, modes, order, Ctx);
-}
-
-void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
-    for (auto &[FDCanon, analysis] : g_function_analyses) {
-        const FunctionDecl *FD = analysis.FD;
-        if (!FD || !FD->hasBody())
-            continue;
-
-        // Overlap tracking is per function: the ranges recorded while
-        // rewriting one function say nothing about the next.
-        m_edited_ranges.clear();
-
-        transformFunction(FD, analysis, Ctx);
     }
 }
 
@@ -518,6 +807,8 @@ void FunctionAccessAnalyzer::printAccesses(const VarDecl *VD,
             llvm::outs() << " offset=" << access.offset_text;
         if (!access.field_name.empty())
             llvm::outs() << " field=" << access.field_name;
+        if (access.owner_ptr)
+            llvm::outs() << " owner=" << access.owner_ptr->getNameAsString();
         if (!access.subscript_text.empty())
             llvm::outs() << " subscript=" << access.subscript_text;
         if (!access.operand_text.empty())

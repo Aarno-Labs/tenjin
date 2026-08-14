@@ -78,9 +78,40 @@ enum class PointerAccessKind {
     // separate offset kind because after the rewrite there is no offset
     // left to account for.
     //
-    // `p = p->next` needs no kind of its own — its RHS `p` is a separate
-    // DeclRefExpr that classifies independently as ArrowAccess.
+    // A tracked pointer inside the RHS is a separate DeclRefExpr, classified
+    // and rewritten on its own (MaterializeUse → `(q_base + q_index)`), so
+    // its position reaches the new pointer through the assigned value rather
+    // than through the index. `p = p->next` likewise needs no kind of its
+    // own — its RHS `p` is an ArrowAccess.
     AssignPtr,          // p = <expr>[ + n];         → (p = <expr>[ + n], p_index = 0);
+
+    // The pointer appears as the base of *another* tracked pointer's
+    // initializer (`T *p = q + 1;` seen from q's side). The enclosing
+    // declaration is rewritten as a whole by the other pointer, which
+    // inherits this one's index, so this occurrence needs no edit of its
+    // own — and must not be mistaken for an unrecognized shape, which
+    // would reject an otherwise perfectly transformable pointer.
+    NoRewrite,
+
+    // The pointer's *value* is read in a context that keeps the
+    // surrounding expression, so the reference is replaced in place by
+    // `(base + index)`. A frozen pointer's value is its base — its
+    // position lives in the index — so a bare reference would report
+    // where it started rather than where it has reached.
+    //
+    // Parenthesized, unlike PassedToFunc's bare `base + index`: an
+    // argument slot binds looser than anything this can appear inside,
+    // but `(char *)p` would otherwise become `(char *)p + index`, which
+    // scales the offset by the wrong type.
+    //
+    // Only produced after validation, by the materialization fixup in
+    // transformAllFunctions.
+    MaterializeUse,
+
+    // p - base, where base is this pointer's own base spelled exactly as
+    // captured. The distance from a pointer to its base is its index, so
+    // the whole subtraction collapses to p_index.
+    PtrDiffBase,
 
     // --- Pointer arithmetic on the pointer itself -------------------------
     Increment,          // p++ / ++p                 → p_index++ / ++p_index
@@ -191,6 +222,31 @@ struct PointerAccess {
     std::string field_name;        // ArrowAccess / ArrowWrite
     std::string subscript_text;    // Subscript / SubscriptWrite
     std::string operand_text;      // PlusAssign / MinusAssign / comparison RHS / wrapper extra args
+
+    // NoRewrite / MaterializeUse: the pointer whose declaration encloses
+    // this reference — the `p` in `T *p = q + 1;` recorded on q's access.
+    // A decl and not a name: two same-named pointers in nested or sibling
+    // scopes are distinct owners, and a name comparison picks whichever
+    // the map happens to yield first. That is the same distinction
+    // assignIndexNames exists to make, on the other side of it.
+    const VarDecl *owner_ptr = nullptr;
+
+    // The expression `offset_text` was snapshotted from — the other half of
+    // the same pairing `base_array` makes with `base_array_text`. Null when
+    // the text is synthesized rather than copied: the inheritance fixup
+    // builds `q_index_xj + (...)`, which names an index variable and
+    // corresponds to no node.
+    //
+    // `offset_text` is pasted verbatim into the output, so whether the
+    // rewrite invalidates it is a question about the nodes it came from,
+    // not about its spelling. Anything that has to inspect the offset —
+    // init-conflict detection is the one caller today — resolves it here
+    // rather than guessing which expression the access refers to.
+    //
+    // Note the fields above are set positionally by aggregate
+    // initialization at ~40 sites; this one and owner_ptr are set by name,
+    // which is why they come last.
+    const Expr *offset_expr = nullptr;
 };
 
 // ============================================================================
@@ -399,6 +455,15 @@ inline const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx) {
 // position rewrites at the variable's declaration line.
 const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody);
 
+// The first DeclRefExpr in `S`'s subtree whose referenced Decl satisfies
+// `pred`, or null if there is none. Pre-order, and stops at the first hit.
+//
+// Both callers are asking the same question of a pasted-through expression:
+// does it name something this rewrite is about to invalidate? Returning the
+// reference rather than a bool lets them name the offender in the diagnostic.
+const DeclRefExpr *findRefIf(const Stmt *S,
+                             llvm::function_ref<bool(const Decl *)> pred);
+
 // The ForStmt whose init clause is `DS`, or null when `DS` is an ordinary
 // statement-level declaration.
 //
@@ -432,10 +497,12 @@ const char *pointerAccessKindToString(PointerAccessKind kind);
 // Every rewritten pointer gets a companion index variable. The name is
 // assigned once, up front, rather than derived at each use site, because
 // an index does not always share its pointer's scope: a pointer declared
-// in a multi-declarator for-init has its index placed before the whole
-// loop, where it outlives the pointer. Two same-named pointers in sibling
-// loops would then put two identically-named indices in one block — a
-// redefinition, or worse a silent resolution to the wrong one.
+// in a for-init has its index placed before the whole loop, where it
+// outlives the pointer. That covers a frozen pointer in any for-init and
+// a collapsed one in a multi-declarator for-init. Two same-named pointers
+// in sibling loops, or in different scopes, would then put two
+// identically-named indices in one block — a redefinition, or worse a
+// silent resolution to the wrong one.
 //
 // assignIndexNames() takes one function's pointers in source order and
 // hands out `p_index_xj`, then `p_index_xj_1`, `p_index_xj_2`, ... on

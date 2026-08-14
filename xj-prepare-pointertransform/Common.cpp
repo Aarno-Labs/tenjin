@@ -65,6 +65,23 @@ const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody) {
     return finder.Found;
 }
 
+// Plain recursion rather than a RecursiveASTVisitor: the callers hand in a
+// bare subexpression, not a whole body, and want to stop at the first hit.
+const DeclRefExpr *findRefIf(const Stmt *S,
+                             llvm::function_ref<bool(const Decl *)> pred) {
+    if (!S)
+        return nullptr;
+    if (const auto *DRE = dyn_cast<DeclRefExpr>(S)) {
+        if (pred(DRE->getDecl()))
+            return DRE;
+    }
+    for (const Stmt *Child : S->children()) {
+        if (const DeclRefExpr *Hit = findRefIf(Child, pred))
+            return Hit;
+    }
+    return nullptr;
+}
+
 // The ForStmt `DS` is the init clause of, if any. Only the init clause
 // counts: a DeclStmt in the loop *body* is an ordinary statement with an
 // ordinary position after it.
@@ -152,6 +169,9 @@ const char *pointerAccessKindToString(PointerAccessKind kind) {
     case PointerAccessKind::AssignArray: return "AssignArray";
     case PointerAccessKind::AssignArrayOffset: return "AssignArrayOffset";
     case PointerAccessKind::AssignPtr: return "AssignPtr";
+    case PointerAccessKind::NoRewrite: return "NoRewrite";
+    case PointerAccessKind::MaterializeUse: return "MaterializeUse";
+    case PointerAccessKind::PtrDiffBase: return "PtrDiffBase";
     case PointerAccessKind::Increment: return "Increment";
     case PointerAccessKind::Decrement: return "Decrement";
     case PointerAccessKind::PlusAssign: return "PlusAssign";
