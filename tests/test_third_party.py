@@ -916,7 +916,6 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 110 s
-@pytest.mark.skip(reason="needs updated clang-refold")
 def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     """Translate Megalania's compressor and require it to behave exactly as the C
     build does: byte-identical compressed output on several inputs, and matching
@@ -1166,9 +1165,6 @@ def test_silentbicycle__guff(tenjin_fixtures: TenjinFixtures):
         "https://github.com/silentbicycle/guff.git", "a6f11ad8973e83dcb9650c256cdee3caf87a12ca"
     )
     translation_preparation.copy_codebase(codebase, tmp_codebase)
-
-    # temporary hack
-    tenjin_fixtures.monkeypatch.setenv("XJ_EXTRA_PREPARATION_PASSES", "0")
 
     translation.do_translate(
         translation_types.TranslationFlags.simple(
@@ -1609,9 +1605,6 @@ def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
         "https://github.com/xiph/speex.git", "05895229896dc942d453446eba6f9f5ddcf95422"
     )
     translation_preparation.copy_codebase(codebase, tmp_codebase)
-
-    # temporary hack
-    tenjin_fixtures.monkeypatch.setenv("XJ_EXTRA_PREPARATION_PASSES", "0")
 
     translation.do_translate(
         translation_types.TranslationFlags.simple(
