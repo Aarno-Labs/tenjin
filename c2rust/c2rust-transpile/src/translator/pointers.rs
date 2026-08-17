@@ -860,7 +860,6 @@ impl<'c> Translation<'c> {
         source_cty: CQualTypeId,
         target_cty: CQualTypeId,
         val: WithStmts<Box<Expr>>,
-        expr: Option<CExprId>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         if ctx.is_const {
             return Err(format_translation_err!(
@@ -891,7 +890,6 @@ impl<'c> Translation<'c> {
                         ctx,
                         CQualTypeId::new(size_type_id),
                         enum_decl_id,
-                        expr,
                         val,
                     )
                 })
