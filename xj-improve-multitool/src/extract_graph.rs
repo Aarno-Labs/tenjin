@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use rustc_hir::{
-    self as hir, ForeignItem, HirId, Item, ItemKind,
+    self as hir, ForeignItem, HirId, ImplItem, ImplItemKind, Item, ItemKind,
     def::Res,
     def_id::DefId,
     intravisit::{self, Visitor},
@@ -230,6 +230,25 @@ impl<'c> Visitor<'c> for GraphExtractionVisitor<'c> {
         self.scope.push(item.owner_id);
         intravisit::walk_foreign_item(self, item);
         self.scope.pop();
+    }
+
+    fn visit_impl_item(&mut self, item: &'c ImplItem<'c>) -> Self::Result {
+        if matches!(item.kind, ImplItemKind::Const(..)) {
+            // Type-relative paths such as `Type::CONSTANT` are not resolved by the
+            // HIR path visitor below, so we cannot reliably discover which associated
+            // constants are live. Conservatively retain impls containing constants.
+            let impl_owner = self
+                .scope
+                .last()
+                .expect("an impl item should be visited within its impl");
+            self.graf.update_edge(
+                GNode::VirtualRoot,
+                GNode::Def(impl_owner.to_def_id()),
+                GEdge::Mentions,
+            );
+        }
+
+        intravisit::walk_impl_item(self, item)
     }
 
     fn visit_path(&mut self, path: &hir::Path<'c>, _id: HirId) -> Self::Result {

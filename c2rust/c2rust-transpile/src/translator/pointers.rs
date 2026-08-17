@@ -446,21 +446,59 @@ impl<'c> Translation<'c> {
                 ctx.used().decay_ref()
             };
             let pointer_rs = self.convert_expr(pointer_ctx, pointer_id, None)?;
-            // `convert_pointer_offset` performs the final usize/isize conversion.
-            // Preserve the source expression here so it does not acquire two casts.
-            let offset_rs = self.convert_expr(ctx.used(), offset_id, None)?;
+            let offset_cty = self.ast_context[offset_id]
+                .kind
+                .get_qual_type()
+                .ok_or_else(|| format_err!("offset_id bad type"))?;
+            let offset_is_enum = matches!(
+                self.ast_context.resolve_type(offset_cty.ctype).kind,
+                CTypeKind::Enum(_)
+            );
+            let offset_rs = if offset_is_enum {
+                // Enums are represented as newtypes, so preserve their C type long enough for
+                // `convert_cast_from_enum` to extract the inner integer before casting it.
+                let offset_type = if can_subscript {
+                    CTypeKind::Size
+                } else {
+                    CTypeKind::SSize
+                };
+                let offset_type_id = self.ast_context.type_for_kind(&offset_type);
+                self.convert_expr_with_cast(
+                    ctx.used(),
+                    CQualTypeId::new(offset_type_id),
+                    offset_id,
+                    &None,
+                )?
+            } else {
+                // `convert_pointer_offset` performs the final usize/isize conversion.
+                self.convert_expr(ctx.used(), offset_id, None)?
+            };
 
             let mut val = pointer_rs
                 .zip(offset_rs)
                 .and_then(|(pointer_rs, offset_rs)| {
-                    self.convert_pointer_offset(
-                        Some(pointer_id),
-                        pointer_rs,
-                        offset_rs,
-                        pointee_type_id.ctype,
-                        false,
-                        deref,
-                    )
+                    if offset_is_enum {
+                        if can_subscript {
+                            self.make_pointer_subscript(pointer_rs, offset_rs, deref)
+                        } else {
+                            self.make_pointer_offset(
+                                pointer_rs,
+                                offset_rs,
+                                pointee_type_id.ctype,
+                                false,
+                                deref,
+                            )
+                        }
+                    } else {
+                        self.convert_pointer_offset(
+                            Some(pointer_id),
+                            pointer_rs,
+                            offset_rs,
+                            pointee_type_id.ctype,
+                            false,
+                            deref,
+                        )
+                    }
                 });
 
             if lrvalue.is_rvalue() {
@@ -497,16 +535,7 @@ impl<'c> Translation<'c> {
     ) -> WithStmts<Box<Expr>> {
         if !neg && c_ptr.is_some_and(|ptr_id| self.can_subscript(ptr_id)) {
             let subscript = cast_int(offset, "usize", false);
-            let overall = if deref {
-                // ptr[idx]
-                mk().index_expr(ptr, subscript)
-            } else {
-                // XREF:guided_subscript_noderef
-                // &ptr[idx..]
-                mk().borrow_expr(mk().index_expr(ptr, mk().range_expr(Some(subscript), None)))
-            };
-
-            return WithStmts::new_val(overall);
+            return self.make_pointer_subscript(ptr, subscript, deref);
         }
 
         self.make_pointer_offset(
@@ -516,6 +545,25 @@ impl<'c> Translation<'c> {
             neg,
             deref,
         )
+    }
+
+    /// Creates a slice indexing expression. Assumes that `subscript` is of type `usize`.
+    fn make_pointer_subscript(
+        &self,
+        ptr: Box<Expr>,
+        subscript: Box<Expr>,
+        deref: bool,
+    ) -> WithStmts<Box<Expr>> {
+        let overall = if deref {
+            // ptr[idx]
+            mk().index_expr(ptr, subscript)
+        } else {
+            // XREF:guided_subscript_noderef
+            // &ptr[idx..]
+            mk().borrow_expr(mk().index_expr(ptr, mk().range_expr(Some(subscript), None)))
+        };
+
+        WithStmts::new_val(overall)
     }
 
     /// Creates a pointer offset expression. Assumes that `offset_rs` is of type `isize`.
@@ -812,7 +860,6 @@ impl<'c> Translation<'c> {
         source_cty: CQualTypeId,
         target_cty: CQualTypeId,
         val: WithStmts<Box<Expr>>,
-        expr: Option<CExprId>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         if ctx.is_const {
             return Err(format_translation_err!(
@@ -843,7 +890,6 @@ impl<'c> Translation<'c> {
                         ctx,
                         CQualTypeId::new(size_type_id),
                         enum_decl_id,
-                        expr,
                         val,
                     )
                 })

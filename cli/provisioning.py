@@ -11,6 +11,7 @@ import json
 import enum
 import sys
 import textwrap
+import threading
 import zipfile
 
 from packaging.version import Version
@@ -40,6 +41,10 @@ class TrackingWhatWeHave:
                 self._have = json.load(f)
         except OSError:
             self._have = {}
+
+        # A recursive lock ensures that accidental recursive provisioning
+        # gets an exception under our control rather than a deadlock.
+        self.mutex = threading.RLock()
 
     def save(self):
         with open(Path(self.localdir, "config.10j-HAVE.json"), "w", encoding="utf-8") as f:
@@ -225,46 +230,49 @@ def provision_desires(wanted: str):
     if wanted == "uv":
         return
     assert wanted in "all llvm ocaml rust".split()
-    assert HAVE.provisioning_depth == 0, "Re-provisioning loop detected!"
-    HAVE.provisioning_depth += 1
 
-    # Unlike the other stuff, we won't provision rustup ourselves,
-    # so if it's not available, we should inform the user ASAP.
-    if wanted in ("all", "rust"):
-        require_rustup()
+    with HAVE.mutex:
+        # This check guards against accidental recursive provisioning.
+        assert HAVE.provisioning_depth == 0, "Re-provisioning loop detected!"
+        HAVE.provisioning_depth += 1
 
-    # First time install?
-    if wanted == "all" and HAVE.query("10j-reference-c2rust-tag") is None:
+        # Unlike the other stuff, we won't provision rustup ourselves,
+        # so if it's not available, we should inform the user ASAP.
+        if wanted in ("all", "rust"):
+            require_rustup()
 
-        def say(msg: str):
-            sez(msg, ctx="(overall-provisioning) ")
+        # First time install?
+        if wanted == "all" and HAVE.query("10j-reference-c2rust-tag") is None:
 
-        say(f"Provisioning local directory {HAVE.localdir}...")
-        say("This involves downloading and extracting a few hundred megs of tarballs:")
-        say("    Clang+LLVM, a sysroot, and misc build tools like CMake.")
-        say("We'll also install Rust and OCaml, which will take a few minutes...")
+            def say(msg: str):
+                sez(msg, ctx="(overall-provisioning) ")
 
-    # We get these unconditionally, because both Rust and OCaml (and/or the
-    # projects in those languages) end up needing them.
-    want_10j_deps()
-    want_10j_llvm()
-    want_cmake()
-    want_10j_more_deps()
-    want_10j_ast_grep()
-    want_10j_crat()
+            say(f"Provisioning local directory {HAVE.localdir}...")
+            say("This involves downloading and extracting a few hundred megs of tarballs:")
+            say("    Clang+LLVM, a sysroot, and misc build tools like CMake.")
+            say("We'll also install Rust and OCaml, which will take a few minutes...")
 
-    if wanted in ("all", "rust"):
-        want_10j_rust_toolchains()
-        want_10j_cargo_nextest()
+        # We get these unconditionally, because both Rust and OCaml (and/or the
+        # projects in those languages) end up needing them.
+        want_10j_deps()
+        want_10j_llvm()
+        want_cmake()
+        want_10j_more_deps()
+        want_10j_ast_grep()
+        want_10j_crat()
 
-    if wanted in ("all", "ocaml"):
-        want_dune()
-        want_codehawk_c()
+        if wanted in ("all", "rust"):
+            want_10j_rust_toolchains()
+            want_10j_cargo_nextest()
 
-    if wanted == "all":
-        want_10j_reference_c2rust_tag()
+        if wanted in ("all", "ocaml"):
+            want_dune()
+            want_codehawk_c()
 
-    HAVE.provisioning_depth -= 1
+        if wanted == "all":
+            want_10j_reference_c2rust_tag()
+
+        HAVE.provisioning_depth -= 1
 
 
 def require_rustup():

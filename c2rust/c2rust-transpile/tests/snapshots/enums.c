@@ -1,6 +1,13 @@
 typedef enum { Foo0, Foo1, Foo2, Foo3 } Foo;
 enum Bar { BarN1 = -1, Bar0, Bar1, Bar2, Bar3 };
 
+typedef int (*Callback)();
+Callback callbacks[1];
+
+int call_callback(Foo index) {
+    return (*callbacks[index])();
+}
+
 #define FOO1_MACRO Foo1
 #define BAR1_MACRO Bar1
 

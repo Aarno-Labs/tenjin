@@ -430,6 +430,13 @@ fn test_rename_unnamed() {
 }
 
 #[test]
+fn test_rename_unnamed_partial_eq() {
+    refactor("rename_unnamed")
+        .named("rename_unnamed_partial_eq.rs")
+        .test();
+}
+
+#[test]
 fn test_reorder_derives() {
     refactor("noop")
         .named("reorder_derives.rs")
