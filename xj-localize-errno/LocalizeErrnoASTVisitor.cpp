@@ -21,7 +21,6 @@ USRString DeclUSR(FunctionDecl *Decl)
   return Buf;
 }
 
-
 bool DerefOfCallExtern(Expr *E, std::string Name)
 {
   if (auto *Op = llvm::dyn_cast<UnaryOperator>(E))
@@ -98,26 +97,26 @@ void FunctionTransaction::CommitChanges(ASTContext *Context,
                                         std::map<USRString, std::string> &DestWrappers,
                                         std::map<USRString, clang::SourceLocation> &DestInsertLocations)
 {
-    DestChanges.insert(DestChanges.end(), Changes.begin(), Changes.end());
+  DestChanges.insert(DestChanges.end(), Changes.begin(), Changes.end());
 
-    for (auto Callee : NeededWrappers)
-    {
-      GenerateWrapper(Context, Callee, DestWrappedFunctions, DestWrappers, DestInsertLocations);
-    }
+  for (auto Callee : NeededWrappers)
+  {
+    GenerateWrapper(Context, Callee, DestWrappedFunctions, DestWrappers, DestInsertLocations);
+  }
 
-    if (auto Body = llvm::dyn_cast<CompoundStmt, Stmt>(Decl->getBody()))
-    {
-      AtomicChange InsertLocalDecl(Context->getSourceManager(), Decl->getBody()->getBeginLoc(), /* insert_after = */ false);
-      auto InsertLoc = Body->body_front()->getBeginLoc();
-      auto err = InsertLocalDecl.insert(Context->getSourceManager(), InsertLoc, "int " + LOCAL_ERRNO_NAME + ";\n");
-      assert(!err);
-      DestChanges.push_back(InsertLocalDecl);
-    }
-    else
-    {
-      Decl->getBody()->dump();
-      assert(0);
-    }
+  if (auto Body = llvm::dyn_cast<CompoundStmt, Stmt>(Decl->getBody()))
+  {
+    AtomicChange InsertLocalDecl(Context->getSourceManager(), Decl->getBody()->getBeginLoc(), /* insert_after = */ false);
+    auto InsertLoc = Body->body_front()->getBeginLoc();
+    auto err = InsertLocalDecl.insert(Context->getSourceManager(), InsertLoc, "int " + LOCAL_ERRNO_NAME + ";\n");
+    assert(!err);
+    DestChanges.push_back(InsertLocalDecl);
+  }
+  else
+  {
+    Decl->getBody()->dump();
+    assert(0);
+  }
 }
 
 std::string WrapperString(FunctionDecl *Decl)
@@ -169,7 +168,8 @@ std::string WrapperString(FunctionDecl *Decl)
 
 bool LocalizeErrnoASTVisitor::TraverseFunctionDecl(FunctionDecl *Decl)
 {
-  if (!Decl->hasBody()) {
+  if (!Decl->hasBody())
+  {
     return true;
   }
 
@@ -206,6 +206,12 @@ bool LocalizeErrnoASTVisitor::VisitExpr(clang::Expr *Expr)
 bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
 {
   assert(CurrentFunctionTxn.Decl != nullptr);
+  Decl *CallDecl = Call->getCalleeDecl();
+  if (!CallDecl)
+  {
+    return true;
+  }
+
   FunctionDecl *Callee = llvm::dyn_cast<FunctionDecl, Decl>(Call->getCalleeDecl());
   if (!Callee)
   {
@@ -242,7 +248,7 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
     llvm::errs() << "Error inserting call to wrapper: " << err << "\n";
     assert(false);
   }
-  
+
   // Stages the change in the current transaction
   CurrentFunctionTxn.Changes.push_back(CallWrapper);
   CurrentFunctionTxn.NeededWrappers.insert(Callee);
@@ -251,7 +257,7 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
 }
 
 void FunctionTransaction::GenerateWrapper(ASTContext *Context,
-                                          FunctionDecl *Callee, 
+                                          FunctionDecl *Callee,
                                           std::set<USRString> &Wrappers,
                                           std::map<USRString, std::string> &WrapperDefinitions,
                                           std::map<USRString, SourceLocation> &InsertLocations)
@@ -286,7 +292,7 @@ void LocalizeErrnoConsumer::HandleTranslationUnit(clang::ASTContext &Context)
   Visitor.InsertLocations.clear();
   Visitor.Wrappers.clear();
   Visitor.TraverseDecl(Context.getTranslationUnitDecl());
-  assert (Visitor.CurrentFunctionTxn.Empty());
+  assert(Visitor.CurrentFunctionTxn.Empty());
 
   std::map<SourceLocation, std::string> ChangesByLoc;
   if (!Visitor.WrapperDefinitions.empty())
