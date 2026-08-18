@@ -212,7 +212,7 @@ bool LocalizeErrnoASTVisitor::VisitCallExpr(CallExpr *Call)
     return true;
   }
 
-  FunctionDecl *Callee = llvm::dyn_cast<FunctionDecl, Decl>(Call->getCalleeDecl());
+  FunctionDecl *Callee = llvm::dyn_cast<FunctionDecl, Decl>(CallDecl);
   if (!Callee)
   {
     // This is OK, then we don't need to wrap this function
