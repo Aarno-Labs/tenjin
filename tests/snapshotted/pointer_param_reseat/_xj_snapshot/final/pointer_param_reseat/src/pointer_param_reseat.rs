@@ -9,7 +9,7 @@
 )]
 #![feature(raw_ref_op)]
 #[allow(unused_imports)]
-use ::pointer_param_reseat;
+use ::pointer_param_reseat as _;
 use ::std::process::ExitCode;
 #[no_mangle]
 pub unsafe extern "C" fn write_not_null(mut dest: *mut ::core::ffi::c_int) -> ::core::ffi::c_int {

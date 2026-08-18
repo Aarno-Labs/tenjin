@@ -10,7 +10,7 @@
 #![feature(extern_types, raw_ref_op)]
 use ::std::process::ExitCode;
 #[allow(unused_imports)]
-use ::assign;
+use ::assign as _;
 extern "C" {
     pub type _IO_wide_data;
     pub type _IO_codecvt;

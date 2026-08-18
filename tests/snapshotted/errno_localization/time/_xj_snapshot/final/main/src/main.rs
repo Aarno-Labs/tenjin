@@ -9,7 +9,7 @@
 )]
 #![feature(raw_ref_op)]
 #[allow(unused_imports)]
-use ::main;
+use ::main as _;
 use ::std::process::ExitCode;
 extern "C" {
 

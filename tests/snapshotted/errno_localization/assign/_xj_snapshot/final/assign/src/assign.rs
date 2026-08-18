@@ -9,7 +9,7 @@
 )]
 #![feature(extern_types, raw_ref_op)]
 #[allow(unused_imports)]
-use ::assign;
+use ::assign as _;
 use ::std::process::ExitCode;
 extern "C" {
     pub type _IO_wide_data;
@@ -105,8 +105,8 @@ unsafe fn main_0(
         println!("Error: [{:>}]", {
             xj_str_from_ptr(
                 ({
-                    let __lift_2_3602_0 = _xj_local_errno;
-                    _xj_wrap_strerror_xjtr_0(&mut _xj_local_errno, __lift_2_3602_0)
+                    let __lift_2_3607_0 = _xj_local_errno;
+                    _xj_wrap_strerror_xjtr_0(&mut _xj_local_errno, __lift_2_3607_0)
                 }) as *const core::ffi::c_char,
             )
         },);

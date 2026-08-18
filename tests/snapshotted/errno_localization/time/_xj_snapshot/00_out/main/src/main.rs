@@ -10,7 +10,7 @@
 #![feature(raw_ref_op)]
 use ::std::process::ExitCode;
 #[allow(unused_imports)]
-use ::main;
+use ::main as _;
 extern "C" {
     fn time(__timer: *mut time_t) -> time_t;
     fn __errno_location() -> *mut ::core::ffi::c_int;

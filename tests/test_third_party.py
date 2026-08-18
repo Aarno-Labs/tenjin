@@ -1091,6 +1091,61 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.slow  # expected runtime: 15 minutes
+def test_lemon_exe(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/tenjin-corpus/lemon-grove.git",
+        "54285f4d6d9129666e08d769eb9deee8210922ba",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase / "lemon",
+            resultsdir=tmp_resultsdir,
+            buildcmd="cc lemon.c -o lemon",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    help_output: bytes = hermetic.run(
+        ["target/debug/lemon", "-?"],
+        capture_output=True,
+        cwd=tmp_resultsdir / "final",
+    ).stderr
+
+    assert (
+        help_output
+        == b"""Command line syntax error: undefined option.
+target/debug/lemon -?
+             here --^
+Valid command line options for "target/debug/lemon" are:
+  -b           Print only the basis in report.
+  -c           Don't compress the action table.
+  -d<string>   Output directory.  Default '.'
+  -D<string>   Define an %ifdef macro.
+  -E           Print input file after preprocessing.
+  -f<string>   Ignored.  (Placeholder for -f compiler options.)
+  -g           Print grammar without actions.
+  -I<string>   Ignored.  (Placeholder for '-I' compiler options.)
+  -m           Output a makeheaders compatible file.
+  -l           Do not print #line statements.
+  -O<string>   Ignored.  (Placeholder for '-O' compiler options.)
+  -p           Show conflicts resolved by precedence rules
+  -q           (Quiet) Don't print the report file.
+  -r           Do not sort or renumber states
+  -s           Print parser stats to standard output.
+  -S           Generate the *.sql file describing the parser tables.
+  -x           Print the version number.
+  -T<string>   Specify a template file.
+  -W<string>   Ignored.  (Placeholder for '-W' compiler options.)
+"""
+    )
+
+
 @pytest.mark.slow  # expected runtime: 220 seconds
 def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir

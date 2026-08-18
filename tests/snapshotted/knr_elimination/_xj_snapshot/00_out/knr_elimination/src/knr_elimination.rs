@@ -9,7 +9,7 @@
 )]
 use ::std::process::ExitCode;
 #[allow(unused_imports)]
-use ::knr_elimination;
+use ::knr_elimination as _;
 extern "C" {
     fn printf(_: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
 }

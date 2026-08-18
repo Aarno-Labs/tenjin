@@ -8,7 +8,7 @@
     unused_mut
 )]
 #[allow(unused_imports)]
-use ::knr_elimination;
+use ::knr_elimination as _;
 use ::std::process::ExitCode;
 
 #[no_mangle]

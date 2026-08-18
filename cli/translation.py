@@ -500,7 +500,7 @@ def fixup_binary_crates_in_workspace(outdir: Path, workspace_cratename: str):
             f"use ::{member_cratename}::",
         ).replace(
             f"use ::{workspace_cratename};",
-            f"use ::{member_cratename};",
+            f"use ::{member_cratename} as _;",
         )
         rs_file.write_text(fixed_content, encoding="utf-8")
 

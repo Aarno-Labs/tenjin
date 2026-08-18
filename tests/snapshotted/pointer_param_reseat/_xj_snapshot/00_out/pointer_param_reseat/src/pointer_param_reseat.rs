@@ -10,7 +10,7 @@
 #![feature(raw_ref_op)]
 use ::std::process::ExitCode;
 #[allow(unused_imports)]
-use ::pointer_param_reseat;
+use ::pointer_param_reseat as _;
 #[no_mangle]
 pub unsafe extern "C" fn write_not_null(mut dest: *mut ::core::ffi::c_int) -> ::core::ffi::c_int {
     let mut buf: [::core::ffi::c_int; 4] = [0 as ::core::ffi::c_int; 4];
