@@ -1679,6 +1679,33 @@ def test_atomicobject__odo(tenjin_fixtures: TenjinFixtures):
     assert get_final_unsafe_fns_count(tmp_resultsdir) == 14
 
 
+@pytest.mark.slow
+def test_frobware__ts(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase = tenjin_fixtures.tmp_codebase
+    tmp_resultsdir = tenjin_fixtures.tmp_resultsdir
+
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/frobware/ts.git", "c8c816953039c15856b0e34dae3f3a16b17dc6c4"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            tenjin_fixtures.root,
+            tmp_codebase,
+            tmp_resultsdir,
+            buildcmd="make",
+        ),
+        guidance_path_or_literal="",
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 18
+
+
 @pytest.mark.slow  # expected runtime: 700 seconds (~12 minutes, up to the xfail below)
 def test_file_file(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
