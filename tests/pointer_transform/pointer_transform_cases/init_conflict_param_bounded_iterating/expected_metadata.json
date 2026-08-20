@@ -1,0 +1,26 @@
+{
+  "functions": {
+    "assign_form@init_conflict_param_bounded_iterating.c": {
+      "file": "init_conflict_param_bounded_iterating.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "init_form@init_conflict_param_bounded_iterating.c": {
+      "file": "init_conflict_param_bounded_iterating.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

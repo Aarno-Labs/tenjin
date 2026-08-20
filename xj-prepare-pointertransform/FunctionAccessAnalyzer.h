@@ -23,6 +23,43 @@
 // runs on this tool's output (valid, index-rewritten C) plus the
 // per-pointer metadata records.
 
+// How a pointer will be rewritten, decided by validatePointerCandidate.
+//
+//   Reject   — nothing about this pointer is rewritten.
+//   Collapse — the pointer variable is deleted and every access becomes
+//              `<base source text>[p_index]`. The base is a *syntactic*
+//              fact re-substituted at each access site, so it has to be
+//              textually valid and stable across the whole function.
+//
+// Two values today, so this is exactly the boolean the validator used to
+// return. It is an enum because the verdict is about to gain a third
+// answer, and a bool cannot carry one.
+enum class TransformMode { Reject, Collapse };
+
+// Pointers that will be transformed, and how.
+//
+// This is the single authority on both questions: membership means "will
+// be transformed", and the mapped value is how. Keeping the two together
+// is deliberate — a set of pointers riding alongside a separate map of
+// modes can fall out of step, and then a pointer dropped from one but
+// left in the other is rewritten after having been rejected.
+using TransformModeMap = std::map<const VarDecl *, TransformMode>;
+
+// The order pointers are rewritten in, split by whether their bound
+// comparison resolves against a parameter.
+//
+// Param-bounded pointers go first so that when two pointers' comparison
+// rewrites overlap, the param-bounded form wins — applyEdits drops the
+// later of two overlapping edits.
+//
+// The two groups differ only in when they are rewritten; both are filtered
+// through the verdict map alike. They stay separate structurally so the
+// ordering rule above has somewhere to live.
+struct EditOrder {
+    std::vector<const VarDecl *> param_bounded;
+    std::vector<const VarDecl *> rest;
+};
+
 class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
   public:
     explicit FunctionAccessAnalyzer(Rewriter &R);
@@ -60,11 +97,11 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
                        ASTContext &Ctx);
 
     // Defined in ValidationMethods.cpp.
-    bool validatePointerCandidate(const VarDecl *PtrVar,
-                                  PointerCandidate &candidate,
-                                  std::vector<PointerAccess> &accesses,
-                                  ASTContext &Ctx,
-                                  std::string &error);
+    TransformMode validatePointerCandidate(const VarDecl *PtrVar,
+                                           PointerCandidate &candidate,
+                                           std::vector<PointerAccess> &accesses,
+                                           ASTContext &Ctx,
+                                           std::string &error);
 
     // Defined in TransformationMethods.cpp.
     // generateTransformation: rewrite a single local pointer in place.
@@ -86,7 +123,31 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     void applyEdits(std::vector<Edit> &edits, SourceManager &SM);
 
     // ---- Cross-function transformation phase --------------------------
+    // transformAllFunctions walks every analyzed function; transformFunction
+    // runs the rewrite pipeline for one of them. The pipeline steps below
+    // are members because they need validatePointerCandidate or
+    // transformPointerVar; the remaining steps are file-static helpers in
+    // FunctionAccessAnalyzer.cpp.
     void transformAllFunctions(ASTContext &Ctx);
+    void transformFunction(const FunctionDecl *FD, FunctionAnalysis &analysis,
+                           ASTContext &Ctx);
+
+    // Judge every pointer, into the mode it will be rewritten in. Pointers
+    // that cannot be rewritten at all are simply absent from the map, so
+    // membership answers "will this be transformed" and the mapped value
+    // answers "how" — one container rather than a set and a mode that can
+    // fall out of step.
+    TransformModeMap decideTransformModes(FunctionAnalysis &analysis,
+                                          ASTContext &Ctx);
+
+    // Drop pointers whose pasted offset text the rewrite would invalidate.
+    void rejectStaleOffsets(FunctionAnalysis &analysis, TransformModeMap &modes,
+                            ASTContext &Ctx);
+
+    // Rewrite the pointers in `order` that survived into `modes`.
+    void emitPointerRewrites(const FunctionDecl *FD, FunctionAnalysis &analysis,
+                             const TransformModeMap &modes,
+                             const EditOrder &order, ASTContext &Ctx);
 
     // ---- Metadata export for xj-prepare-slicetransform ----------------
     // Look up (or create) the metadata record for FD; nullptr when a
