@@ -16,6 +16,19 @@ class InterceptedCommandInfo(TypedDict):
     output: str | None
 
 
+def is_preprocess_dev_null_probe(build_type: InterceptedBuildType, arguments: list[str]) -> bool:
+    """Return whether this is a C preprocessor feature-detection probe."""
+    return (
+        build_type == "cc"
+        and "-E" in arguments
+        and "/dev/null" in arguments
+        and any(
+            arg == "-x" and i + 1 < len(arguments) and arguments[i + 1] == "c"
+            for i, arg in enumerate(arguments)
+        )
+    )
+
+
 def is_executable_file(path: str) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
@@ -55,27 +68,28 @@ def intercept_exec(build_type: InterceptedBuildType, run_as: Path, args: list[st
         non_intercepted_command = resolve_sans_intercept(run_as.name)
         arguments = [non_intercepted_command.as_posix(), *args]
 
-    build_commands_dir = os.environ.get("BUILD_COMMANDS_DIRECTORY", "/tmp/build_commands")
-    # Ensure the build commands directory exists (concurrency-safe)
-    Path(build_commands_dir).mkdir(parents=True, exist_ok=True)
-    build_info: InterceptedCommandInfo = {
-        "type": build_type,
-        "directory": os.getcwd(),
-        "arguments": arguments,
-        "file": None,
-        "output": None,
-    }
-    build_json = json.dumps(build_info, indent=4)
+    if not is_preprocess_dev_null_probe(build_type, arguments):
+        build_commands_dir = os.environ.get("BUILD_COMMANDS_DIRECTORY", "/tmp/build_commands")
+        # Ensure the build commands directory exists (concurrency-safe)
+        Path(build_commands_dir).mkdir(parents=True, exist_ok=True)
+        build_info: InterceptedCommandInfo = {
+            "type": build_type,
+            "directory": os.getcwd(),
+            "arguments": arguments,
+            "file": None,
+            "output": None,
+        }
+        build_json = json.dumps(build_info, indent=4)
 
-    # Hash the contents of the JSON file and use that as the file name
-    # This is safe for concurrency, and guarantees that each unique
-    # compilation gets an output file
-    hm = hashlib.sha256()
-    hm.update(build_json.encode("utf-8"))
-    build_file_name = "%s.json" % hm.hexdigest()
-    build_file = os.path.join(build_commands_dir, build_file_name)
-    with open(build_file, "w", encoding="utf-8") as f:
-        f.write(build_json)
+        # Hash the contents of the JSON file and use that as the file name
+        # This is safe for concurrency, and guarantees that each unique
+        # compilation gets an output file
+        hm = hashlib.sha256()
+        hm.update(build_json.encode("utf-8"))
+        build_file_name = "%s.json" % hm.hexdigest()
+        build_file = os.path.join(build_commands_dir, build_file_name)
+        with open(build_file, "w", encoding="utf-8") as f:
+            f.write(build_json)
 
     script_dir = os.path.dirname(os.path.realpath(__file__))
     # The -B flag tells gcc/clang to look in the given directory

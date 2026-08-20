@@ -67,6 +67,8 @@ def convert_json_entries(
 ) -> list[InterceptedCommand]:
     entry_infos = []
     for entry in entries:
+        if intercept_exec.is_preprocess_dev_null_probe(entry["type"], entry["arguments"]):
+            continue
         entry_infos.append(convert_intercepted_entry(entry))
     return entry_infos
 
