@@ -23,8 +23,10 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
 
     // Split a pointer-valued right-hand side into a root and an offset and
     // record the result on `pa`. `Owner` is the pointer being assigned;
-    // `owner_is_declared_here` distinguishes an initializer, whose index
-    // declaration may have to be hoisted, from a plain assignment.
+    // `owner_is_declared_here` says its index declaration may have to be
+    // hoisted out of a for-init, which is the one thing left that can
+    // refuse the split — an offset cannot move to a position ahead of the
+    // names it reads.
     void splitAssignedValue(const Expr *RHS, PointerAccess &pa,
                             const VarDecl *Owner = nullptr,
                             bool owner_is_declared_here = false);
@@ -56,11 +58,6 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
 
     // True if `VD` is one of the pointers this collector tracks.
     bool isTracked(const Decl *D) const;
-
-    // True if `S` names a tracked pointer anywhere in its subtree. Text
-    // copied into an index declaration is copied verbatim, so it must not
-    // mention a name this pass is going to give a different meaning.
-    bool referencesTracked(const Stmt *S) const;
 
     // True if `S` names something `Owner`'s own for-init binds. Such an
     // index has to be declared before the whole loop, where those names do

@@ -14,21 +14,7 @@
 
 #include "FunctionAccessAnalyzer.h"
 
-// True if this access kind produces a source edit. The kinds that do not
-// are exempt from the macro check below — there is nothing for the
-// Rewriter to fail to write.
-static bool emitsEdit(PointerAccessKind kind) {
-    switch (kind) {
-    case PointerAccessKind::NullTest:
-    case PointerAccessKind::NoEdit:
-    case PointerAccessKind::PairwiseRoot:
-    case PointerAccessKind::AddressOf:
-    case PointerAccessKind::Unknown:
-        return false;
-    default:
-        return true;
-    }
-}
+#include "EditPlan.h"
 
 bool FunctionAccessAnalyzer::validatePointerCandidate(
     const VarDecl *PtrVar,
@@ -44,6 +30,12 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         error = "No accesses found";
         return false;
     }
+
+    // Whether a null test has to move is a property of the whole access
+    // list, not of the test — see nullLivesInIndex. Asked here, of the same
+    // function the planner asks, so the two cannot disagree about which
+    // tests need an editable range.
+    const bool null_in_index = nullLivesInIndex(accesses);
 
     for (const auto &access : accesses) {
         // &p means the pointer's storage is observable. A retained pointer
@@ -62,11 +54,41 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
                     access.loc.printToString(Ctx.getSourceManager());
             return false;
         }
+        // A pairwise root emits nothing *while its owner is rewritten*, and
+        // whether the owner is rewritten is what this pass is deciding. If
+        // it turns out not to be, the root is rebuilt like any other value
+        // read — a rewrite of the reference itself — so hold it to that
+        // standard now. The demotion happens once validation is over, with
+        // no second chance to refuse.
+        const Stmt *node;
+        if (access.kind == PointerAccessKind::PairwiseRoot)
+            node = access.expr;
+        else if (access.kind == PointerAccessKind::NullTest)
+            node = null_in_index ? nullTestNode(access) : nullptr;
+        else
+            node = editedNode(access, Ctx);
+        if (!node)
+            continue;  // this access legitimately rewrites nothing
+
         // The Rewriter cannot edit text inside a macro expansion, so an
         // access there would be left naming the pointer while its
         // siblings moved to the index form.
-        if (emitsEdit(access.kind) && access.loc.isMacroID()) {
+        if (access.loc.isMacroID()) {
             error = "Pointer used inside macro expansion";
+            return false;
+        }
+
+        // An access that needs a rewrite needs a span to put it in, and
+        // that span has to be addressable. Asking here — through the same
+        // function the planner asks later — is what lets the planner treat
+        // a missing extent as a bug rather than as a case to handle: by the
+        // time it runs, every access it sees is plannable.
+        FileID file;
+        unsigned begin = 0, end = 0;
+        if (!editRangeOf(node, Ctx, file, begin, end)) {
+            error = std::string("No editable range for a ") +
+                    pointerAccessKindToString(access.kind) + " at " +
+                    access.loc.printToString(Ctx.getSourceManager());
             return false;
         }
     }
@@ -89,10 +111,13 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         case PointerAccessKind::DerefPreInc:
         case PointerAccessKind::DerefPostDec:
         case PointerAccessKind::DerefPreDec:
+        case PointerAccessKind::AssignFromAllowedFunc:
             has_mutation = true;
             break;
         case PointerAccessKind::Init:
+        case PointerAccessKind::InitNull:
         case PointerAccessKind::Assign:
+        case PointerAccessKind::AssignNull:
             if (access.offset_text != "0")
                 has_offset_assignment = true;
             break;

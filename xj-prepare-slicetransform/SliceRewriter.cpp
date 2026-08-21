@@ -500,8 +500,9 @@ namespace xj
             lenRepl = "(" + slice + ".len - " +
                       std::to_string(S.lookback + S.lookahead) + ")";
 
-        // Moved-pointer facts from the metadata: which index variables exist,
-        // and which of them iterate over the removed base param.
+        // Moved-pointer facts from the metadata: which index variables
+        // exist, and which of them were proved to iterate over the base
+        // param this slice removes.
         struct RsPtr
         {
             const PtrIndexPointerRecord *rec;
@@ -516,10 +517,11 @@ namespace xj
             if (P.index_var.empty())
                 continue;
             all_index_vars.insert(P.index_var);
-            // Which of these index pointers walk the slice's own base is a
-            // resolved-base fact; the side-file no longer carries a base and
-            // matching spellings here would only re-invent the guess.
-            (void)base_name;
+            if (P.base_text == base_name)
+            {
+                rs_ptrs[P.index_var] = RsPtr{&P, false};
+                rs_index_vars.insert(P.index_var);
+            }
         }
 
         std::vector<std::pair<unsigned, unsigned>> edited;

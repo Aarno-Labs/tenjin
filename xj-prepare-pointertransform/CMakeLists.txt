@@ -12,6 +12,7 @@ add_executable(xj-prepare-pointertransform
     main.cpp
     Common.cpp
     PointerAccessCollector.cpp
+    EditPlan.cpp
     FunctionAccessAnalyzer.cpp
     ValidationMethods.cpp
     TransformationMethods.cpp
