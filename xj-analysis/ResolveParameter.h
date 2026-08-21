@@ -17,6 +17,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <optional>
@@ -36,8 +37,15 @@ namespace xj::analysis
   //
   //     p = t->storage;  use(p);  p = NULL;   /* no uses after */
   //
-  // resolves — every use agrees, and reconstruction deleting `p` also
-  // deletes the dead store.
+  // resolves — every use agrees, and the trailing store is dead.
+  //
+  // Excluding stores from the site set is only half of what makes that
+  // safe: a store the consumer cannot *delete* would have the base
+  // substituted into its left-hand side, turning a dead store to `p` into
+  // a live one to `t->storage`. So `xj-prepare-baserewrite` reconstructs
+  // only pointers whose every store is one it can delete — the left arm
+  // of the comma the pointer pass emits, which is the form that store
+  // arrives in by the time it gets there.
   struct SiteFact
   {
     const clang::DeclRefExpr *Use = nullptr;
@@ -90,7 +98,19 @@ namespace xj::analysis
 
     // When several candidates survive, the preferred one is param > local
     // > lvalue, then shortest path, then spelling, for determinism.
-    std::optional<Resolution> resolve(const clang::VarDecl *B) const;
+    std::optional<Resolution> resolve(const clang::VarDecl *B) const
+    {
+      return resolve(B, [](CellId) { return true; });
+    }
+
+    // The same, with the surviving candidates narrowed: `Accept` is
+    // consulted for every cell that agreed everywhere, before the
+    // preference order picks among them, and `std::nullopt` comes back if
+    // it rejects them all. `xj-prepare-baserewrite` uses this to avoid
+    // naming a pointer it is itself about to delete.
+    std::optional<Resolution>
+    resolve(const clang::VarDecl *B,
+            llvm::function_ref<bool(CellId)> Accept) const;
 
     // The unreduced form: `resolve` is exactly this folded by
     // intersection.

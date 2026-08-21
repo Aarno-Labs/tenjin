@@ -179,7 +179,8 @@ namespace xj::analysis
   }
 
   std::optional<Resolution>
-  ParameterResolver::resolve(const clang::VarDecl *B) const
+  ParameterResolver::resolve(const clang::VarDecl *B,
+                             llvm::function_ref<bool(CellId)> Accept) const
   {
     // `&p` reads the variable's *storage*, not its value, so a cursor whose
     // address is taken is not substitutable however well its value agrees:
@@ -219,6 +220,13 @@ namespace xj::analysis
                                   }),
                    Agreed.end());
     }
+
+    // Narrowing after the fold rather than at each site: `Accept` is a
+    // property of the cell, so filtering commutes with the intersection.
+    Agreed.erase(std::remove_if(Agreed.begin(), Agreed.end(),
+                                [&](CellId C)
+                                { return !Accept(C); }),
+                 Agreed.end());
 
     if (Count == 0 || Agreed.empty())
       return std::nullopt;

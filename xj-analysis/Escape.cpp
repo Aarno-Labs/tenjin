@@ -120,9 +120,11 @@ namespace xj::analysis
     const Cell &A = Cells.get(P);
     const Cell &B = Cells.get(Q);
 
+    // We are writing into cell P. Can this change the value stored in Q?
+    // Not if Q is out of reach (couldn't have reached P) and vice versa.
     if (A.Root != B.Root)
-      return !(isOutOfReach(P, Cells, Escapes) ||
-               isOutOfReach(Q, Cells, Escapes));
+      return (!isOutOfReach(P, Cells, Escapes) &&
+              !isOutOfReach(Q, Cells, Escapes));
 
     // Same root: walk the shared prefix.
     const unsigned N = std::min(A.Path.size(), B.Path.size());
