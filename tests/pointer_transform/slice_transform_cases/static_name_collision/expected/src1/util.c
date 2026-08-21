@@ -3,15 +3,16 @@
 
 #include <stddef.h>
 
-static int scale(const int *buf, int n) {
-    const int *p = buf;
-    int p_index_xj = 1;
+typedef struct { int *ptr; size_t len; } RustSlice_int;
+
+static int scale(RustSlice_int arr) {
+    int p_index_xj = 1 + 1;
     int s = 0;
-    while ((p + p_index_xj) < buf + n) {
-        s += p[p_index_xj - 1] + p[p_index_xj];
+    while (p_index_xj < arr.len) {
+        s += arr.ptr[p_index_xj - 1] + arr.ptr[p_index_xj];
         p_index_xj++;
     }
     return s;
 }
 
-int src1_scale(const int *buf, int n) { return scale(buf, n); }
+int src1_scale(const int *buf, int n) { return scale((RustSlice_int){buf - 1, n + 1}); }

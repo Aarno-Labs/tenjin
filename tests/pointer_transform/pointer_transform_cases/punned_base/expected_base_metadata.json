@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "checksum@punned_base.c": {
+      "file": "punned_base.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

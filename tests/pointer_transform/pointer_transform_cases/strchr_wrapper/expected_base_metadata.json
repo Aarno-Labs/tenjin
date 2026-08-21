@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "count_commas@strchr_wrapper.c": {
+      "file": "strchr_wrapper.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

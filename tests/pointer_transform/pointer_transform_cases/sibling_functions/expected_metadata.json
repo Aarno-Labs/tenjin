@@ -1,0 +1,46 @@
+{
+  "functions": {
+    "find_id@sibling_functions.c": {
+      "file": "sibling_functions.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 12,
+          "decl_line": 22,
+          "index_var": "end_index_xj",
+          "name": "end",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "decl_col": 12,
+          "decl_line": 20,
+          "index_var": "ptr_index_xj",
+          "name": "ptr",
+          "param_index": -1
+        }
+      ]
+    },
+    "scale_all@sibling_functions.c": {
+      "file": "sibling_functions.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 12,
+          "decl_line": 36,
+          "index_var": "last_index_xj",
+          "name": "last",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "decl_col": 12,
+          "decl_line": 34,
+          "index_var": "current_index_xj",
+          "name": "current",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

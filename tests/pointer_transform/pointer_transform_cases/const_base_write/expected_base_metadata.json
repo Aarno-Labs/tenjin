@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "patch@const_base_write.c": {
+      "file": "const_base_write.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "w_index_xj",
+          "name": "w",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

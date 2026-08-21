@@ -1,0 +1,38 @@
+{
+  "functions": {
+    "after_sep@search_other_region.c": {
+      "file": "search_other_region.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 17,
+          "decl_line": 20,
+          "index_var": "l_index_xj",
+          "name": "l",
+          "param_index": -1
+        }
+      ]
+    },
+    "after_sep_moved@search_other_region.c": {
+      "file": "search_other_region.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 17,
+          "decl_line": 40,
+          "index_var": "l_index_xj",
+          "name": "l",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "decl_col": 17,
+          "decl_line": 38,
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

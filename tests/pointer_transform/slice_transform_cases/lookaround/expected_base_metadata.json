@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "lookaround@lookaround.c": {
+      "file": "lookaround.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

@@ -1,37 +1,37 @@
 #include <stdio.h>
 
-static int *partition(int *lo, int *hi) {
-    int pivot = *hi;
-    int *i = lo;
+typedef struct { int *ptr; size_t len; } RustSlice_int;
+
+int partition(RustSlice_int arr) {
+    int pivot = arr.ptr[(arr.len - 1)];
     int i_index_xj = 0;
-    int *j = lo;
     int j_index_xj = 0;
-    while ((j + j_index_xj) < hi) {
-        if (j[j_index_xj] < pivot) {
-            int t = i[i_index_xj];
-            i[i_index_xj] = j[j_index_xj];
-            j[j_index_xj] = t;
+    while (j_index_xj < arr.len - 1) {
+        if (arr.ptr[j_index_xj] < pivot) {
+            int t = arr.ptr[i_index_xj];
+            arr.ptr[i_index_xj] = arr.ptr[j_index_xj];
+            arr.ptr[j_index_xj] = t;
             i_index_xj++;
         }
         j_index_xj++;
     }
-    int t = i[i_index_xj];
-    i[i_index_xj] = *hi;
-    *hi = t;
-    return (i + i_index_xj);
+    int t = arr.ptr[i_index_xj];
+    arr.ptr[i_index_xj] = arr.ptr[(arr.len - 1)];
+    arr.ptr[(arr.len - 1)] = t;
+    return i_index_xj;
 }
 
-static void quick_sort(int *lo, int *hi) {
-    if (lo < hi) {
-        int *p = partition(lo, hi);
-        quick_sort(lo, p - 1);
-        quick_sort(p + 1, hi);
+static void quick_sort(RustSlice_int arr) {
+    if (arr.len > 1) {
+        int p = partition(arr);
+        quick_sort((RustSlice_int){arr.ptr, p});
+        quick_sort((RustSlice_int){arr.ptr + p + 1, arr.len - (p + 1)});
     }
 }
 
 int main(void) {
     int d[7] = {3, 7, 1, 6, 2, 5, 4};
-    quick_sort(d, d + 6);
+    quick_sort((RustSlice_int){d, 6 + 1});
     for (int i = 0; i < 7; i++)
         printf("%d ", d[i]);
     printf("\n");

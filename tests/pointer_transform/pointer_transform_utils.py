@@ -5,24 +5,40 @@ Each fixture directory looks like:
     <case>/
       input/                        # source files (.c / .h)
       expected_ptr/                 # golden: after xj-prepare-pointertransform alone
+      expected_base/                # golden: after chaining xj-prepare-baserewrite
       expected/                     # golden: after chaining xj-prepare-slicetransform
       expected_metadata.json        # golden: side-file written by the pointer tool
                                     #   (per-pointer facts only; no slice records)
+      expected_base_metadata.json   # golden: that side-file as the base tool
+                                    #   re-emits it — the visible record of
+                                    #   which bases were actually proved
 
-The driver mirrors the `pointertransform` preparation pass: it runs
-xj-prepare-pointertransform (index rewriting, emitting the per-pointer
-metadata side-file) and then xj-prepare-slicetransform (RustSlice
-detection + signature reshaping, consuming that side-file) over a
-scratch copy of input/ and checks, at each stage:
+`expected_metadata.json` carries each pointer's declaration line and
+column, so editing a fixture's *comments* moves them and churns that
+golden even when nothing about the rewrite changed.
+
+The driver mirrors the `pointertransform` preparation pass, which is
+three tools over one side-file:
+
+  1. xj-prepare-pointertransform — index rewriting, emitting the
+     per-pointer metadata side-file;
+  2. xj-prepare-baserewrite — proving a base per pointer, substituting
+     it, and recording it back into the side-file;
+  3. xj-prepare-slicetransform — RustSlice detection and signature
+     reshaping, consuming the proved bases.
+
+It runs them over a scratch copy of input/ and checks, at each stage:
 
   1. the output matches the stored golden (mismatches auto-rewrite the
      golden and fail, mirroring the repo's snapshot-test convention:
      inspect with git diff and keep or revert);
-  2. the output still parses (clang -fsyntax-only) — the slice pass
-     re-parses the pointer pass's output, so the intermediate must
-     always be valid C;
+  2. the output still parses (clang -fsyntax-only) — each tool
+     re-parses the previous one's output, so every intermediate must be
+     valid C;
   3. the program still compiles and behaves identically (stdout + exit
-     code) to the untransformed input.
+     code) to the untransformed input. This is what actually guards
+     base reconstruction: a false "resolves" is a miscompilation, and
+     -fsyntax-only would not catch it.
 """
 
 import json
@@ -133,6 +149,9 @@ def run_case(tmp_path: Path, case_dir: Path) -> None:
         hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
         / "xj-prepare-pointertransform"
     )
+    base_tool = (
+        hermetic.xj_prepare_baserewrite_build_dir(repo_root.localdir()) / "xj-prepare-baserewrite"
+    )
     slice_tool = (
         hermetic.xj_prepare_slicetransform_build_dir(repo_root.localdir())
         / "xj-prepare-slicetransform"
@@ -167,7 +186,25 @@ def run_case(tmp_path: Path, case_dir: Path) -> None:
     _compare_with_golden(case_dir, "expected_ptr", workdir, input_files)
     _compare_metadata_golden(case_dir, "expected_metadata.json", metadata_path)
 
-    # Pass 2: slice transform (RustSlice detection + signature reshaping).
+    # Pass 2: base reconstruction (prove a base, substitute it, delete the
+    # pointer). --metadata-in and --metadata-out are the same path: the
+    # tool hands back the records it was given, with proved bases added.
+    _run_tool(
+        base_tool,
+        workdir,
+        sources,
+        [f"--metadata-in={metadata_path}", f"--metadata-out={metadata_path}"],
+    )
+
+    _check_syntax(sources)
+    after_base = _compile_and_run(workdir, sources, "base")
+    assert after_base == baseline, (
+        f"base-reconstructed output behaves differently: {after_base} vs {baseline}"
+    )
+    _compare_with_golden(case_dir, "expected_base", workdir, input_files)
+    _compare_metadata_golden(case_dir, "expected_base_metadata.json", metadata_path)
+
+    # Pass 3: slice transform (RustSlice detection + signature reshaping).
     _run_tool(slice_tool, workdir, sources, [f"--metadata-in={metadata_path}"])
 
     _check_syntax(sources)

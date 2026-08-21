@@ -4,6 +4,9 @@
       "file": "src1/util.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 16,
+          "decl_line": 7,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -14,6 +17,9 @@
       "file": "src2/util.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 16,
+          "decl_line": 7,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -24,6 +30,9 @@
       "file": "a.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 16,
+          "decl_line": 9,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1

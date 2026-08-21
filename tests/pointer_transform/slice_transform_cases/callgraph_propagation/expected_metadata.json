@@ -4,6 +4,9 @@
       "file": "callgraph_propagation.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 10,
+          "decl_line": 5,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1

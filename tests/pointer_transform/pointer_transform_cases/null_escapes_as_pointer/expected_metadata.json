@@ -1,9 +1,25 @@
 {
   "functions": {
+    "first_comma@null_escapes_as_pointer.c": {
+      "file": "null_escapes_as_pointer.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 17,
+          "decl_line": 28,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
     "maybe_tail@null_escapes_as_pointer.c": {
       "file": "null_escapes_as_pointer.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 17,
+          "decl_line": 48,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -14,6 +30,9 @@
       "file": "null_escapes_as_pointer.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 17,
+          "decl_line": 36,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
