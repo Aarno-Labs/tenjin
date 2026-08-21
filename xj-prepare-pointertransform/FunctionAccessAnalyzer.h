@@ -12,11 +12,12 @@
 // onEndOfTranslationUnit() runs after every function has been seen and
 // drives the actual rewriting:
 //
-//   1. transformAllFunctions: rewrite each pointer access inside the
-//      bodies of eligible pointers, in plain form (base params kept,
-//      comparisons against the original len/end params). Each rewritten
-//      pointer is recorded in the metadata side-file.
-//   2. Globals: file-scope pointers are transformed at the very end.
+//   1. collectCandidates: decide which pointers — locals, parameters and
+//      file-scope alike — are rewritten, and where each companion index is
+//      declared. Settled first because a pointer's index may name another's.
+//   2. EditPlan: plan every access rewrite in the TU at once, so two that
+//      nest fold together instead of one silently displacing the other.
+//   3. Apply, then record each rewritten pointer in the metadata side-file.
 //
 // This tool performs NO RustSlice-related work: candidate detection and
 // all signature-level reshaping live in xj-prepare-slicetransform, which
@@ -35,10 +36,16 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     ASTContext *StoredCtx = nullptr;       // captured once so end-of-TU phases can use it
     bool globals_collected = false;        // file-scope pointers only need scanning once
 
-    // (begin, end) file offsets of edits already applied. Used to drop
-    // later edits that overlap an earlier one — protects against double
-    // rewrites when multiple phases would touch the same range.
-    std::vector<std::pair<unsigned, unsigned>> m_edited_ranges;
+    // One pointer that survived validation and has a home for its index.
+    // `accesses` points into the analysis that owns it — g_function_analyses
+    // for a local or parameter, g_global_pointer_map for a file-scope
+    // pointer — and is written through when a pairwise root is demoted.
+    struct PointerPlan {
+        const FunctionDecl *FD = nullptr;   // null for a file-scope pointer
+        const VarDecl *ptr = nullptr;
+        std::vector<PointerAccess> *accesses = nullptr;
+        IndexDeclSite site;
+    };
 
     // Scan the TU once for file-scope pointer variables.
     void collectGlobalPointers(ASTContext &Ctx);
@@ -49,11 +56,13 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // Emit a [FAILED] log entry plus update gLog/per-file state.
     void logFailedPointer(const VarDecl *VD, ASTContext &Ctx, const std::string &error);
 
-    // Validate + rewrite one local pointer (the simple within-function path).
-    void transformPointerVar(const FunctionDecl *FD, const VarDecl *PtrVar,
-                             PointerCandidate &candidate,
-                             std::vector<PointerAccess> &accesses,
-                             ASTContext &Ctx);
+    // Decide which pointers in the TU are rewritten and where each index
+    // is declared, in the order their declarations should be emitted.
+    void collectCandidates(ASTContext &Ctx, std::vector<PointerPlan> &plans,
+                           std::set<const VarDecl *> &transformed);
+
+    // Log one rewritten pointer and add it to the metadata side-file.
+    void recordTransformed(const PointerPlan &P, ASTContext &Ctx);
 
     // Debug dump of an access list (only fires when VERBOSE).
     void printAccesses(const VarDecl *VD, const std::vector<PointerAccess> &seq,
@@ -66,27 +75,10 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
                                   ASTContext &Ctx,
                                   std::string &error);
 
-    // Defined in TransformationMethods.cpp.
-    // generateTransformation: rewrite a single local pointer in place.
-    bool generateTransformation(const FunctionDecl *FD,
-                                const VarDecl *PtrVar,
-                                PointerCandidate &candidate,
-                                std::vector<PointerAccess> &accesses,
-                                ASTContext &Ctx);
-
-    // generateGlobalTransformation: same idea but for a file-scope
-    // pointer (visited from every function that uses it).
-    bool generateGlobalTransformation(const VarDecl *PtrVar,
-                                      PointerCandidate &candidate,
-                                      std::vector<PointerAccess> &accesses,
-                                      ASTContext &Ctx);
-
-    // Apply a vector<Edit> to the Rewriter, sorted to avoid offset drift
-    // and skipping any that overlap an already-edited range.
+    // Apply a vector<Edit> to the Rewriter, highest offset first so the
+    // offsets still to come stay valid. Every edit handed here is applied;
+    // EditPlan has already settled which ones there are.
     void applyEdits(std::vector<Edit> &edits, SourceManager &SM);
-
-    // ---- Cross-function transformation phase --------------------------
-    void transformAllFunctions(ASTContext &Ctx);
 
     // ---- Metadata export for xj-prepare-slicetransform ----------------
     // Look up (or create) the metadata record for FD; nullptr when a

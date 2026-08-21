@@ -12,7 +12,7 @@ static int count_commas(const char *s) {
     int count = 0;
     while (1) {
         p_index_xj = strchr_index_xj(s, p_index_xj, ',');
-        if (p_index_xj == -1)
+        if (!(s && p_index_xj >= 0))
             break;
         count++;
         p_index_xj++;

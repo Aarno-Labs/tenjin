@@ -500,8 +500,9 @@ namespace xj
             lenRepl = "(" + slice + ".len - " +
                       std::to_string(S.lookback + S.lookahead) + ")";
 
-        // Moved-pointer facts from the metadata: which index variables exist,
-        // and which of them iterate over the removed base param.
+        // Moved-pointer facts from the metadata: which index variables
+        // exist, and which of them were proved to iterate over the base
+        // param this slice removes.
         struct RsPtr
         {
             const PtrIndexPointerRecord *rec;

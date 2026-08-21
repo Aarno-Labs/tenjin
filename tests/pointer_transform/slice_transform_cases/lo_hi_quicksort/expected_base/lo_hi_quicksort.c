@@ -4,7 +4,7 @@ static int *partition(int *lo, int *hi) {
     int pivot = *hi;
     int i_index_xj = 0;
     int j_index_xj = 0;
-    while (j_index_xj < (hi - lo)) {
+    while ((lo + j_index_xj) < hi) {
         if (lo[j_index_xj] < pivot) {
             int t = lo[i_index_xj];
             lo[i_index_xj] = lo[j_index_xj];
@@ -16,7 +16,7 @@ static int *partition(int *lo, int *hi) {
     int t = lo[i_index_xj];
     lo[i_index_xj] = *hi;
     *hi = t;
-    return lo + i_index_xj;
+    return (lo + i_index_xj);
 }
 
 static void quick_sort(int *lo, int *hi) {

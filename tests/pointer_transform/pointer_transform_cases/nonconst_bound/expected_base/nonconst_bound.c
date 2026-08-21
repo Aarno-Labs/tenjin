@@ -6,7 +6,7 @@
 static int adjacent_pairs(const int *buf, int n) {
     int p_index_xj = 0;
     int count = 0;
-    while (p_index_xj < (buf + n - 1 - buf)) {
+    while ((buf + p_index_xj) < buf + n - 1) {
         if (buf[p_index_xj] < buf[p_index_xj + 1])
             count++;
         p_index_xj++;

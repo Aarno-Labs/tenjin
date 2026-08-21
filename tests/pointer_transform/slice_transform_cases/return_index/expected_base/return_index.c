@@ -5,7 +5,7 @@ static int *find(int *buf, int n, int target) {
     int p_index_xj = 0;
     while (p_index_xj < n) {
         if (buf[p_index_xj] == target)
-            return buf + p_index_xj;
+            return (buf + p_index_xj);
         p_index_xj++;
     }
     return NULL;

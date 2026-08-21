@@ -13,6 +13,10 @@ Each fixture directory looks like:
                                     #   re-emits it — the visible record of
                                     #   which bases were actually proved
 
+`expected_metadata.json` carries each pointer's declaration line and
+column, so editing a fixture's *comments* moves them and churns that
+golden even when nothing about the rewrite changed.
+
 The driver mirrors the `pointertransform` preparation pass, which is
 three tools over one side-file:
 

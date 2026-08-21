@@ -15,7 +15,7 @@ static void sort(int *buf, int n) {
         while (p_index_xj < n) {
             if (i > 0) {
                 if (buf[p_index_xj + -1] > buf[p_index_xj]) {
-                    swap(buf + p_index_xj - 1, buf + p_index_xj);
+                    swap((buf + p_index_xj) - 1, (buf + p_index_xj));
                     done = 0;
                 }
             }

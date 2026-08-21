@@ -8,11 +8,12 @@ static int strchr_index_xj(const char *base, int start, int c) {
 }
 
 static int count_commas(const char *s) {
+    const char *p = s;
     int p_index_xj = 0;
     int count = 0;
     while (1) {
-        p_index_xj = strchr_index_xj(s, p_index_xj, ',');
-        if (p_index_xj == -1)
+        p_index_xj = strchr_index_xj(p, p_index_xj, ',');
+        if (!(p && p_index_xj >= 0))
             break;
         count++;
         p_index_xj++;

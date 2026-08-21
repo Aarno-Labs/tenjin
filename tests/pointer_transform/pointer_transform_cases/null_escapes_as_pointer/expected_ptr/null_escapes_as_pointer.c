@@ -25,31 +25,34 @@ static int strchr_index_xj(const char *base, int start, int c) {
 }
 
 static void first_comma(const char *s) {
+    const char *p = s;
     int p_index_xj = 0;
 
-    p_index_xj = strchr_index_xj(s, p_index_xj, ',');
-    observe((p_index_xj < 0 ? (void *)0 : s + p_index_xj), "comma");
+    p_index_xj = strchr_index_xj(p, p_index_xj, ',');
+    observe((p_index_xj < 0 ? (void *)0 : p + p_index_xj), "comma");
 }
 
 static void pick(const char *s, int take) {
+    const char *p;
     int p_index_xj = 0;
 
     if (take)
-        p_index_xj = 1;
+        (p = s, p_index_xj = 1);
     else
-        p_index_xj = -1;
-    observe((p_index_xj < 0 ? (void *)0 : s + p_index_xj), "pick");
+        (p = NULL, p_index_xj = -1);
+    observe((p_index_xj < 0 ? (void *)0 : p + p_index_xj), "pick");
 }
 
 /* The same sentinel crossing a return boundary rather than a call. */
 static const char *maybe_tail(const char *s, int take) {
+    const char *p;
     int p_index_xj = 0;
 
     if (take)
-        p_index_xj = 2;
+        (p = s, p_index_xj = 2);
     else
-        p_index_xj = -1;
-    return (p_index_xj < 0 ? (void *)0 : s + p_index_xj);
+        (p = NULL, p_index_xj = -1);
+    return (p_index_xj < 0 ? (void *)0 : p + p_index_xj);
 }
 
 int main(void) {

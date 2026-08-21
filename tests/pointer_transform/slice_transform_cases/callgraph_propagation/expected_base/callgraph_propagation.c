@@ -3,7 +3,7 @@
 static int sum_range(int *lo, int *hi) {
     int total = 0;
     int p_index_xj = 0;
-    while (p_index_xj < (hi - lo)) {
+    while ((lo + p_index_xj) < hi) {
         total += lo[p_index_xj];
         p_index_xj++;
     }
