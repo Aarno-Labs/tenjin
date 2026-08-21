@@ -21,12 +21,6 @@ bool g_inplace = false;
 bool g_verbose = false;
 std::map<const VarDecl *, GlobalPointerState> g_global_pointer_map;
 
-// Library functions whose pointer args / returns we know how to translate.
-// Keep this list small and conservative — anything added here needs
-// matching support in PointerAccessCollector and TransformationMethods.
-std::set<std::string> g_allowed_funcs = {"strchr", "sscanf"};
-
-std::set<std::string> g_emitted_wrappers;
 std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
 xj::PtrIndexMetadata g_metadata;
 std::string g_metadata_out;
@@ -144,39 +138,29 @@ const std::string &indexNameFor(const VarDecl *VD) {
 // Stringify a PointerAccessKind for verbose / debug output.
 const char *pointerAccessKindToString(PointerAccessKind kind) {
     switch (kind) {
-    case PointerAccessKind::InitNull: return "InitNull";
-    case PointerAccessKind::InitArray: return "InitArray";
-    case PointerAccessKind::InitArrayOffset: return "InitArrayOffset";
-    case PointerAccessKind::AssignNull: return "AssignNull";
-    case PointerAccessKind::AssignAddrOf: return "AssignAddrOf";
-    case PointerAccessKind::AssignArray: return "AssignArray";
-    case PointerAccessKind::AssignArrayOffset: return "AssignArrayOffset";
-    case PointerAccessKind::Increment: return "Increment";
-    case PointerAccessKind::Decrement: return "Decrement";
-    case PointerAccessKind::PlusAssign: return "PlusAssign";
-    case PointerAccessKind::MinusAssign: return "MinusAssign";
     case PointerAccessKind::Deref: return "Deref";
+    case PointerAccessKind::DerefWrite: return "DerefWrite";
     case PointerAccessKind::DerefPostInc: return "DerefPostInc";
     case PointerAccessKind::DerefPreInc: return "DerefPreInc";
     case PointerAccessKind::DerefPostDec: return "DerefPostDec";
     case PointerAccessKind::DerefPreDec: return "DerefPreDec";
-    case PointerAccessKind::ArrowAccess: return "ArrowAccess";
-    case PointerAccessKind::Subscript: return "Subscript";
     case PointerAccessKind::DerefOffset: return "DerefOffset";
     case PointerAccessKind::DerefOffsetWrite: return "DerefOffsetWrite";
-    case PointerAccessKind::DerefWrite: return "DerefWrite";
+    case PointerAccessKind::ArrowAccess: return "ArrowAccess";
     case PointerAccessKind::ArrowWrite: return "ArrowWrite";
+    case PointerAccessKind::Subscript: return "Subscript";
     case PointerAccessKind::SubscriptWrite: return "SubscriptWrite";
-    case PointerAccessKind::Comparison: return "Comparison";
-    case PointerAccessKind::ComparisonNull: return "ComparisonNull";
-    case PointerAccessKind::ComparisonExpr: return "ComparisonExpr";
-    case PointerAccessKind::BoolTrue: return "BoolTrue";
-    case PointerAccessKind::BoolFalse: return "BoolFalse";
-    case PointerAccessKind::PassedToAllowedFunc: return "PassedToAllowedFunc";
-    case PointerAccessKind::AssignFromAllowedFunc: return "AssignFromAllowedFunc";
+    case PointerAccessKind::Increment: return "Increment";
+    case PointerAccessKind::Decrement: return "Decrement";
+    case PointerAccessKind::PlusAssign: return "PlusAssign";
+    case PointerAccessKind::MinusAssign: return "MinusAssign";
+    case PointerAccessKind::Init: return "Init";
+    case PointerAccessKind::Assign: return "Assign";
+    case PointerAccessKind::ValueUse: return "ValueUse";
+    case PointerAccessKind::PairwiseRoot: return "PairwiseRoot";
+    case PointerAccessKind::NullTest: return "NullTest";
+    case PointerAccessKind::NoEdit: return "NoEdit";
     case PointerAccessKind::AddressOf: return "AddressOf";
-    case PointerAccessKind::PassedToFunc: return "PassedToFunc";
-    case PointerAccessKind::ReturnPtr: return "ReturnPtr";
     case PointerAccessKind::Unknown: return "Unknown";
     }
     return "Unknown";

@@ -1,9 +1,10 @@
 // Metadata handed from xj-prepare-pointertransform to
 // xj-prepare-slicetransform.
 //
-// The pointer pass records, for
-// every pointer it rewrote as an index, the facts that identify the
-// rewrite in the transformed source.
+// The pointer pass records, for every pointer it rewrote as an index, the
+// facts that identify the rewrite in the transformed source. Identity
+// only: after the rewrite a pointer is its own base, and what that base
+// equals is a question for base resolution, not for this side-file.
 
 #ifndef XJ_PREPARE_SUPPORT_PTR_INDEX_METADATA_H
 #define XJ_PREPARE_SUPPORT_PTR_INDEX_METADATA_H

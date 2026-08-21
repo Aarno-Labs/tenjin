@@ -1,20 +1,22 @@
 #include <stdio.h>
 
 static int sum_stride(int *buf, int n, int j) {
+    int *p = buf;
     int p_index_xj = 0;
     int s = 0;
-    while (p_index_xj < n) {
-        s += buf[p_index_xj + j];
+    while ((p + p_index_xj) < buf + n) {
+        s += p[p_index_xj + j];
         p_index_xj++;
     }
     return s;
 }
 
 static int sum_plain(int *buf, int n) {
+    int *p = buf;
     int p_index_xj = 0;
     int s = 0;
-    while (p_index_xj < n) {
-        s += buf[p_index_xj++];
+    while ((p + p_index_xj) < buf + n) {
+        s += p[p_index_xj++];
     }
     return s;
 }

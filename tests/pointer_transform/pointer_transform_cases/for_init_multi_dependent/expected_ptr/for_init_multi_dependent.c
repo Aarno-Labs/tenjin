@@ -6,8 +6,9 @@
  * carries an index of 0 alongside the pointer instead. */
 static int offset_by_sibling(int *a, int k, int n) {
     int s = 0;
-    for (int i = k, *p = a + i; n > 0; n--, i++, p++)
-        s += *p + i;
+    int p_index_xj = 0;
+    for (int i = k, *p = a + i; n > 0; n--, i++, p_index_xj++)
+        s += p[p_index_xj] + i;
     return s;
 }
 

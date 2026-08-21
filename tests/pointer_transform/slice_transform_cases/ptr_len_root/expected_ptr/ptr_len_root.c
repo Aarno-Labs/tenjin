@@ -1,10 +1,11 @@
 #include <stdio.h>
 
 static int sum(int *buf, int n) {
+    int *p = buf;
     int p_index_xj = 0;
     int s = 0;
-    while (p_index_xj < n) {
-        s += buf[p_index_xj++];
+    while ((p + p_index_xj) < buf + n) {
+        s += p[p_index_xj++];
     }
     return s;
 }

@@ -2,10 +2,11 @@
 #include <stdio.h>
 
 static int *find(int *buf, int n, int target) {
+    int *p = buf;
     int p_index_xj = 0;
-    while (p_index_xj < n) {
-        if (buf[p_index_xj] == target)
-            return buf + p_index_xj;
+    while ((p + p_index_xj) < buf + n) {
+        if (p[p_index_xj] == target)
+            return (p + p_index_xj);
         p_index_xj++;
     }
     return NULL;

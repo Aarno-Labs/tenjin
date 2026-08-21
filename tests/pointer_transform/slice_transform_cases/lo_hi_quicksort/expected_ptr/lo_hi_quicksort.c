@@ -2,21 +2,23 @@
 
 static int *partition(int *lo, int *hi) {
     int pivot = *hi;
+    int *i = lo;
     int i_index_xj = 0;
+    int *j = lo;
     int j_index_xj = 0;
-    while (j_index_xj < (hi - lo)) {
-        if (lo[j_index_xj] < pivot) {
-            int t = lo[i_index_xj];
-            lo[i_index_xj] = lo[j_index_xj];
-            lo[j_index_xj] = t;
+    while ((j + j_index_xj) < hi) {
+        if (j[j_index_xj] < pivot) {
+            int t = i[i_index_xj];
+            i[i_index_xj] = j[j_index_xj];
+            j[j_index_xj] = t;
             i_index_xj++;
         }
         j_index_xj++;
     }
-    int t = lo[i_index_xj];
-    lo[i_index_xj] = *hi;
+    int t = i[i_index_xj];
+    i[i_index_xj] = *hi;
     *hi = t;
-    return lo + i_index_xj;
+    return (i + i_index_xj);
 }
 
 static void quick_sort(int *lo, int *hi) {

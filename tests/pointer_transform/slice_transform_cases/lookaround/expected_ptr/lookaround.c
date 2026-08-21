@@ -3,13 +3,14 @@
 /* Exercises lookback (via *(p - 1)) and lookahead (via *(p + 1)): the
  * constructed slice at the call site must be widened on both sides. */
 static int lookaround(const int *buf, int n) {
+    const int *p = buf;
     int p_index_xj = 1;
     int i = 1;
     int total = 0;
-    while (p_index_xj < n) {
-        total += buf[p_index_xj - 1];
+    while ((p + p_index_xj) < buf + n) {
+        total += p[p_index_xj - 1];
         if (i + 1 < n)
-            total += buf[p_index_xj + 1];
+            total += p[p_index_xj + 1];
         i++;
         p_index_xj++;
     }

@@ -1,0 +1,14 @@
+{
+  "functions": {
+    "walk@call_valued_base.c": {
+      "file": "call_valued_base.c",
+      "pointers": [
+        {
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

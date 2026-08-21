@@ -4,15 +4,18 @@
       "file": "for_init_multi_collapse.c",
       "pointers": [
         {
-          "base_text": "buf",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
         },
         {
-          "base_text": "buf",
-          "index_var": "q_index_xj",
-          "name": "q",
+          "index_var": "end_index_xj",
+          "name": "end",
           "param_index": -1
         }
       ]
@@ -21,15 +24,13 @@
       "file": "for_init_multi_collapse.c",
       "pointers": [
         {
-          "base_text": "buf",
-          "index_var": "p_index_xj",
-          "name": "p",
+          "index_var": "q_index_xj",
+          "name": "q",
           "param_index": -1
         },
         {
-          "base_text": "buf",
-          "index_var": "q_index_xj",
-          "name": "q",
+          "index_var": "p_index_xj",
+          "name": "p",
           "param_index": -1
         }
       ]
@@ -38,15 +39,13 @@
       "file": "for_init_multi_collapse.c",
       "pointers": [
         {
-          "base_text": "buf",
-          "index_var": "p_index_xj",
-          "name": "p",
+          "index_var": "q_index_xj",
+          "name": "q",
           "param_index": -1
         },
         {
-          "base_text": "buf",
-          "index_var": "q_index_xj",
-          "name": "q",
+          "index_var": "p_index_xj",
+          "name": "p",
           "param_index": -1
         }
       ]

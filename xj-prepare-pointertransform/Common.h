@@ -46,107 +46,109 @@ inline constexpr bool VERBOSE = false;
 // PointerAccessKind — every way a tracked pointer can appear in the source.
 // ============================================================================
 //
-// Each DeclRefExpr to a tracked pointer is classified into exactly one
-// of these kinds by walking the AST parent chain (see
-// PointerAccessCollector::classifyAccess). The kind drives both
-// validation (some kinds disqualify the pointer) and rewriting (each
-// kind has a corresponding case in TransformationMethods.cpp).
+// Each DeclRefExpr to a tracked pointer is classified into exactly one of
+// these kinds by walking the AST parent chain (see
+// PointerAccessCollector::classifyAccess). The rewrite is *total*: the
+// pointer variable is its own base and is never deleted, so there is no
+// syntactic context that has to be rejected except `&p`.
+//
+// Four buckets, and each bucket has one rule:
+//
+//   element access   -> p[p_index_xj + ...]     the index names the element
+//   position         -> p_index_xj moves        the base never does
+//   (base, index)    -> (p = ROOT, p_index_xj = OFF)
+//   value read       -> (p + p_index_xj)        rebuild the pointer in place
+//
+// The value read is the fallback, and it is what makes the rewrite total:
+// any use of the pointer's value that is not one of the other three
+// buckets is still expressible.
 
 enum class PointerAccessKind {
-    // --- Initialization (at the declaration site) -------------------------
-    InitNull,           // int *p = NULL;            → int p_index = -1;
-    InitArray,          // int *p = arr;             → int p_index = 0;
-    InitArrayOffset,    // int *p = arr + n;         → int p_index = n;
+    // --- Element access: the index selects an element of the base ---------
+    Deref,              // *p                        -> p[p_index_xj]
+    DerefWrite,         // *p = v                    -> p[p_index_xj] = v
+    DerefPostInc,       // *p++                      -> p[p_index_xj++]
+    DerefPreInc,        // *++p                      -> p[++p_index_xj]
+    DerefPostDec,       // *p--                      -> p[p_index_xj--]
+    DerefPreDec,        // *--p                      -> p[--p_index_xj]
+    DerefOffset,        // *(p + n)                  -> p[p_index_xj + n]
+    DerefOffsetWrite,   // *(p + n) = v              -> p[p_index_xj + n] = v
+    ArrowAccess,        // p->field                  -> p[p_index_xj].field
+    ArrowWrite,         // p->field = v              -> p[p_index_xj].field = v
+    Subscript,          // p[i]                      -> p[p_index_xj + i]
+    SubscriptWrite,     // p[i] = v                  -> p[p_index_xj + i] = v
 
-    // --- Reassignment after declaration -----------------------------------
-    AssignNull,         // p = NULL;                 → p_index = -1;
-    AssignAddrOf,       // p = &arr[i];              → p_index = i;
-    AssignArray,        // p = arr;                  → p_index = 0;
-    AssignArrayOffset,  // p = arr + n;              → p_index = n;
+    // --- Position: the index moves, the base stays put --------------------
+    Increment,          // p++ / ++p                 -> p_index_xj++ / ++p_index_xj
+    Decrement,          // p-- / --p                 -> p_index_xj-- / --p_index_xj
+    PlusAssign,         // p += n                    -> p_index_xj += n
+    MinusAssign,        // p -= n                    -> p_index_xj -= n
 
-    // --- Pointer arithmetic on the pointer itself -------------------------
-    Increment,          // p++ / ++p                 → p_index++ / ++p_index
-    Decrement,          // p-- / --p                 → p_index-- / --p_index
-    PlusAssign,         // p += n                    → p_index += n
-    MinusAssign,        // p -= n                    → p_index -= n
+    // --- (base, index) assignment -----------------------------------------
+    // The RHS is split syntactically into a root and an offset; see
+    // PointerAccess::root_expr. `int *q = p + 1;` is `q = p` paired with
+    // `q_index_xj = p_index_xj + 1` — no special "inheritance" rule, just
+    // the ordinary assignment.
+    Init,               // T *p = RHS;
+    Assign,             // p = RHS
 
-    // --- Dereference (read) -----------------------------------------------
-    Deref,              // *p                        → arr[p_index]
-    DerefPostInc,       // *p++                      → arr[p_index++]
-    DerefPreInc,        // *++p                      → arr[++p_index]
-    DerefPostDec,       // *p--                      → arr[p_index--]
-    DerefPreDec,        // *--p                      → arr[--p_index]
+    // --- Reads of the pointer's value -------------------------------------
+    ValueUse,           // f(p), return p, p < end, p - buf, (char *)p, ...
+                        //                           -> (p + p_index_xj)
+    PairwiseRoot,       // this reference *is* the root of another tracked
+                        // pointer's Init/Assign RHS, whose rewrite carries
+                        // the pair. No edit of its own.
+    NullTest,           // if (p), !p, p == NULL, p && q — the retained
+                        // pointer is null exactly when it was before, so
+                        // these are left alone.
+    NoEdit,             // sizeof p — the value is never read.
 
-    // --- Structured access ------------------------------------------------
-    ArrowAccess,        // p->field                  → arr[p_index].field
-    Subscript,          // p[i]                      → arr[p_index + i]
-
-    // --- Dereference with an offset expression ----------------------------
-    DerefOffset,        // *(p + n) / *(p - n)       → arr[p_index ± n]
-    DerefOffsetWrite,   // *(p + n) = v              → arr[p_index ± n] = v
-
-    // --- Writes through the pointer ---------------------------------------
-    DerefWrite,         // *p = v                    → arr[p_index] = v
-    ArrowWrite,         // p->field = v              → arr[p_index].field = v
-    SubscriptWrite,     // p[i] = v                  → arr[p_index + i] = v
-
-    // --- Comparison -------------------------------------------------------
-    Comparison,         // any comparison we can't resolve to an index form
-                        // (causes rejection)
-    ComparisonNull,     // p == NULL / p != NULL     → p_index == -1 / != -1
-    ComparisonExpr,     // p < arr + n / p < end     → p_index < n / < (end - arr)
-
-    // --- Implicit boolean (pointer used as a truth value) -----------------
-    BoolTrue,           // if (p), while (p), p && ..., p ? : ...
-                        //                           → p_index != -1
-    BoolFalse,          // !p                        → p_index == -1
-
-    // --- Calls to allowlisted library functions (g_allowed_funcs) ---------
-    PassedToAllowedFunc,    // strchr(p, c), sscanf(p, ...) — argument is
-                            // rebuilt as (base + p_index)
-    AssignFromAllowedFunc,  // p = strchr(...) — generates an _index wrapper
-
-    // --- Return value -----------------------------------------------------
-    ReturnPtr,              // return p → return base + p_index
-                            // (or return p_index if the function's return
-                            // type was rewritten to int)
-
-    // --- Escape / rejection triggers --------------------------------------
-    AddressOf,              // &p — pointer's identity matters; reject
-    PassedToFunc,           // pointer passed to an unknown function; if the
-                            // callee is RustSlice-transformed the call site
-                            // is rewritten later, otherwise the argument
-                            // becomes (base + p_index)
-    Unknown                 // any pattern we don't recognize — reject
+    // --- The only rejection ------------------------------------------------
+    AddressOf,          // &p — the pointer's storage is observable, so it
+                        // cannot carry a base while an index carries the
+                        // position.
+    Unknown             // no parent at all; nothing to anchor an edit to
 };
 
-// One pointer the tool is considering rewriting. Populated by
-// PointerAccessCollector and refined as more accesses are classified.
+// One pointer the tool is considering rewriting. The pointer variable is
+// its own base, so there is nothing here about *what* the base is — that
+// question belongs to base resolution, which runs on this tool's output.
 struct PointerCandidate {
-    const VarDecl *ptr_var;
-    const Expr *base_array;        // AST node the base array was extracted from
-    std::string base_array_text;   // source text of the base, e.g. "users", "bs->buf"
-    bool is_parameter;             // true if this pointer is a function parameter
-
-    // Lookback / lookahead bounds, computed from constant *(p ± k) accesses.
-    // Used by the RustSlice transform to extend slice bounds at call sites.
-    int min_relative_offset = 0;   // most-negative constant offset seen (e.g. -1)
-    int max_relative_offset = 0;   // most-positive constant offset seen (e.g. +2)
-    bool constant_offsets = true;  // false if any *(p + variable) was seen → reject
+    const VarDecl *ptr_var = nullptr;
+    bool is_parameter = false;      // true if this pointer is a function parameter
 };
 
 // One classified use of a tracked pointer. The combination of `kind` and
-// the populated string fields tells the rewriter exactly what edit to
-// produce; unused fields are left empty.
+// the populated fields tells the rewriter exactly what edit to produce;
+// unused fields are left empty.
 struct PointerAccess {
     PointerAccessKind kind;
     SourceLocation loc;
-    const Expr *expr;              // the DeclRefExpr (or wrapping expr) for the access
-    const Stmt *enclosing_stmt;    // outer stmt used when replacing whole expressions
-    std::string offset_text;       // InitArrayOffset / AssignArrayOffset / DerefOffset / wrapper-name
+    const Expr *expr = nullptr;    // the DeclRefExpr (or, for Init, the initializer)
+    const Stmt *enclosing_stmt = nullptr;  // Assign: the BinaryOperator;
+                                           // DerefOffset: the UO_Deref node
+    std::string offset_text;       // DerefOffset: the arithmetic after the name.
+                                   // Init/Assign: the whole index expression to
+                                   // use when the root is not a tracked pointer
+                                   // ("0", "3", "0 + 1 - 2").
     std::string field_name;        // ArrowAccess / ArrowWrite
     std::string subscript_text;    // Subscript / SubscriptWrite
-    std::string operand_text;      // PlusAssign / MinusAssign / comparison RHS / wrapper extra args
+    std::string operand_text;      // PlusAssign / MinusAssign: the RHS.
+                                   // Init/Assign: the remainder to append after
+                                   // the root's index ("", " + 1 - 2").
+
+    // Init / Assign only. `rhs_expr` is the whole right-hand side;
+    // `root_expr` is the sub-expression that becomes the new base, or null
+    // when the RHS is taken whole and the index starts at 0. When they
+    // differ, the rewriter replaces the RHS range with the root's text.
+    const Expr *rhs_expr = nullptr;
+    const Expr *root_expr = nullptr;
+
+    // PairwiseRoot only: the pointer whose assignment carries this
+    // reference. If that pointer turns out not to be rewritten, the
+    // reference is demoted to an ordinary value read — nothing else
+    // would restore the position the root used to hold.
+    const VarDecl *pair_owner = nullptr;
 };
 
 // ============================================================================
@@ -223,14 +225,6 @@ extern bool g_verbose;                         // --verbose CLI flag
 
 // File-scope pointers found in this TU (separate from per-function locals).
 extern std::map<const VarDecl *, GlobalPointerState> g_global_pointer_map;
-
-// Library functions whose pointer arguments / return values we know how
-// to handle (see PassedToAllowedFunc / AssignFromAllowedFunc).
-extern std::set<std::string> g_allowed_funcs;
-
-// Names of _index wrappers already emitted (e.g. "strchr_index"). Used
-// to make wrapper emission idempotent across the TU.
-extern std::set<std::string> g_emitted_wrappers;
 
 // Per-function analysis snapshots saved during run() for later phases.
 extern std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;

@@ -1,21 +1,9 @@
 {
   "functions": {
-    "first_comma@null_escapes_as_pointer.c": {
-      "file": "null_escapes_as_pointer.c",
-      "pointers": [
-        {
-          "base_text": "s",
-          "index_var": "p_index_xj",
-          "name": "p",
-          "param_index": -1
-        }
-      ]
-    },
     "maybe_tail@null_escapes_as_pointer.c": {
       "file": "null_escapes_as_pointer.c",
       "pointers": [
         {
-          "base_text": "s",
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -26,7 +14,6 @@
       "file": "null_escapes_as_pointer.c",
       "pointers": [
         {
-          "base_text": "s",
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1

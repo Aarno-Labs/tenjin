@@ -11,11 +11,12 @@ static void sort(int *buf, int n) {
     while (!done) {
         done = 1;
         int i = 0;
+        int *p = buf;
         int p_index_xj = 0;
-        while (p_index_xj < n) {
+        while ((p + p_index_xj) < buf + n) {
             if (i > 0) {
-                if (buf[p_index_xj + -1] > buf[p_index_xj]) {
-                    swap(buf + p_index_xj - 1, buf + p_index_xj);
+                if (p[p_index_xj + -1] > p[p_index_xj]) {
+                    swap((p + p_index_xj) - 1, (p + p_index_xj));
                     done = 0;
                 }
             }

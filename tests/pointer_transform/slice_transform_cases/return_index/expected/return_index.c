@@ -1,25 +1,24 @@
 #include <stddef.h>
 #include <stdio.h>
 
-typedef struct { int *ptr; size_t len; } RustSlice_int;
-
-int find(RustSlice_int arr, int target) {
+static int *find(int *buf, int n, int target) {
+    int *p = buf;
     int p_index_xj = 0;
-    while (p_index_xj < arr.len) {
-        if (arr.ptr[p_index_xj] == target)
-            return p_index_xj;
+    while ((p + p_index_xj) < buf + n) {
+        if (p[p_index_xj] == target)
+            return (p + p_index_xj);
         p_index_xj++;
     }
-    return -1;
+    return NULL;
 }
 
 int main(void) {
     int d[5] = {10, 20, 30, 40, 50};
-    int q = find((RustSlice_int){d, 5}, 30);
-    if (q != -1)
-        printf("found %d\n", d[q]);
-    int r = find((RustSlice_int){d, 5}, 99);
-    if (r == -1)
+    int *q = find(d, 5, 30);
+    if (q)
+        printf("found %d\n", *q);
+    int *r = find(d, 5, 99);
+    if (!r)
         printf("missing\n");
     return 0;
 }

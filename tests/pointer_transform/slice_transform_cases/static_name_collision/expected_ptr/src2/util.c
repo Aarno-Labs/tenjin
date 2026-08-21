@@ -4,10 +4,11 @@
 #include <stddef.h>
 
 static int scale(const int *buf, int n) {
+    const int *p = buf;
     int p_index_xj = 0;
     int s = 0;
-    while (p_index_xj < n) {
-        s += buf[p_index_xj] * 2;
+    while ((p + p_index_xj) < buf + n) {
+        s += p[p_index_xj] * 2;
         p_index_xj++;
     }
     return s;

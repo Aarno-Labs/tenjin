@@ -2,9 +2,10 @@
 
 static int sum_range(int *lo, int *hi) {
     int total = 0;
+    int *p = lo;
     int p_index_xj = 0;
-    while (p_index_xj < (hi - lo)) {
-        total += lo[p_index_xj];
+    while ((p + p_index_xj) < hi) {
+        total += p[p_index_xj];
         p_index_xj++;
     }
     return total;

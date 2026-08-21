@@ -1,14 +1,14 @@
 // Regression fixture for the pointer-to-index transform.
 //
 // `dest` is a parameter pointer that is conditionally reseated to a
-// local buffer (`if (!dest) dest = buf;`). The pointer-to-index rewrite
-// must NOT turn this into an index off `dest`: doing so drops the reseat
-// (rewriting `dest = buf` to a bare index reset) and dereferences the
-// caller's NULL pointer. validatePointerCandidate rejects the pointer
-// so it is left as a pointer here.
+// local buffer (`if (!dest) dest = buf;`). The reseat has to survive:
+// dropping it — as an earlier rewrite did, by turning `dest = buf` into a
+// bare index reset — dereferences the caller's NULL pointer instead.
 //
-// See xj-prepare-pointertransform/ValidationMethods.cpp
-// ("Parameter reseated to a different base array").
+// The pointer is retained and carries a companion index, so the reseat is
+// an ordinary (base, index) assignment: `(dest = buf, dest_index_xj = 0)`.
+// The contract here is behavioural — the program must still exit 6 — so
+// check the snapshot by running it, not by reading it.
 int write_not_null(int *dest)
 {
 	int buf[4] = {0};
