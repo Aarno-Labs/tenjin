@@ -340,7 +340,9 @@ namespace xj
     }
 
     // Source spelling of an expression (used to match subscript bases like
-    // `bs->buf` against the textual base recorded by the pointer pass).
+    // `bs->buf` against the base xj-prepare-baserewrite proved and then
+    // emitted at each access, which is why matching them by text is sound
+    // here: both spellings came from the same proved cell).
     static std::string sourceTextOf(const Expr *E, ASTContext &Ctx)
     {
         const SourceManager &SM = Ctx.getSourceManager();
@@ -366,9 +368,11 @@ namespace xj
                 const VarDecl *IdxVD = findLocalVarNamed(FD->getBody(), P.index_var);
                 if (!IdxVD || !IdxVD->getType()->isIntegerType())
                     continue;
-                // Every rewritten pointer is its own base, so its accesses
-                // are spelled `p[p_index_xj + k]`.
-                const std::string base = P.name;
+                // An empty base_text means the pointer was not
+                // reconstructed and so is still its own base; the
+                // rewriter spells its accesses `p[p_index_xj + k]`.
+                const std::string base =
+                    P.base_text.empty() ? P.name : P.base_text;
 
                 struct SubscriptWalker : RecursiveASTVisitor<SubscriptWalker>
                 {
@@ -496,16 +500,25 @@ namespace xj
                 if (!IdxVD || !IdxVD->getType()->isIntegerType())
                     continue;
 
-                // A root anchors a slice on the parameter its base names.
-                // The pointer pass no longer answers that question — it
-                // rewrites syntactically and leaves every pointer as its own
-                // base — and re-deriving it here by matching spellings is
-                // exactly the fragility that split base resolution out into
-                // its own analysis. Until that analysis is wired in, no local
-                // pointer can be shown to alias a parameter, so no roots are
-                // detected.
+                // A root anchors a slice on the parameter its base
+                // names, so the base has to *be* a pointer parameter.
+                // `base_text` is xj-prepare-baserewrite's proved answer,
+                // and at Kind::Param it is a parameter's own name — so
+                // matching it against the signature is identity, not the
+                // spelling guess this used to be.
                 const ParmVarDecl *base_pd = nullptr;
                 int base_param_idx = -1;
+                for (unsigned i = 0; i < FD->getNumParams(); i++)
+                {
+                    const ParmVarDecl *Parm = FD->getParamDecl(i);
+                    if (Parm->getNameAsString() == P.base_text &&
+                        Parm->getType()->isPointerType())
+                    {
+                        base_pd = Parm;
+                        base_param_idx = static_cast<int>(i);
+                        break;
+                    }
+                }
                 if (!base_pd)
                     continue;
 
@@ -611,10 +624,16 @@ namespace xj
                 // `base + idx` over this slice's base.
                 if (FD->getReturnType()->isPointerType())
                 {
-                    // Grouping pointers by base is identity on resolved
-                    // bases, which base resolution owns; nothing here can
-                    // stand in for it.
+                    // Two pointers share a base iff they resolved to the
+                    // same cell, and equal `base_text` is exactly that:
+                    // the strings were both printed from one cell.
                     std::set<std::string> base_idx_vars;
+                    for (const PtrIndexPointerRecord &Q : fnRec->pointers)
+                    {
+                        if (!Q.index_var.empty() &&
+                            Q.base_text == P.base_text)
+                            base_idx_vars.insert(Q.index_var);
+                    }
                     rec.return_type_changed =
                         allReturnsAreIndexShaped(FD, base_pd, base_idx_vars);
                 }
@@ -1146,9 +1165,18 @@ namespace xj
                 bool return_changed = false;
                 if (FD->getReturnType()->isPointerType())
                 {
-                    // See detectRoots: which pointers share this base is a
-                    // resolved-base question, not a spelling one.
+                    // See detectRoots: equal `base_text` is cell
+                    // identity, printed twice.
                     std::set<std::string> base_idx_vars;
+                    if (const PtrIndexFunctionRecord *fnRec = recordFor(FD, SM))
+                    {
+                        for (const PtrIndexPointerRecord &Q : fnRec->pointers)
+                        {
+                            if (!Q.index_var.empty() &&
+                                Q.base_text == BaseParam->getNameAsString())
+                                base_idx_vars.insert(Q.index_var);
+                        }
+                    }
                     return_changed =
                         allReturnsAreIndexShaped(FD, BaseParam, base_idx_vars);
                 }

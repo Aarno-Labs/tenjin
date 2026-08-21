@@ -1,16 +1,23 @@
 // SliceDetector — RustSlice candidate detection over index-transformed C.
 //
 // Runs as a read-only sweep over every TU before SliceRewriter touches
-// anything. Input is the output of xj-prepare-pointertransform: moving
-// pointers have been replaced by integer index variables in plain form
-// (`base[idx]` accesses, `idx < len` / `idx < (end - base)` comparisons,
-// `return base + idx`), and the metadata side-file identifies each
-// synthesized index variable (its name and the base it indexes). The
-// pointer pass records identity only: this class is the sole author of
-// the per-pointer offset bounds, the per-function PtrIndexSliceRecords,
-// and the global-return map — all tool-private in-memory state (defined
-// below) that SliceRewriter then consumes; the metadata itself is
-// read-only input.
+// anything. Input is the output of xj-prepare-baserewrite, two tools
+// downstream of the source: moving pointers have been replaced by integer
+// index variables in plain form (`base[idx]` accesses, `idx < len` /
+// `idx < (end - base)` comparisons, `return base + idx`), and the metadata
+// side-file identifies each synthesized index variable — its name, and the
+// base the base rewrite tool *proved* it indexes.
+//
+// That base is the one fact this pass takes on trust, and it is worth
+// being exact about why it may be: it is not a spelling somebody wrote,
+// it is a spelling xj-prepare-baserewrite emitted from a cell it proved,
+// substituted at every access itself. Where it proved nothing, `base_text`
+// is empty and the pointer is its own base.
+//
+// This class is the sole author of the per-pointer offset bounds, the
+// per-function PtrIndexSliceRecords, and the global-return map — all
+// tool-private in-memory state (defined below) that SliceRewriter then
+// consumes; the metadata itself is read-only input.
 //
 // Detection uses the metadata records for pointer *identity* (which int
 // locals are indices, over which base) and the AST for everything else

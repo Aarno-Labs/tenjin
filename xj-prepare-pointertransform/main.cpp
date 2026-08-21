@@ -70,6 +70,15 @@ int main(int argc, const char **argv) {
             rc = r;
     }
 
+    // A broken edit-plan invariant means this tool cannot vouch for what it
+    // would have written, so it writes nothing and says so.
+    if (g_invariant_violations != 0) {
+        llvm::errs() << "xj-prepare-pointertransform: " << g_invariant_violations
+                     << " edit-plan invariant violation(s); affected files were "
+                        "left unchanged\n";
+        rc = 1;
+    }
+
     // g_metadata accumulated one function/pointer record set per TU as
     // files were processed; flush it once at the end of the run.
     if (!g_metadata_out.empty() && !g_metadata.writeToFile(g_metadata_out)) {

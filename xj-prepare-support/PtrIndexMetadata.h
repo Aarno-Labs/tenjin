@@ -1,10 +1,19 @@
-// Metadata handed from xj-prepare-pointertransform to
-// xj-prepare-slicetransform.
+// Metadata handed along the pointer_transform pipeline:
+//
+//     xj-prepare-pointertransform  --metadata-out
+//     xj-prepare-baserewrite       --metadata-in and --metadata-out
+//     xj-prepare-slicetransform    --metadata-in
 //
 // The pointer pass records, for every pointer it rewrote as an index, the
-// facts that identify the rewrite in the transformed source. Identity
-// only: after the rewrite a pointer is its own base, and what that base
-// equals is a question for base resolution, not for this side-file.
+// facts that identify the rewrite in the transformed source. It has no
+// opinion about what the pointer's base equals: after its (total,
+// syntactic) rewrite every pointer is its own base.
+//
+// The base rewrite tool is the one that answers that, by running the
+// must-equality analysis over the pointer pass's output. When it proves a
+// base and substitutes it, it fills in `base_text` and re-emits the
+// side-file, and the slice pass consumes a base that was *proved* rather
+// than one that was guessed from spellings.
 
 #ifndef XJ_PREPARE_SUPPORT_PTR_INDEX_METADATA_H
 #define XJ_PREPARE_SUPPORT_PTR_INDEX_METADATA_H
@@ -21,8 +30,12 @@ namespace xj
         std::string name;      // pointer variable name
         std::string index_var; // companion index variable name, "" if none
         int param_index = -1;  // position among the function's params, -1 if local
-        // Source text of the base array this pointer indexes into (e.g. "buf",
-        // "bs->buf"). Empty when the pointer is its own base (a parameter).
+
+        // The base xj-prepare-baserewrite proved this pointer equals and
+        // substituted for it throughout the function, e.g. "buf" or
+        // "t->storage". Empty in two cases that the slice pass treats
+        // alike: the base tool has not run yet, and the base tool declined
+        // to reconstruct, leaving the pointer as its own base.
         std::string base_text;
 
         // Spelling position of the pointer's *declaring identifier*.

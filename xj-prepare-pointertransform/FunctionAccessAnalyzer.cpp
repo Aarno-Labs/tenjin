@@ -3,8 +3,9 @@
 //
 //   1. Driver: constructor, run() (per-function analysis), and
 //      onEndOfTranslationUnit() (the phase orchestrator).
-//   2. transformAllFunctions — plain index rewriting.
-//   3. Helpers — transformPointerVar, metadataRecordFor, applyEdits, etc.
+//   2. collectCandidates — which pointers are rewritten, and where
+//      each companion index is declared.
+//   3. Helpers — recordTransformed, metadataRecordFor, applyEdits, etc.
 //
 // All actual source rewriting is deferred to onEndOfTranslationUnit so
 // that every function in the TU has been analyzed before any edits are
@@ -12,6 +13,7 @@
 
 #include "FunctionAccessAnalyzer.h"
 
+#include "EditPlan.h"
 #include "FunctionKey.h"
 
 // ============================================================================
@@ -38,6 +40,21 @@ void FunctionAccessAnalyzer::collectGlobalPointers(ASTContext &Ctx) {
             continue;
         if (VD->hasExternalStorage())
             continue;
+        // A file-scope pointer with external linkage is read from
+        // translation units this per-TU pass never rewrites: they hold
+        // `extern T *p;` and keep spelling `*p`, with no `p_index_xj` to
+        // advance. Splitting it here pins every one of those uses at
+        // index 0, and because the base pointer still exists the program
+        // links and silently computes the wrong thing.
+        if (VD->isExternallyVisible()) {
+            logFailedPointer(VD, Ctx,
+                             "file-scope pointer has external linkage (visible to "
+                             "other translation units)");
+            if (VERBOSE)
+                llvm::outs() << "[Skip] global " << VD->getNameAsString()
+                             << ": external linkage\n";
+            continue;
+        }
 
         if (VERBOSE)
             llvm::outs() << "[Collect] Found global pointer: " << VD->getNameAsString() << "\n";
@@ -136,97 +153,112 @@ void FunctionAccessAnalyzer::run(const MatchFinder::MatchResult &Result) {
 // reshaping: it rewrites moving pointers as indices and records each
 // rewritten pointer's facts in the metadata side-file. All slice
 // candidate detection happens downstream, in xj-prepare-slicetransform.
+//
+// The order of the phases is the whole design. Which pointers are rewritten
+// is settled first, because a pointer's index may name another's. Every
+// rewrite is then planned across the entire TU before any of them is
+// written, because two rewrites can nest — an offset that reads through a
+// second pointer, say — and only a plan that sees both can fold one into
+// the other instead of losing it.
 void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
     if (!StoredCtx)
         return;
     ASTContext &Ctx = *StoredCtx;
+    SourceManager &SM = Ctx.getSourceManager();
 
-    // Rewrite individual local pointers function-by-function.
-    transformAllFunctions(Ctx);
+    // ---- 1. Who is rewritten, and where each index lives --------------
+    std::vector<PointerPlan> plans;
+    std::set<const VarDecl *> transformed;
+    collectCandidates(Ctx, plans, transformed);
 
-    // Rewrite file-scope pointer variables (they were collected once
-    // during the first run() call).
-    std::set<const VarDecl *> transformed_globals;
-    for (auto &[VD, state] : g_global_pointer_map) {
-        if (state.accesses.empty())
-            continue;
-
-        printAccesses(VD, state.accesses, Ctx);
-
-        std::string error;
-        if (!validatePointerCandidate(VD, state.candidate, state.accesses,
-                                      Ctx, error)) {
-            gLog.error = error;
-            logFailedPointer(VD, Ctx, error);
-            if (VERBOSE)
-                llvm::outs() << "[Skip] global " << VD->getNameAsString()
-                              << ": " << error << "\n";
-            continue;
-        }
-
-        // The Rewriter cannot edit macro-expanded text, so a global
-        // declared inside a macro would have its uses rewritten without
-        // the index variable itself ever being introduced.
-        if (VD->getBeginLoc().isMacroID()) {
-            if (VERBOSE)
-                llvm::outs() << "[Skip] global " << VD->getNameAsString()
-                              << ": declaration in macro expansion\n";
-            continue;
-        }
-
-        transformed_globals.insert(VD);
-    }
-
-    for (auto &[VD, state] : g_global_pointer_map) {
-        for (auto &acc : state.accesses)
+    // ---- 2. A pairwise root is left bare because its owner's assignment
+    // restores the position. If the owner is not rewritten, nothing does,
+    // so the root has to be rebuilt like any other value read.
+    for (PointerPlan &P : plans)
+        for (PointerAccess &acc : *P.accesses)
             if (acc.kind == PointerAccessKind::PairwiseRoot &&
-                !transformed_globals.count(acc.pair_owner))
+                !transformed.count(acc.pair_owner))
                 acc.kind = PointerAccessKind::ValueUse;
-    }
 
-    // Reverse source order, for the same reason transformAllFunctions uses
-    // it: two index declarations sharing an anchor are both InsertTextBefore
-    // at one location, where a later insertion is placed ahead of an
-    // earlier one.
-    std::vector<const VarDecl *> globals;
-    for (const auto &pair : g_global_pointer_map)
-        globals.push_back(pair.first);
-    std::sort(globals.begin(), globals.end(),
-              [&](const VarDecl *A, const VarDecl *B) {
-                  return Ctx.getSourceManager().isBeforeInTranslationUnit(
-                      B->getLocation(), A->getLocation());
-              });
+    // ---- 3. Plan every access rewrite in the TU at once ---------------
+    EditPlan plan(Ctx, transformed);
+    for (PointerPlan &P : plans)
+        plan.add(P.FD, P.ptr, *P.accesses);
+    plan.build();
 
-    for (const VarDecl *VD : globals) {
-        if (!transformed_globals.count(VD))
-            continue;
-        GlobalPointerState &state = g_global_pointer_map[VD];
+    // ---- 4. Write ------------------------------------------------------
+    // Declarations first, in the order the pointers were planned, so that
+    // two sharing an anchor stack back into source order; then one
+    // replacement per outermost access rewrite.
+    std::vector<Edit> edits;
+    for (PointerPlan &P : plans)
+        emitIndexDecl(P.site, P.ptr, plan.indexDeclInit(P.ptr, *P.accesses), SM,
+                      edits);
+    plan.appendRootEdits(edits);
 
-        g_pointers_found++;
+    // A failure here is a bug in this tool. Leaving the file untouched and
+    // failing the run is the only honest response: the alternative is C
+    // that compiles and means something else.
+    if (!plan.verify(edits))
+        return;
 
-        if (generateTransformation(/*FD=*/nullptr, VD, state.candidate,
-                                   state.accesses, transformed_globals, Ctx)) {
-            gLog.replacedPointer = true;
-            g_pointers_replaced++;
-            SourceManager &SM = Ctx.getSourceManager();
-            SourceLocation Loc = VD->getLocation();
-            g_succeeded_pointers.push_back({
-                VD->getNameAsString(),
-                "(global)",
-                SM.getSpellingLineNumber(Loc),
-                SM.getSpellingColumnNumber(Loc)
-            });
-        }
-    }
+    applyEdits(edits, SM);
+
+    // ---- 5. Record what was done --------------------------------------
+    for (const PointerPlan &P : plans)
+        recordTransformed(P, Ctx);
 }
 
 // ============================================================================
-// transformAllFunctions — rewrite every local pointer that's safe to
-// rewrite, function by function, in plain (base-param-relative) form.
+// collectCandidates — decide the rewritten set, TU-wide
 // ============================================================================
-
-void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
+//
+// Validation is a pure function of one pointer's own access list, and
+// placement is a pure function of its declaration, so a single pass
+// settles both. Nothing here depends on what any other pointer turns out
+// to be — which is what lets step 2 above run once, on a final answer.
+//
+// Pointers are appended in reverse source order within each scope. Two
+// index declarations sharing an anchor are both InsertTextBefore at one
+// location, where a later insertion is placed ahead of an earlier one, so
+// planning them backwards puts their declarations back in source order —
+// which is what a paired index needs to name the one before it.
+void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
+                                               std::vector<PointerPlan> &plans,
+                                               std::set<const VarDecl *> &transformed) {
     SourceManager &SM = Ctx.getSourceManager();
+
+    auto consider = [&](const FunctionDecl *FD, const VarDecl *PtrVar,
+                        PointerCandidate &candidate,
+                        std::vector<PointerAccess> &accesses) {
+        printAccesses(PtrVar, accesses, Ctx);
+
+        std::string error;
+        if (!validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error)) {
+            gLog.error = error;
+            logFailedPointer(PtrVar, Ctx, error);
+            if (VERBOSE)
+                llvm::outs() << "[Skip] " << PtrVar->getNameAsString() << ": "
+                             << error << "\n";
+            return;
+        }
+
+        g_pointers_found++;
+
+        PointerPlan P;
+        P.FD = FD;
+        P.ptr = PtrVar;
+        P.accesses = &accesses;
+        if (!findIndexDeclSite(FD, PtrVar, candidate, Ctx, P.site)) {
+            error = "No position for the index declaration";
+            gLog.error = error;
+            logFailedPointer(PtrVar, Ctx, error);
+            return;
+        }
+
+        plans.push_back(std::move(P));
+        transformed.insert(PtrVar);
+    };
 
     for (auto &[FDCanon, analysis] : g_function_analyses) {
         const FunctionDecl *FD = analysis.FD;
@@ -247,45 +279,80 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
                   });
         assignIndexNames(ptrs);
 
-        // Validation is a pure function of a single pointer's own access
-        // list, so one pass settles the whole function. Nothing here
-        // depends on what any other pointer turns out to be.
-        std::set<const VarDecl *> transformed;
-        for (const VarDecl *PtrVar : ptrs) {
-            std::string error;
-            if (validatePointerCandidate(PtrVar, analysis.tracked_pointers[PtrVar],
-                                         analysis.accesses[PtrVar], Ctx, error)) {
-                transformed.insert(PtrVar);
-            } else {
-                gLog.error = error;
-                logFailedPointer(PtrVar, Ctx, error);
-                if (VERBOSE)
-                    llvm::outs() << "[Skip] " << PtrVar->getNameAsString()
-                                 << ": " << error << "\n";
-            }
-        }
-
-        // A pairwise root is left bare because its owner's assignment
-        // restores the position. If the owner is not rewritten, nothing
-        // does, so the root has to be rebuilt like any other value read.
-        for (const VarDecl *PtrVar : ptrs)
-            for (auto &acc : analysis.accesses[PtrVar])
-                if (acc.kind == PointerAccessKind::PairwiseRoot &&
-                    !transformed.count(acc.pair_owner))
-                    acc.kind = PointerAccessKind::ValueUse;
-
-        // Reverse source order. Two index declarations sharing an anchor
-        // are both InsertTextBefore at one location, where a later
-        // insertion is placed ahead of an earlier one — so rewriting the
-        // pointers backwards puts their declarations back in source order,
-        // which is what a paired index needs to name the one before it.
-        for (auto it = ptrs.rbegin(); it != ptrs.rend(); ++it) {
-            if (!transformed.count(*it))
-                continue;
-            transformPointerVar(FD, *it, analysis.tracked_pointers[*it],
-                                analysis.accesses[*it], transformed, Ctx);
-        }
+        for (auto it = ptrs.rbegin(); it != ptrs.rend(); ++it)
+            consider(FD, *it, analysis.tracked_pointers[*it], analysis.accesses[*it]);
     }
+
+    // File-scope pointers, collected once during the first run() call.
+    std::vector<const VarDecl *> globals;
+    for (const auto &pair : g_global_pointer_map)
+        globals.push_back(pair.first);
+    std::sort(globals.begin(), globals.end(),
+              [&](const VarDecl *A, const VarDecl *B) {
+                  return SM.isBeforeInTranslationUnit(B->getLocation(),
+                                                      A->getLocation());
+              });
+
+    for (const VarDecl *VD : globals) {
+        GlobalPointerState &state = g_global_pointer_map[VD];
+        if (state.accesses.empty())
+            continue;
+        // The Rewriter cannot edit macro-expanded text, so a global
+        // declared inside a macro would have its uses rewritten without
+        // the index variable itself ever being introduced.
+        if (VD->getBeginLoc().isMacroID()) {
+            if (VERBOSE)
+                llvm::outs() << "[Skip] global " << VD->getNameAsString()
+                             << ": declaration in macro expansion\n";
+            continue;
+        }
+        consider(/*FD=*/nullptr, VD, state.candidate, state.accesses);
+    }
+}
+
+// ============================================================================
+// recordTransformed — logs and the metadata side-file
+// ============================================================================
+
+void FunctionAccessAnalyzer::recordTransformed(const PointerPlan &P, ASTContext &Ctx) {
+    SourceManager &SM = Ctx.getSourceManager();
+    SourceLocation Loc = P.ptr->getLocation();
+
+    gLog.replacedPointer = true;
+    g_pointers_replaced++;
+    g_succeeded_pointers.push_back({P.ptr->getNameAsString(),
+                                    P.FD ? P.FD->getNameAsString() : "(global)",
+                                    SM.getSpellingLineNumber(Loc),
+                                    SM.getSpellingColumnNumber(Loc)});
+
+    // Record the transformed pointer in the metadata side-file so the
+    // downstream tools know which index variables exist. Identity only:
+    // nothing about a base crosses this boundary, because this pass no
+    // longer has an opinion about one — xj-prepare-baserewrite fills in
+    // base_text once it has proved a base.
+    if (!P.FD)
+        return;
+    xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(P.FD, Ctx);
+    if (!fnRec)
+        return;
+
+    xj::PtrIndexPointerRecord rec;
+    rec.name = P.ptr->getNameAsString();
+    rec.index_var = indexNameFor(P.ptr);
+    rec.param_index = -1;
+    if (const auto *PD = dyn_cast<ParmVarDecl>(P.ptr))
+        rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
+    fnRec->pointers.push_back(std::move(rec));
+
+    // Note the *pre-rewrite* position of the declaring identifier and
+    // defer translating it, because pointers earlier in the function
+    // have not been rewritten yet. The identifier token itself is never
+    // rewritten, so it maps to itself and end-of-TU is free to look it
+    // up by offset. See PendingDeclLoc.
+    auto [FID, Off] = SM.getDecomposedLoc(SM.getSpellingLoc(Loc));
+    if (FID.isValid())
+        g_pending_decl_locs.push_back(
+            {xj::functionKey(P.FD, SM), fnRec->pointers.size() - 1, FID, Off});
 }
 
 // ============================================================================
@@ -339,49 +406,6 @@ void FunctionAccessAnalyzer::printAccesses(const VarDecl *VD,
     }
 }
 
-// Validate-and-rewrite one local pointer. Bumps the per-file counters
-// and emits the [REPLACED] / [FAILED] log entries.
-void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
-                                                  const VarDecl *PtrVar,
-                                                  PointerCandidate &candidate,
-                                                  std::vector<PointerAccess> &accesses,
-                                                  const std::set<const VarDecl *> &transformed,
-                                                  ASTContext &Ctx) {
-    printAccesses(PtrVar, accesses, Ctx);
-
-    g_pointers_found++;
-
-    if (!generateTransformation(FD, PtrVar, candidate, accesses, transformed, Ctx))
-        return;
-
-    gLog.replacedPointer = true;
-    g_pointers_replaced++;
-    SourceManager &SM = Ctx.getSourceManager();
-    SourceLocation Loc = PtrVar->getLocation();
-    g_succeeded_pointers.push_back({
-        PtrVar->getNameAsString(),
-        FD ? FD->getNameAsString() : "(global)",
-        SM.getSpellingLineNumber(Loc),
-        SM.getSpellingColumnNumber(Loc)
-    });
-
-    // Record the transformed pointer in the metadata side-file so the
-    // slice pass knows which index variables exist. Identity only: nothing
-    // about a base crosses this boundary, because this pass no longer has
-    // an opinion about one.
-    if (!FD)
-        return;
-    if (xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(FD, Ctx)) {
-        xj::PtrIndexPointerRecord rec;
-        rec.name = PtrVar->getNameAsString();
-        rec.index_var = indexNameFor(PtrVar);
-        rec.param_index = -1;
-        if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
-            rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
-        fnRec->pointers.push_back(std::move(rec));
-    }
-}
-
 // Return the metadata record for `FD`, creating it (with the right
 // source file stamped) on first use. Keying by xj::functionKey rather
 // than by bare name is what keeps distinct same-named statics apart:
@@ -401,53 +425,36 @@ FunctionAccessAnalyzer::metadataRecordFor(const FunctionDecl *FD, ASTContext &Ct
     return &it->second;
 }
 
-// Push a vector<Edit> through the Rewriter. Edits are applied
-// highest-offset first so earlier offsets remain valid; any edit that
-// overlaps an already-edited range is dropped to protect against the
-// same span being rewritten twice by different phases.
+// Push a vector<Edit> through the Rewriter, highest offset first so the
+// offsets of the edits still to come stay valid.
+//
+// Nothing is dropped here. Overlap used to be discovered at this point and
+// resolved by skipping the later edit, which is silent and — once every
+// pointer reference has to be rewritten — wrong: the skipped rewrite is a
+// reference left with its old meaning. EditPlan now settles overlap before
+// anything reaches the Rewriter, so an edit that arrives here is applied.
+//
+// The sort is stable because insertions at one location stack in the order
+// they are applied, and that order is how two index declarations sharing an
+// anchor end up in source order.
 void FunctionAccessAnalyzer::applyEdits(std::vector<Edit> &edits, SourceManager &SM) {
-    std::sort(edits.begin(), edits.end(),
-              [](const Edit &A, const Edit &B) { return A.offset > B.offset; });
+    std::stable_sort(edits.begin(), edits.end(),
+                     [](const Edit &A, const Edit &B) { return A.offset > B.offset; });
 
     for (const auto &e : edits) {
         if (VERBOSE) {
             llvm::outs() << "[Edit] type=" << e.type
                          << " offset=" << e.offset
-                         << " end_offset=" << SM.getFileOffset(e.end)
                          << " text=\"" << e.text << "\""
                          << " at " << e.start.printToString(SM) << "\n";
         }
 
-        // Skip edits whose range overlaps with an already-applied edit.
-        // This prevents garbled output when two transformed pointers
-        // both try to rewrite the same comparison expression.
-        if (e.type == Edit::Replace) {
-            FileID eFile = SM.getFileID(e.start);
-            unsigned eStart = e.offset;
-            unsigned eEnd = SM.getFileOffset(e.end);
-            bool overlaps = false;
-            for (const auto &r : m_edited_ranges) {
-                if (r.file == eFile && eStart < r.end && eEnd > r.begin) {
-                    overlaps = true;
-                    break;
-                }
-            }
-            if (overlaps) {
-                if (VERBOSE)
-                    llvm::outs() << "[Edit] SKIPPED (overlapping range)\n";
-                continue;
-            }
-        }
-
         switch (e.type) {
-        case Edit::Replace: {
-            // Use the (SourceLocation, unsigned, StringRef) overload to avoid
-            // Rewriter's getRangeSize including prior InsertTextBefore at same offset
-            unsigned origLen = SM.getFileOffset(e.end) - e.offset;
-            TheRewriter.ReplaceText(e.start, origLen, e.text);
-            m_edited_ranges.push_back(
-                {SM.getFileID(e.start), e.offset, SM.getFileOffset(e.end)});
-        }
+        case Edit::Replace:
+            // The (SourceLocation, unsigned, StringRef) overload avoids
+            // Rewriter's getRangeSize including a prior InsertTextBefore at
+            // the same offset.
+            TheRewriter.ReplaceText(e.start, SM.getFileOffset(e.end) - e.offset, e.text);
             break;
         case Edit::InsertBefore:
             TheRewriter.InsertTextBefore(e.start, e.text);
@@ -458,3 +465,4 @@ void FunctionAccessAnalyzer::applyEdits(std::vector<Edit> &edits, SourceManager 
         }
     }
 }
+

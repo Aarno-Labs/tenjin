@@ -17,6 +17,12 @@ class PointerTransformAction : public ASTFrontendAction {
     std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, StringRef file) override;
 
   private:
+    // Translate every pointer's recorded declaration position from this
+    // TU's input buffer into the buffer this pass emits, and stamp it on
+    // the metadata record. Runs at end of TU because that is the first
+    // moment every edit is in place.
+    void stampDeclLocations();
+
     Rewriter TheRewriter;                          // Holds all source edits for this TU.
     std::unique_ptr<FunctionAccessAnalyzer> FA;    // Owns analysis + transformation logic.
     MatchFinder Finder;                            // Drives the AST matcher.

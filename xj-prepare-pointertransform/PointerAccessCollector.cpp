@@ -37,6 +37,38 @@ bool PointerAccessCollector::isNullExpr(const Expr *E)
     return false;
 }
 
+// True when one of `CE`'s arguments is a bare reference to `PtrVar`.
+//
+// The wrapper passes the retained pointer as its `base` and the index as
+// its `start`, so the result is only an offset from `p`'s own region when
+// `p` is what the call searched. `p = strchr(q, c)` lands in q's region and
+// falls through to an ordinary assignment, which reseats as before.
+// The region an allowlisted search runs over: argument 0 for every function
+// in the allowlist, and what the wrapper takes as its `base`.
+//
+// It has to be a bare variable. The rewrite names the region twice — once to
+// reseat the assigned pointer, once as the wrapper's base — so an argument
+// with side effects could not be duplicated safely.
+static const DeclRefExpr *searchBaseArg(const CallExpr *CE)
+{
+    if (!CE || CE->getNumArgs() == 0)
+        return nullptr;
+    const auto *DRE = dyn_cast<DeclRefExpr>(CE->getArg(0)->IgnoreParenImpCasts());
+    return DRE && isa<VarDecl>(DRE->getDecl()) ? DRE : nullptr;
+}
+
+// True when `CE` is an allowlisted search whose result is an offset into the
+// region named by its first argument.
+static bool isAllowedSearch(const CallExpr *CE)
+{
+    if (!CE || !CE->getType()->isPointerType())
+        return false;
+    const FunctionDecl *Callee = CE->getDirectCallee();
+    if (!Callee || !g_allowed_funcs.count(Callee->getNameAsString()))
+        return false;
+    return searchBaseArg(CE) != nullptr;
+}
+
 // ============================================================================
 // Parent walking
 // ============================================================================
@@ -84,24 +116,17 @@ static bool consumerOf(const Stmt *S, ASTContext &Ctx,
 // which is what makes the rewrite total — splitting only ever improves
 // what the base *is*, it is never required for the rewrite to be sound.
 //
+// The offset terms are recorded as expressions, not as text. They are
+// lifted out of the right-hand side and re-emitted in the index, and a
+// term can read through a pointer this pass is rewriting — so where they
+// land they are rendered by the edit plan, exactly like the offset of an
+// element access.
+//
 // The one case where splitting *is* required is a root that is itself a
 // tracked pointer. After the rewrite such a root holds its base, not its
 // position, so `p = q + 1` left alone would silently reset p to wherever q
 // started. Recording the root here is what lets the rewriter pair the
 // indices instead.
-bool PointerAccessCollector::referencesTracked(const Stmt *S) const
-{
-    if (!S)
-        return false;
-    if (const auto *DRE = dyn_cast<DeclRefExpr>(S))
-        if (isTracked(DRE->getDecl()))
-            return true;
-    for (const Stmt *Child : S->children())
-        if (referencesTracked(Child))
-            return true;
-    return false;
-}
-
 static bool referencesAnyOf(const Stmt *S, const std::set<const Decl *> &bound)
 {
     if (!S)
@@ -139,15 +164,17 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     pa.root_expr = nullptr;
     pa.offset_text = "0";
     pa.operand_text = "";
+    pa.index_terms.clear();
 
     if (!RHS)
         return;
 
     const Expr *Core = RHS->IgnoreParenImpCasts();
     const Expr *Root = nullptr;
-    std::vector<const Expr *> offsets; // sub-expressions copied into the index
-    std::string standalone;            // the index when the root is not paired
-    std::string remainder;             // what follows the root's index when it is
+    std::vector<const Expr *> offsets;   // sub-expressions lifted into the index
+    std::vector<OffsetTerm> index_terms; // the same, with their operators
+    std::string standalone;              // the index when the root is not paired
+    std::string remainder;               // what follows the root's index when it is
 
     if (const auto *UO = dyn_cast<UnaryOperator>(Core))
     {
@@ -167,6 +194,7 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
             return;
         Root = Base;
         offsets.push_back(ASE->getIdx());
+        index_terms.push_back({ASE->getIdx(), /*minus=*/false});
         standalone = getSourceText(ASE->getIdx(), SM, LO);
         remainder = " + " + standalone;
     }
@@ -199,10 +227,14 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
         {
             const auto *BO = cast<BinaryOperator>(Cur);
             offsets.push_back(BO->getRHS());
+            index_terms.push_back({BO->getRHS(), BO->getOpcode() == BO_Sub});
             terms.push_back(std::string(BO->getOpcode() == BO_Add ? " + " : " - ") +
                             getSourceText(BO->getRHS(), SM, LO));
             Cur = BO->getLHS()->IgnoreParenImpCasts();
         }
+        // The chain is walked outermost-first, which is right-to-left in
+        // the source. Both orders are reversed to read left to right.
+        std::reverse(index_terms.begin(), index_terms.end());
         for (auto it = terms.rbegin(); it != terms.rend(); ++it)
             remainder += *it;
         // `q + 1` counts from 1 on its own; `q - 1` needs the zero to
@@ -211,23 +243,20 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
                                                          : "0" + remainder;
     }
 
-    // The offset is copied verbatim into the index declaration, so decline
-    // the split when that text would not mean there what it means here:
-    // when it names another tracked pointer (whose spelling this pass is
-    // about to repurpose as a base), or when it names something the
-    // declaration's own for-init binds (which a hoisted index precedes).
+    // An offset that names another tracked pointer is fine: the term is an
+    // expression, and wherever it lands the edit plan rewrites what is
+    // inside it. Scope is the one thing rendering cannot fix — an index
+    // hoisted out of a for-init sits *before* the loop, where the names
+    // that same for-init binds do not exist yet.
     //
     // Declining is always safe. The right-hand side is then kept whole and
     // the index starts at zero, which is the same pointer by a different
     // route — and any tracked pointer inside it is rewritten in place as an
     // ordinary value read.
-    for (const Expr *O : offsets)
-    {
-        if (referencesTracked(O))
-            return;
-        if (owner_is_declared_here && escapesForInitScope(O, Owner))
-            return;
-    }
+    if (owner_is_declared_here)
+        for (const Expr *O : offsets)
+            if (escapesForInitScope(O, Owner))
+                return;
 
     // Pairing two indices only works when both pointers are rewritten in
     // the same batch: each batch decides which of its members transformed,
@@ -247,6 +276,7 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     {
         pa.offset_text = standalone;
         pa.operand_text = remainder;
+        pa.index_terms = std::move(index_terms);
     }
 }
 
@@ -259,6 +289,25 @@ const VarDecl *PointerAccessCollector::pairwiseOwner(const DeclRefExpr *DRE)
     DynTypedNode Parent;
     if (!consumerOf(DRE, Ctx, Outer, Parent))
         return nullptr;
+
+    // `q = strchr(p, c)` — the search argument names the region the result
+    // lands in, and the assignment's rewrite spells that region itself, so
+    // this reference emits no edit. No climbing: the argument is the region
+    // exactly when it is the call's first operand.
+    if (const auto *CE = dyn_cast_or_null<CallExpr>(Parent.get<Stmt>()))
+    {
+        if (searchBaseArg(CE) == DRE && isAllowedSearch(CE))
+        {
+            const Stmt *Up = skipTransparentParents(CE, Ctx);
+            if (const auto *BO = dyn_cast_or_null<BinaryOperator>(Up))
+            {
+                const auto *LHS =
+                    dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts());
+                if (BO->getOpcode() == BO_Assign && LHS && isTracked(LHS->getDecl()))
+                    return cast<VarDecl>(LHS->getDecl());
+            }
+        }
+    }
 
     // Climb transparent wrappers and +/- arithmetic looking for an
     // assignment or an initializer this reference might be the root of,
@@ -331,7 +380,8 @@ bool PointerAccessCollector::VisitVarDecl(VarDecl *VD)
     if (VD->hasInit())
     {
         PointerAccess pa;
-        pa.kind = PointerAccessKind::Init;
+        pa.kind = isNullExpr(VD->getInit()) ? PointerAccessKind::InitNull
+                                            : PointerAccessKind::Init;
         pa.loc = VD->getInit()->getBeginLoc();
         pa.expr = VD->getInit();
         splitAssignedValue(VD->getInit(), pa, VD, /*owner_is_declared_here=*/true);
@@ -560,6 +610,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 emit(is_write ? PointerAccessKind::SubscriptWrite
                               : PointerAccessKind::Subscript,
                      ASE->getBeginLoc());
+            pa.subscript_expr = ASE->getIdx();
             pa.subscript_text = getSourceText(ASE->getIdx(), SM, LO);
             return;
         }
@@ -568,11 +619,27 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
     // ---- BinaryOperator ---------------------------------------------------
     if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(Parent))
     {
+        // p = strchr(...) — the region is unchanged, so the whole assignment
+        // collapses to an index update through a generated wrapper.
+        if (BO->getOpcode() == BO_Assign && isSelf(BO->getLHS()))
+        {
+            const auto *RhsCall =
+                dyn_cast<CallExpr>(BO->getRHS()->IgnoreParenImpCasts());
+            if (isAllowedSearch(RhsCall))
+            {
+                emit(PointerAccessKind::AssignFromAllowedFunc, BO->getBeginLoc(), BO)
+                    .offset_text = RhsCall->getDirectCallee()->getNameAsString();
+                return;
+            }
+        }
+
         // p = RHS — the (base, index) pair is reassigned together.
         if (BO->getOpcode() == BO_Assign && isSelf(BO->getLHS()))
         {
             PointerAccess &pa =
-                emit(PointerAccessKind::Assign, BO->getBeginLoc(), BO);
+                emit(isNullExpr(BO->getRHS()) ? PointerAccessKind::AssignNull
+                                              : PointerAccessKind::Assign,
+                     BO->getBeginLoc(), BO);
             splitAssignedValue(BO->getRHS(), pa, PtrVar);
             return;
         }
@@ -594,7 +661,19 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
         if ((BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub) &&
             isSelf(BO->getLHS()))
         {
+            // Collect the offset terms while climbing, innermost first —
+            // which is left-to-right in the source, and so the order they
+            // have to be re-emitted in. Each term is kept as its own node,
+            // not as a slice of the chain's text: a term may itself contain
+            // a reference this pass has to rewrite, and only a node can be
+            // addressed by the edit plan.
+            //
+            // The climb also insists the chain stay on its left spine. The
+            // pointer is the leftmost leaf, so `*(k + (p + 1))` reaches this
+            // code with `p + 1` as a right operand — a shape that has no
+            // offset to lift out, and falls through to the value read.
             const Stmt *Current = BO;
+            std::vector<OffsetTerm> terms{{BO->getRHS(), BO->getOpcode() == BO_Sub}};
             while (true)
             {
                 const Stmt *Up = skipTransparentParents(Current, Ctx);
@@ -604,16 +683,6 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 {
                     if (DerefUO->getOpcode() != UO_Deref)
                         break;
-                    // The offset is whatever follows the pointer's name in
-                    // the arithmetic. Using the outermost chain node keeps
-                    // parens that IgnoreParenImpCasts would drop.
-                    std::string arith_text =
-                        getSourceText(cast<Expr>(Current)->getSourceRange(), SM, LO);
-                    std::string ptr_text = getSourceText(DRE, SM, LO);
-                    std::string offset_str;
-                    size_t pos = arith_text.find(ptr_text);
-                    if (pos != std::string::npos)
-                        offset_str = arith_text.substr(pos + ptr_text.length());
 
                     const Stmt *DerefParent = skipTransparentParents(DerefUO, Ctx);
                     bool is_write = false;
@@ -625,13 +694,18 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                         emit(is_write ? PointerAccessKind::DerefOffsetWrite
                                       : PointerAccessKind::DerefOffset,
                              DerefUO->getBeginLoc(), DerefUO);
-                    pa.offset_text = offset_str;
+                    pa.offset_terms = terms;
+                    for (const OffsetTerm &t : terms)
+                        pa.offset_text += (t.minus ? " - " : " + ") +
+                                          getSourceText(t.expr, SM, LO);
                     return;
                 }
                 if (const auto *UpBO = dyn_cast<BinaryOperator>(Up))
                 {
-                    if (UpBO->getOpcode() == BO_Add || UpBO->getOpcode() == BO_Sub)
+                    if ((UpBO->getOpcode() == BO_Add || UpBO->getOpcode() == BO_Sub) &&
+                        UpBO->getLHS()->IgnoreParenImpCasts() == Current)
                     {
+                        terms.push_back({UpBO->getRHS(), UpBO->getOpcode() == BO_Sub});
                         Current = UpBO;
                         continue;
                     }
@@ -651,7 +725,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
             if ((BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) &&
                 isNullExpr(Other))
             {
-                emit(PointerAccessKind::NullTest, BO->getBeginLoc());
+                emit(PointerAccessKind::NullTest, BO->getBeginLoc(), BO);
                 return;
             }
             emitValueUse();
