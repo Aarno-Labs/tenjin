@@ -5,12 +5,13 @@
 static int table[4] = {10, 20, 30, 40};
 
 /* Slice-detectable: a moving pointer bounded by buf + n. */
-static int sum(const int *buf, int n) {
-    const int *p = buf;
+typedef struct { int *ptr; size_t len; } RustSlice_int;
+
+static int sum(RustSlice_int arr) {
     int p_index_xj = 0;
     int s = 0;
-    while ((p + p_index_xj) < buf + n) {
-        s += p[p_index_xj];
+    while (p_index_xj < arr.len) {
+        s += arr.ptr[p_index_xj];
         p_index_xj++;
     }
     return s;
@@ -23,7 +24,7 @@ static int pick(int i) {
     return -1;
 }
 
-int a_sum(const int *buf, int n) { return sum(buf, n); }
+int a_sum(const int *buf, int n) { return sum((RustSlice_int){buf, n}); }
 
 int a_pick(int i) {
     int p = pick(i);

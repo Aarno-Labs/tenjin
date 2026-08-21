@@ -4,16 +4,25 @@
       "file": "deriv_chain.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 10,
+          "decl_line": 12,
           "index_var": "r_index_xj",
           "name": "r",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 10,
+          "decl_line": 10,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 10,
+          "decl_line": 8,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1

@@ -4,21 +4,33 @@
       "file": "for_init_sibling_names.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 27,
+          "decl_line": 44,
           "index_var": "q_index_xj_1",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 19,
+          "decl_line": 44,
           "index_var": "p_index_xj_1",
           "name": "p",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 23,
+          "decl_line": 39,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 15,
+          "decl_line": 39,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -29,21 +41,33 @@
       "file": "for_init_sibling_names.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 23,
+          "decl_line": 24,
           "index_var": "q_index_xj_1",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 15,
+          "decl_line": 24,
           "index_var": "p_index_xj_1",
           "name": "p",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 23,
+          "decl_line": 20,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 15,
+          "decl_line": 20,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1

@@ -4,6 +4,9 @@
       "file": "const_base_write.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 8,
           "index_var": "w_index_xj",
           "name": "w",
           "param_index": -1

@@ -1,0 +1,43 @@
+{
+  "functions": {
+    "checksum@lvalue_base.c": {
+      "file": "lvalue_base.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 35,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "checksum_and_reset@lvalue_base.c": {
+      "file": "lvalue_base.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 44,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "checksum_logged@lvalue_base.c": {
+      "file": "lvalue_base.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 54,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

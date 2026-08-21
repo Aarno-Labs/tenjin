@@ -1,0 +1,21 @@
+{
+  "functions": {
+    "derived@for_init_multi_inherit.c": {
+      "file": "for_init_multi_inherit.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "index_var": "r_index_xj",
+          "name": "r",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

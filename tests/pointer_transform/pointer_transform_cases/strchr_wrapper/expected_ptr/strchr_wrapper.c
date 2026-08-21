@@ -1,13 +1,19 @@
 #include <stdio.h>
 #include <string.h>
 
+static int strchr_index_xj(const char *base, int start, int c) {
+    const char *result = strchr(base + start, c);
+    if (!result) return -1;
+    return (int)(result - base);
+}
+
 static int count_commas(const char *s) {
     const char *p = s;
     int p_index_xj = 0;
     int count = 0;
     while (1) {
-        (p = strchr((p + p_index_xj), ','), p_index_xj = 0);
-        if (!p)
+        p_index_xj = strchr_index_xj(p, p_index_xj, ',');
+        if (!(p && p_index_xj >= 0))
             break;
         count++;
         p_index_xj++;

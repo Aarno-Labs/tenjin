@@ -1,6 +1,8 @@
 #ifndef LIB_H
 #define LIB_H
 
-int sum(int *buf, int n);
+typedef struct { int *ptr; size_t len; } RustSlice_int;
+
+int sum(RustSlice_int arr);
 
 #endif

@@ -4,6 +4,9 @@
       "file": "anon_aggregate_fields.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 32,
           "index_var": "m_index_xj",
           "name": "m",
           "param_index": -1
@@ -14,6 +17,9 @@
       "file": "anon_aggregate_fields.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 47,
           "index_var": "m_index_xj",
           "name": "m",
           "param_index": -1

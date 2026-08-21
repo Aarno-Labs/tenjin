@@ -4,11 +4,17 @@
       "file": "for_init_unbraced_nested.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 31,
+          "decl_line": 35,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 23,
+          "decl_line": 35,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -19,11 +25,17 @@
       "file": "for_init_unbraced_nested.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 31,
+          "decl_line": 89,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 23,
+          "decl_line": 89,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -34,11 +46,17 @@
       "file": "for_init_unbraced_nested.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 35,
+          "decl_line": 53,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 27,
+          "decl_line": 53,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -49,11 +67,17 @@
       "file": "for_init_unbraced_nested.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 31,
+          "decl_line": 20,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 23,
+          "decl_line": 20,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -64,6 +88,9 @@
       "file": "for_init_unbraced_nested.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 19,
+          "decl_line": 68,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1

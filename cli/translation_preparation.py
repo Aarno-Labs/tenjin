@@ -2110,20 +2110,23 @@ def run_preparation_passes(
     def prep_pointertransform(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         """Pointer arithmetic reduction + RustSlice signature reshaping."""
         ptr_builddir = hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
+        base_builddir = hermetic.xj_prepare_baserewrite_build_dir(repo_root.localdir())
         slice_builddir = hermetic.xj_prepare_slicetransform_build_dir(repo_root.localdir())
-        for builddir in (ptr_builddir, slice_builddir):
+        for builddir in (ptr_builddir, base_builddir, slice_builddir):
             assert builddir.exists(), (
                 f"Build directory {builddir} does not exist, should have been built already"
             )
 
         # Keep in sync with the tools' CMakeLists.txt
         PTR_TOOL_NAME = "xj-prepare-pointertransform"
+        BASE_TOOL_NAME = "xj-prepare-baserewrite"
         SLICE_TOOL_NAME = "xj-prepare-slicetransform"
         ptr_binary = ptr_builddir / PTR_TOOL_NAME
+        base_binary = base_builddir / BASE_TOOL_NAME
         slice_binary = slice_builddir / SLICE_TOOL_NAME
-        # Either tool can be the one that fails, so the pass reports
-        # under a name covering both; the stderr is labelled per tool.
-        pass_name = f"{PTR_TOOL_NAME}+{SLICE_TOOL_NAME}"
+        # Any of the three can be the one that fails, so the pass reports
+        # under a name covering all of them; the stderr is labelled per tool.
+        pass_name = f"{PTR_TOOL_NAME}+{BASE_TOOL_NAME}+{SLICE_TOOL_NAME}"
 
         compdb_path = current_codebase / "compile_commands.json"
         store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
@@ -2142,8 +2145,10 @@ def run_preparation_passes(
             .strip()
         )
 
-        # Side-file handed from the pointer tool to the slice tool; must
-        # not outlive this pass, lest later passes or builds see it.
+        # Side-file threaded through all three tools: the pointer tool
+        # writes it, the base tool reads and re-writes it in place (adding
+        # the bases it proved), the slice tool reads it. Must not outlive
+        # this pass, lest later passes or builds see it.
         metadata_path = current_codebase / PTR_INDEX_METADATA_FILENAME
 
         common_args = [
@@ -2173,26 +2178,37 @@ def run_preparation_passes(
                 check=True,
                 capture_output=True,
             )
-            ptr_stderr = labelled(PTR_TOOL_NAME, cp.stderr)
-            metadata_args = (
+            prior_stderr = labelled(PTR_TOOL_NAME, cp.stderr)
+            metadata_in = (
                 [f"--metadata-in={metadata_path.as_posix()}"] if metadata_path.exists() else []
             )
-            try:
-                cp_slice = hermetic.run(
-                    [slice_binary.as_posix(), *metadata_args, *common_args],
-                    cwd=current_codebase,
-                    check=True,
-                    capture_output=True,
-                )
-            except CalledProcessError as e:
-                # The pointer tool's warnings usually explain why the
-                # slice tool could not re-parse its output, so carry
-                # them through rather than reporting the failing tool's
-                # stderr alone.
-                e.stderr = ptr_stderr + labelled(SLICE_TOOL_NAME, e.stderr or b"")
-                raise
-            cp_slice.stderr = ptr_stderr + labelled(SLICE_TOOL_NAME, cp_slice.stderr)
-            return cp_slice
+
+            # Each tool re-parses the previous one's output, so a failure
+            # downstream is usually explained by an upstream warning.
+            # Carry the accumulated stderr through rather than reporting
+            # the failing tool's alone.
+            def chained(tool_name: str, binary, extra: list[str], prior: bytes):
+                try:
+                    cp_next = hermetic.run(
+                        [binary.as_posix(), *extra, *common_args],
+                        cwd=current_codebase,
+                        check=True,
+                        capture_output=True,
+                    )
+                except CalledProcessError as e:
+                    e.stderr = prior + labelled(tool_name, e.stderr or b"")
+                    raise
+                cp_next.stderr = prior + labelled(tool_name, cp_next.stderr)
+                return cp_next
+
+            # The base tool takes --metadata-in and --metadata-out on the
+            # same path: it consumes the pointer tool's records and hands
+            # back the same set with the bases it proved filled in.
+            base_metadata_args = (
+                [*metadata_in, f"--metadata-out={metadata_path.as_posix()}"] if metadata_in else []
+            )
+            cp_base = chained(BASE_TOOL_NAME, base_binary, base_metadata_args, prior_stderr)
+            return chained(SLICE_TOOL_NAME, slice_binary, metadata_in, cp_base.stderr)
 
         xj_start = time.time()
         try:

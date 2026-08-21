@@ -4,6 +4,9 @@
       "file": "mutated_base.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 15,
           "index_var": "dst_index_xj",
           "name": "dst",
           "param_index": -1

@@ -4,6 +4,9 @@
       "file": "value_escape.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 16,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -14,6 +17,9 @@
       "file": "value_escape.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 32,
+          "decl_line": 8,
           "index_var": "s_index_xj",
           "name": "s",
           "param_index": 0

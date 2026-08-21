@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "sum_range@callgraph_propagation.c": {
+      "file": "callgraph_propagation.c",
+      "pointers": [
+        {
+          "base_text": "lo",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

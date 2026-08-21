@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "drain@global_ptr_mix.c": {
+      "file": "global_ptr_mix.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

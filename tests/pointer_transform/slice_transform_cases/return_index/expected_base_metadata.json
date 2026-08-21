@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "find@return_index.c": {
+      "file": "return_index.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

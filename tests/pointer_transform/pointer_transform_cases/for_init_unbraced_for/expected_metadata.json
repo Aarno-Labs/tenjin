@@ -4,11 +4,17 @@
       "file": "for_init_unbraced_for.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 27,
+          "decl_line": 98,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 19,
+          "decl_line": 98,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -19,11 +25,17 @@
       "file": "for_init_unbraced_for.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 27,
+          "decl_line": 83,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 19,
+          "decl_line": 83,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -34,6 +46,9 @@
       "file": "for_init_unbraced_for.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 19,
+          "decl_line": 38,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -44,11 +59,17 @@
       "file": "for_init_unbraced_for.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 27,
+          "decl_line": 69,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 19,
+          "decl_line": 69,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -59,11 +80,17 @@
       "file": "for_init_unbraced_for.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 27,
+          "decl_line": 23,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 19,
+          "decl_line": 23,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -74,11 +101,17 @@
       "file": "for_init_unbraced_for.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 23,
+          "decl_line": 117,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 15,
+          "decl_line": 117,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
@@ -89,11 +122,17 @@
       "file": "for_init_unbraced_for.c",
       "pointers": [
         {
+          "base_text": "",
+          "decl_col": 27,
+          "decl_line": 55,
           "index_var": "q_index_xj",
           "name": "q",
           "param_index": -1
         },
         {
+          "base_text": "",
+          "decl_col": 19,
+          "decl_line": 55,
           "index_var": "p_index_xj",
           "name": "p",
           "param_index": -1
