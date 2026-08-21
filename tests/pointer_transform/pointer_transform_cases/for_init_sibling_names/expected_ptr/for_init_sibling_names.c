@@ -15,14 +15,14 @@
  * and the placement have to land together. */
 static int siblings(int *a, int n) {
     int s = 0;
-    int q_index_xj = 1;
     int p_index_xj = 0;
-    for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-        s += a[p_index_xj] + a[q_index_xj];
-    int q_index_xj_1 = 2;
+    int q_index_xj = 1;
+    for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+        s += p[p_index_xj] + q[q_index_xj];
     int p_index_xj_1 = 0;
-    for (int *p = a, *q = a + 2; p_index_xj_1 < n; p_index_xj_1++, q_index_xj_1++)
-        s += a[p_index_xj_1] * 2 + a[q_index_xj_1];
+    int q_index_xj_1 = 2;
+    for (int *p = a, *q = a; (p + p_index_xj_1) < a + n; p_index_xj_1++, q_index_xj_1++)
+        s += p[p_index_xj_1] * 2 + q[q_index_xj_1];
     return s;
 }
 
@@ -34,15 +34,15 @@ static int siblings(int *a, int n) {
  * scope analysis. */
 static int nested_scopes(int *a, int n) {
     int s = 0;
-    int q_index_xj = 1;
     int p_index_xj = 0;
-    for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-        s += a[p_index_xj] + a[q_index_xj];
+    int q_index_xj = 1;
+    for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+        s += p[p_index_xj] + q[q_index_xj];
     {
-        int q_index_xj_1 = 3;
         int p_index_xj_1 = 0;
-        for (int *p = a, *q = a + 3; p_index_xj_1 < n; p_index_xj_1++, q_index_xj_1++)
-            s += a[p_index_xj_1] - a[q_index_xj_1];
+        int q_index_xj_1 = 3;
+        for (int *p = a, *q = a; (p + p_index_xj_1) < a + n; p_index_xj_1++, q_index_xj_1++)
+            s += p[p_index_xj_1] - q[q_index_xj_1];
     }
     return s;
 }

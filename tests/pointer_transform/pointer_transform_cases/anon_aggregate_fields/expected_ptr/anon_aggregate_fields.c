@@ -29,13 +29,14 @@ struct Ctx {
 };
 
 static unsigned sum_spans(struct Ctx* ctx) {
+    Mark* m;
     int m_index_xj = 0;
     unsigned total = 0;
 
-    for (m_index_xj = 0; m_index_xj < ctx->n_marks; m_index_xj++) {
-        total += (ctx->marks)[m_index_xj].end - (ctx->marks)[m_index_xj].beg;   /* two anonymous levels */
-        total += (ctx->marks)[m_index_xj].tag;            /* one anonymous level */
-        total += (unsigned)(ctx->marks)[m_index_xj].ch;   /* named field, no levels */
+    for ((m = ctx->marks, m_index_xj = 0); (m + m_index_xj) < ctx->marks + ctx->n_marks; m_index_xj++) {
+        total += m[m_index_xj].end - m[m_index_xj].beg;   /* two anonymous levels */
+        total += m[m_index_xj].tag;            /* one anonymous level */
+        total += (unsigned)m[m_index_xj].ch;   /* named field, no levels */
     }
     return total;
 }
@@ -43,11 +44,12 @@ static unsigned sum_spans(struct Ctx* ctx) {
 /* Writes through the doubly-nested fields, so the ArrowWrite path is
  * exercised as well as the read path. */
 static void widen(struct Ctx* ctx) {
+    Mark* m;
     int m_index_xj = 0;
 
-    for (m_index_xj = 0; m_index_xj < ctx->n_marks; m_index_xj++) {
-        (ctx->marks)[m_index_xj].end++;
-        (ctx->marks)[m_index_xj].beg--;
+    for ((m = ctx->marks, m_index_xj = 0); (m + m_index_xj) < ctx->marks + ctx->n_marks; m_index_xj++) {
+        m[m_index_xj].end++;
+        m[m_index_xj].beg--;
     }
 }
 

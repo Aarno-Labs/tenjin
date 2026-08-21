@@ -4,7 +4,6 @@
       "file": "anon_aggregate_fields.c",
       "pointers": [
         {
-          "base_text": "ctx->marks",
           "index_var": "m_index_xj",
           "name": "m",
           "param_index": -1
@@ -15,7 +14,6 @@
       "file": "anon_aggregate_fields.c",
       "pointers": [
         {
-          "base_text": "ctx->marks",
           "index_var": "m_index_xj",
           "name": "m",
           "param_index": -1

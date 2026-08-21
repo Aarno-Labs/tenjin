@@ -1,137 +1,32 @@
 // TransformationMethods.cpp — emits the actual rewrites.
 //
-// generateTransformation:        rewrite a single local pointer's
-//                                  declaration + every use.
-// generateGlobalTransformation:  same, but for a file-scope pointer
-//                                  (uses the original variable name as
-//                                  the index name, no _index suffix).
-// applyEdits:                    apply a vector<Edit> via the Rewriter.
+// One function rewrites every tracked pointer, local, parameter or
+// file-scope alike. There is only one shape to emit:
 //
-// RustSlice signature reshaping (singleton / pointer-pair / root slice
-// functions) lives in xj-prepare-slicetransform; this tool only records
-// the detection results into the metadata side-file.
+//     T *p          stays exactly where it is, holding a base
+//     int p_index_xj    declared beside it, holding the position
 //
-// The case statements inside generateTransformation /
-// generateGlobalTransformation are organized by PointerAccessKind and
-// each produces one or more Edit records. Collected edits are applied
-// in reverse-offset order so earlier offsets stay valid.
+// so the three paths this file used to have — collapse the declaration,
+// retain a parameter, duplicate the whole switch for globals — collapse
+// into one. The only thing that varies between them is where the index
+// declaration goes.
 
 #include "FunctionAccessAnalyzer.h"
 
-// Wrap a base-array text in parens if naive concatenation of "[idx]"
-// onto it would parse incorrectly:
-//   "data + 2"      -> "(data + 2)"     (top-level + binds looser than [])
-//   "(short *) buf" -> "((short *) buf)"  ([] binds tighter than a cast)
-//
-// If neither hazard applies, the original text is returned unchanged.
-static std::string safeBase(const std::string &base)
-{
-    if (base.empty())
-        return base;
-
-    int depth = 0;
-    for (char c : base)
-    {
-        if (c == '(' || c == '[')
-            depth++;
-        else if (c == ')' || c == ']')
-            depth--;
-        else if (depth == 0 && (c == '+' || c == '-'))
-            return "(" + base + ")";
-    }
-
-    // Cast detection: if the first paren group ends before the end of
-    // the string, what follows is the cast target — and [] would bind
-    // to it instead of the whole cast.
-    if (base[0] == '(')
-    {
-        int d = 0;
-        for (size_t i = 0; i < base.size(); i++)
-        {
-            if (base[i] == '(')
-                d++;
-            else if (base[i] == ')')
-            {
-                d--;
-                if (d == 0 && i + 1 < base.size())
-                {
-                    for (size_t j = i + 1; j < base.size(); j++)
-                    {
-                        if (!isspace((unsigned char)base[j]))
-                            return "(" + base + ")";
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    return base;
-}
-
 // ============================================================================
-// Turning an index back into a pointer
+// Placing an index declaration alongside a for-init declaration
 // ============================================================================
 //
-// A pointer that can hold NULL is represented by the out-of-range index
-// -1 (see PointerAccessKind::InitNull). This means that the correct way
-// to reconstruct the pointer's value is (p_index < 0 ? NULL : p + p_index).
+// An ordinary declaration gets its index on the next line, where
+// everything the declaration binds is already in scope. A for-init has no
+// position after it that accepts a statement — that slot is the loop
+// condition — so its index goes before the whole loop.
 //
-// NB:
-// xj-prepare-slicetransform can identify this and simplify when possible,
-// so this should be kept in sync with collapseNullGuard in SliceRewriter.cpp.
-//
-// The sentinel -1 reaches an index from exactly three places. Two are
-// explicit nulls; additionally, the generated wrappers for
-// allowlisted functions return -1 for "not found" (see
-// PointerAccessKind::AssignFromAllowedFunc — `p = strchr(...)` becomes
-// `p_index = strchr_index_xj(...)`), so a strchr-derived pointer can be
-// null without any NULL ever appearing in the source.
-//
-// If a future access kind can assign the literal -1 to an index, it belongs
-// in this list.
-// As such, note that a *parameter* serving as its own base is not such a case:
-// there the index is a pure non-negative offset and the null-ness stays
-// in the base, which is left untouched.
-static bool pointerMayBeNull(const std::vector<PointerAccess> &accesses)
-{
-    for (const auto &access : accesses)
-    {
-        if (access.kind == PointerAccessKind::InitNull ||
-            access.kind == PointerAccessKind::AssignNull ||
-            access.kind == PointerAccessKind::AssignFromAllowedFunc)
-            return true;
-    }
-    return false;
-}
-
-// The pointer value for `index_name`, guarded only when the sentinel can
-// actually reach this site. Pointers that never hold NULL keep the bare
-// `base + index` spelling, which is what the slice pass already matches.
-static std::string pointerFromIndex(const std::string &base_array,
-                                    const std::string &index_name,
-                                    bool may_be_null)
-{
-    std::string ptr = base_array + " + " + index_name;
-    if (!may_be_null)
-        return ptr;
-    return "(" + index_name + " < 0 ? (void *)0 : " + ptr + ")";
-}
-
-// ============================================================================
-// Placing an index declaration alongside a pointer's declaration
-// ============================================================================
-//
-// Two shapes make "just insert it after the DeclStmt" wrong.
-//
-// A for-init DeclStmt has no position *after* it that accepts a statement
-// — that slot is the loop condition — so the anchor is the whole ForStmt
-// and the index goes before it. That is as far as it may travel: the
-// anchor has to execute exactly as often as the declaration it precedes,
-// and a pointer declared in a loop body is re-initialized on every
-// iteration, so hoisting to the block or function top would leave a stale
-// index on the second pass. Immediately before the loop, nothing runs in
-// between.
+// That is as far as it may travel: the anchor has to execute exactly as
+// often as the declaration it precedes, and a pointer declared in a loop
+// body is re-initialized on every iteration, so hoisting to the block or
+// function top would leave a stale index on the second pass. Immediately
+// before the loop, nothing runs in between.
 //
 // And the anchor is only a legal home for a declaration if it sits
 // directly inside a compound statement. As the unbraced substatement of an
@@ -146,25 +41,15 @@ struct DeclAnchor
     bool needs_braces = false;  // ... after wrapping it in a block
 };
 
-static DeclAnchor declAnchorFor(const DeclStmt *DS, ASTContext &Ctx)
+static DeclAnchor forInitAnchorFor(const ForStmt *FS, ASTContext &Ctx)
 {
     DeclAnchor A;
-    const ForStmt *FS = forStmtInitializedBy(DS, Ctx);
-    A.stmt = FS ? static_cast<const Stmt *>(FS) : static_cast<const Stmt *>(DS);
+    A.stmt = FS;
 
     auto Parents = Ctx.getParents(*A.stmt);
     if (!Parents.empty() && Parents[0].get<CompoundStmt>())
         return A;
 
-    // Braces can only be wrapped around the loop. Were the anchor the
-    // DeclStmt itself, a block would scope away the very variable being
-    // declared — but that shape does not arise: a bare DeclStmt outside a
-    // compound statement is not valid C to begin with.
-    if (!FS)
-    {
-        A.stmt = nullptr;
-        return A;
-    }
     A.needs_braces = true;
     return A;
 }
@@ -225,8 +110,136 @@ static bool emitDeclBefore(const DeclAnchor &A, const std::string &decl,
 }
 
 // ============================================================================
-// generateTransformation — rewrite one local pointer (the bread-and-butter
-// case). Walks the access list, builds a vector<Edit>, applies them.
+// Edit builders
+// ============================================================================
+//
+// Every edit has to land on real source text. Validation rejects a pointer
+// whose own reference sits inside a macro expansion, but an edit is not
+// always anchored on that reference: an Init or an Assign is bracketed
+// around the whole assignment, so its far end is the end of the right-hand
+// side. `p = NULL;` ends inside the expansion of NULL while `p` itself is
+// ordinary file text — and a macro location is neither rewritable (the
+// Rewriter drops the edit, which is how `(p = NULL;` loses its closing
+// paren) nor sortable, since its file offset belongs to the expansion
+// buffer rather than the file.
+//
+// Mapping through the expansion puts the edit on the macro *name* token,
+// which is the text a reader would edit by hand. A range that cannot be
+// expressed in the file at all — one whose ends come from different
+// expansions — yields an invalid range, and the builder reports failure so
+// the caller abandons the pointer rather than emitting half a rewrite.
+
+// The file-text span of `S`, past-the-end, or an invalid range.
+static CharSourceRange fileRangeOf(const Stmt *S, const SourceManager &SM,
+                                   const LangOptions &LO)
+{
+    return Lexer::makeFileCharRange(
+        CharSourceRange::getTokenRange(S->getSourceRange()), SM, LO);
+}
+
+static bool replaceNode(std::vector<Edit> &edits, const Stmt *S,
+                        const std::string &text, const SourceManager &SM,
+                        const LangOptions &LO)
+{
+    CharSourceRange R = fileRangeOf(S, SM, LO);
+    if (R.isInvalid())
+        return false;
+
+    Edit e;
+    e.type = Edit::Replace;
+    e.start = R.getBegin();
+    e.offset = SM.getFileOffset(e.start);
+    e.end = R.getEnd();
+    e.text = text;
+    edits.push_back(e);
+    return true;
+}
+
+static bool insertBeforeNode(std::vector<Edit> &edits, const Stmt *S,
+                             const std::string &text, const SourceManager &SM,
+                             const LangOptions &LO)
+{
+    CharSourceRange R = fileRangeOf(S, SM, LO);
+    if (R.isInvalid())
+        return false;
+
+    Edit e;
+    e.type = Edit::InsertBefore;
+    e.start = R.getBegin();
+    e.offset = SM.getFileOffset(e.start);
+    e.text = text;
+    edits.push_back(e);
+    return true;
+}
+
+static bool insertAfterNode(std::vector<Edit> &edits, const Stmt *S,
+                            const std::string &text, const SourceManager &SM)
+{
+    // InsertAfterToken advances past the token it is given, so this one
+    // wants the *start* of the last token rather than fileRangeOf's
+    // past-the-end position. Keeping InsertAfterToken also keeps the
+    // stacking order: a later insertion at a location goes last, which is
+    // what puts a closing tail outside one already emitted there.
+    SourceLocation End = S->getEndLoc();
+    if (End.isMacroID())
+        End = SM.getExpansionRange(End).getEnd();
+    if (End.isInvalid() || !End.isFileID())
+        return false;
+
+    Edit e;
+    e.type = Edit::InsertAfterToken;
+    e.start = End;
+    e.offset = SM.getFileOffset(End);
+    e.text = text;
+    edits.push_back(e);
+    return true;
+}
+
+// True when the value of an assignment expression is consumed. A discarded
+// assignment can end at the index update; a consumed one has to hand back a
+// pointer, so it appends `p + p_index_xj` as a third comma element.
+static bool assignmentValueIsUsed(const BinaryOperator *BO, ASTContext &Ctx)
+{
+    auto Parents = Ctx.getParents(*BO);
+    if (Parents.empty())
+        return true;
+    const Stmt *P = Parents[0].get<Stmt>();
+    if (!P)
+        return true;
+    if (isa<CompoundStmt>(P) || isa<LabelStmt>(P) || isa<CaseStmt>(P) ||
+        isa<DefaultStmt>(P))
+        return false;
+    if (const auto *FS = dyn_cast<ForStmt>(P))
+        return FS->getCond() == BO;
+    if (const auto *IS = dyn_cast<IfStmt>(P))
+        return IS->getCond() == BO;
+    if (const auto *WS = dyn_cast<WhileStmt>(P))
+        return WS->getCond() == BO;
+    if (const auto *DS = dyn_cast<DoStmt>(P))
+        return DS->getCond() == BO;
+    if (const auto *SS = dyn_cast<SwitchStmt>(P))
+        return SS->getCond() == BO;
+    return true;
+}
+
+// The index expression an Init or Assign should install. When the root is a
+// pointer this pass also rewrote, the two indices are paired — `p = q + 1`
+// is `p_index_xj = q_index_xj + 1`. Otherwise the root's value is still its
+// own position, so the offset counts from zero.
+static std::string indexValueFor(const PointerAccess &acc,
+                                 const std::set<const VarDecl *> &transformed)
+{
+    if (const auto *DRE = dyn_cast_or_null<DeclRefExpr>(acc.root_expr))
+    {
+        const auto *RootVD = dyn_cast<VarDecl>(DRE->getDecl());
+        if (RootVD && transformed.count(RootVD))
+            return indexNameFor(RootVD) + acc.operand_text;
+    }
+    return acc.offset_text;
+}
+
+// ============================================================================
+// generateTransformation — rewrite one pointer, wherever it lives
 // ============================================================================
 
 bool FunctionAccessAnalyzer::generateTransformation(
@@ -234,480 +247,252 @@ bool FunctionAccessAnalyzer::generateTransformation(
     const VarDecl *PtrVar,
     PointerCandidate &candidate,
     std::vector<PointerAccess> &accesses,
+    const std::set<const VarDecl *> &transformed,
     ASTContext &Ctx)
 {
 
     SourceManager &SM = Ctx.getSourceManager();
     const LangOptions &LO = Ctx.getLangOpts();
-    Stmt *Body = FD->getBody();
 
-    std::string ptr_name = PtrVar->getNameAsString();
-    std::string index_name = indexNameFor(PtrVar);
-    std::string base_array = safeBase(candidate.base_array_text);
-    bool may_be_null = pointerMayBeNull(accesses);
-
-    // Note: the body is always rewritten in *plain* form — base params
-    // kept, indices counted from the original base, comparisons against
-    // the original len/end params. RustSlice candidate detection, the
-    // signature-level reshaping, and the corresponding body touch-ups are
-    // all performed downstream by xj-prepare-slicetransform, driven by
-    // this tool's output plus the metadata side-file.
+    const std::string ptr = PtrVar->getNameAsString();
+    const std::string idx = indexNameFor(PtrVar);
+    const std::string elem = ptr + "[" + idx; // prefix of every element access
+    const std::string value = "(" + ptr + " + " + idx + ")";
 
     std::vector<Edit> edits;
 
-    // ---- Step 1: rewrite the pointer's declaration --------------------
-    // `T *p = init;` becomes `int p_index = init;` (with init mapped
-    // to the appropriate integer form: 0 for InitArray, n for
-    // InitArrayOffset, -1 for InitNull). Parameter pointers are
-    // handled separately in the signature-rewrite paths.
-    if (!candidate.is_parameter)
+    // ---- Step 1: declare the index beside the pointer --------------------
+    //
+    // The pointer's own declaration is left alone except for the root
+    // rewrite of a split initializer. Nothing is ever deleted, so no text
+    // this pass emits can name something that is no longer there.
+    const PointerAccess *init = nullptr;
+    for (const auto &access : accesses)
     {
-        const DeclStmt *DS = findDeclStmtForVar(PtrVar, Body);
-        if (!DS)
+        if (access.kind == PointerAccessKind::Init)
         {
-            if (VERBOSE)
-                llvm::outs() << "[Error] Could not find DeclStmt for " << ptr_name << "\n";
-            return false;
-        }
-
-        // Build the replacement declaration
-        std::string init_value;
-        bool found_init = false;
-        for (const auto &access : accesses)
-        {
-            switch (access.kind)
-            {
-            case PointerAccessKind::InitNull:
-                init_value = "-1";
-                found_init = true;
-                break;
-            case PointerAccessKind::InitArray:
-                init_value = "0";
-                found_init = true;
-                break;
-            case PointerAccessKind::InitArrayOffset:
-                init_value = access.offset_text;
-                found_init = true;
-                break;
-            default:
-                break;
-            }
-            if (found_init)
-                break;
-        }
-
-        if (!found_init)
-            init_value = "0";
-
-        bool multi_decl = isMultiDeclarator(DS);
-        bool for_init = forStmtInitializedBy(DS, Ctx) != nullptr;
-
-        std::string replacement = "int " + index_name + " = " + init_value + ";";
-
-        if (multi_decl && for_init)
-        {
-            // The index cannot go after this DeclStmt — in a for-init that
-            // slot is the loop condition — and the statement cannot be
-            // replaced in place either, because the other declarators have
-            // to survive. Place it before the whole loop.
-            //
-            // The initializer is not always the literal 0, so this move is
-            // only sound when it names nothing the statement binds;
-            // validation rejects the pointer otherwise, so by the time we
-            // get here the hoist is known to be safe.
-            if (!emitDeclBefore(declAnchorFor(DS, Ctx), replacement, SM, LO, edits))
-            {
-                if (VERBOSE)
-                    llvm::outs() << "[Error] No position for the index of "
-                                 << ptr_name << "\n";
-                return false;
-            }
-        }
-        else if (multi_decl)
-        {
-            // Multi-declarator: keep the DeclStmt intact (PtrVar becomes unused)
-            // and insert the index declaration on a new line after it
-            SourceLocation DeclEnd = DS->getEndLoc();
-            std::string indent = getIndentBeforeLoc(DS->getBeginLoc(), SM).str();
-
-            Edit e;
-            e.type = Edit::InsertAfterToken;
-            e.offset = SM.getFileOffset(DeclEnd);
-            e.start = DeclEnd;
-            e.text = "\n" + indent + replacement;
-            edits.push_back(e);
-        }
-        else
-        {
-            SourceLocation DeclStart = DS->getBeginLoc();
-            SourceLocation DeclEnd = Lexer::getLocForEndOfToken(
-                DS->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(DeclStart);
-            e.start = DeclStart;
-            e.end = DeclEnd;
-            e.text = replacement;
-            edits.push_back(e);
+            init = &access;
+            break;
         }
     }
-    else
+
+    std::string index_init = init ? indexValueFor(*init, transformed) : "0";
+    std::string index_decl = "int " + idx + " = " + index_init + ";";
+
+    if (candidate.is_parameter)
     {
-        // Parameter: insert index variable at top of function body
-        // Keep the parameter itself, add int p_index = 0; after opening brace
-        const CompoundStmt *CS = dyn_cast<CompoundStmt>(Body);
+        // The parameter arrives holding its base; the index starts at 0.
+        const auto *CS = FD ? dyn_cast_or_null<CompoundStmt>(FD->getBody()) : nullptr;
         if (!CS)
         {
             if (VERBOSE)
                 llvm::outs() << "[Error] Function body is not a CompoundStmt\n";
             return false;
         }
-
         SourceLocation lbrace = CS->getLBracLoc();
         std::string indent = getIndentBeforeLoc(lbrace, SM).str() + "    ";
-        std::string insertion = "\n" + indent + "int " + index_name + " = 0;";
 
+        // InsertBefore at the position just past `{`, rather than
+        // InsertAfterToken on `{` itself: pointers are rewritten in reverse
+        // source order (see transformAllFunctions), and only InsertBefore
+        // stacks a later insertion ahead of an earlier one, which puts the
+        // declarations back in source order.
         Edit e;
-        e.type = Edit::InsertAfterToken;
-        e.offset = SM.getFileOffset(lbrace);
-        e.start = lbrace;
-        e.text = insertion;
+        e.type = Edit::InsertBefore;
+        e.start = Lexer::getLocForEndOfToken(lbrace, 0, SM, LO);
+        e.offset = SM.getFileOffset(e.start);
+        e.text = "\n" + indent + index_decl;
         edits.push_back(e);
-
-        // The transformation assumes that the base array of a parameter is the parameter itself
-        assert((candidate.base_array_text.empty() ||
-                candidate.base_array_text == ptr_name) &&
-               "parameter base override would discard a live distinct base");
-        base_array = ptr_name;
+    }
+    else if (PtrVar->hasGlobalStorage())
+    {
+        // File scope: the index is a file-scope int with the same linkage.
+        std::string prefix =
+            PtrVar->getStorageClass() == SC_Static ? "static " : "";
+        auto semi = Lexer::findNextToken(PtrVar->getEndLoc(), SM, LO);
+        if (!semi || !semi->is(tok::semi))
+        {
+            if (VERBOSE)
+                llvm::outs() << "[Error] No terminator after global " << ptr << "\n";
+            return false;
+        }
+        Edit e;
+        e.type = Edit::InsertBefore;
+        e.start = Lexer::getLocForEndOfToken(semi->getLocation(), 0, SM, LO);
+        e.offset = SM.getFileOffset(e.start);
+        e.text = "\n" + prefix + index_decl;
+        edits.push_back(e);
+    }
+    else
+    {
+        const DeclStmt *DS = FD ? findDeclStmtForVar(PtrVar, FD->getBody()) : nullptr;
+        if (!DS)
+        {
+            if (VERBOSE)
+                llvm::outs() << "[Error] Could not find DeclStmt for " << ptr << "\n";
+            return false;
+        }
+        if (const ForStmt *FS = forStmtInitializedBy(DS, Ctx))
+        {
+            if (!emitDeclBefore(forInitAnchorFor(FS, Ctx), index_decl, SM, LO, edits))
+            {
+                if (VERBOSE)
+                    llvm::outs() << "[Error] No position for the index of " << ptr << "\n";
+                return false;
+            }
+        }
+        else
+        {
+            // On the next line, where every name the declaration binds —
+            // including a sibling declarator's index — is already in scope.
+            // InsertBefore at the position past the terminator rather than
+            // InsertAfterToken on it: pointers are rewritten in reverse
+            // source order, and only InsertBefore stacks a later insertion
+            // ahead of an earlier one, which is what puts two indices
+            // sharing this anchor back in source order.
+            std::string indent = getIndentBeforeLoc(DS->getBeginLoc(), SM).str();
+            Edit e;
+            e.type = Edit::InsertBefore;
+            e.start = Lexer::getLocForEndOfToken(DS->getEndLoc(), 0, SM, LO);
+            e.offset = SM.getFileOffset(e.start);
+            e.text = "\n" + indent + index_decl;
+            edits.push_back(e);
+        }
     }
 
-    // When the pointer variable is itself retained as the base array (a
-    // parameter used as its own base), the offset index starts at 0 and only
-    // ever advances, so its -1 sentinel never models a NULL pointer. The
-    // pointer's null-ness still lives in the retained pointer variable, so
-    // NULL tests (!p, p == NULL, p = NULL, if (p)) must stay on the original
-    // pointer rather than be rewritten against the index. (The -1 sentinel
-    // only encodes NULL in the full-replacement case where the pointer
-    // variable is removed and the index becomes the whole pointer value.)
-    bool ptr_retained = candidate.is_parameter && (base_array == ptr_name);
+    // A split initializer keeps only its root: `int *q = p + 1;` becomes
+    // `int *q = p;` with the `+ 1` moved into q's index.
+    if (init && init->root_expr && init->rhs_expr &&
+        init->root_expr != init->rhs_expr->IgnoreParenImpCasts())
+    {
+        if (!replaceNode(edits, init->rhs_expr,
+                         getSourceText(init->root_expr, SM, LO), SM, LO))
+        {
+            if (VERBOSE)
+                llvm::outs() << "[Error] Initializer of " << ptr
+                             << " is not file text\n";
+            return false;
+        }
+    }
 
-    // ---- Step 2: rewrite each access ---------------------------------
-    // One case per PointerAccessKind. Each case looks up the relevant
-    // AST nodes from the access record, builds the replacement text,
-    // and pushes an Edit covering the right source range. Init kinds
-    // were already handled by the declaration rewrite above and are
-    // skipped here.
+    // ---- Step 2: rewrite each access -------------------------------------
     for (const auto &access : accesses)
     {
-        if (access.kind == PointerAccessKind::InitNull ||
-            access.kind == PointerAccessKind::InitArray ||
-            access.kind == PointerAccessKind::InitArrayOffset)
-            continue;
+        auto parentOf = [&](const Expr *E)
+        { return skipTransparentParents(E, Ctx); };
 
-        auto findParent = [&](const Expr *E) -> const Stmt *
-        {
-            return skipTransparentParents(E, Ctx);
-        };
-        auto findGrandParent = [&](const Stmt *P) -> const Stmt *
-        {
-            return skipTransparentParents(P, Ctx);
-        };
+        // Set by every builder below. A builder that cannot place its edit
+        // would leave this access in pointer form while its siblings moved
+        // to the index form, so the pointer is abandoned whole.
+        bool placed = true;
 
         switch (access.kind)
         {
 
-        // ---- Dereference: *p -> arr[p_index] ----
+        // Nothing to do. A retained pointer is null exactly when it was
+        // before, so null tests stand; a pairwise root is carried by its
+        // owner's assignment; sizeof never reads the value.
+        case PointerAccessKind::Init:
+        case PointerAccessKind::NullTest:
+        case PointerAccessKind::NoEdit:
+        case PointerAccessKind::PairwiseRoot:
+        case PointerAccessKind::AddressOf:
+        case PointerAccessKind::Unknown:
+            break;
+
+        // ---- Element access -------------------------------------------
         case PointerAccessKind::Deref:
         case PointerAccessKind::DerefWrite:
         {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
+            const auto *UO = dyn_cast_or_null<UnaryOperator>(parentOf(access.expr));
             if (!UO)
                 break;
-
-            SourceLocation StarLoc = UO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                UO->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StarLoc);
-            e.start = StarLoc;
-            e.end = EndLoc;
-            e.text = base_array + "[" + index_name + "]";
-            edits.push_back(e);
+            placed = replaceNode(edits, UO, elem + "]", SM, LO);
             break;
         }
 
-        // ---- Deref with post-increment: *p++ -> arr[p_index++] ----
         case PointerAccessKind::DerefPostInc:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *IncOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!IncOp)
-                break;
-            const Stmt *GP = findGrandParent(IncOp);
-            const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp)
-                break;
-
-            SourceLocation StartLoc = DerefOp->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                DerefOp->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = base_array + "[" + index_name + "++]";
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Deref with pre-increment: *++p -> arr[++p_index] ----
         case PointerAccessKind::DerefPreInc:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *IncOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!IncOp)
-                break;
-            const Stmt *GP = findGrandParent(IncOp);
-            const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp)
-                break;
-
-            SourceLocation StartLoc = DerefOp->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                DerefOp->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = base_array + "[++" + index_name + "]";
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Deref with post-decrement: *p-- -> arr[p_index--] ----
         case PointerAccessKind::DerefPostDec:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *DecOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!DecOp)
-                break;
-            const Stmt *GP = findGrandParent(DecOp);
-            const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp)
-                break;
-
-            SourceLocation StartLoc = DerefOp->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                DerefOp->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = base_array + "[" + index_name + "--]";
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Deref with pre-decrement: *--p -> arr[--p_index] ----
         case PointerAccessKind::DerefPreDec:
         {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *DecOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!DecOp)
+            const Stmt *P = parentOf(access.expr);
+            const auto *MutOp = dyn_cast_or_null<UnaryOperator>(P);
+            if (!MutOp)
                 break;
-            const Stmt *GP = findGrandParent(DecOp);
-            const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
+            const auto *DerefOp =
+                dyn_cast_or_null<UnaryOperator>(skipTransparentParents(MutOp, Ctx));
             if (!DerefOp)
                 break;
-
-            SourceLocation StartLoc = DerefOp->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                DerefOp->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = base_array + "[--" + index_name + "]";
-            edits.push_back(e);
+            const char *op = (access.kind == PointerAccessKind::DerefPostInc ||
+                              access.kind == PointerAccessKind::DerefPreInc)
+                                 ? "++"
+                                 : "--";
+            bool is_post = access.kind == PointerAccessKind::DerefPostInc ||
+                           access.kind == PointerAccessKind::DerefPostDec;
+            placed = replaceNode(edits, DerefOp,
+                                 is_post ? ptr + "[" + idx + op + "]"
+                                         : ptr + "[" + op + idx + "]",
+                                 SM, LO);
             break;
         }
 
-        // ---- Deref with offset: *(p + expr) -> arr[p_index + expr] ----
         case PointerAccessKind::DerefOffset:
         case PointerAccessKind::DerefOffsetWrite:
         {
-            // enclosing_stmt holds the UO_Deref node
-            const UnaryOperator *DerefUO = access.enclosing_stmt
-                                               ? dyn_cast<UnaryOperator>(access.enclosing_stmt)
-                                               : nullptr;
+            const auto *DerefUO =
+                dyn_cast_or_null<UnaryOperator>(access.enclosing_stmt);
             if (!DerefUO)
                 break;
-
-            SourceLocation StartLoc = DerefUO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                DerefUO->getEndLoc(), 0, SM, LO);
-
-            // offset_text has the arithmetic after the pointer name (e.g. " - 1")
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = base_array + "[" + index_name + access.offset_text + "]";
-            edits.push_back(e);
+            placed = replaceNode(edits, DerefUO, elem + access.offset_text + "]",
+                                 SM, LO);
             break;
         }
 
-        // ---- Arrow access: p->field -> arr[p_index].field ----
         case PointerAccessKind::ArrowAccess:
         case PointerAccessKind::ArrowWrite:
         {
-            const Stmt *P = findParent(access.expr);
-            const MemberExpr *ME = P ? dyn_cast<MemberExpr>(P) : nullptr;
+            const auto *ME = dyn_cast_or_null<MemberExpr>(parentOf(access.expr));
             if (!ME)
                 break;
-
-            SourceLocation StartLoc = ME->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                ME->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = base_array + "[" + index_name + "]." + access.field_name;
-            edits.push_back(e);
+            placed = replaceNode(edits, ME, elem + "]." + access.field_name, SM, LO);
             break;
         }
 
-        // ---- Subscript: p[i] -> arr[p_index + i] ----
         case PointerAccessKind::Subscript:
         case PointerAccessKind::SubscriptWrite:
         {
-            const Stmt *P = findParent(access.expr);
-            const ArraySubscriptExpr *ASE = P ? dyn_cast<ArraySubscriptExpr>(P) : nullptr;
+            const auto *ASE =
+                dyn_cast_or_null<ArraySubscriptExpr>(parentOf(access.expr));
             if (!ASE)
                 break;
-
-            SourceLocation StartLoc = ASE->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                ASE->getEndLoc(), 0, SM, LO);
-
-            std::string index_expr;
-            if (access.subscript_text == "0")
-            {
-                index_expr = index_name;
-            }
-            else
-            {
-                index_expr = index_name + " + " + access.subscript_text;
-            }
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = base_array + "[" + index_expr + "]";
-            edits.push_back(e);
+            std::string text = access.subscript_text == "0"
+                                   ? elem + "]"
+                                   : elem + " + " + access.subscript_text + "]";
+            placed = replaceNode(edits, ASE, text, SM, LO);
             break;
         }
 
-        // ---- Standalone increment: p++ -> p_index++ ----
-        // If the increment expression's value is consumed as a pointer
-        // (passed to a function, returned, assigned to a pointer var),
-        // wrap the rewrite so the result type stays a pointer:
-        //   func(++p) -> func(base + ++p_index)
-        //   func(p++) -> func(base + p_index++)
-        // Otherwise (statement context, e.g. just `p++;`) keep the
-        // integer-only form. Same logic applies to Decrement below.
+        // ---- Position --------------------------------------------------
+        // `p++` moves the index. If the expression's value is consumed as a
+        // pointer, the result is rebuilt so the type stays a pointer:
+        // `unhex(++in)` becoming `unhex(++in_index_xj)` once passed an int
+        // where a `char *` was expected, and c2rust turned the int into
+        // literal addresses like 0x4.
         //
-        // Pre-increment semantics: `++p` returns the new pointer, and
-        // `(base + ++p_index)` evaluates `++p_index` first (yielding
-        // the new index), then adds base — same value.
-        // Post-increment semantics: `p++` returns the OLD pointer,
-        // and `(base + p_index++)` evaluates `p_index++` first
-        // (yielding the OLD index), then adds base — same value.
-        // Bug this guards against: in url.h's decode_percent,
-        // `unhex(++in)` was rewritten to `unhex(++in_index)` — passing
-        // an integer where a `char *` was expected. c2rust then cast
-        // the int to a pointer, producing literal addresses like 0x4
-        // and SIGSEGV'ing on dereference.
+        // Pre-increment returns the new pointer and `(p + ++p_index_xj)`
+        // increments first, so both see the new position; post-increment
+        // returns the old pointer and `(p + p_index_xj++)` yields the old
+        // index, so both see the old one.
         case PointerAccessKind::Increment:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO)
-                break;
-
-            bool wrap = false;
-            const Stmt *GP = findGrandParent(UO);
-            if (GP)
-            {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
-                {
-                    wrap = true;
-                }
-                else if (const auto *BO = dyn_cast<BinaryOperator>(GP))
-                {
-                    if (BO->isAssignmentOp() &&
-                        BO->getRHS()->IgnoreParenImpCasts() == UO &&
-                        BO->getLHS()->getType()->isPointerType())
-                    {
-                        wrap = true;
-                    }
-                }
-            }
-
-            SourceLocation StartLoc = UO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                UO->getEndLoc(), 0, SM, LO);
-
-            std::string replacement;
-            if (UO->getOpcode() == UO_PostInc)
-                replacement = wrap
-                                  ? ("(" + base_array + " + " + index_name + "++)")
-                                  : (index_name + "++");
-            else // UO_PreInc
-                replacement = wrap
-                                  ? ("(" + base_array + " + ++" + index_name + ")")
-                                  : ("++" + index_name);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = replacement;
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Standalone decrement: p-- -> p_index-- ----
-        // Same context-aware wrapping as Increment above; see comment there.
         case PointerAccessKind::Decrement:
         {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
+            const auto *UO = dyn_cast_or_null<UnaryOperator>(parentOf(access.expr));
             if (!UO)
                 break;
 
             bool wrap = false;
-            const Stmt *GP = findGrandParent(UO);
-            if (GP)
+            if (const Stmt *GP = skipTransparentParents(UO, Ctx))
             {
                 if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
                 {
@@ -715,1027 +500,92 @@ bool FunctionAccessAnalyzer::generateTransformation(
                 }
                 else if (const auto *BO = dyn_cast<BinaryOperator>(GP))
                 {
-                    if (BO->isAssignmentOp() &&
-                        BO->getRHS()->IgnoreParenImpCasts() == UO &&
-                        BO->getLHS()->getType()->isPointerType())
-                    {
-                        wrap = true;
-                    }
+                    wrap = BO->isAssignmentOp() &&
+                           BO->getRHS()->IgnoreParenImpCasts() == UO &&
+                           BO->getLHS()->getType()->isPointerType();
                 }
             }
 
-            SourceLocation StartLoc = UO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                UO->getEndLoc(), 0, SM, LO);
-
-            std::string replacement;
-            if (UO->getOpcode() == UO_PostDec)
-                replacement = wrap
-                                  ? ("(" + base_array + " + " + index_name + "--)")
-                                  : (index_name + "--");
-            else // UO_PreDec
-                replacement = wrap
-                                  ? ("(" + base_array + " + --" + index_name + ")")
-                                  : ("--" + index_name);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = replacement;
-            edits.push_back(e);
+            const char *op = access.kind == PointerAccessKind::Increment ? "++" : "--";
+            bool is_post = UO->getOpcode() == UO_PostInc || UO->getOpcode() == UO_PostDec;
+            std::string bare = is_post ? idx + op : op + idx;
+            placed = replaceNode(edits, UO,
+                                 wrap ? "(" + ptr + " + " + bare + ")" : bare,
+                                 SM, LO);
             break;
         }
 
-        // ---- Plus assign: p += n -> p_index += n ----
+        // `p += n` — replace only the name, so an edit inside the operand
+        // survives.
         case PointerAccessKind::PlusAssign:
-        {
-            // Replace just the LHS identifier (p -> p_index), leaving
-            // the += and RHS intact so inner edits (e.g., function args)
-            // don't overlap with this edit.
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = index_name;
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Minus assign: p -= n -> p_index -= n ----
         case PointerAccessKind::MinusAssign:
-        {
-            // Replace just the LHS identifier, same as PlusAssign.
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = index_name;
-            edits.push_back(e);
+            placed = replaceNode(edits, access.expr, idx, SM, LO);
             break;
-        }
 
-        // ---- Assign null: p = NULL -> p_index = -1 ----
-        case PointerAccessKind::AssignNull:
+        // ---- (base, index) assignment ----------------------------------
+        case PointerAccessKind::Assign:
         {
-            // Retained pointer: `p = NULL` keeps acting on the live pointer.
-            if (ptr_retained)
-                break;
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
+            const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
             if (!BO)
                 break;
 
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                BO->getEndLoc(), 0, SM, LO);
+            std::string tail = ", " + idx + " = " + indexValueFor(access, transformed);
+            if (assignmentValueIsUsed(BO, Ctx))
+                tail += ", " + ptr + " + " + idx;
+            tail += ")";
 
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = index_name + " = -1";
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Assign &arr[i]: p = &arr[i] -> p_index = i ----
-        case PointerAccessKind::AssignAddrOf:
-        {
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                BO->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = index_name + " = " + access.offset_text;
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Assign arr: p = arr -> p_index = 0 ----
-        case PointerAccessKind::AssignArray:
-        {
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                BO->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = index_name + " = 0";
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Assign arr + offset: p = arr + off -> p_index = off ----
-        case PointerAccessKind::AssignArrayOffset:
-        {
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                BO->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = index_name + " = " + access.offset_text;
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Comparison null: p == NULL -> p_index == -1 ----
-        // ---- Comparison expr: p < arr+n -> p_index < n ----
-        case PointerAccessKind::ComparisonNull:
-        case PointerAccessKind::ComparisonExpr:
-        {
-            // Retained pointer: `p == NULL` / `p != NULL` keeps testing the
-            // live pointer. (ComparisonExpr is still an index comparison and
-            // is rewritten as usual.)
-            if (ptr_retained && access.kind == PointerAccessKind::ComparisonNull)
-                break;
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                BO->getEndLoc(), 0, SM, LO);
-
-            // offset_text has the operator, operand_text has the RHS value
-            // base_text non-empty means reconstruct pointer: (base + index) <op> other
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            if (!access.field_name.empty())
-                e.text = access.field_name + " + " + index_name + " " + access.offset_text + " " + access.operand_text;
-            else
-                e.text = index_name + " " + access.offset_text + " " + access.operand_text;
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Bool true: if (p), p && ... -> p_index != -1 ----
-        case PointerAccessKind::BoolTrue:
-        {
-            // Retained pointer: `if (p)` keeps testing the live pointer.
-            if (ptr_retained)
-                break;
-            // Replace just the pointer DRE (source range = the pointer name token)
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = index_name + " != -1";
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- Bool false: !p -> p_index == -1 ----
-        case PointerAccessKind::BoolFalse:
-        {
-            // Retained pointer: `!p` keeps testing the live pointer.
-            if (ptr_retained)
-                break;
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO)
-                break;
-
-            SourceLocation StartLoc = UO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                UO->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = index_name + " == -1";
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- PassedToAllowedFunc: sscanf(p, ...) -> sscanf(base + p_index, ...) ----
-        case PointerAccessKind::PassedToAllowedFunc:
-        {
-            // Check if this same CallExpr is already covered by an AssignFromAllowedFunc
-            // (e.g., s = strchr(s, c) — the assignment handler covers the whole call)
-            const CallExpr *CE = dyn_cast<CallExpr>(access.enclosing_stmt);
-            if (CE)
+            if (access.root_expr && access.rhs_expr &&
+                access.root_expr != access.rhs_expr->IgnoreParenImpCasts())
             {
-                bool covered = false;
-                for (const auto &other : accesses)
-                {
-                    if (other.kind == PointerAccessKind::AssignFromAllowedFunc &&
-                        other.enclosing_stmt == CE)
-                    {
-                        covered = true;
-                        break;
-                    }
-                }
-                if (covered)
-                    break;
-            }
-
-            // Replace the pointer arg with base + index
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = pointerFromIndex(base_array, index_name, may_be_null);
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- AssignFromAllowedFunc: s = strchr(s, c) -> s_index = strchr_index(base, s_index, c) ----
-        case PointerAccessKind::AssignFromAllowedFunc:
-        {
-            std::string func_name = access.offset_text; // stored in offset_text field
-            std::string wrapper_name = func_name + "_index_xj";
-
-            // Re-walk the original call's args using the now-known base.
-            // The collector recorded operand_text at collect time, when
-            // the candidate's base may not have been inferred yet (e.g.
-            // an uninitialized local `const char *l;` whose base is only
-            // learned later from `l = path + strlen(path)`). Any arg
-            // that resolves to the tracked pointer or the base is
-            // already passed implicitly via the wrapper's `start` and
-            // `base` params — including it here would emit a duplicate
-            // arg and a "too many arguments to function call" C error.
-            std::string other_args;
-            const CallExpr *CE = dyn_cast_or_null<CallExpr>(access.enclosing_stmt);
-            if (CE)
-            {
-                for (unsigned i = 0; i < CE->getNumArgs(); i++)
-                {
-                    const Expr *Arg = CE->getArg(i)->IgnoreParenImpCasts();
-                    if (const DeclRefExpr *ArgDRE = dyn_cast<DeclRefExpr>(Arg))
-                    {
-                        if (ArgDRE->getDecl() == PtrVar)
-                            continue; // already passed as `start`
-                        if (const VarDecl *AVD = dyn_cast<VarDecl>(ArgDRE->getDecl()))
-                        {
-                            if (AVD->getNameAsString() == candidate.base_array_text)
-                                continue; // already passed as `base`
-                        }
-                    }
-                    std::string arg_text = getSourceText(CE->getArg(i), SM, LO);
-                    if (!candidate.base_array_text.empty() &&
-                        arg_text == candidate.base_array_text)
-                        continue; // text-level fallback
-                    if (!other_args.empty())
-                        other_args += ", ";
-                    other_args += arg_text;
-                }
+                // Splitting means the right-hand side keeps only its root,
+                // which is a bare name — nothing inside it needs an edit of
+                // its own, so the whole assignment can be replaced at once.
+                placed = replaceNode(edits, BO,
+                                     "(" + ptr + " = " +
+                                         getSourceText(access.root_expr, SM, LO) +
+                                         tail,
+                                     SM, LO);
             }
             else
             {
-                other_args = access.operand_text; // fallback
-            }
-
-            // Find the enclosing assignment: p = func(...)
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-
-            // Build replacement: p_index = func_index(base, p_index, other_args)
-            std::string replacement = index_name + " = " + wrapper_name + "(" +
-                                      base_array + ", " + index_name;
-            if (!other_args.empty())
-                replacement += ", " + other_args;
-            replacement += ")";
-
-            // Check if the assignment is in a boolean context (for/while/if condition)
-            // e.g., (s = strchr(s, c)) in a for-loop condition
-            // In that case, append >= 0
-            bool in_bool_context = false;
-            const Stmt *AssignParent = skipTransparentParents(BO, Ctx);
-            if (AssignParent)
-            {
-                if (isa<IfStmt>(AssignParent) || isa<WhileStmt>(AssignParent) ||
-                    isa<ForStmt>(AssignParent) || isa<DoStmt>(AssignParent))
-                {
-                    in_bool_context = true;
-                }
-                // Also check for logical operators: (s = strchr(...)) && ...
-                if (const BinaryOperator *LogBO = dyn_cast<BinaryOperator>(AssignParent))
-                {
-                    if (LogBO->getOpcode() == BO_LAnd || LogBO->getOpcode() == BO_LOr)
-                        in_bool_context = true;
-                }
-            }
-
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                BO->getEndLoc(), 0, SM, LO);
-
-            if (in_bool_context)
-                replacement = "(" + replacement + ") >= 0";
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = replacement;
-            edits.push_back(e);
-
-            // Emit wrapper function if not already emitted
-            if (g_emitted_wrappers.find(wrapper_name) == g_emitted_wrappers.end())
-            {
-                g_emitted_wrappers.insert(wrapper_name);
-
-                // Get the pointee type from the pointer
-                QualType pointeeType = PtrVar->getType()->getPointeeType();
-                std::string type_str = pointeeType.getAsString();
-
-                std::string wrapper;
-                if (func_name == "strchr")
-                {
-                    wrapper = "static int strchr_index_xj(const char *base, int start, int c) {\n"
-                              "    const char *result = strchr(base + start, c);\n"
-                              "    if (!result) return -1;\n"
-                              "    return (int)(result - base);\n"
-                              "}\n\n";
-                }
-                else if (func_name == "strstr")
-                {
-                    wrapper = "static int strstr_index_xj(const char *base, int start, const char *needle) {\n"
-                              "    const char *result = strstr(base + start, needle);\n"
-                              "    if (!result) return -1;\n"
-                              "    return (int)(result - base);\n"
-                              "}\n\n";
-                }
-
-                if (!wrapper.empty())
-                {
-                    // Insert wrapper before the function definition
-                    SourceLocation FuncStart = FD->getBeginLoc();
-                    Edit we;
-                    we.type = Edit::InsertBefore;
-                    we.offset = SM.getFileOffset(FuncStart);
-                    we.start = FuncStart;
-                    we.text = wrapper;
-                    edits.push_back(we);
-                }
+                // The right-hand side is kept whole and may contain
+                // rewrites of its own, so bracket it with insertions
+                // instead of replacing it. The index update comes last, so
+                // an RHS that reads through this pointer — `p = p->next` —
+                // still sees the old position.
+                placed = insertBeforeNode(edits, BO, "(", SM, LO) &&
+                         insertAfterNode(edits, BO, tail, SM);
             }
             break;
         }
 
-        // ---- PassedToFunc: func(p) -> func(base + p_index) ----
-        // The argument is rewritten in pointer form even when the callee
-        // is a RustSlice candidate: the slice pass reads the (base +
-        // index) shape back out of the AST when it rebuilds the call
-        // site, and the intermediate C stays valid either way.
-        case PointerAccessKind::PassedToFunc:
+        // ---- Value read -------------------------------------------------
+        // The fallback, and the reason nothing else has to be rejected.
+        case PointerAccessKind::ValueUse:
+            placed = replaceNode(edits, access.expr, value, SM, LO);
+            break;
+        }
+
+        if (!placed)
         {
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = pointerFromIndex(base_array, index_name, may_be_null);
-            edits.push_back(e);
-            break;
-        }
-
-        // ---- ReturnPtr: return p -> return base + index ----
-        // Always the pointer form; if the slice pass later retypes the
-        // function's return as int, it also shrinks this to a bare index.
-        case PointerAccessKind::ReturnPtr:
-        {
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-
-            Edit e;
-            e.type = Edit::Replace;
-            e.offset = SM.getFileOffset(StartLoc);
-            e.start = StartLoc;
-            e.end = EndLoc;
-            e.text = pointerFromIndex(base_array, index_name, may_be_null);
-            edits.push_back(e);
-            break;
-        }
-
-        default:
-            break;
+            if (VERBOSE)
+                llvm::outs() << "[Error] No file position for an access of "
+                             << ptr << " at "
+                             << access.loc.printToString(SM) << "\n";
+            return false;
         }
     }
 
     if (edits.empty())
     {
         if (VERBOSE)
-            llvm::outs() << "[Warning] No edits generated for " << ptr_name << "\n";
+            llvm::outs() << "[Warning] No edits generated for " << ptr << "\n";
         return false;
     }
 
     if (VERBOSE)
         llvm::outs() << "[Transform] Applying " << edits.size() << " edits for "
-                     << ptr_name << " -> " << index_name
-                     << " (base: " << base_array << ")\n";
-
-    applyEdits(edits, SM);
-    return true;
-}
-
-// ============================================================================
-// generateGlobalTransformation — file-scope pointers
-// ============================================================================
-//
-// Same shape as generateTransformation but for a global pointer:
-//   - The declaration line lives at file scope, so we patch the
-//     VarDecl directly rather than locating a DeclStmt.
-//   - There's no enclosing function for RustSlice detection to fire.
-//   - All accesses in the TU may be in different functions, but they
-//     were already merged into state.accesses by run().
-
-bool FunctionAccessAnalyzer::generateGlobalTransformation(
-    const VarDecl *PtrVar,
-    PointerCandidate &candidate,
-    std::vector<PointerAccess> &accesses,
-    ASTContext &Ctx)
-{
-
-    SourceManager &SM = Ctx.getSourceManager();
-    const LangOptions &LO = Ctx.getLangOpts();
-
-    std::string ptr_name = PtrVar->getNameAsString();
-    std::string index_name = ptr_name + "_index_xj";
-    std::string base_array = safeBase(candidate.base_array_text);
-    bool may_be_null = pointerMayBeNull(accesses);
-
-    std::vector<Edit> edits;
-
-    // ========================================================================
-    // Step 1: Replace the global pointer declaration with an index declaration
-    // ========================================================================
-
-    // Determine init value from the first init access
-    std::string init_value = "0";
-    for (const auto &access : accesses)
-    {
-        if (access.kind == PointerAccessKind::InitNull)
-        {
-            init_value = "-1";
-            break;
-        }
-        else if (access.kind == PointerAccessKind::InitArray)
-        {
-            init_value = "0";
-            break;
-        }
-        else if (access.kind == PointerAccessKind::InitArrayOffset)
-        {
-            init_value = access.offset_text;
-            break;
-        }
-    }
-
-    // Build replacement: preserve static/extern qualifiers
-    std::string prefix;
-    if (PtrVar->getStorageClass() == SC_Static)
-        prefix = "static ";
-
-    std::string replacement = prefix + "int " + index_name + " = " + init_value;
-
-    SourceLocation DeclStart = PtrVar->getBeginLoc();
-    SourceLocation DeclEnd = Lexer::getLocForEndOfToken(
-        PtrVar->getEndLoc(), 0, SM, LO);
-
-    Edit decl_edit;
-    decl_edit.type = Edit::Replace;
-    decl_edit.offset = SM.getFileOffset(DeclStart);
-    decl_edit.start = DeclStart;
-    decl_edit.end = DeclEnd;
-    decl_edit.text = replacement;
-    edits.push_back(decl_edit);
-
-    // ========================================================================
-    // Step 2: Replace all accesses (same logic as local pointer transformation)
-    // ========================================================================
-
-    for (const auto &access : accesses)
-    {
-        if (access.kind == PointerAccessKind::InitNull ||
-            access.kind == PointerAccessKind::InitArray ||
-            access.kind == PointerAccessKind::InitArrayOffset)
-            continue;
-
-        auto findParent = [&](const Expr *E) -> const Stmt *
-        {
-            return skipTransparentParents(E, Ctx);
-        };
-        auto findGrandParent = [&](const Stmt *P) -> const Stmt *
-        {
-            return skipTransparentParents(P, Ctx);
-        };
-
-        switch (access.kind)
-        {
-
-        case PointerAccessKind::Deref:
-        case PointerAccessKind::DerefWrite:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO)
-                break;
-            SourceLocation StartLoc = UO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(UO->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             base_array + "[" + index_name + "]"});
-            break;
-        }
-
-        case PointerAccessKind::DerefPostInc:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *IncOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!IncOp)
-                break;
-            const Stmt *GP = findGrandParent(IncOp);
-            const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp)
-                break;
-            SourceLocation StartLoc = DerefOp->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(DerefOp->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             base_array + "[" + index_name + "++]"});
-            break;
-        }
-
-        case PointerAccessKind::DerefPreInc:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *IncOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!IncOp)
-                break;
-            const Stmt *GP = findGrandParent(IncOp);
-            const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp)
-                break;
-            SourceLocation StartLoc = DerefOp->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(DerefOp->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             base_array + "[++" + index_name + "]"});
-            break;
-        }
-
-        case PointerAccessKind::DerefPostDec:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *DecOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!DecOp)
-                break;
-            const Stmt *GP = findGrandParent(DecOp);
-            const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp)
-                break;
-            SourceLocation StartLoc = DerefOp->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(DerefOp->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             base_array + "[" + index_name + "--]"});
-            break;
-        }
-
-        case PointerAccessKind::DerefPreDec:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *DecOp = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!DecOp)
-                break;
-            const Stmt *GP = findGrandParent(DecOp);
-            const UnaryOperator *DerefOp = GP ? dyn_cast<UnaryOperator>(GP) : nullptr;
-            if (!DerefOp)
-                break;
-            SourceLocation StartLoc = DerefOp->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(DerefOp->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             base_array + "[--" + index_name + "]"});
-            break;
-        }
-
-        case PointerAccessKind::DerefOffset:
-        case PointerAccessKind::DerefOffsetWrite:
-        {
-            const UnaryOperator *DerefUO = access.enclosing_stmt
-                                               ? dyn_cast<UnaryOperator>(access.enclosing_stmt)
-                                               : nullptr;
-            if (!DerefUO)
-                break;
-            SourceLocation StartLoc = DerefUO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                DerefUO->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             base_array + "[" + index_name + access.offset_text + "]"});
-            break;
-        }
-
-        case PointerAccessKind::ArrowAccess:
-        case PointerAccessKind::ArrowWrite:
-        {
-            const Stmt *P = findParent(access.expr);
-            const MemberExpr *ME = P ? dyn_cast<MemberExpr>(P) : nullptr;
-            if (!ME)
-                break;
-            SourceLocation StartLoc = ME->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(ME->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             base_array + "[" + index_name + "]." + access.field_name});
-            break;
-        }
-
-        case PointerAccessKind::Subscript:
-        case PointerAccessKind::SubscriptWrite:
-        {
-            const Stmt *P = findParent(access.expr);
-            const ArraySubscriptExpr *ASE = P ? dyn_cast<ArraySubscriptExpr>(P) : nullptr;
-            if (!ASE)
-                break;
-            SourceLocation StartLoc = ASE->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(ASE->getEndLoc(), 0, SM, LO);
-            std::string index_expr = (access.subscript_text == "0")
-                                         ? index_name
-                                         : index_name + " + " + access.subscript_text;
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             base_array + "[" + index_expr + "]"});
-            break;
-        }
-
-        case PointerAccessKind::Increment:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO)
-                break;
-            // See the longer comment on the Increment case in the
-            // earlier transformer pass: when the result of `++p`/`p++`
-            // is consumed as a pointer (call arg, return, assignment
-            // to pointer var), wrap the rewrite as `(base + ...)` so
-            // the value type stays a pointer.
-            bool wrap = false;
-            const Stmt *GP = findGrandParent(UO);
-            if (GP)
-            {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
-                {
-                    wrap = true;
-                }
-                else if (const auto *BO = dyn_cast<BinaryOperator>(GP))
-                {
-                    if (BO->isAssignmentOp() &&
-                        BO->getRHS()->IgnoreParenImpCasts() == UO &&
-                        BO->getLHS()->getType()->isPointerType())
-                    {
-                        wrap = true;
-                    }
-                }
-            }
-            SourceLocation StartLoc = UO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(UO->getEndLoc(), 0, SM, LO);
-            std::string repl;
-            if (UO->getOpcode() == UO_PostInc)
-                repl = wrap
-                           ? ("(" + base_array + " + " + index_name + "++)")
-                           : (index_name + "++");
-            else
-                repl = wrap
-                           ? ("(" + base_array + " + ++" + index_name + ")")
-                           : ("++" + index_name);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc, repl});
-            break;
-        }
-
-        case PointerAccessKind::Decrement:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO)
-                break;
-            bool wrap = false;
-            const Stmt *GP = findGrandParent(UO);
-            if (GP)
-            {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
-                {
-                    wrap = true;
-                }
-                else if (const auto *BO = dyn_cast<BinaryOperator>(GP))
-                {
-                    if (BO->isAssignmentOp() &&
-                        BO->getRHS()->IgnoreParenImpCasts() == UO &&
-                        BO->getLHS()->getType()->isPointerType())
-                    {
-                        wrap = true;
-                    }
-                }
-            }
-            SourceLocation StartLoc = UO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(UO->getEndLoc(), 0, SM, LO);
-            std::string repl;
-            if (UO->getOpcode() == UO_PostDec)
-                repl = wrap
-                           ? ("(" + base_array + " + " + index_name + "--)")
-                           : (index_name + "--");
-            else
-                repl = wrap
-                           ? ("(" + base_array + " + --" + index_name + ")")
-                           : ("--" + index_name);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc, repl});
-            break;
-        }
-
-        case PointerAccessKind::PlusAssign:
-        {
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(access.expr->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc, index_name});
-            break;
-        }
-
-        case PointerAccessKind::MinusAssign:
-        {
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(access.expr->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc, index_name});
-            break;
-        }
-
-        case PointerAccessKind::AssignNull:
-        {
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             index_name + " = -1"});
-            break;
-        }
-
-        case PointerAccessKind::AssignAddrOf:
-        {
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             index_name + " = " + access.offset_text});
-            break;
-        }
-
-        case PointerAccessKind::AssignArray:
-        {
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             index_name + " = 0"});
-            break;
-        }
-
-        case PointerAccessKind::AssignArrayOffset:
-        {
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             index_name + " = " + access.offset_text});
-            break;
-        }
-
-        case PointerAccessKind::ComparisonNull:
-        case PointerAccessKind::ComparisonExpr:
-        {
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(BO->getEndLoc(), 0, SM, LO);
-            if (!access.field_name.empty())
-                edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                                 StartLoc, EndLoc,
-                                 access.field_name + " + " + index_name + " " + access.offset_text + " " + access.operand_text});
-            else
-                edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                                 StartLoc, EndLoc,
-                                 index_name + " " + access.offset_text + " " + access.operand_text});
-            break;
-        }
-
-        case PointerAccessKind::BoolTrue:
-        {
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             index_name + " != -1"});
-            break;
-        }
-
-        case PointerAccessKind::BoolFalse:
-        {
-            const Stmt *P = findParent(access.expr);
-            const UnaryOperator *UO = P ? dyn_cast<UnaryOperator>(P) : nullptr;
-            if (!UO)
-                break;
-            SourceLocation StartLoc = UO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                UO->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             index_name + " == -1"});
-            break;
-        }
-
-        case PointerAccessKind::PassedToAllowedFunc:
-        {
-            const CallExpr *CE = dyn_cast<CallExpr>(access.enclosing_stmt);
-            if (CE)
-            {
-                bool covered = false;
-                for (const auto &other : accesses)
-                {
-                    if (other.kind == PointerAccessKind::AssignFromAllowedFunc &&
-                        other.enclosing_stmt == CE)
-                    {
-                        covered = true;
-                        break;
-                    }
-                }
-                if (covered)
-                    break;
-            }
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             pointerFromIndex(base_array, index_name, may_be_null)});
-            break;
-        }
-
-        case PointerAccessKind::AssignFromAllowedFunc:
-        {
-            std::string func_name = access.offset_text;
-            std::string wrapper_name = func_name + "_index_xj";
-            std::string other_args = access.operand_text;
-
-            const Stmt *P = findParent(access.expr);
-            const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-            if (!BO)
-                break;
-
-            std::string replacement = index_name + " = " + wrapper_name + "(" +
-                                      base_array + ", " + index_name;
-            if (!other_args.empty())
-                replacement += ", " + other_args;
-            replacement += ")";
-
-            bool in_bool_context = false;
-            const Stmt *AssignParent = skipTransparentParents(BO, Ctx);
-            if (AssignParent)
-            {
-                if (isa<IfStmt>(AssignParent) || isa<WhileStmt>(AssignParent) ||
-                    isa<ForStmt>(AssignParent) || isa<DoStmt>(AssignParent))
-                    in_bool_context = true;
-                if (const BinaryOperator *LogBO = dyn_cast<BinaryOperator>(AssignParent))
-                {
-                    if (LogBO->getOpcode() == BO_LAnd || LogBO->getOpcode() == BO_LOr)
-                        in_bool_context = true;
-                }
-            }
-
-            SourceLocation StartLoc = BO->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                BO->getEndLoc(), 0, SM, LO);
-
-            if (in_bool_context)
-                replacement = "(" + replacement + ") >= 0";
-
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc, replacement});
-            break;
-        }
-
-        case PointerAccessKind::PassedToFunc:
-        {
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             pointerFromIndex(base_array, index_name, may_be_null)});
-            break;
-        }
-
-        case PointerAccessKind::ReturnPtr:
-        {
-            SourceLocation StartLoc = access.expr->getBeginLoc();
-            SourceLocation EndLoc = Lexer::getLocForEndOfToken(
-                access.expr->getEndLoc(), 0, SM, LO);
-            edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
-                             StartLoc, EndLoc,
-                             pointerFromIndex(base_array, index_name, may_be_null)});
-            break;
-        }
-
-        default:
-            break;
-        }
-    }
-
-    if (edits.empty())
-    {
-        if (VERBOSE)
-            llvm::outs() << "[Warning] No edits generated for global " << ptr_name << "\n";
-        return false;
-    }
-
-    if (VERBOSE)
-        llvm::outs() << "[Transform] Applying " << edits.size()
-                     << " edits for global " << ptr_name << " -> " << index_name
-                     << " (base: " << base_array << ")\n";
+                     << ptr << " -> " << idx << "\n";
 
     applyEdits(edits, SM);
     return true;

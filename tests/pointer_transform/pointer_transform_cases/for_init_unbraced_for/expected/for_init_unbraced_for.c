@@ -18,10 +18,10 @@
 static int in_if(int *a, int n, int c) {
     int s = 0;
     if (c)
-        { int q_index_xj = 1;
         { int p_index_xj = 0;
-        for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-            s += a[p_index_xj] * 2 + a[q_index_xj];
+        { int q_index_xj = 1;
+        for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+            s += p[p_index_xj] * 2 + q[q_index_xj];
         }
         }
     return s;
@@ -34,11 +34,13 @@ static int in_else(int *a, int *b, int n, int c) {
     if (c)
         s = -1;
     else
+        { int p_index_xj = 0;
         for (int *p = a; n > 0; n--) {
             if (n == 2)
-                p = b;
-            s += *p;
-            p++;
+                (p = b, p_index_xj = 0);
+            s += p[p_index_xj];
+            p_index_xj++;
+        }
         }
     return s;
 }
@@ -48,10 +50,10 @@ static int in_while(int *a, int n) {
     int s = 0;
     int rounds = 2;
     while (rounds-- > 0)
-        { int q_index_xj = 1;
         { int p_index_xj = 0;
-        for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-            s += a[p_index_xj] - a[q_index_xj];
+        { int q_index_xj = 1;
+        for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+            s += p[p_index_xj] - q[q_index_xj];
         }
         }
     return s;
@@ -62,10 +64,10 @@ static int in_while(int *a, int n) {
 static int in_for(int *a, int n) {
     int s = 0;
     for (int i = 0; i < 2; i++)
-        { int q_index_xj = 1;
         { int p_index_xj = 0;
-        for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-            s += (a[p_index_xj] + a[q_index_xj]) * (i + 1);
+        { int q_index_xj = 1;
+        for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+            s += (p[p_index_xj] + q[q_index_xj]) * (i + 1);
         }
         }
     return s;
@@ -76,10 +78,10 @@ static int in_do(int *a, int n) {
     int s = 0;
     int rounds = 2;
     do
-        { int q_index_xj = 1;
         { int p_index_xj = 0;
-        for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-            s += a[p_index_xj] + a[q_index_xj];
+        { int q_index_xj = 1;
+        for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+            s += p[p_index_xj] + q[q_index_xj];
         }
         }
     while (--rounds > 0);
@@ -91,10 +93,10 @@ static int in_case(int *a, int n, int k) {
     int s = 0;
     switch (k) {
     case 1:
-        { int q_index_xj = 1;
         { int p_index_xj = 0;
-        for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-            s += a[p_index_xj] | a[q_index_xj];
+        { int q_index_xj = 1;
+        for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+            s += p[p_index_xj] | q[q_index_xj];
         }
         }
         break;
@@ -110,10 +112,10 @@ static int in_label(int *a, int n) {
     int s = 0;
     int again = 1;
 retry:
-    { int q_index_xj = 1;
     { int p_index_xj = 0;
-    for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-        s += a[p_index_xj] ^ a[q_index_xj];
+    { int q_index_xj = 1;
+    for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+        s += p[p_index_xj] ^ q[q_index_xj];
     }
     }
     if (again) {

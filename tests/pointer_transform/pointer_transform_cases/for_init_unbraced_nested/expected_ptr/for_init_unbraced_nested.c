@@ -15,10 +15,10 @@ static int if_while_for(int *a, int n, int c) {
     int rounds = 2;
     if (c)
         while (rounds-- > 0)
-            { int q_index_xj = 1;
             { int p_index_xj = 0;
-            for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-                s += a[p_index_xj] * 2 + a[q_index_xj];
+            { int q_index_xj = 1;
+            for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+                s += p[p_index_xj] * 2 + q[q_index_xj];
             }
             }
     return s;
@@ -30,10 +30,10 @@ static int dangling_else(int *a, int n, int c, int d) {
     int s = 0;
     if (c)
         if (d)
-            { int q_index_xj = 1;
             { int p_index_xj = 0;
-            for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-                s += a[p_index_xj] + a[q_index_xj];
+            { int q_index_xj = 1;
+            for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+                s += p[p_index_xj] + q[q_index_xj];
             }
             }
         else
@@ -48,10 +48,10 @@ static int four_levels(int *a, int n, int c) {
         for (int i = 0; i < 2; i++) {
             int rounds = 1;
             while (rounds-- > 0)
-                { int q_index_xj = 1;
                 { int p_index_xj = 0;
-                for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-                    s += (a[p_index_xj] - a[q_index_xj]) * (i + 1);
+                { int q_index_xj = 1;
+                for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+                    s += (p[p_index_xj] - q[q_index_xj]) * (i + 1);
                 }
                 }
         }
@@ -64,11 +64,13 @@ static int labelled_at_depth(int *a, int *b, int n, int c) {
     int s = 0;
     if (c)
     retry:
+        { int p_index_xj = 0;
         for (int *p = a; n > 0; n--) {
             if (n == 2)
-                p = b;
-            s += *p;
-            p++;
+                (p = b, p_index_xj = 0);
+            s += p[p_index_xj];
+            p_index_xj++;
+        }
         }
     if (s < 0)
         goto retry;
@@ -82,10 +84,10 @@ static int do_inside_while(int *a, int n) {
     int outer = 2;
     while (outer-- > 0)
         do
-            { int q_index_xj = 1;
             { int p_index_xj = 0;
-            for (int *p = a, *q = a + 1; p_index_xj < n; p_index_xj++, q_index_xj++)
-                s += a[p_index_xj] | a[q_index_xj];
+            { int q_index_xj = 1;
+            for (int *p = a, *q = a; (p + p_index_xj) < a + n; p_index_xj++, q_index_xj++)
+                s += p[p_index_xj] | q[q_index_xj];
             }
             }
         while (0);

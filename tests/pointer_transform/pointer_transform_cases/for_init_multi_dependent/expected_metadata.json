@@ -1,3 +1,14 @@
 {
-  "functions": {}
+  "functions": {
+    "offset_by_sibling@for_init_multi_dependent.c": {
+      "file": "for_init_multi_dependent.c",
+      "pointers": [
+        {
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
 }

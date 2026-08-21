@@ -6,10 +6,11 @@ static int table[4] = {10, 20, 30, 40};
 
 /* Slice-detectable: a moving pointer bounded by buf + n. */
 static int sum(const int *buf, int n) {
+    const int *p = buf;
     int p_index_xj = 0;
     int s = 0;
-    while (p_index_xj < n) {
-        s += buf[p_index_xj];
+    while ((p + p_index_xj) < buf + n) {
+        s += p[p_index_xj];
         p_index_xj++;
     }
     return s;

@@ -27,6 +27,7 @@ void FunctionAccessAnalyzer::collectGlobalPointers(ASTContext &Ctx) {
     TranslationUnitDecl *TU = Ctx.getTranslationUnitDecl();
     const SourceManager &SM = Ctx.getSourceManager();
 
+    std::vector<VarDecl *> globals;
     for (auto *D : TU->decls()) {
         auto *VD = dyn_cast<VarDecl>(D);
         if (!VD)
@@ -43,16 +44,27 @@ void FunctionAccessAnalyzer::collectGlobalPointers(ASTContext &Ctx) {
 
         GlobalPointerState state;
         state.candidate.ptr_var = VD;
-        state.candidate.base_array = nullptr;
-        state.candidate.base_array_text = "";
         state.candidate.is_parameter = false;
-
-        if (VD->hasInit()) {
-            PointerAccessCollector tempCollector(Ctx);
-            tempCollector.analyzePointerInit(VD->getInit(), VD, state.candidate, state.accesses);
-        }
-
         g_global_pointer_map[VD] = state;
+        globals.push_back(VD);
+    }
+
+    // Splitting an initializer has to know which names are tracked
+    // pointers, so it runs only once every global is registered.
+    PointerAccessCollector splitter(Ctx);
+    for (VarDecl *VD : globals)
+        splitter.tracked_pointers[VD] = g_global_pointer_map[VD].candidate;
+
+    for (VarDecl *VD : globals) {
+        if (!VD->hasInit())
+            continue;
+        PointerAccess pa;
+        pa.kind = PointerAccessKind::Init;
+        pa.loc = VD->getInit()->getBeginLoc();
+        pa.expr = VD->getInit();
+        splitter.splitAssignedValue(VD->getInit(), pa, VD,
+                                    /*owner_is_declared_here=*/true);
+        g_global_pointer_map[VD].accesses.push_back(pa);
     }
 }
 
@@ -96,22 +108,13 @@ void FunctionAccessAnalyzer::run(const MatchFinder::MatchResult &Result) {
 
     traverseFunctionBody(Body, V);
 
-    // Roll any global-pointer accesses we just observed into the
-    // shared g_global_pointer_map. Also opportunistically promote a
-    // base array from the per-function candidate if the global one
-    // didn't have one yet (e.g. a global pointer initialized by an
-    // assignment in some function).
+    // Roll any global-pointer accesses we just observed into the shared
+    // g_global_pointer_map.
     for (auto &[GVD, state] : g_global_pointer_map) {
         auto it = V.accesses.find(GVD);
         if (it != V.accesses.end() && !it->second.empty()) {
             state.accesses.insert(state.accesses.end(),
                                   it->second.begin(), it->second.end());
-        }
-        auto cit = V.tracked_pointers.find(GVD);
-        if (cit != V.tracked_pointers.end() &&
-            state.candidate.base_array_text.empty() &&
-            !cit->second.base_array_text.empty()) {
-            state.candidate = cit->second;
         }
     }
 
@@ -143,6 +146,7 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
 
     // Rewrite file-scope pointer variables (they were collected once
     // during the first run() call).
+    std::set<const VarDecl *> transformed_globals;
     for (auto &[VD, state] : g_global_pointer_map) {
         if (state.accesses.empty())
             continue;
@@ -161,9 +165,8 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
         }
 
         // The Rewriter cannot edit macro-expanded text, so a global
-        // declared inside a macro would have its uses rewritten to
-        // <name>_index without ever introducing the _index variable
-        // itself. Skip the whole pointer in that case.
+        // declared inside a macro would have its uses rewritten without
+        // the index variable itself ever being introduced.
         if (VD->getBeginLoc().isMacroID()) {
             if (VERBOSE)
                 llvm::outs() << "[Skip] global " << VD->getNameAsString()
@@ -171,9 +174,38 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
             continue;
         }
 
+        transformed_globals.insert(VD);
+    }
+
+    for (auto &[VD, state] : g_global_pointer_map) {
+        for (auto &acc : state.accesses)
+            if (acc.kind == PointerAccessKind::PairwiseRoot &&
+                !transformed_globals.count(acc.pair_owner))
+                acc.kind = PointerAccessKind::ValueUse;
+    }
+
+    // Reverse source order, for the same reason transformAllFunctions uses
+    // it: two index declarations sharing an anchor are both InsertTextBefore
+    // at one location, where a later insertion is placed ahead of an
+    // earlier one.
+    std::vector<const VarDecl *> globals;
+    for (const auto &pair : g_global_pointer_map)
+        globals.push_back(pair.first);
+    std::sort(globals.begin(), globals.end(),
+              [&](const VarDecl *A, const VarDecl *B) {
+                  return Ctx.getSourceManager().isBeforeInTranslationUnit(
+                      B->getLocation(), A->getLocation());
+              });
+
+    for (const VarDecl *VD : globals) {
+        if (!transformed_globals.count(VD))
+            continue;
+        GlobalPointerState &state = g_global_pointer_map[VD];
+
         g_pointers_found++;
 
-        if (generateGlobalTransformation(VD, state.candidate, state.accesses, Ctx)) {
+        if (generateTransformation(/*FD=*/nullptr, VD, state.candidate,
+                                   state.accesses, transformed_globals, Ctx)) {
             gLog.replacedPointer = true;
             g_pointers_replaced++;
             SourceManager &SM = Ctx.getSourceManager();
@@ -194,207 +226,64 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
 // ============================================================================
 
 void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
+    SourceManager &SM = Ctx.getSourceManager();
+
     for (auto &[FDCanon, analysis] : g_function_analyses) {
         const FunctionDecl *FD = analysis.FD;
         if (!FD || !FD->hasBody())
             continue;
 
-        m_edited_ranges.clear();
-
         // Name every index up front, in source order so the assignment is
         // reproducible. Sorting by location rather than iterating the map
         // matters: the map is keyed by VarDecl address, which is
         // allocation order and not a property of the source.
-        {
-            SourceManager &SM = Ctx.getSourceManager();
-            std::vector<const VarDecl *> ptrs;
-            for (const auto &pair : analysis.accesses)
-                ptrs.push_back(pair.first);
-            std::sort(ptrs.begin(), ptrs.end(),
-                      [&](const VarDecl *A, const VarDecl *B) {
-                          return SM.isBeforeInTranslationUnit(A->getLocation(),
-                                                              B->getLocation());
-                      });
-            assignIndexNames(ptrs);
-        }
+        std::vector<const VarDecl *> ptrs;
+        for (const auto &pair : analysis.accesses)
+            ptrs.push_back(pair.first);
+        std::sort(ptrs.begin(), ptrs.end(),
+                  [&](const VarDecl *A, const VarDecl *B) {
+                      return SM.isBeforeInTranslationUnit(A->getLocation(),
+                                                          B->getLocation());
+                  });
+        assignIndexNames(ptrs);
 
-        // Two-pass edit ordering: pointers whose bound comparison
-        // resolves against a parameter are rewritten first, so that when
-        // two pointers' comparison rewrites overlap, the param-bounded
-        // form wins (overlapping later edits are dropped in applyEdits).
-        std::vector<const VarDecl *> rust_slice_candidates;
-        std::vector<const VarDecl *> other_pointers;
-
-        for (auto &pair : analysis.accesses) {
-            const VarDecl *PtrVar = pair.first;
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            auto &access_list = pair.second;
-
-            bool is_rs_candidate = false;
-            if (!candidate.is_parameter && FD->getNumParams() > 0) {
-                bool base_is_param = false;
-                for (unsigned i = 0; i < FD->getNumParams(); i++) {
-                    if (FD->getParamDecl(i)->getNameAsString() == candidate.base_array_text &&
-                        FD->getParamDecl(i)->getType()->isPointerType()) {
-                        base_is_param = true;
-                        break;
-                    }
-                }
-                if (base_is_param) {
-                    for (const auto &acc : access_list) {
-                        if (acc.kind == PointerAccessKind::ComparisonExpr) {
-                            is_rs_candidate = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (is_rs_candidate)
-                rust_slice_candidates.push_back(PtrVar);
-            else
-                other_pointers.push_back(PtrVar);
-        }
-
-        // Pre-validation: determine which pointers will actually be
-        // transformed so that cross-pointer comparisons can be resolved.
-        std::set<const VarDecl *> will_transform;
-        for (auto &pair : analysis.accesses) {
-            const VarDecl *PtrVar = pair.first;
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            auto &access_list = pair.second;
+        // Validation is a pure function of a single pointer's own access
+        // list, so one pass settles the whole function. Nothing here
+        // depends on what any other pointer turns out to be.
+        std::set<const VarDecl *> transformed;
+        for (const VarDecl *PtrVar : ptrs) {
             std::string error;
-            if (validatePointerCandidate(PtrVar, candidate, access_list, Ctx, error))
-                will_transform.insert(PtrVar);
-        }
-
-        // Fix up ComparisonExpr accesses that reference another pointer
-        // which will also be transformed. Replace operand_text with the
-        // reconstructed pointer form: other_base + other_name_index.
-        for (auto &pair : analysis.accesses) {
-            const VarDecl *PtrVar = pair.first;
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            if (will_transform.find(PtrVar) == will_transform.end())
-                continue;
-            for (auto &acc : pair.second) {
-                if (acc.kind != PointerAccessKind::ComparisonExpr)
-                    continue;
-                // Check if operand_text is "(other - base)" pattern
-                // and the other is also being transformed
-                if (!acc.field_name.empty() &&
-                    acc.field_name != candidate.base_array_text)
-                    continue; // shape-5 param reconstruction; leave alone
-                // (pointer-form equality records — field_name == base —
-                // fall through: their operand still names the other
-                // pointer and must be reconstructed below if that
-                // pointer is transformed too)
-                // Look for the other pointer in the comparison's parent
-                const Stmt *P = skipTransparentParents(acc.expr, Ctx);
-                const BinaryOperator *BO = P ? dyn_cast<BinaryOperator>(P) : nullptr;
-                if (!BO) continue;
-                const Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
-                const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
-                const Expr *OtherSide = nullptr;
-                if (const DeclRefExpr *LDRE = dyn_cast<DeclRefExpr>(LHS)) {
-                    if (LDRE->getDecl() == PtrVar) OtherSide = RHS;
-                }
-                if (!OtherSide) {
-                    if (const DeclRefExpr *RDRE = dyn_cast<DeclRefExpr>(RHS)) {
-                        if (RDRE->getDecl() == PtrVar) OtherSide = LHS;
-                    }
-                }
-                if (!OtherSide) continue;
-                // Walk through OtherSide to find a DeclRefExpr to a transformed pointer
-                // Handle both direct refs (e.g., `e`) and expressions (e.g., `buf + len`)
-                const DeclRefExpr *OtherDRE = dyn_cast<DeclRefExpr>(OtherSide);
-                if (!OtherDRE) {
-                    // Try to find the pointer in a BinaryOperator (e.g., arr + n)
-                    if (const BinaryOperator *AddBO = dyn_cast<BinaryOperator>(OtherSide)) {
-                        OtherDRE = dyn_cast<DeclRefExpr>(AddBO->getLHS()->IgnoreParenImpCasts());
-                    }
-                }
-                if (!OtherDRE) continue;
-                const VarDecl *OtherVD = dyn_cast<VarDecl>(OtherDRE->getDecl());
-                if (!OtherVD || will_transform.find(OtherVD) == will_transform.end())
-                    continue;
-                // Both pointers will be transformed. Use pointer reconstruction:
-                // base + index <op> other_base + other_index
-                auto &other_cand = analysis.tracked_pointers[OtherVD];
-                std::string other_base = other_cand.base_array_text;
-                std::string other_idx = indexNameFor(OtherVD);
-                std::string rhs = other_base.empty() ?
-                    other_idx : other_base + " + " + other_idx;
-                acc.field_name = candidate.base_array_text;
-                acc.operand_text = rhs;
+            if (validatePointerCandidate(PtrVar, analysis.tracked_pointers[PtrVar],
+                                         analysis.accesses[PtrVar], Ctx, error)) {
+                transformed.insert(PtrVar);
+            } else {
+                gLog.error = error;
+                logFailedPointer(PtrVar, Ctx, error);
+                if (VERBOSE)
+                    llvm::outs() << "[Skip] " << PtrVar->getNameAsString()
+                                 << ": " << error << "\n";
             }
         }
 
-        // Reject pointers whose init/assign offset references another
-        // pointer that will also be transformed. The init edit would use
-        // stale source text for the offset, conflicting with the inner
-        // pointer's transformation.
-        for (auto &pair : analysis.accesses) {
-            const VarDecl *PtrVar = pair.first;
-            if (will_transform.find(PtrVar) == will_transform.end())
-                continue;
-            for (const auto &acc : pair.second) {
-                if (acc.kind != PointerAccessKind::InitArrayOffset &&
-                    acc.kind != PointerAccessKind::AssignAddrOf &&
-                    acc.kind != PointerAccessKind::AssignArrayOffset)
-                    continue;
-                // Check if any other transformed pointer appears in the
-                // init expression's subtree
-                const Stmt *InitStmt = acc.enclosing_stmt;
-                if (!InitStmt) {
-                    // For declarations, use the VarDecl's init
-                    if (PtrVar->hasInit())
-                        InitStmt = PtrVar->getInit();
-                }
-                if (!InitStmt && acc.expr) {
-                    // For separate assignments (AssignAddrOf, AssignArrayOffset),
-                    // walk up from the DeclRefExpr to find the BinaryOperator
-                    // and check its RHS for references to other transformed ptrs
-                    const Stmt *P = skipTransparentParents(acc.expr, Ctx);
-                    if (const BinaryOperator *BO = dyn_cast_or_null<BinaryOperator>(P))
-                        InitStmt = BO->getRHS();
-                }
-                if (!InitStmt) continue;
-                bool has_conflict = false;
-                // Walk the init to find DeclRefExprs to other transformed pointers
-                std::function<void(const Stmt *)> checkRefs = [&](const Stmt *S) {
-                    if (has_conflict || !S) return;
-                    if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
-                        if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-                            if (VD != PtrVar && will_transform.count(VD))
-                                has_conflict = true;
-                        }
-                    }
-                    for (const Stmt *Child : S->children())
-                        checkRefs(Child);
-                };
-                checkRefs(InitStmt);
-                if (has_conflict) {
-                    will_transform.erase(PtrVar);
-                    break;
-                }
-            }
-        }
+        // A pairwise root is left bare because its owner's assignment
+        // restores the position. If the owner is not rewritten, nothing
+        // does, so the root has to be rebuilt like any other value read.
+        for (const VarDecl *PtrVar : ptrs)
+            for (auto &acc : analysis.accesses[PtrVar])
+                if (acc.kind == PointerAccessKind::PairwiseRoot &&
+                    !transformed.count(acc.pair_owner))
+                    acc.kind = PointerAccessKind::ValueUse;
 
-        // First pass: param-bounded pointers
-        for (const VarDecl *PtrVar : rust_slice_candidates) {
-            auto &access_list = analysis.accesses[PtrVar];
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
-        }
-
-        // Second pass: remaining pointers. Skip pointers removed from
-        // will_transform by init conflict detection.
-        for (const VarDecl *PtrVar : other_pointers) {
-            auto &access_list = analysis.accesses[PtrVar];
-            auto &candidate = analysis.tracked_pointers[PtrVar];
-            if (will_transform.find(PtrVar) == will_transform.end())
+        // Reverse source order. Two index declarations sharing an anchor
+        // are both InsertTextBefore at one location, where a later
+        // insertion is placed ahead of an earlier one — so rewriting the
+        // pointers backwards puts their declarations back in source order,
+        // which is what a paired index needs to name the one before it.
+        for (auto it = ptrs.rbegin(); it != ptrs.rend(); ++it) {
+            if (!transformed.count(*it))
                 continue;
-            transformPointerVar(FD, PtrVar, candidate, access_list, Ctx);
+            transformPointerVar(FD, *it, analysis.tracked_pointers[*it],
+                                analysis.accesses[*it], transformed, Ctx);
         }
     }
 }
@@ -456,51 +345,40 @@ void FunctionAccessAnalyzer::transformPointerVar(const FunctionDecl *FD,
                                                   const VarDecl *PtrVar,
                                                   PointerCandidate &candidate,
                                                   std::vector<PointerAccess> &accesses,
+                                                  const std::set<const VarDecl *> &transformed,
                                                   ASTContext &Ctx) {
-    if (accesses.empty())
-        return;
-
     printAccesses(PtrVar, accesses, Ctx);
-
-    std::string error;
-    if (!validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error)) {
-        gLog.error = error;
-        logFailedPointer(PtrVar, Ctx, error);
-        if (VERBOSE)
-            llvm::outs() << "[Skip] " << PtrVar->getNameAsString() << ": " << error << "\n";
-        return;
-    }
 
     g_pointers_found++;
 
-    if (generateTransformation(FD, PtrVar, candidate, accesses, Ctx)) {
-        gLog.replacedPointer = true;
-        g_pointers_replaced++;
-        SourceManager &SM = Ctx.getSourceManager();
-        SourceLocation Loc = PtrVar->getLocation();
-        g_succeeded_pointers.push_back({
-            PtrVar->getNameAsString(),
-            FD ? FD->getNameAsString() : "(global)",
-            SM.getSpellingLineNumber(Loc),
-            SM.getSpellingColumnNumber(Loc)
-        });
+    if (!generateTransformation(FD, PtrVar, candidate, accesses, transformed, Ctx))
+        return;
 
-        // Record the transformed pointer in the metadata side-file so
-        // the slice pass knows which index variables exist and what
-        // they index into. Identity only — offset bounds are derived by
-        // the slice pass from the rewritten AST.
-        if (FD) {
-            if (xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(FD, Ctx)) {
-                xj::PtrIndexPointerRecord rec;
-                rec.name = PtrVar->getNameAsString();
-                rec.index_var = indexNameFor(PtrVar);
-                rec.param_index = -1;
-                if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
-                    rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
-                rec.base_text = candidate.base_array_text;
-                fnRec->pointers.push_back(std::move(rec));
-            }
-        }
+    gLog.replacedPointer = true;
+    g_pointers_replaced++;
+    SourceManager &SM = Ctx.getSourceManager();
+    SourceLocation Loc = PtrVar->getLocation();
+    g_succeeded_pointers.push_back({
+        PtrVar->getNameAsString(),
+        FD ? FD->getNameAsString() : "(global)",
+        SM.getSpellingLineNumber(Loc),
+        SM.getSpellingColumnNumber(Loc)
+    });
+
+    // Record the transformed pointer in the metadata side-file so the
+    // slice pass knows which index variables exist. Identity only: nothing
+    // about a base crosses this boundary, because this pass no longer has
+    // an opinion about one.
+    if (!FD)
+        return;
+    if (xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(FD, Ctx)) {
+        xj::PtrIndexPointerRecord rec;
+        rec.name = PtrVar->getNameAsString();
+        rec.index_var = indexNameFor(PtrVar);
+        rec.param_index = -1;
+        if (const auto *PD = dyn_cast<ParmVarDecl>(PtrVar))
+            rec.param_index = static_cast<int>(PD->getFunctionScopeIndex());
+        fnRec->pointers.push_back(std::move(rec));
     }
 }
 
@@ -544,11 +422,12 @@ void FunctionAccessAnalyzer::applyEdits(std::vector<Edit> &edits, SourceManager 
         // This prevents garbled output when two transformed pointers
         // both try to rewrite the same comparison expression.
         if (e.type == Edit::Replace) {
+            FileID eFile = SM.getFileID(e.start);
             unsigned eStart = e.offset;
             unsigned eEnd = SM.getFileOffset(e.end);
             bool overlaps = false;
             for (const auto &r : m_edited_ranges) {
-                if (eStart < r.second && eEnd > r.first) {
+                if (r.file == eFile && eStart < r.end && eEnd > r.begin) {
                     overlaps = true;
                     break;
                 }
@@ -566,7 +445,8 @@ void FunctionAccessAnalyzer::applyEdits(std::vector<Edit> &edits, SourceManager 
             // Rewriter's getRangeSize including prior InsertTextBefore at same offset
             unsigned origLen = SM.getFileOffset(e.end) - e.offset;
             TheRewriter.ReplaceText(e.start, origLen, e.text);
-            m_edited_ranges.push_back({e.offset, SM.getFileOffset(e.end)});
+            m_edited_ranges.push_back(
+                {SM.getFileID(e.start), e.offset, SM.getFileOffset(e.end)});
         }
             break;
         case Edit::InsertBefore:

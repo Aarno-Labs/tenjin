@@ -1,0 +1,19 @@
+{
+  "functions": {
+    "tail_sum@bare_copy_decl.c": {
+      "file": "bare_copy_decl.c",
+      "pointers": [
+        {
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}
