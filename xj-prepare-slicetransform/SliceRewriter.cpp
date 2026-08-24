@@ -30,6 +30,38 @@ namespace xj
         return getSourceText(E->getSourceRange(), SM, LO);
     }
 
+    // xj-prepare-pointertransform represents a NULL-able pointer as the
+    // out-of-range index -1, and spells the pointer value it hands to an
+    // untransformed callee as
+    //
+    //     (idx < 0 ? (void *)0 : base + idx)
+    //
+    // Wherever *this* pass moves a function into index space the guard is
+    // redundant — -1 means null again there — and it would otherwise stop
+    // the `base + idx` matching below from firing, leaving a pointer
+    // expression behind in a signature already retyped to int. Unwrap it
+    // and let the ordinary matching proceed.
+    static const Expr *stripNullGuard(const Expr *E, ASTContext &Ctx)
+    {
+        if (!E)
+            return E;
+        const Expr *S = E->IgnoreParenImpCasts();
+        const auto *CO = dyn_cast<ConditionalOperator>(S);
+        if (!CO)
+            return E;
+        // The null branch must actually be a null pointer constant; the
+        // other branch carries the `base + idx` we want.
+        const Expr *TrueE = CO->getTrueExpr()->IgnoreParenImpCasts();
+        const Expr *FalseE = CO->getFalseExpr()->IgnoreParenImpCasts();
+        if (TrueE->isNullPointerConstant(Ctx,
+                                         Expr::NPC_ValueDependentIsNotNull))
+            return FalseE;
+        if (FalseE->isNullPointerConstant(Ctx,
+                                          Expr::NPC_ValueDependentIsNotNull))
+            return TrueE;
+        return E;
+    }
+
     // Step up to the first parent that isn't an ImplicitCastExpr or ParenExpr.
     static const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx)
     {
@@ -797,8 +829,11 @@ namespace xj
                 if (!RetVal)
                     continue;
 
-                // `return base + idx;` -> `return idx;`
-                const Expr *Stripped = RetVal->IgnoreParenImpCasts();
+                // `return base + idx;` -> `return idx;`, including the
+                // NULL-guarded spelling the pointer pass emits for a
+                // NULL-able pointer, which collapses to the same index.
+                const Expr *Stripped =
+                    stripNullGuard(RetVal, Ctx)->IgnoreParenImpCasts();
                 while (const auto *C = dyn_cast<CStyleCastExpr>(Stripped))
                     Stripped = C->getSubExpr()->IgnoreParenImpCasts();
                 if (const auto *Add = dyn_cast<BinaryOperator>(Stripped))
@@ -1101,6 +1136,13 @@ namespace xj
         const FunctionDecl *CallerFD = CallerT.Def;
 
         ArgExpr = ArgExpr->IgnoreImpCasts();
+        if (const auto *PE = dyn_cast<ParenExpr>(ArgExpr))
+            ArgExpr = PE->getSubExpr()->IgnoreImpCasts();
+
+        // A NULL-able pointer reaches us wrapped in the pointer pass's
+        // null guard; in index space that collapses to the bare index, so
+        // unwrap before the `base + idx` matching below.
+        ArgExpr = stripNullGuard(ArgExpr, Ctx)->IgnoreImpCasts();
         if (const auto *PE = dyn_cast<ParenExpr>(ArgExpr))
             ArgExpr = PE->getSubExpr()->IgnoreImpCasts();
 
