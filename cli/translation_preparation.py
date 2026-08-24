@@ -44,6 +44,17 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     return (end_ns - start_ns) / 1_000_000.0
 
 
+def _remap_path_prefix_in_argument(s: str, source: Path, dest: Path) -> str:
+    """Remap absolute paths rooted at ``source`` inside a command argument."""
+    # A compiler argument can be a bare path, a joined option such as
+    # ``-I/path``, or a delimiter-separated value such as an rpath.  Requiring
+    # one of those boundaries prevents a source root like ``/md4c`` from also
+    # matching the relative build path ``CMakeFiles/md4c-html.dir``.
+    boundary = r"(^|[=,:]|^-[^/=,:]*)"
+    pattern = rf"{boundary}{re.escape(str(source))}(?=/|$)"
+    return re.sub(pattern, lambda match: match.group(1) + str(dest), s)
+
+
 def run_modifying_subprocess_or_restore_prev(
     prev: Path,
     current_codebase: Path,
@@ -131,8 +142,8 @@ def compute_build_info_in(
             reverse=True,
         )
         for pref in prefixes:
-            if pref and pref in s:
-                s = s.replace(pref, str(dest))
+            if pref:
+                s = _remap_path_prefix_in_argument(s, Path(pref), dest)
         return s
 
     def convert_intercepted_commands_to_build_info(remap_dest: Path):
