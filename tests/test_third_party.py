@@ -1722,3 +1722,138 @@ def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+# Maps (C binary name) -> (example source, translated Rust bin name). The example
+# programs under examples/ are not built by libzahl's Makefile, so we compile them
+# ourselves and statically link them against the library's object files. Tenjin
+# gives each executable its own crate, and names the crate's binary after the C
+# source file rather than after the linked output.
+LIBZAHL_EXAMPLES = {
+    "zahl_sum": ("examples/01-sum.c", "01_sum"),
+    "zahl_prod": ("examples/02-prod.c", "02_prod"),
+    "zahl_avg": ("examples/03-avg.c", "03_avg"),
+    "zahl_median": ("examples/04-median.c", "04_median"),
+}
+
+# Each example takes its operands as command line arguments and prints one line.
+# Note that 03-avg.c divides by `argc`, i.e. it counts argv[0] as an operand.
+LIBZAHL_EXAMPLE_ARGS = {
+    "zahl_sum": [
+        ["1", "2", "3"],
+        ["12345678901234567890", "98765432109876543210", "111"],
+        ["-5", "17", "-40"],
+        [],
+    ],
+    "zahl_prod": [
+        ["6", "7"],
+        ["123456789", "987654321", "1000000007"],
+        ["-3", "-4", "5"],
+        [],
+    ],
+    "zahl_avg": [
+        ["10", "20", "31"],
+        ["1000000000000000000000", "3000000000000000000000", "2"],
+    ],
+    "zahl_median": [
+        ["5", "3", "9", "1", "7"],
+        ["4", "1", "3", "2"],
+        ["99999999999999999999", "1", "-88888888888888888888"],
+    ],
+}
+
+
+def libzahl_translate(tenjin_fixtures: TenjinFixtures):
+    """Clone libzahl, build its example programs, and translate the result."""
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/maandree/libzahl.git",
+        "8aa2a900974b100672d1af89a97c1043372a446d",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # libzahl's own config.mk builds with `-O3 -flto` and links with `-s`; we drop
+    # those so the sources reach c2rust in a translatable shape. ZAHL_NO_ASM
+    # disables the x86-64 inline assembly in src/zadd.c and zahl/memory.h.
+    cflags = (
+        "-std=c99 -I. -DZAHL_NO_ASM -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_XOPEN_SOURCE=700 -DGOOD_RAND"
+    )
+
+    buildcmd = " && ".join(
+        [f'for f in src/*.c; do cc {cflags} -c "$f" -o "$(basename "${{f%.c}}").o" || exit 1; done']
+        + [
+            f"cc {cflags} -o {binname} {src} *.o"
+            for binname, (src, _rs_binname) in LIBZAHL_EXAMPLES.items()
+        ]
+    )
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="maandree_libzahl",
+            buildcmd=buildcmd,
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+
+def libzahl_check_examples(tmp_resultsdir: Path, cargo_profile: str):
+    """Build the translated crates with the given cargo profile and compare each
+    example's output against the corresponding C binary."""
+    build_args = ["build"] + (["--release"] if cargo_profile == "release" else [])
+    run_cargo_on_final(tmp_resultsdir / "final", build_args)
+
+    for binname, (_src, rs_binname) in LIBZAHL_EXAMPLES.items():
+        c_binpath = tmp_resultsdir / "_build_1" / binname
+        rs_binpath = tmp_resultsdir / "final" / "target" / cargo_profile / rs_binname
+        for args in LIBZAHL_EXAMPLE_ARGS[binname]:
+            c_prog_output = hermetic.run([str(c_binpath), *args], check=False, capture_output=True)
+            rs_prog_output = hermetic.run(
+                [str(rs_binpath), *args], check=False, capture_output=True
+            )
+            assert rs_prog_output.stdout == c_prog_output.stdout, (
+                f"Failed on {binname} with args {args!r}; got stdout:"
+                f" {rs_prog_output.stdout!r}, expected: {c_prog_output.stdout!r}"
+            )
+            assert rs_prog_output.stderr == c_prog_output.stderr, (
+                f"Failed on {binname} with args {args!r}; got stderr:"
+                f" {rs_prog_output.stderr!r}, expected: {c_prog_output.stderr!r}"
+            )
+            assert rs_prog_output.returncode == c_prog_output.returncode, (
+                f"Failed on {binname} with args {args!r}; got return code:"
+                f" {rs_prog_output.returncode}, expected: {c_prog_output.returncode}"
+            )
+
+
+@pytest.mark.slow  # expected runtime: 70 s
+def test_maandree_libzahl(tenjin_fixtures: TenjinFixtures):
+    tmp_resultsdir = tenjin_fixtures.tmp_resultsdir
+    libzahl_translate(tenjin_fixtures)
+    libzahl_check_examples(tmp_resultsdir, "release")
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 70 s
+@pytest.mark.skip(
+    reason="`sprintint_fix` in src/zstr.c writes uint16_t values through a pointer derived "
+    "from a char buffer at an arbitrary offset, and reads uint16_t values out of a string "
+    "literal. Both are unaligned accesses; x86-64 C tolerates them silently, but the "
+    "translated Rust trips the debug-only misaligned-pointer-dereference assertion and "
+    "aborts with SIGABRT on every non-zero input. The debug crates still compile, and the "
+    "same code produces C-identical output in release mode (see test_maandree_libzahl), so "
+    "this is inherited UB from the C sources rather than a translation defect.",
+)
+def test_maandree_libzahl_debug(tenjin_fixtures: TenjinFixtures):
+    tmp_resultsdir = tenjin_fixtures.tmp_resultsdir
+    libzahl_translate(tenjin_fixtures)
+    try:
+        libzahl_check_examples(tmp_resultsdir, "debug")
+    finally:
+        # Unlike the tests that clean up only on success, this one is expected to
+        # fail, so the (multi-gigabyte) resultsdir would never be reclaimed.
+        clean_up_resultsdir(tmp_resultsdir)
+        annotate_pytest_request_with_translation_notes(tenjin_fixtures)
