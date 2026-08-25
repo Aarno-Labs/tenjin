@@ -70,6 +70,55 @@ static std::string safeBase(const std::string &base)
 }
 
 // ============================================================================
+// Turning an index back into a pointer
+// ============================================================================
+//
+// A pointer that can hold NULL is represented by the out-of-range index
+// -1 (see PointerAccessKind::InitNull). This means that the correct way
+// to reconstruct the pointer's value is (p_index < 0 ? NULL : p + p_index).
+//
+// NB:
+// xj-prepare-slicetransform can identify this and simplify when possible,
+// so this should be kept in sync with collapseNullGuard in SliceRewriter.cpp.
+//
+// The sentinel -1 reaches an index from exactly three places. Two are
+// explicit nulls; additionally, the generated wrappers for
+// allowlisted functions return -1 for "not found" (see
+// PointerAccessKind::AssignFromAllowedFunc — `p = strchr(...)` becomes
+// `p_index = strchr_index_xj(...)`), so a strchr-derived pointer can be
+// null without any NULL ever appearing in the source.
+//
+// If a future access kind can assign the literal -1 to an index, it belongs
+// in this list.
+// As such, note that a *parameter* serving as its own base is not such a case:
+// there the index is a pure non-negative offset and the null-ness stays
+// in the base, which is left untouched.
+static bool pointerMayBeNull(const std::vector<PointerAccess> &accesses)
+{
+    for (const auto &access : accesses)
+    {
+        if (access.kind == PointerAccessKind::InitNull ||
+            access.kind == PointerAccessKind::AssignNull ||
+            access.kind == PointerAccessKind::AssignFromAllowedFunc)
+            return true;
+    }
+    return false;
+}
+
+// The pointer value for `index_name`, guarded only when the sentinel can
+// actually reach this site. Pointers that never hold NULL keep the bare
+// `base + index` spelling, which is what the slice pass already matches.
+static std::string pointerFromIndex(const std::string &base_array,
+                                    const std::string &index_name,
+                                    bool may_be_null)
+{
+    std::string ptr = base_array + " + " + index_name;
+    if (!may_be_null)
+        return ptr;
+    return "(" + index_name + " < 0 ? (void *)0 : " + ptr + ")";
+}
+
+// ============================================================================
 // Placing an index declaration alongside a pointer's declaration
 // ============================================================================
 //
@@ -195,6 +244,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
     std::string ptr_name = PtrVar->getNameAsString();
     std::string index_name = indexNameFor(PtrVar);
     std::string base_array = safeBase(candidate.base_array_text);
+    bool may_be_null = pointerMayBeNull(accesses);
 
     // Note: the body is always rewritten in *plain* form — base params
     // kept, indices counted from the original base, comparisons against
@@ -939,7 +989,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
             e.offset = SM.getFileOffset(StartLoc);
             e.start = StartLoc;
             e.end = EndLoc;
-            e.text = base_array + " + " + index_name;
+            e.text = pointerFromIndex(base_array, index_name, may_be_null);
             edits.push_back(e);
             break;
         }
@@ -1096,7 +1146,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
             e.offset = SM.getFileOffset(StartLoc);
             e.start = StartLoc;
             e.end = EndLoc;
-            e.text = base_array + " + " + index_name;
+            e.text = pointerFromIndex(base_array, index_name, may_be_null);
             edits.push_back(e);
             break;
         }
@@ -1115,7 +1165,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
             e.offset = SM.getFileOffset(StartLoc);
             e.start = StartLoc;
             e.end = EndLoc;
-            e.text = base_array + " + " + index_name;
+            e.text = pointerFromIndex(base_array, index_name, may_be_null);
             edits.push_back(e);
             break;
         }
@@ -1165,6 +1215,7 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
     std::string ptr_name = PtrVar->getNameAsString();
     std::string index_name = ptr_name + "_index_xj";
     std::string base_array = safeBase(candidate.base_array_text);
+    bool may_be_null = pointerMayBeNull(accesses);
 
     std::vector<Edit> edits;
 
@@ -1600,7 +1651,7 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
                 access.expr->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
                              StartLoc, EndLoc,
-                             base_array + " + " + index_name});
+                             pointerFromIndex(base_array, index_name, may_be_null)});
             break;
         }
 
@@ -1654,7 +1705,7 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
                 access.expr->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
                              StartLoc, EndLoc,
-                             base_array + " + " + index_name});
+                             pointerFromIndex(base_array, index_name, may_be_null)});
             break;
         }
 
@@ -1665,7 +1716,7 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
                 access.expr->getEndLoc(), 0, SM, LO);
             edits.push_back({Edit::Replace, SM.getFileOffset(StartLoc),
                              StartLoc, EndLoc,
-                             base_array + " + " + index_name});
+                             pointerFromIndex(base_array, index_name, may_be_null)});
             break;
         }
 
