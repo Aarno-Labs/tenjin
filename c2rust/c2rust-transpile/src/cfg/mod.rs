@@ -18,7 +18,7 @@
 use crate::c_ast::iterators::{DFExpr, SomeId};
 use crate::c_ast::CLabelId;
 use crate::diagnostics::TranslationResult;
-use crate::rust_ast::SpanExt;
+use crate::rust_ast::{self, SpanExt};
 use c2rust_ast_printer::pprust;
 use proc_macro2::Span;
 use std::collections::hash_map::DefaultHasher;
@@ -459,6 +459,7 @@ impl GenTerminator<StructureLabel<StmtOrDecl>> {
 pub struct SwitchCases {
     cases: Vec<(Pat, Label)>,
     default: Option<Label>,
+    expected_type_id: Option<CQualTypeId>,
 }
 
 /// A Rust statement, or a C declaration, or a comment
@@ -1956,42 +1957,54 @@ impl CfgBuilder {
                 self.add_wip_block(wip, Jump(this_label.clone()));
 
                 // Case
-                let resolved = translator.ast_context.unwrap_cast_expr(case_expr);
-                let branch = match translator.ast_context.index_unwrap_parens(resolved).kind {
-                    CExprKind::Literal(..) | CExprKind::ConstantExpr(_, _, Some(_)) => {
-                        match translator
-                            .convert_expr(ctx.used(), resolved, None)?
-                            .to_pure_expr()
-                        {
-                            Some(expr) => match *expr {
-                                Expr::Lit(lit) => Some(mk().lit_pat(lit.lit)),
-                                Expr::Path(path) => Some(mk().path_pat(path.path, path.qself)),
-                                _ => None,
-                            },
-                            _ => None,
+                let switch_case = self.switch_expr_cases.last_mut().ok_or_else(|| {
+                    format_err!(
+                        "Cannot find the 'switch' wrapping this ({:?}) 'case' statement",
+                        stmt_id,
+                    )
+                })?;
+
+                let pat = translator
+                    .convert_expr_with_optional_cast(
+                        ctx.const_().pattern().used(),
+                        switch_case.expected_type_id,
+                        case_expr,
+                    )
+                    .map_err(|err| ("convert_expr", err.to_string()))
+                    .and_then(|val| {
+                        val.to_pure_expr()
+                            .ok_or_else(|| ("to_pure_expr", "".to_string()))
+                    })
+                    .and_then(|expr| {
+                        rust_ast::expr_to_pat(*expr).map_err(|err| ("expr_to_pat", err))
+                    })
+                    .unwrap_or_else(|(src, err)| {
+                        log::trace!(
+                            "Converting `case` {:?} failed in {}: {}",
+                            case_expr,
+                            src,
+                            err
+                        );
+
+                        let mut pat = match cie {
+                            ConstIntExpr::U(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
+                            ConstIntExpr::I(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
+                        };
+
+                        if let Some(expected_type_id) = switch_case.expected_type_id {
+                            if let CTypeKind::Enum(enum_id) = translator
+                                .ast_context
+                                .resolve_type(expected_type_id.ctype)
+                                .kind
+                            {
+                                pat = translator.enum_constructor_pat(enum_id, pat);
+                            }
                         }
-                    }
-                    _ => None,
-                };
 
-                let pat = match branch {
-                    Some(pat) => pat,
-                    None => match cie {
-                        ConstIntExpr::U(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
-                        ConstIntExpr::I(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
-                    },
-                };
+                        pat
+                    });
 
-                self.switch_expr_cases
-                    .last_mut()
-                    .ok_or_else(|| {
-                        format_err!(
-                            "Cannot find the 'switch' wrapping this ({:?}) 'case' statement",
-                            stmt_id,
-                        )
-                    })?
-                    .cases
-                    .push((pat, this_label.clone()));
+                switch_case.cases.push((pat, this_label.clone()));
 
                 // Sub stmt
                 let sub_stmt_next = self.convert_stmt_help(
@@ -2037,8 +2050,30 @@ impl CfgBuilder {
                 let body_label = self.fresh_label();
 
                 // Convert the condition
+
+                let mut expected_type_id = None;
+
+                // If the condition is an implicit cast from an enum to its integral type,
+                // override the type to that of the enum.
+                if let CExprKind::ImplicitCast(target_type_id, castee_id, ..) =
+                    translator.ast_context.index_unwrap_parens(scrutinee).kind
+                {
+                    let castee_kind = &translator.ast_context.index_unwrap_parens(castee_id).kind;
+                    let castee_type_id = castee_kind.get_qual_type().unwrap();
+                    let castee_type_kind = &translator
+                        .ast_context
+                        .resolve_type(castee_type_id.ctype)
+                        .kind;
+
+                    if let CTypeKind::Enum(enum_id) = *castee_type_kind {
+                        if target_type_id == translator.enum_integral_type(enum_id) {
+                            expected_type_id = Some(castee_type_id);
+                        }
+                    }
+                }
+
                 let (stmts, val) = translator
-                    .convert_expr(ctx.used(), scrutinee, None)?
+                    .convert_expr_with_optional_cast(ctx.used(), expected_type_id, scrutinee)?
                     .discard_unsafe();
                 wip.extend(stmts);
 
@@ -2050,7 +2085,10 @@ impl CfgBuilder {
                 let saw_unmatched_case = self.last_per_stmt_mut().saw_unmatched_case;
                 let saw_unmatched_default = self.last_per_stmt_mut().saw_unmatched_default;
                 self.break_labels.push(next_label.clone());
-                self.switch_expr_cases.push(SwitchCases::default());
+                self.switch_expr_cases.push(SwitchCases {
+                    expected_type_id,
+                    ..Default::default()
+                });
 
                 let body_stuff = self.convert_stmt_help(
                     translator,

@@ -12,7 +12,7 @@ expression: cat tests/snapshots/enums.2024.clang15.rs
     unused_assignments,
     unused_mut
 )]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Foo(pub ::core::ffi::c_uint);
 impl Foo {
@@ -21,7 +21,7 @@ impl Foo {
     pub const Foo2: Self = Self(2);
     pub const Foo3: Self = Self(3);
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Bar(pub ::core::ffi::c_int);
 impl Bar {
@@ -37,11 +37,8 @@ pub static mut callbacks: [Callback; 1] = [None; 1];
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn call_callback(mut index: Foo) -> ::core::ffi::c_int {
     return ::core::mem::transmute::<_, fn() -> ::core::ffi::c_int>(
-        Some(
-            (*(&raw mut callbacks as *mut Callback).offset(index.0 as isize))
-                .expect("non-null function pointer"),
-        )
-        .expect("non-null function pointer"),
+        Some(callbacks[index.0 as usize].expect("non-null function pointer"))
+            .expect("non-null function pointer"),
     )();
 }
 pub const FOO1_MACRO: ::core::ffi::c_uint = 1 as ::core::ffi::c_uint;
@@ -75,10 +72,10 @@ pub unsafe extern "C" fn test_enums() {
         (e.0 == bar.0 as ::core::ffi::c_uint) as ::core::ffi::c_int;
     let mut wrong_enum_constant: ::core::ffi::c_int =
         (e.0 == Bar::Bar0.0 as ::core::ffi::c_uint) as ::core::ffi::c_int;
-    match foo.0 {
-        0 | 1 | 2 | 3 | 42 | 4294967254 | _ => {}
+    match foo {
+        Foo::Foo0 | Foo(FOO1_MACRO) | Foo(2) | Foo(3) | Foo(42) | Foo(4294967254) | _ => {}
     }
-    match bar.0 {
-        0 | BAR1_MACRO | 2 | 3 | -1 | 42 | -42 | _ => {}
+    match bar {
+        Bar::Bar0 | Bar(BAR1_MACRO) | Bar(2) | Bar(3) | Bar::BarN1 | Bar(42) | Bar(-42) | _ => {}
     };
 }
