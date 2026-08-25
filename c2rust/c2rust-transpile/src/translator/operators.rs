@@ -38,14 +38,11 @@ impl Translation<'_> {
                 Ok(lhs
                     .map(|x| bool_to_int(mk().binary_expr(BinOp::from(op), x, rhs.to_expr())))
                     .and_then(|out| {
-                        if ctx.is_unused() {
-                            WithStmts::new(
-                                vec![mk().semi_stmt(out)],
-                                self.panic_or_err("Binary expression is not supposed to be used"),
-                            )
-                        } else {
-                            WithStmts::new_val(out)
-                        }
+                        self.convert_side_effects_expr(
+                            ctx,
+                            WithStmts::new_val(out),
+                            "Binary expression is not supposed to be used",
+                        )
                     }))
             }
 
@@ -709,7 +706,7 @@ impl Translation<'_> {
                 ctx,
                 unary,
                 "Unary expression is not supposed to be used",
-            )?;
+            );
         }
         Ok(unary)
     }
@@ -831,7 +828,7 @@ impl Translation<'_> {
             // If we are negating a literal, generate a negated literal directly.
             // This will create an expression like `-1 as ty` without parentheses,
             // rather than `-(1 as ty)`.
-            let val = self.mk_int_lit(expr_type_id, val, base, true)?;
+            let val = self.mk_int_lit(ctx, expr_type_id, val, base, true)?;
             Ok(WithStmts::new_val(val))
         } else {
             let val = self.convert_expr(ctx.used(), arg_id, Some(expr_type_id))?;

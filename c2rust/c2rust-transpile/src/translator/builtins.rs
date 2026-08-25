@@ -35,7 +35,7 @@ impl<'c> Translation<'c> {
         // Emit `arg0.{method_name}(arg1)`
         let arg0 = self.convert_expr(ctx.used(), args[0], None)?;
         let arg1 = self.convert_expr(ctx.used(), args[1], None)?;
-        arg0.zip(arg1).and_then_try(|(arg0, arg1)| {
+        Ok(arg0.zip(arg1).and_then(|(arg0, arg1)| {
             let arg1 = mk().cast_expr(arg1, mk().path_ty(vec!["u32"]));
             let method_call_expr = mk().method_call_expr(arg0, rotate_method_name, vec![arg1]);
             self.convert_side_effects_expr(
@@ -43,7 +43,7 @@ impl<'c> Translation<'c> {
                 WithStmts::new_val(method_call_expr),
                 "Builtin is not supposed to be used",
             )
-        })
+        }))
     }
 
     /// Convert a call to a builtin function to a Rust expression
@@ -457,11 +457,11 @@ impl<'c> Translation<'c> {
                 self.import_simd_function(fn_name)?;
                 let ident = mk().ident_expr(fn_name);
                 let call = mk().call_expr(ident, vec![]);
-                self.convert_side_effects_expr(
+                Ok(self.convert_side_effects_expr(
                     ctx,
                     WithStmts::new_val(call),
                     "Builtin is not supposed to be used",
-                )
+                ))
             }
 
             "__builtin_arm_yield" => {
@@ -480,11 +480,11 @@ impl<'c> Translation<'c> {
                 self.import_arch_function("aarch64", fn_name);
                 let ident = mk().ident_expr(fn_name);
                 let call = mk().call_expr(ident, vec![]);
-                self.convert_side_effects_expr(
+                Ok(self.convert_side_effects_expr(
                     ctx,
                     WithStmts::new_val(call),
                     "Builtin is not supposed to be used",
-                )
+                ))
             }
 
             "__sync_val_compare_and_swap_1"
@@ -520,11 +520,11 @@ impl<'c> Translation<'c> {
             "__sync_synchronize" => {
                 let atomic_func = self.atomic_intrinsic_expr("fence", &[SeqCst]);
                 let call_expr = mk().call_expr(atomic_func, vec![]);
-                self.convert_side_effects_expr(
+                Ok(self.convert_side_effects_expr(
                     ctx,
                     WithStmts::new_val(call_expr),
                     "Builtin is not supposed to be used",
-                )
+                ))
             }
 
             // `__atomic_thread_fence` is a full fence (`atomic_fence`);
@@ -557,11 +557,11 @@ impl<'c> Translation<'c> {
                         vec![ordering],
                     )
                 };
-                self.convert_side_effects_expr(
+                Ok(self.convert_side_effects_expr(
                     ctx,
                     WithStmts::new_val(call_expr),
                     "Builtin is not supposed to be used",
-                )
+                ))
             }
 
             "__sync_lock_test_and_set_1"
@@ -573,14 +573,14 @@ impl<'c> Translation<'c> {
                 let atomic_func = self.atomic_intrinsic_expr("xchg", &[Acquire]);
                 let arg0 = self.convert_expr(ctx.used(), args[0], None)?;
                 let arg1 = self.convert_expr(ctx.used(), args[1], None)?;
-                arg0.zip(arg1).and_then_try(|(arg0, arg1)| {
+                Ok(arg0.zip(arg1).and_then(|(arg0, arg1)| {
                     let call_expr = mk().call_expr(atomic_func, vec![arg0, arg1]);
                     self.convert_side_effects_expr(
                         ctx,
                         WithStmts::new_val(call_expr),
                         "Builtin is not supposed to be used",
                     )
-                })
+                }))
             }
 
             "__sync_lock_release_1"
@@ -591,7 +591,7 @@ impl<'c> Translation<'c> {
                 // Emit `atomic_store_release(arg0, 0)`
                 let atomic_func = self.atomic_intrinsic_expr("store", &[Release]);
                 let arg0 = self.convert_expr(ctx.used(), args[0], None)?;
-                arg0.and_then_try(|arg0| {
+                Ok(arg0.and_then(|arg0| {
                     let zero = mk().lit_expr(mk().int_lit(0, ""));
                     let call_expr = mk().call_expr(atomic_func, vec![arg0, zero]);
                     self.convert_side_effects_expr(
@@ -599,7 +599,7 @@ impl<'c> Translation<'c> {
                         WithStmts::new_val(call_expr),
                         "Builtin is not supposed to be used",
                     )
-                })
+                }))
             }
             // There's currently no way to replicate this functionality in Rust, so we just
             // pass the ptr input param in its place.
@@ -826,14 +826,11 @@ impl<'c> Translation<'c> {
                 .collect::<Vec<_>>();
             let mem_expr = mk().call_expr(mem, args_casted);
 
-            if ctx.is_used() {
-                Ok(WithStmts::new_val(mem_expr))
-            } else {
-                Ok(WithStmts::new(
-                    vec![mk().semi_stmt(mem_expr)],
-                    self.panic_or_err(&format!("__builtin_{name} not used")),
-                ))
-            }
+            Ok(self.convert_side_effects_expr(
+                ctx,
+                WithStmts::new_val(mem_expr),
+                &format!("__builtin_{} not used", name),
+            ))
         })
     }
 }

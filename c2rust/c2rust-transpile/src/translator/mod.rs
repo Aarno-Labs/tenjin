@@ -134,6 +134,10 @@ pub struct ExprContext {
     /// translation.
     is_const: bool,
 
+    /// In a context where a pattern is expected, such as for `match` arms.
+    /// This restricts what kinds of expressions can be emitted.
+    is_pattern: bool,
+
     /// Evaluating a C global/static variable.
     /// This is usually in a const context, but doesn't have to be, for example with initializers
     /// that are executed by the `c2rust_run_static_initializers` function.
@@ -184,6 +188,18 @@ impl ExprContext {
     pub fn not_const(self) -> Self {
         ExprContext {
             is_const: false,
+            ..self
+        }
+    }
+    pub fn pattern(self) -> Self {
+        ExprContext {
+            is_pattern: true,
+            ..self
+        }
+    }
+    pub fn not_pattern(self) -> Self {
+        ExprContext {
+            is_pattern: false,
             ..self
         }
     }
@@ -660,7 +676,7 @@ pub struct Translation<'c> {
     // Translation state and utilities
     parent_fn_map: HashMap<CDeclId, CDeclId>,
     parent_expr_map: HashMap<CExprId, CExprId>,
-    type_converter: RefCell<TypeConverter>,
+    pub(crate) type_converter: RefCell<TypeConverter>,
     renamer: Rc<RefCell<Renamer<CDeclId>>>,
     zero_inits: RefCell<ZeroInits>,
     function_context: RefCell<FuncContext>,
@@ -1243,8 +1259,9 @@ pub fn translate(
     let mut t = Translation::new(ast_context, tcfg, main_file, parent_fn_map, parent_expr_map);
     let ctx = ExprContext {
         used: true,
-        is_static: false,
         is_const: false,
+        is_pattern: false,
+        is_static: false,
         decay_ref: DecayRef::Default,
         is_bitfield_write: false,
         needs_address: false,
@@ -1268,7 +1285,7 @@ pub fn translate(
         // Headers often pull in declarations that are unused;
         // we simplify the translator output by omitting those.
         t.ast_context
-            .prune_unwanted_decls(tcfg.preserve_unused_functions);
+            .prune_unwanted_items(tcfg.preserve_unused_functions);
 
         // Normalize AST types between Clang < 16 and later versions. Ensures that
         // binary and unary operators' expr types agree with their argument types
@@ -4704,6 +4721,22 @@ impl<'c> Translation<'c> {
             }
         }
 
+        if ctx.is_pattern
+            && !matches!(
+                expr_kind,
+                CExprKind::Paren(..)
+                    | CExprKind::ConstantExpr(..)
+                    | CExprKind::DeclRef(..)
+                    | CExprKind::Literal(..)
+                    | CExprKind::ImplicitCast(..)
+                    | CExprKind::ExplicitCast(..)
+            )
+        {
+            return Err(TranslationError::generic(
+                "expr kind is not supported in patterns",
+            ));
+        }
+
         use CExprKind::*;
         match *expr_kind {
             DesignatedInitExpr(..) => {
@@ -4723,6 +4756,31 @@ impl<'c> Translation<'c> {
             ConvertVector(..) => Err(TranslationError::generic("convert vector not supported")),
 
             UnaryType(result_type_id, kind, opt_expr, arg_ty) => {
+                // `__alignof__`/`_Alignof` applied directly to a struct
+                // field (e.g. `__alignof__(s->f)`) should reflect that
+                // field's own manual `__attribute__((aligned(N)))`, if any,
+                // rather than its type's natural alignment.
+                if matches!(kind, CUnTypeOp::AlignOf | CUnTypeOp::PreferredAlignOf) {
+                    if let Some(field_expr) = opt_expr {
+                        if let CExprKind::Member(_, _, decl_id, _, _) =
+                            self.ast_context.index_unwrap_parens(field_expr).kind
+                        {
+                            if let CDeclKind::Field {
+                                manual_alignment: Some(alignment),
+                                ..
+                            } = self.ast_context[decl_id].kind
+                            {
+                                let ty = self.convert_type(result_type_id.ctype)?;
+                                let val = mk().cast_expr(
+                                    mk().lit_expr(mk().int_unsuffixed_lit(alignment)),
+                                    ty,
+                                );
+                                return Ok(WithStmts::new_val(val));
+                            }
+                        }
+                    }
+                }
+
                 let result = match kind {
                     CUnTypeOp::SizeOf => match opt_expr {
                         None => self.compute_size_of_type(
@@ -4769,7 +4827,11 @@ impl<'c> Translation<'c> {
 
             ConstantExpr(ty, child, value) => {
                 if let Some(constant) = value {
-                    self.convert_constant(constant).map(WithStmts::new_val)
+                    if ctx.is_pattern {
+                        self.convert_expr(ctx, child, override_ty)
+                    } else {
+                        self.convert_constant(constant).map(WithStmts::new_val)
+                    }
                 } else {
                     self.convert_expr(ctx, child, Some(override_ty.unwrap_or(ty)))
                 }
@@ -4789,6 +4851,7 @@ impl<'c> Translation<'c> {
 
             OffsetOf(ty, ref kind) => match kind {
                 OffsetOfKind::Constant(val) => Ok(WithStmts::new_val(self.mk_int_lit(
+                    ctx,
                     override_ty.unwrap_or(ty),
                     *val,
                     IntBase::Dec,
@@ -5148,6 +5211,19 @@ impl<'c> Translation<'c> {
         )
     }
 
+    pub(crate) fn convert_expr_with_optional_cast(
+        &self,
+        ctx: ExprContext,
+        target_type_id: Option<CQualTypeId>,
+        expr_id: CExprId,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        if let Some(target_type_id) = target_type_id {
+            self.convert_expr_with_cast(ctx, target_type_id, expr_id, &None)
+        } else {
+            self.convert_expr(ctx, expr_id, None)
+        }
+    }
+
     fn convert_decl_ref(
         &self,
         ctx: ExprContext,
@@ -5191,6 +5267,12 @@ impl<'c> Translation<'c> {
                 expected_type_id.unwrap_or(result_type_id),
                 decl_id,
             );
+        }
+
+        if ctx.is_pattern {
+            return Err(TranslationError::generic(
+                "non-EnumConstant DeclRefs are not supported in patterns",
+            ));
         }
 
         let varname = decl.get_name().expect("expected variable name").to_owned();
@@ -5345,15 +5427,15 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         expr: WithStmts<Box<Expr>>,
         panic_msg: &str,
-    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+    ) -> WithStmts<Box<Expr>> {
         if ctx.is_unused() {
             // Recall that if `used` is false, the `stmts` field of the output must contain
             // all side-effects (and a function call can always have side-effects)
-            Ok(expr.and_then(|expr| {
+            expr.and_then(|expr| {
                 WithStmts::new(vec![mk().semi_stmt(expr)], self.panic_or_err(panic_msg))
-            }))
+            })
         } else {
-            Ok(expr)
+            expr
         }
     }
 
@@ -5423,11 +5505,11 @@ impl<'c> Translation<'c> {
                             // enclose block in parentheses to work around
                             // https://github.com/rust-lang/rust/issues/54482
                             let val = mk().paren_expr(block);
-                            return self.convert_side_effects_expr(
+                            return Ok(self.convert_side_effects_expr(
                                 ctx,
                                 WithStmts::new_val(val),
                                 "Compound statement expression is not supposed to be used",
-                            );
+                            ));
                         }
                         _ => {
                             self.use_feature("label_break_value");
@@ -5438,11 +5520,11 @@ impl<'c> Translation<'c> {
 
                 let block_body = mk().block(stmts);
                 let val: Box<Expr> = mk().labelled_block_expr(block_body, lbl.pretty_print());
-                self.convert_side_effects_expr(
+                Ok(self.convert_side_effects_expr(
                     ctx,
                     WithStmts::new_val(val),
                     "Compound statement expression is not supposed to be used",
-                )
+                ))
             }
             _ => {
                 if ctx.is_unused() {
@@ -5481,7 +5563,7 @@ impl<'c> Translation<'c> {
         // But for some expression types, if we don't absolutely have to cast,
         // we would rather the expression is translated according to the type we're
         // expecting, and then we can skip the cast entirely.
-        if self.can_propagate_cast(expr, target_ty, is_explicit) {
+        if self.can_propagate_cast(ctx, expr, target_ty, is_explicit) {
             return self.convert_expr_guided(ctx, expr, Some(target_ty), ctx_guided_type);
         }
 
@@ -5550,6 +5632,7 @@ impl<'c> Translation<'c> {
 
     fn can_propagate_cast(
         &self,
+        ctx: ExprContext,
         expr_id: CExprId,
         target_type_id: CQualTypeId,
         is_explicit: bool,
@@ -5559,29 +5642,62 @@ impl<'c> Translation<'c> {
             return false;
         }
 
-        let expr_kind = &self.ast_context.index_unwrap_parens(expr_id).kind;
+        let mut expr_kind = &self.ast_context.index_unwrap_parens(expr_id).kind;
 
-        if let &CExprKind::DeclRef(_, decl_id, _) = expr_kind {
-            if let CDeclKind::EnumConstant { .. } = self.ast_context[decl_id].kind {
-                // In C, `EnumConstant`s have some integral type, _not_ the enum type.
-                // However, if we then immediately have a cast to convert this variable back into
-                // the enum type, we would like to produce Rust with _no_ casts.
-                if self.enum_constant_matches_type(target_type_id.ctype, decl_id) {
-                    return true;
-                }
+        // In patterns, skip over `ConstantExpr`s.
+        if ctx.is_pattern {
+            if let &CExprKind::ConstantExpr(_, expr_id, _) = expr_kind {
+                expr_kind = &self.ast_context.index_unwrap_parens(expr_id).kind;
+            }
+        }
 
-                let source_enum_id = self.ast_context.parents[&decl_id];
-                let source_integral_type_id = self.enum_integral_type(source_enum_id);
-                let target_type_resolved_id = self
-                    .ast_context
-                    .resolve_type_id_no_typedef(target_type_id.ctype);
+        match *expr_kind {
+            // The inner expression is also an implicit cast. See if we can combine the casts.
+            CExprKind::ImplicitCast(source_type_id, _, cast_kind, _, _) => {
+                let source_type_kind = &self.ast_context.resolve_type(source_type_id.ctype).kind;
+                let target_type_kind = &self.ast_context.resolve_type(target_type_id.ctype).kind;
 
-                // Likewise, if we are casting to the inner integral type of the enum, then
-                // translate the enum constant directly as that.
-                if target_type_resolved_id == source_integral_type_id.ctype {
-                    return true;
+                if let CTypeKind::Enum(target_enum_id) = *target_type_kind {
+                    let target_integral_type_id = self.enum_integral_type(target_enum_id);
+                    let target_integral_type_kind = &self
+                        .ast_context
+                        .resolve_type(target_integral_type_id.ctype)
+                        .kind;
+
+                    // We are casting to an enum type, from its underlying integral type.
+                    // Skip the cast to the integral type and cast to the enum type directly.
+                    if cast_kind == CastKind::IntegralCast
+                        && source_type_kind == target_integral_type_kind
+                    {
+                        return true;
+                    }
                 }
             }
+
+            CExprKind::DeclRef(_, decl_id, _) => {
+                if let CDeclKind::EnumConstant { .. } = self.ast_context[decl_id].kind {
+                    // In C, `EnumConstant`s have some integral type, _not_ the enum type.
+                    // However, if we then immediately have a cast to convert this variable back into
+                    // the enum type, we would like to produce Rust with _no_ casts.
+                    if self.enum_constant_matches_type(target_type_id.ctype, decl_id) {
+                        return true;
+                    }
+
+                    let source_enum_id = self.ast_context.parents[&decl_id];
+                    let source_integral_type_id = self.enum_integral_type(source_enum_id);
+                    let target_type_resolved_id = self
+                        .ast_context
+                        .resolve_type_id_no_typedef(target_type_id.ctype);
+
+                    // Likewise, if we are casting to the inner integral type of the enum, then
+                    // translate the enum constant directly as that.
+                    if target_type_resolved_id == source_integral_type_id.ctype {
+                        return true;
+                    }
+                }
+            }
+
+            _ => {}
         }
 
         let mut literal_expr_kind = expr_kind;
@@ -5664,6 +5780,17 @@ impl<'c> Translation<'c> {
             return Ok(val);
         }
 
+        if ctx.is_pattern
+            && !matches!(
+                kind,
+                CastKind::ToVoid | CastKind::ConstCast | CastKind::IntegralCast
+            )
+        {
+            return Err(TranslationError::generic(
+                "cast kind is not supported in patterns",
+            ));
+        }
+
         match kind {
             CastKind::BitCast | CastKind::NoOp => {
                 self.convert_pointer_to_pointer_cast(source_cty, target_cty, val, expr, None)
@@ -5683,6 +5810,12 @@ impl<'c> Translation<'c> {
             | CastKind::IntegralToFloating
             | CastKind::BooleanToSignedIntegral => {
                 let target_ty = self.convert_type(target_cty.ctype)?;
+
+                if ctx.is_pattern && !target_ty_kind.is_enum() {
+                    return Err(TranslationError::generic(
+                        "integral casts to non-enums are not supported in patterns",
+                    ));
+                }
 
                 if let CTypeKind::LongDouble | CTypeKind::Float128 = target_ty_kind {
                     if let CTypeKind::LongDouble | CTypeKind::Float128 =
