@@ -16,6 +16,14 @@ namespace xj
         O["index_var"] = R.index_var;
         O["param_index"] = R.param_index;
         O["base_text"] = R.base_text;
+        // Omitted rather than written as 0 so that the side-file the base tool
+        // re-emits differs from the pointer pass's by the absence of a stale
+        // position, not by a zero that reads like one.
+        if (R.decl_line != 0)
+        {
+            O["decl_line"] = R.decl_line;
+            O["decl_col"] = R.decl_col;
+        }
         return O;
     }
 
@@ -30,6 +38,8 @@ namespace xj
         R.index_var = IndexVar->str();
         R.param_index = static_cast<int>(O.getInteger("param_index").value_or(-1));
         R.base_text = O.getString("base_text").value_or("").str();
+        R.decl_line = static_cast<int>(O.getInteger("decl_line").value_or(0));
+        R.decl_col = static_cast<int>(O.getInteger("decl_col").value_or(0));
         return true;
     }
 
