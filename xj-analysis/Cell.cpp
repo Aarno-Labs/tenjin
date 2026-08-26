@@ -68,15 +68,10 @@ namespace xj::analysis
   {
 
     // The cell an expression names, or nullopt when this domain cannot name
-    // it: array subscripts, call results, casts between unrelated types,
+    // it. array subscripts, call results, casts between unrelated types,
     // paths over the depth cap, anything not rooted at a `VarDecl`.
     //
-    // Shared by `collect`, which interns what the body mentions, and by
-    // `lookup`, which asks the same question of one expression. They must
-    // never disagree about what is nameable: a `lookup` that succeeded where
-    // `collect` had not interned would silently make a store unresolvable,
-    // and one that failed where `collect` had would leave a dead cell in the
-    // alphabet.
+    // Must agree with `lookup`
     std::optional<Cell> cellOf(const clang::Expr *E)
     {
       if (E == nullptr)
@@ -100,7 +95,7 @@ namespace xj::analysis
       {
         // An anonymous struct or union member arrives as an
         // IndirectFieldDecl, which names storage this path grammar cannot
-        // spell. Not nameable, therefore not a cell.
+        // spell.
         const auto *FD = llvm::dyn_cast<clang::FieldDecl>(ME->getMemberDecl());
         if (FD == nullptr || FD->getType().isVolatileQualified())
           return std::nullopt;
@@ -112,8 +107,7 @@ namespace xj::analysis
         if (ME->isArrow())
           C->Path.push_back(Step::deref());
         C->Path.push_back(Step::field(FD));
-        // Over the cap is simply not nameable, which makes a store through
-        // such a path an unresolvable store — lossy, never unsound.
+
         if (C->Path.size() > CellUniverse::MaxPathDepth)
           return std::nullopt;
         return C;
@@ -122,21 +116,6 @@ namespace xj::analysis
       return std::nullopt;
     }
 
-    // Collects the alphabet: every variable the function names, plus every
-    // field path it mentions.
-    //
-    // "Every variable", rather than only the pointer-typed ones, is
-    // load-bearing once field paths are cells. A store whose destination is not
-    // a cell is an *unresolvable* store, and T2 answers one of those by
-    // detaching every cell not out of reach — which is every Deref-bearing
-    // cell there is. So with `t->storage` in the alphabet, leaving `i` out
-    // of it means the `i++` in
-    //
-    //     for (unsigned i = 0; i < t->len; i++)  sum += p[i];
-    //
-    // clears the base on every iteration and `p` resolves to nothing.
-    // Non-pointer cells are not a precision nicety here; without them the
-    // field paths they surround are unusable.
     class CellCollector : public clang::RecursiveASTVisitor<CellCollector>
     {
     public:
@@ -158,10 +137,7 @@ namespace xj::analysis
         return true;
       }
 
-      // Every `x.f` and `x->f` the body mentions, whatever its type. A
-      // non-pointer field is never a resolution candidate worth reporting,
-      // but it has to be a *cell*: `t->len = 0` must be a resolvable store
-      // before mayOverlap can rule it disjoint from `t->storage`.
+      // Every `x.f` and `x->f` the body mentions.
       bool VisitMemberExpr(clang::MemberExpr *ME)
       {
         if (auto C = cellOf(ME))

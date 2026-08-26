@@ -177,8 +177,25 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit() {
     for (PointerPlan &P : plans)
         for (PointerAccess &acc : *P.accesses)
             if (acc.kind == PointerAccessKind::PairwiseRoot &&
-                !transformed.count(acc.pair_owner))
-                acc.kind = PointerAccessKind::ValueUse;
+                !transformed.count(acc.pair_owner)) {
+                // A bare root is just a value read once its owner is out. A
+                // *stepped* root still has to move: `q = p++` with q not
+                // rewritten is p's own increment again, rendered in value
+                // position because the initializer still wants a pointer.
+                switch (acc.root_adjust) {
+                case RootAdjust::PostInc:
+                case RootAdjust::PreInc:
+                    acc.kind = PointerAccessKind::Increment;
+                    break;
+                case RootAdjust::PostDec:
+                case RootAdjust::PreDec:
+                    acc.kind = PointerAccessKind::Decrement;
+                    break;
+                case RootAdjust::None:
+                    acc.kind = PointerAccessKind::ValueUse;
+                    break;
+                }
+            }
 
     // ---- 3. Plan every access rewrite in the TU at once ---------------
     EditPlan plan(Ctx, transformed);

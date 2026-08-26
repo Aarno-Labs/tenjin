@@ -154,6 +154,20 @@ const std::string &indexNameFor(const VarDecl *VD)
         .first->second;
 }
 
+// Pre-increment yields the new position and post-increment the old one, so
+// `q = ++p` and `q = p++` differ only in where the operator lands — the same
+// distinction the index has to reproduce.
+std::string applyRootAdjust(RootAdjust adj, const std::string &name) {
+    switch (adj) {
+    case RootAdjust::PostInc: return name + "++";
+    case RootAdjust::PostDec: return name + "--";
+    case RootAdjust::PreInc: return "++" + name;
+    case RootAdjust::PreDec: return "--" + name;
+    case RootAdjust::None: break;
+    }
+    return name;
+}
+
 // Stringify a PointerAccessKind for verbose / debug output.
 const char *pointerAccessKindToString(PointerAccessKind kind)
 {

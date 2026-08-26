@@ -155,6 +155,110 @@ bool PointerAccessCollector::escapesForInitScope(const Stmt *S,
     return referencesAnyOf(S, bound);
 }
 
+// A node the decomposition below descends through on its way to the base.
+// The climb in pairwiseOwner has to step through exactly these: the two must
+// agree about which reference is a root, and neither side reports it when
+// they do not.
+static bool isSplitTransparent(const Stmt *S)
+{
+    if (!S)
+        return false;
+    if (isa<ParenExpr>(S) || isa<ImplicitCastExpr>(S))
+        return true;
+    if (const auto *UO = dyn_cast<UnaryOperator>(S))
+        return UO->isIncrementDecrementOp();
+    if (const auto *BO = dyn_cast<BinaryOperator>(S))
+        return BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub;
+    return false;
+}
+
+bool PointerAccessCollector::decomposePointer(const Expr *E, PointerSplit &out)
+{
+    if (!E)
+        return false;
+    const Expr *Core = E->IgnoreParenImpCasts();
+
+    // q — the expression is its own base, at offset 0. Still a decomposition
+    // and not a refusal: the root is recorded and paired, so `int *q = p;`
+    // inherits p's position, even though no text moves.
+    if (const auto *DRE = dyn_cast<DeclRefExpr>(Core))
+    {
+        QualType T = DRE->getType();
+        if (!T->isPointerType() && !T->isArrayType())
+            return false;
+        out.base = DRE;
+        out.ok = true;
+        return true;
+    }
+
+    if (const auto *UO = dyn_cast<UnaryOperator>(Core))
+    {
+        // q = p++ — the base is p, and what q lands at is p's position and
+        // the step together. Only a tracked p has an index to step; for an
+        // untracked one there is nothing to carry the increment, and taking
+        // the split anyway would drop it on the floor.
+        if (UO->isIncrementDecrementOp())
+        {
+            const auto *OpDRE =
+                dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
+            if (!OpDRE || !OpDRE->getType()->isPointerType())
+                return false;
+            if (!isTracked(OpDRE->getDecl()))
+                return false;
+            switch (UO->getOpcode())
+            {
+            case UO_PostInc: out.step = RootAdjust::PostInc; break;
+            case UO_PreInc: out.step = RootAdjust::PreInc; break;
+            case UO_PostDec: out.step = RootAdjust::PostDec; break;
+            case UO_PreDec: out.step = RootAdjust::PreDec; break;
+            default: return false;
+            }
+            out.base = OpDRE;
+            out.ok = true;
+            return true;
+        }
+
+        // &arr[i] — the address of an element already names its own base.
+        // A tracked base is excluded: its reference is rewritten to
+        // arr[arr_index_xj + i] in place, and replacing the whole
+        // right-hand side would drop that edit on the floor.
+        if (UO->getOpcode() != UO_AddrOf)
+            return false;
+        const auto *ASE =
+            dyn_cast<ArraySubscriptExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
+        if (!ASE)
+            return false;
+        const auto *BaseDRE =
+            dyn_cast<DeclRefExpr>(ASE->getBase()->IgnoreParenImpCasts());
+        if (!BaseDRE || isTracked(BaseDRE->getDecl()))
+            return false;
+        out.base = BaseDRE;
+        out.terms.push_back({ASE->getIdx(), /*minus=*/false});
+        out.ok = true;
+        return true;
+    }
+
+    // e ± k — decompose the pointer-valued side and keep the rest as a term.
+    // Recursing rather than walking the spine is what lets `q = p++ + 1`
+    // split with no rule of its own. Terms accumulate on the way back up, so
+    // they come out in source order without a reversal.
+    //
+    // A C-style cast is deliberately not stepped through, here or above:
+    // dropping it would change the assignment's type, and the cast operand
+    // is reachable as an ordinary value read instead.
+    if (const auto *BO = dyn_cast<BinaryOperator>(Core))
+    {
+        if (BO->getOpcode() != BO_Add && BO->getOpcode() != BO_Sub)
+            return false;
+        if (!decomposePointer(BO->getLHS(), out))
+            return false;
+        out.terms.push_back({BO->getRHS(), BO->getOpcode() == BO_Sub});
+        return true;
+    }
+
+    return false;
+}
+
 void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
                                                 PointerAccess &pa,
                                                 const VarDecl *Owner,
@@ -162,6 +266,7 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
 {
     pa.rhs_expr = RHS;
     pa.root_expr = nullptr;
+    pa.root_adjust = RootAdjust::None;
     pa.offset_text = "0";
     pa.operand_text = "";
     pa.index_terms.clear();
@@ -169,79 +274,9 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     if (!RHS)
         return;
 
-    const Expr *Core = RHS->IgnoreParenImpCasts();
-    const Expr *Root = nullptr;
-    std::vector<const Expr *> offsets;   // sub-expressions lifted into the index
-    std::vector<OffsetTerm> index_terms; // the same, with their operators
-    std::string standalone;              // the index when the root is not paired
-    std::string remainder;               // what follows the root's index when it is
-
-    if (const auto *UO = dyn_cast<UnaryOperator>(Core))
-    {
-        // &arr[i] — the address of an element already names its own base.
-        // A tracked base is excluded: its reference is rewritten to
-        // arr[arr_index_xj + i] in place, and replacing the whole
-        // right-hand side would drop that edit on the floor.
-        if (UO->getOpcode() != UO_AddrOf)
-            return;
-        const auto *ASE =
-            dyn_cast<ArraySubscriptExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
-        if (!ASE)
-            return;
-        const Expr *Base = ASE->getBase()->IgnoreParenImpCasts();
-        const auto *BaseDRE = dyn_cast<DeclRefExpr>(Base);
-        if (!BaseDRE || isTracked(BaseDRE->getDecl()))
-            return;
-        Root = Base;
-        offsets.push_back(ASE->getIdx());
-        index_terms.push_back({ASE->getIdx(), /*minus=*/false});
-        standalone = getSourceText(ASE->getIdx(), SM, LO);
-        remainder = " + " + standalone;
-    }
-    else
-    {
-        // q, or q ± k ± ... — walk down the left spine of the +/- chain. A
-        // C-style cast is deliberately not stepped through: dropping it
-        // would change the assignment's type, and the cast operand is
-        // reachable as an ordinary value read instead.
-        const Expr *Spine = Core;
-        while (const auto *BO = dyn_cast<BinaryOperator>(Spine))
-        {
-            if (BO->getOpcode() != BO_Add && BO->getOpcode() != BO_Sub)
-                return;
-            Spine = BO->getLHS()->IgnoreParenImpCasts();
-        }
-        const auto *RootDRE = dyn_cast<DeclRefExpr>(Spine);
-        if (!RootDRE)
-            return;
-        QualType T = RootDRE->getType();
-        if (!T->isPointerType() && !T->isArrayType())
-            return;
-        Root = Spine;
-
-        // Rebuild the offset from the chain rather than from the source
-        // text of the whole expression, so a parenthesised root like
-        // `(q) + 1` does not leave a stray `)` in the middle of the index.
-        std::vector<std::string> terms;
-        for (const Expr *Cur = Core; Cur != Spine;)
-        {
-            const auto *BO = cast<BinaryOperator>(Cur);
-            offsets.push_back(BO->getRHS());
-            index_terms.push_back({BO->getRHS(), BO->getOpcode() == BO_Sub});
-            terms.push_back(std::string(BO->getOpcode() == BO_Add ? " + " : " - ") +
-                            getSourceText(BO->getRHS(), SM, LO));
-            Cur = BO->getLHS()->IgnoreParenImpCasts();
-        }
-        // The chain is walked outermost-first, which is right-to-left in
-        // the source. Both orders are reversed to read left to right.
-        std::reverse(index_terms.begin(), index_terms.end());
-        for (auto it = terms.rbegin(); it != terms.rend(); ++it)
-            remainder += *it;
-        // `q + 1` counts from 1 on its own; `q - 1` needs the zero to
-        // subtract from.
-        standalone = remainder.compare(0, 3, " + ") == 0 ? remainder.substr(3)
-                                                         : "0" + remainder;
-    }
+    PointerSplit split;
+    if (!decomposePointer(RHS, split))
+        return;
 
     // An offset that names another tracked pointer is fine: the term is an
     // expression, and wherever it lands the edit plan rewrites what is
@@ -254,8 +289,8 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     // route — and any tracked pointer inside it is rewritten in place as an
     // ordinary value read.
     if (owner_is_declared_here)
-        for (const Expr *O : offsets)
-            if (escapesForInitScope(O, Owner))
+        for (const OffsetTerm &t : split.terms)
+            if (escapesForInitScope(t.expr, Owner))
                 return;
 
     // Pairing two indices only works when both pointers are rewritten in
@@ -263,7 +298,7 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     // and a root belonging to the other one would be edited by that batch
     // while this one replaces the text around it. File-scope pointers are
     // their own batch, so a split never straddles the two.
-    if (const auto *RootDRE = dyn_cast<DeclRefExpr>(Root))
+    if (const auto *RootDRE = dyn_cast<DeclRefExpr>(split.base))
     {
         const auto *RootVD = dyn_cast<VarDecl>(RootDRE->getDecl());
         if (RootVD && isTracked(RootVD) && Owner &&
@@ -271,20 +306,39 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
             return;
     }
 
-    pa.root_expr = Root;
-    if (Root != Core)
+    pa.root_expr = split.base;
+    if (split.base != RHS->IgnoreParenImpCasts())
     {
+        // Spellings only, for the verbose dump. Rebuilt from the terms rather
+        // than sliced out of the whole expression's source text, so a
+        // parenthesised root like `(q) + 1` leaves no stray `)` behind.
+        std::string remainder;
+        for (const OffsetTerm &t : split.terms)
+            remainder += (t.minus ? " - " : " + ") + getSourceText(t.expr, SM, LO);
+        // `q + 1` counts from 1 on its own; `q - 1` needs the zero to
+        // subtract from. A stepped root counts from the step instead.
+        std::string standalone =
+            split.step != RootAdjust::None
+                ? applyRootAdjust(split.step, getSourceText(split.base, SM, LO)) + remainder
+            : remainder.compare(0, 3, " + ") == 0 ? remainder.substr(3)
+                                                  : "0" + remainder;
+
+        pa.root_adjust = split.step;
         pa.offset_text = standalone;
         pa.operand_text = remainder;
-        pa.index_terms = std::move(index_terms);
+        pa.index_terms = std::move(split.terms);
     }
 }
 
 // The mirror of splitAssignedValue, seen from the root's own reference:
 // if this reference is the root that some tracked pointer's Init or Assign
 // will pair with, that owner is returned and the reference emits no edit.
-const VarDecl *PointerAccessCollector::pairwiseOwner(const DeclRefExpr *DRE)
+const VarDecl *PointerAccessCollector::pairwiseOwner(const DeclRefExpr *DRE,
+                                                     RootAdjust *step)
 {
+    if (step)
+        *step = RootAdjust::None;
+
     const Stmt *Outer = DRE;
     DynTypedNode Parent;
     if (!consumerOf(DRE, Ctx, Outer, Parent))
@@ -309,25 +363,31 @@ const VarDecl *PointerAccessCollector::pairwiseOwner(const DeclRefExpr *DRE)
         }
     }
 
-    // Climb transparent wrappers and +/- arithmetic looking for an
-    // assignment or an initializer this reference might be the root of,
-    // then ask splitAssignedValue whether it actually is. Deciding it with
-    // the same function that the rewriter uses is the point: the two must
-    // agree, or a reference is either rewritten twice or not at all.
+    // Climb whatever the decomposition descends through, looking for an
+    // assignment or an initializer this reference might be the root of, then
+    // ask splitAssignedValue whether it actually is. Deciding it with the
+    // same function that the rewriter uses is the point: the two must agree,
+    // or a reference is either rewritten twice or not at all.
     for (;;)
     {
         const VarDecl *Owner = nullptr;
         const Expr *RHS = nullptr;
         bool declared_here = false;
 
-        if (const auto *BO = dyn_cast_or_null<BinaryOperator>(Parent.get<Stmt>()))
-        {
-            if (BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub)
+        // `q = p++ + 1` puts both an increment and an addition between the
+        // reference and the assignment. Stopping short of either would leave
+        // p to rewrite its own increment, which then collides with the edit
+        // the owner's split is already making over the same text.
+        if (const Stmt *S = Parent.get<Stmt>())
+            if (isSplitTransparent(S))
             {
-                if (!consumerOf(BO, Ctx, Outer, Parent))
+                if (!consumerOf(cast<Expr>(S), Ctx, Outer, Parent))
                     return nullptr;
                 continue;
             }
+
+        if (const auto *BO = dyn_cast_or_null<BinaryOperator>(Parent.get<Stmt>()))
+        {
             if (BO->getOpcode() == BO_Assign)
             {
                 const auto *LHS =
@@ -354,7 +414,11 @@ const VarDecl *PointerAccessCollector::pairwiseOwner(const DeclRefExpr *DRE)
 
         PointerAccess probe;
         splitAssignedValue(RHS, probe, Owner, declared_here);
-        return probe.root_expr == static_cast<const Expr *>(DRE) ? Owner : nullptr;
+        if (probe.root_expr != static_cast<const Expr *>(DRE))
+            return nullptr;
+        if (step)
+            *step = probe.root_adjust;
+        return Owner;
     }
 }
 
@@ -487,9 +551,15 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
     }
 
     // ---- the root of another tracked pointer's (base, index) assignment --
-    if (const VarDecl *Owner = pairwiseOwner(DRE))
+    RootAdjust pair_step = RootAdjust::None;
+    if (const VarDecl *Owner = pairwiseOwner(DRE, &pair_step))
     {
-        emit(PointerAccessKind::PairwiseRoot, DRE->getLocation()).pair_owner = Owner;
+        PointerAccess &pa =
+            emit(PointerAccessKind::PairwiseRoot, DRE->getLocation());
+        pa.pair_owner = Owner;
+        // Remembered so that, if the owner turns out not to be rewritten, the
+        // demotion can put the step back instead of dropping it.
+        pa.root_adjust = pair_step;
         return;
     }
 

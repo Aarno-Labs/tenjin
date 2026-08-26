@@ -1,0 +1,69 @@
+{
+  "functions": {
+    "cast_escapes@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 31,
+          "decl_line": 40,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    },
+    "count_below@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 30,
+          "decl_line": 21,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    },
+    "distance@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 28,
+          "decl_line": 50,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    },
+    "sum_via_call@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 31,
+          "decl_line": 30,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    },
+    "walk@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 23,
+          "decl_line": 60,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    }
+  }
+}

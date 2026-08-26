@@ -268,6 +268,50 @@ void EditPlan::build() {
 // Rendering
 // ============================================================================
 
+// True when the value of an increment expression is consumed. A discarded
+// `p++` can stay a bare index bump; a consumed one has to hand back a
+// pointer, so it renders as `(p + p_index_xj++)`.
+//
+// The question is asked as "is the value discarded?", which is a closed set
+// of statement positions, rather than by enumerating the contexts that
+// consume it. The enumeration is what let `char *q = p++;` through: a
+// declarator is neither a call argument, a return, nor an assignment, so the
+// increment rendered as a bare index and the initializer got an int.
+static bool incrementValueIsUsed(const Expr *E, ASTContext &Ctx) {
+    auto Parents = Ctx.getParents(*E);
+    if (Parents.empty())
+        return true;
+    const Stmt *P = Parents[0].get<Stmt>();
+    // A non-Stmt parent is a declarator: `char *q = p++;` consumes the value.
+    if (!P)
+        return true;
+    if (isa<CompoundStmt>(P) || isa<LabelStmt>(P) || isa<CaseStmt>(P) ||
+        isa<DefaultStmt>(P))
+        return false;
+    // Parentheses are transparent to whether the value is wanted.
+    if (const auto *PE = dyn_cast<ParenExpr>(P))
+        return incrementValueIsUsed(PE, Ctx);
+    // A comma discards its left arm unconditionally; the right arm inherits
+    // the comma's own fate. This is what keeps the increments in
+    // `for (...; ...; p++, q++)` a pair of bare index bumps.
+    if (const auto *BO = dyn_cast<BinaryOperator>(P))
+        if (BO->getOpcode() == BO_Comma)
+            return BO->getLHS()->IgnoreParenImpCasts() == E
+                       ? false
+                       : incrementValueIsUsed(BO, Ctx);
+    if (const auto *FS = dyn_cast<ForStmt>(P))
+        return FS->getCond() == E;
+    if (const auto *IS = dyn_cast<IfStmt>(P))
+        return IS->getCond() == E;
+    if (const auto *WS = dyn_cast<WhileStmt>(P))
+        return WS->getCond() == E;
+    if (const auto *DS = dyn_cast<DoStmt>(P))
+        return DS->getCond() == E;
+    if (const auto *SS = dyn_cast<SwitchStmt>(P))
+        return SS->getCond() == E;
+    return true;
+}
+
 // True when the value of an assignment expression is consumed. A discarded
 // assignment can end at the index update; a consumed one has to hand back a
 // pointer, so it appends `p + p_index_xj` as a third comma element.
@@ -382,7 +426,14 @@ std::string EditPlan::renderIndexValue(const PointerAccess &a, size_t owner) {
     if (const auto *DRE = dyn_cast_or_null<DeclRefExpr>(a.root_expr)) {
         const auto *RootVD = dyn_cast<VarDecl>(DRE->getDecl());
         if (RootVD && transformed.count(RootVD))
-            return indexNameFor(RootVD) + terms;
+            return applyRootAdjust(a.root_adjust, indexNameFor(RootVD)) + terms;
+        // A root that carries a step but was not itself transformed has no
+        // index to bump, and rendering the position without it would lose the
+        // increment outright. The split should never have been offered: only
+        // a tracked root is decomposed, and an untransformed one is demoted
+        // back to its own increment before rendering.
+        if (a.root_adjust != RootAdjust::None)
+            reportViolation("a stepped root was not transformed", a.loc);
     }
     if (terms.empty())
         return "0";
@@ -503,16 +554,7 @@ std::string EditPlan::render(size_t i) {
     case PointerAccessKind::Increment:
     case PointerAccessKind::Decrement: {
         const auto *UO = cast<UnaryOperator>(e.node);
-        bool wrap = false;
-        if (const Stmt *GP = skipTransparentParents(UO, Ctx)) {
-            if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP)) {
-                wrap = true;
-            } else if (const auto *BO = dyn_cast<BinaryOperator>(GP)) {
-                wrap = BO->isAssignmentOp() &&
-                       BO->getRHS()->IgnoreParenImpCasts() == UO &&
-                       BO->getLHS()->getType()->isPointerType();
-            }
-        }
+        bool wrap = incrementValueIsUsed(UO, Ctx);
         const char *op = a.kind == PointerAccessKind::Increment ? "++" : "--";
         bool is_post = UO->getOpcode() == UO_PostInc || UO->getOpcode() == UO_PostDec;
         std::string bare = is_post ? idx + op : op + idx;

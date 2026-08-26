@@ -53,8 +53,16 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
     // If this reference is the root of another tracked pointer's
     // initializer or assignment RHS, return that pointer. The reference
     // then needs no edit of its own: the owner's (base, index) rewrite
-    // carries the pair.
-    const VarDecl *pairwiseOwner(const DeclRefExpr *DRE);
+    // carries the pair. `step`, when given, reports what that rewrite will
+    // do to the root's own index, so the reference can put it back if the
+    // owner turns out not to be rewritten.
+    const VarDecl *pairwiseOwner(const DeclRefExpr *DRE,
+                                 RootAdjust *step = nullptr);
+
+    // Decompose a pointer-valued expression into the base it starts from and
+    // the offset, in elements, that it lands at. Returning false means the
+    // expression is its own base at offset 0, which is always sound.
+    bool decomposePointer(const Expr *E, PointerSplit &out);
 
     // True if `VD` is one of the pointers this collector tracks.
     bool isTracked(const Decl *D) const;

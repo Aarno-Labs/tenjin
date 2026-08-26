@@ -56,17 +56,33 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         }
         // A pairwise root emits nothing *while its owner is rewritten*, and
         // whether the owner is rewritten is what this pass is deciding. If
-        // it turns out not to be, the root is rebuilt like any other value
-        // read — a rewrite of the reference itself — so hold it to that
-        // standard now. The demotion happens once validation is over, with
-        // no second chance to refuse.
-        const Stmt *node;
-        if (access.kind == PointerAccessKind::PairwiseRoot)
-            node = access.expr;
-        else if (access.kind == PointerAccessKind::NullTest)
+        // it turns out not to be, the root is rebuilt as whatever it would
+        // have been on its own — so hold it to that standard now. The
+        // demotion happens once validation is over, with no second chance to
+        // refuse.
+        //
+        // Which standard that is depends on the step. A bare root becomes a
+        // value read, whose edit is the reference itself. A stepped root
+        // becomes its own increment, whose edit covers the whole `p++` — a
+        // wider span, and one that can fail to be addressable where the bare
+        // reference would not.
+        const Stmt *node = nullptr;
+        if (access.kind == PointerAccessKind::PairwiseRoot) {
+            if (access.root_adjust == RootAdjust::None) {
+                node = access.expr;
+            } else {
+                PointerAccess demoted = access;
+                demoted.kind = (access.root_adjust == RootAdjust::PostInc ||
+                                access.root_adjust == RootAdjust::PreInc)
+                                   ? PointerAccessKind::Increment
+                                   : PointerAccessKind::Decrement;
+                node = editedNode(demoted, Ctx);
+            }
+        } else if (access.kind == PointerAccessKind::NullTest) {
             node = null_in_index ? nullTestNode(access) : nullptr;
-        else
+        } else {
             node = editedNode(access, Ctx);
+        }
         if (!node)
             continue;  // this access legitimately rewrites nothing
 
@@ -118,7 +134,12 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         case PointerAccessKind::InitNull:
         case PointerAccessKind::Assign:
         case PointerAccessKind::AssignNull:
-            if (access.offset_text != "0")
+            // Asked of the split itself, not of its spelling: an assignment
+            // lands at an offset when the decomposition moved something into
+            // the index, either addend terms or a step on the base's own
+            // index.
+            if (!access.index_terms.empty() ||
+                access.root_adjust != RootAdjust::None)
                 has_offset_assignment = true;
             break;
         default:

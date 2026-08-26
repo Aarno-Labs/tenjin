@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "scan@increment_root_demoted.c": {
+      "file": "increment_root_demoted.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 23,
+          "decl_line": 23,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    }
+  }
+}
