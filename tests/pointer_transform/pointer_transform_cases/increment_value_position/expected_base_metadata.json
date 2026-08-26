@@ -1,0 +1,59 @@
+{
+  "functions": {
+    "cast_escapes@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    },
+    "count_below@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    },
+    "distance@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    },
+    "sum_via_call@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    },
+    "walk@increment_value_position.c": {
+      "file": "increment_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": 0
+        }
+      ]
+    }
+  }
+}

@@ -144,6 +144,29 @@ struct OffsetTerm {
     bool minus = false;
 };
 
+// How the base of a decomposed right-hand side is stepped as it is read.
+// `q = p++` reads p's position and advances it in one go, so what q inherits
+// is not an addend onto p's index but p's index *and* the bump. That cannot
+// ride in an OffsetTerm — the step both reads and mutates the index — so it
+// travels alongside the terms.
+enum class RootAdjust { None, PostInc, PreInc, PostDec, PreDec };
+
+// The base a pointer-valued expression starts from and the offset, in
+// elements, that it lands at: `base(e)` and `offset(e)` for the `q = e` rule,
+// so that `q = e` becomes `q = base(e); q_index_xj = offset(e)`.
+//
+// `base` is always a *bare* DeclRefExpr when `ok`. Two things downstream
+// compare it by pointer identity — index pairing in EditPlan::renderIndexValue
+// and the root check in PointerAccessCollector::pairwiseOwner — and neither
+// reports a mismatch, so a base that merely *contains* the reference would
+// silently degrade the pointer to index 0.
+struct PointerSplit {
+    const Expr *base = nullptr;
+    std::vector<OffsetTerm> terms;
+    RootAdjust step = RootAdjust::None;
+    bool ok = false;
+};
+
 // One classified use of a tracked pointer. The combination of `kind` and
 // the populated fields tells the rewriter exactly what edit to produce;
 // unused fields are left empty.
@@ -177,10 +200,10 @@ struct PointerAccess {
 
     // ---- Spellings, for the verbose access dump --------------------------
     //
-    // One of these is read for more than logging: validation asks whether
-    // `offset_text` is something other than "0" to tell an Init or Assign
-    // that lands at an offset from one that does not, which is part of
-    // deciding whether the pointer is worth an index at all.
+    // Logging only. Whether an Init or Assign lands at an offset is asked
+    // structurally, of `index_terms` and `root_adjust`, not of this text —
+    // spelling the question as `offset_text != "0"` made a field that is
+    // otherwise a snapshot decide which pointers get rewritten.
     std::string offset_text;       // DerefOffset: the arithmetic after the name.
                                    // Init/Assign: the whole index expression
                                    // ("0", "3", "0 + 1 - 2").
@@ -196,6 +219,12 @@ struct PointerAccess {
     // the root, and `index_terms` holds what it dropped.
     const Expr *rhs_expr = nullptr;
     const Expr *root_expr = nullptr;
+
+    // Init / Assign: how the root's own index is stepped as it is read, for a
+    // right-hand side like `q = p++`. Also carried on a PairwiseRoot, where it
+    // records what the root would have to do for itself if the owner turns out
+    // not to be rewritten — see the demotion in FunctionAccessAnalyzer.
+    RootAdjust root_adjust = RootAdjust::None;
 
     // PairwiseRoot only: the pointer whose assignment carries this
     // reference. If that pointer turns out not to be rewritten, the
@@ -494,6 +523,11 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 
 // Debug helper: stringify a PointerAccessKind for trace logs.
 const char *pointerAccessKindToString(PointerAccessKind kind);
+
+// `name` stepped as the adjustment says: p++, ++p, p--, --p. Shared so the
+// spelling the collector snapshots and the one the rewriter emits cannot
+// drift apart.
+std::string applyRootAdjust(RootAdjust adj, const std::string &name);
 
 // ============================================================================
 // Index variable naming
