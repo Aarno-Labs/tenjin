@@ -107,6 +107,10 @@ def xj_localize_errno_build_dir(localdir: Path) -> Path:
     return localdir / "_build_localize_errno"
 
 
+def xj_analysis_build_dir(localdir: Path) -> Path:
+    return localdir / "_build_analysis"
+
+
 def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) -> dict[str, str]:
     if isinstance(env_ext, dict) and env_ext.get("XJ_USE_LLVM14", "") == "1":
         llvm_root = xj_llvm14_root(localdir)

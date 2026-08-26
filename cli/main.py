@@ -324,6 +324,15 @@ def build_star():
 
 
 @cli.command()
+def build_analysis():
+    "Build xj-analysis and its tools (not part of `build-star`)"
+    try:
+        cli_subcommands.do_build_xj_analysis()
+    except subprocess.CalledProcessError:
+        sys.exit(1)
+
+
+@cli.command()
 def check_rs():
     try:
         cli_subcommands.do_check_rs()

@@ -223,6 +223,37 @@ def do_build_xj_localize_errno(capture_output: bool = False):
     )
 
 
+def do_build_xj_analysis(capture_output: bool = False):
+    # Deliberately not part of `do_build_star`: nothing links this library
+    # yet, so a translation run has no reason to pay for it. Build it by
+    # hand with `10j build-analysis` while working on the must-equality
+    # domain.
+    root = repo_root.find_repo_root_dir_Path()
+    builddir = hermetic.xj_analysis_build_dir(repo_root.localdir())
+
+    if not builddir.exists():
+        hermetic.run(
+            [
+                "cmake",
+                "-GNinja",
+                "-S",
+                (root / "xj-analysis").as_posix(),
+                "-B",
+                builddir.as_posix(),
+            ],
+            cwd=root,
+            check=True,
+            capture_output=capture_output,
+        )
+
+    hermetic.run(
+        ["cmake", "--build", builddir.as_posix(), "--", "--quiet"],
+        cwd=root,
+        check=True,
+        capture_output=capture_output,
+    )
+
+
 def do_build_xj_prepare_unionbitcasts(capture_output: bool = False):
     root = repo_root.find_repo_root_dir_Path()
     builddir = hermetic.xj_prepare_unionbitcasts_build_dir(repo_root.localdir())
