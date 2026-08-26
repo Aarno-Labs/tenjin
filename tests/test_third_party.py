@@ -1722,3 +1722,104 @@ def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: ~250 s, up to the xj-c2rust failure below
+@pytest.mark.xfail(
+    reason="parson does not yet translate end-to-end. Refolding now succeeds; the "
+    "blocker is prep_localize_mutable_globals threading xjg inconsistently across TUs. "
+    "cclyzer resolves the indirect call at parson.c:1550 to the tissue callback "
+    "custom_serialization_func_xjtr_0 (all_mutable=true), so the call gets xjg -- but "
+    "xj-prepare-findfnptrdecls is a strictly intra-TU analysis (ModifyingDeclIDs is "
+    "cleared in onStartOfTranslationUnit), and the evidence for threading the "
+    "JSON_*_Function typedefs exists only in tests.c. So parson.c gets the _xjtp clone "
+    "typedefs but no use rewrites: the struct XjGlobals field, the setter definitions "
+    "and parson.h keep the un-threaded types, and xj-c2rust dies (exit 101) on "
+    "'too many arguments to function call, expected 2, have 3'. Behind that is a "
+    "latent hazard: counted_malloc_xjtr_0/counted_free_xjtr_0 are threaded but stored "
+    "into 1-parameter slots that parson.c calls with one argument, so patching line "
+    "1550 alone would silently corrupt every allocation. Full analysis and a suggested "
+    "fix are in TENJIN_BUG_parson_fnptr_typedef_threading.md.",
+)
+def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/kgabis/parson.git", "ba29f4eda9ea7703a9f6a9cf2b0532a2605723c3"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # Same as the `test` target of the upstream Makefile, minus the C++ variant
+    # and the automatic run of the freshly-built binary.
+    build_args = ["-O0", "-g", "-std=c89", "-DTESTS_MAIN", "tests.c", "parson.c"]
+
+    # `tests.c` walks every file in tests/ (test_suite_1 parses test_1_[123].txt
+    # with and without comments and round-trips each one; test_suite_2 reads
+    # test_2.txt and test_2_comments.txt; test_suite_7 reads test_5.txt) and
+    # writes its serialized output back into that directory. Snapshot the
+    # fixture names before anything runs, since a run mutates its own directory.
+    fixture_dir = tmp_codebase / "tests"
+    fixture_names = sorted(p.name for p in fixture_dir.iterdir() if p.is_file())
+    assert fixture_names, "expected parson's tests/ fixtures to be present"
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="kgabis_parson",
+            buildcmd=" ".join(["cc", *build_args, "-o", "parson_tests"]),
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    # Reference build straight from the pristine C sources, to diff against.
+    c_bin = tmp_codebase / "parson_tests_c_reference"
+    hermetic.run(
+        ["cc", *build_args, "-o", str(c_bin)],
+        cwd=str(tmp_codebase),
+        check=True,
+        capture_output=True,
+    )
+    rs_bin = tmp_resultsdir / "final" / "target" / "debug" / "parson_tests"
+
+    # Run parson's own suite under each build. Each gets its own copy of the
+    # fixtures, both because the suite writes into the directory it is given and
+    # so that the files it leaves behind can be compared as well.
+    results = {}
+    for tag, binary in (("c", c_bin), ("rs", rs_bin)):
+        suite_dir = tmp_resultsdir / f"xj_suite_fixtures_{tag}"
+        shutil.copytree(fixture_dir, suite_dir)
+        cp = hermetic.run([str(binary), str(suite_dir)], check=False, capture_output=True)
+        written = {p.name: p.read_bytes() for p in sorted(suite_dir.iterdir()) if p.is_file()}
+        assert set(written) > set(fixture_names), (
+            f"{tag}: expected the suite to write serialized output into its fixture dir"
+        )
+        results[tag] = (cp.returncode, cp.stdout, cp.stderr, written)
+
+    c_rc, c_stdout, c_stderr, c_written = results["c"]
+    rs_rc, rs_stdout, rs_stderr, rs_written = results["rs"]
+
+    assert rs_rc == c_rc, f"exit code {rs_rc} from Rust, {c_rc} from C"
+    assert rs_stdout == c_stdout, f"suite stdout differs; Rust: {rs_stdout!r}, C: {c_stdout!r}"
+    assert rs_stderr == c_stderr, f"suite stderr differs; Rust: {rs_stderr!r}, C: {c_stderr!r}"
+    # The serialized JSON the suite writes out; compared per file so a mismatch
+    # names the file rather than dumping both dictionaries.
+    for name in sorted(c_written):
+        assert rs_written.get(name) == c_written[name], (
+            f"{name}: written output differs; "
+            f"Rust: {rs_written.get(name)!r}, C: {c_written[name]!r}"
+        )
+
+    # Two identically-wrong builds would agree, so pin the suite's verdict too.
+    assert c_stdout.decode("utf-8").splitlines() == [
+        "#" * 80,
+        "Running parson tests",
+        "Testing failing allocations: OK (tested 536 failing allocations)",
+        "Tests failed: 0",
+        "Tests passed: 349",
+        "#" * 80,
+    ]
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
