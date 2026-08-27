@@ -1,7 +1,9 @@
 import hashlib
 from pathlib import Path
+import re
 import shutil
 import platform
+import struct
 import subprocess
 
 import pytest
@@ -1719,6 +1721,309 @@ def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
     ).stdout
 
     assert male_rs_wav == male_c_wav, "wav file via Rust library did not have the same output"
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+def build_cmocka(prefix: Path) -> Path:
+    """
+    Build the cmocka unit-testing library that libdaq's test/ directory needs, and
+    return the pkg-config directory to point libdaq's configure at. Neither Tenjin's
+    dependencies nor a typical host provides cmocka, and libdaq's test/Makefile.am
+    does not guard on the HAVE_CMOCKA conditional that its m4 macro defines -- so
+    without cmocka, configure merely warns and test/ then fails to compile.
+
+    Built static-only so that the test programs need no LD_LIBRARY_PATH at run time.
+    """
+    cached_clone = cached_git_clone_at_commit(
+        # Tag cmocka-1.1.8; libdaq's tests are written against the cmocka 1.x API.
+        "https://gitlab.com/cmocka/cmocka.git",
+        "eba4d6ffca53b500ab8dfabc30256bb6c3088b2b",
+    )
+    # `cached_git_clone_at_commit` names its cache directory after the URL, so the
+    # path contains the colon from "https:". Make treats a colon in a prerequisite as
+    # a rule separator, and CMake's generated makefiles then die with "target pattern
+    # contains no '%'" -- so build from a copy at a colon-free path.
+    #
+    # `symlinks=True` matters: cmocka's CMakeLists unconditionally drops a
+    # `compile_commands.json` symlink into its *source* directory pointing at the build
+    # directory, so a source tree that has been configured once contains a symlink whose
+    # target may not exist. Copying symlinks as symlinks keeps copytree from trying to
+    # dereference it.
+    source = prefix / "_src"
+    shutil.copytree(cached_clone, source, symlinks=True, dirs_exist_ok=True)
+
+    builddir = prefix / "_build"
+    hermetic.run(
+        [
+            "cmake",
+            "-S",
+            str(source),
+            "-B",
+            str(builddir),
+            f"-DCMAKE_INSTALL_PREFIX={prefix}",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DUNIT_TESTING=OFF",
+            "-DCMAKE_C_COMPILER=cc",
+        ],
+        check=True,
+    )
+    hermetic.run(["make", "-C", str(builddir), "install"], check=True)
+    return prefix / "lib" / "pkgconfig"
+
+
+def snort3_libdaq_savefile_capture() -> bytes:
+    """
+    Build a three-packet Ethernet/IPv4 capture -- a UDP datagram, an ICMP echo
+    request, and a second UDP datagram -- in classic libpcap savefile format,
+    which is what libdaq's `savefile` module reads. Generated rather than checked
+    in so that the expected decode in `test_snort3_libdaq` can be read next to
+    the packets that produce it.
+    """
+
+    def checksum(data: bytes) -> int:
+        if len(data) % 2:
+            data += b"\0"
+        total = sum(struct.unpack(f"!{len(data) // 2}H", data))
+        while total >> 16:
+            total = (total & 0xFFFF) + (total >> 16)
+        return ~total & 0xFFFF
+
+    src_mac, dst_mac = bytes.fromhex("020000000001"), bytes.fromhex("020000000002")
+    src_ip, dst_ip = bytes([10, 0, 0, 1]), bytes([10, 0, 0, 2])
+
+    def ethernet_ipv4(proto: int, payload: bytes) -> bytes:
+        ip_hdr = (
+            struct.pack("!BBHHHBBH", 0x45, 0, 20 + len(payload), 0x1234, 0, 64, proto, 0)
+            + src_ip
+            + dst_ip
+        )
+        ip_hdr = ip_hdr[:10] + struct.pack("!H", checksum(ip_hdr)) + ip_hdr[12:]
+        return dst_mac + src_mac + b"\x08\x00" + ip_hdr + payload
+
+    def udp(sport: int, dport: int, data: bytes) -> bytes:
+        segment = struct.pack("!HHHH", sport, dport, 8 + len(data), 0) + data
+        pseudo_hdr = src_ip + dst_ip + struct.pack("!BBH", 0, 17, len(segment))
+        return segment[:6] + struct.pack("!H", checksum(pseudo_hdr + segment)) + segment[8:]
+
+    def icmp_echo_request(ident: int, seq: int, data: bytes) -> bytes:
+        message = struct.pack("!BBHHH", 8, 0, 0, ident, seq) + data
+        return message[:2] + struct.pack("!H", checksum(message)) + message[4:]
+
+    packets = [
+        ethernet_ipv4(17, udp(1234, 5678, b"hello daq")),
+        ethernet_ipv4(1, icmp_echo_request(1, 1, b"abcdefgh")),
+        ethernet_ipv4(17, udp(4321, 8765, b"second udp payload")),
+    ]
+
+    # File header: magic, version 2.4, no timezone or sigfigs, 1518-byte snaplen,
+    # linktype 1 (DLT_EN10MB), which is the only one the savefile module accepts.
+    out = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 1518, 1)
+    for i, packet in enumerate(packets):
+        out += struct.pack("<IIII", 1700000000 + i, 0, len(packet), len(packet)) + packet
+    return out
+
+
+@pytest.mark.slow  # expected runtime: 85 s
+def test_snort3_libdaq(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/snort3/libdaq.git", "959b13d76aa3409acadfe22d1c30864698a297a7"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # Of the bundled DAQ modules only `savefile` and `trace` are enabled; the rest need
+    # libpcap, libmnl, netmap headers or root privileges, so which of them configure
+    # picks up would otherwise vary by host. Neither of these two needs anything beyond
+    # libc -- `savefile` parses libpcap-format capture files itself. `trace` is enabled
+    # only because configure.ac's BUILD_MODULES conditional does not list `savefile`:
+    # with `savefile` alone, modules/ is skipped entirely and example/ fails to link.
+    #
+    # Tenjin's `aclocal` and `libtoolize` live under different prefixes, so aclocal can't
+    # find libtool.m4 and autoreconf dies with "Libtool library used but LIBTOOL is
+    # undefined". Deriving ACLOCAL_PATH from `libtoolize` works for both that split
+    # layout and a normal system install.
+    disabled_modules = ("afpacket", "bpf", "divert", "dump", "fst", "netmap", "nfq", "pcap", "gwlb")
+    configure_args = [
+        "--disable-static",
+        "--enable-savefile-module",
+        "--enable-trace-module",
+        *(f"--disable-{module}-module" for module in disabled_modules),
+    ]
+    cmocka_pkgconfig = build_cmocka(tmp_codebase.parent / "cmocka")
+    prebuildcmd = (
+        "ACLOCAL_PATH=$(dirname $(dirname $(command -v libtoolize)))/share/aclocal autoreconf -fi"
+        f" && PKG_CONFIG_PATH={cmocka_pkgconfig}:$PKG_CONFIG_PATH"
+        f" ./configure CC=cc {' '.join(configure_args)}"
+    )
+
+    # Only api/ is built under interception, so libdaq.so is Tenjin's single target;
+    # building everything would instead give a multi-target codebase (the library, one
+    # .la per module, and two flavors of the example program), which disables the
+    # non-trivial-refactoring passes. The modules and example/daqtest stay C and are
+    # built afterwards against whichever libdaq.so is in place, which is what lets the
+    # same C driver exercise the C and the Rust library.
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="snort3_libdaq",
+            prebuildcmd=prebuildcmd,
+            buildcmd="make -C api",
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    builddir = tmp_resultsdir / "_build_1"
+    hermetic.run(["make", "-C", "modules"], cwd=str(builddir), check=True)
+    hermetic.run(["make", "-C", "example"], cwd=str(builddir), check=True)
+    # The unit tests are automake check_PROGRAMS, so `make all` skips them. They are
+    # built rather than run via `make check` so that each program's exit status and
+    # output can be compared directly between the C and the Rust library.
+    #
+    # test/mock_stdio.c calls glibc's __vsnprintf_chk / __vprintf_chk / __vfprintf_chk,
+    # which bits/stdio2.h only declares when _FORTIFY_SOURCE is set. Tenjin's clang does
+    # not turn it on by default the way a distro gcc typically does.
+    hermetic.run(
+        [
+            "make",
+            "-C",
+            "test",
+            "api_base_test",
+            "api_config_test",
+            "CPPFLAGS=-D_FORTIFY_SOURCE=2",
+        ],
+        cwd=str(builddir),
+        check=True,
+    )
+
+    (builddir / "daqtest_input.pcap").write_bytes(snort3_libdaq_savefile_capture())
+
+    # Paths are relative to `builddir` so that daqtest's echo of its own configuration
+    # is identical between the two runs below. `example/daqtest` is libtool's wrapper
+    # script, which points the real binary in example/.libs at api/.libs.
+    def run_daqtest() -> bytes:
+        return hermetic.run(
+            [
+                "example/daqtest",
+                "-d",
+                "savefile",
+                "-m",
+                "modules/savefile/.libs",
+                "-i",
+                "daqtest_input.pcap",
+                "-M",
+                "read-file",
+            ],
+            cwd=str(builddir),
+            check=True,
+            capture_output=True,
+        ).stdout
+
+    def run_unit_tests() -> dict[str, tuple[int, bytes, bytes]]:
+        results = {}
+        for program in ("api_base_test", "api_config_test"):
+            completed = hermetic.run(
+                [f"./{program}"],
+                cwd=str(builddir / "test"),
+                check=False,
+                capture_output=True,
+            )
+            results[program] = (completed.returncode, completed.stdout, completed.stderr)
+        return results
+
+    def normalize(stdout: bytes) -> bytes:
+        # daqtest seeds its RNG from time+pid and invents a local MAC address at
+        # startup, so that one line differs between any two runs.
+        return re.sub(rb"(?m)^Local MAC Address: .*$", b"Local MAC Address: <random>", stdout)
+
+    c_prog_output = run_daqtest()
+
+    # Confirm the C program really decoded the generated capture before using its
+    # output as the oracle for the Rust build.
+    decode_start = c_prog_output.index(b"Packet 1: ")
+    decode_end = c_prog_output.index(b"Read the entire file!")
+    assert c_prog_output[decode_start:decode_end] == (
+        b"Packet 1: Size = 51/51, Ingress = -1 (Group = -1), Egress = -1 (Group = -1),"
+        b" Addr Space ID = 0\n"
+        b"MAC: 02:00:00:00:00:01 -> 02:00:00:00:00:02 (0800) (51 bytes)\n"
+        b" IP: 10.0.0.1 -> 10.0.0.2 (37 bytes) (checksum: 37460) (protocol: 17)\n"
+        b"  UDP: 1234 -> 5678  Checksum 46965  (17 bytes of data)\n"
+        b"\n"
+        b"Packet 2: Size = 50/50, Ingress = -1 (Group = -1), Egress = -1 (Group = -1),"
+        b" Addr Space ID = 0\n"
+        b"MAC: 02:00:00:00:00:01 -> 02:00:00:00:00:02 (0800) (50 bytes)\n"
+        b" IP: 10.0.0.1 -> 10.0.0.2 (36 bytes) (checksum: 41812) (protocol: 1)\n"
+        b"  ICMP: Type 8  Code 0  Checksum 26726  (8 bytes of data)\n"
+        b"   Echo: ID 1  Sequence 1\n"
+        b"\n"
+        b"Packet 3: Size = 60/60, Ingress = -1 (Group = -1), Egress = -1 (Group = -1),"
+        b" Addr Space ID = 0\n"
+        b"MAC: 02:00:00:00:00:01 -> 02:00:00:00:00:02 (0800) (60 bytes)\n"
+        b" IP: 10.0.0.1 -> 10.0.0.2 (46 bytes) (checksum: 35156) (protocol: 17)\n"
+        b"  UDP: 4321 -> 8765  Checksum 40637  (26 bytes of data)\n"
+    ), f"Got: {c_prog_output!r}"
+    assert b"\n  Packets Received:   3\n" in c_prog_output, f"Got: {c_prog_output!r}"
+
+    c_unit_tests = run_unit_tests()
+
+    # cmocka splits its report across streams: the per-case [ RUN ]/[ OK ] lines go to
+    # stdout, the [ PASSED ]/[ FAILED ] summary to stderr.
+    _, _, c_config_stderr = c_unit_tests["api_config_test"]
+    assert c_unit_tests["api_config_test"][0] == 0, (
+        f"api_config_test failed against the C library: {c_unit_tests['api_config_test']!r}"
+    )
+    assert b"[  PASSED  ] 7 test(s)." in c_config_stderr, f"Got: {c_config_stderr!r}"
+
+    # api_base_test mocks printf/opendir/dlopen and friends via the linker's --wrap,
+    # which only redirects calls made from the test's own objects; the calls libdaq.so
+    # makes internally still reach the real libc. Three of its four cases therefore fail
+    # regardless of what language libdaq is written in -- upstream's `make check` only
+    # passes with libdaq linked statically, which would defeat the point of swapping the
+    # shared library below. Its pass/fail counts are left to the C-versus-Rust comparison
+    # rather than pinned here, so this keeps working if that ever changes.
+    #
+    # Only the stderr summary is a usable liveness check: once a case turns the printf
+    # mock on, cmocka's own [ RUN ] lines land in the mock's capture buffer instead of
+    # stdout, so api_base_test never prints a "N test(s) run." tally.
+    base_status, _, base_stderr = c_unit_tests["api_base_test"]
+    assert base_status >= 0, f"api_base_test died on signal {-base_status}"
+    assert b"[  PASSED  ]" in base_stderr, f"Got: {base_stderr!r}"
+
+    # Copy the Rust shared library over the C version and re-run the same C driver.
+    # daqtest links against the `libdaq.so.3` soname, so confirm that name still
+    # resolves to the file being replaced -- otherwise the swap below would be a
+    # no-op and the comparison would pass without ever running any Rust.
+    c_shared_lib = builddir / "api" / ".libs" / "libdaq.so.3.0.0"
+    assert (builddir / "api" / ".libs" / "libdaq.so.3").resolve() == c_shared_lib
+    c_shared_lib_digest = sha256hex(c_shared_lib)
+    shutil.copyfile(
+        tmp_resultsdir / "final" / "target" / "debug" / "libdaq_3_0_0.so",
+        c_shared_lib,
+    )
+    # Everything below re-runs the same C binaries and re-resolves this file, so the
+    # runs are only telling us anything if its contents actually changed here.
+    assert sha256hex(c_shared_lib) != c_shared_lib_digest, (
+        "the Rust library did not replace the C one; every comparison below would"
+        " be comparing the C library against itself"
+    )
+    rs_prog_output = run_daqtest()
+
+    assert normalize(rs_prog_output) == normalize(c_prog_output), (
+        f"Rust and C output differed; Rust output was: {rs_prog_output!r}"
+    )
+
+    rs_unit_tests = run_unit_tests()
+    for program, c_result in c_unit_tests.items():
+        assert rs_unit_tests[program] == c_result, (
+            f"Rust and C runs of {program} differed;"
+            f" Rust gave {rs_unit_tests[program]!r}, C gave {c_result!r}"
+        )
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
