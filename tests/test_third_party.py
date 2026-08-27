@@ -1722,3 +1722,263 @@ def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: ~610 s (~10 minutes) to reach the xfail below
+@pytest.mark.xfail(
+    reason="libdnet does not yet translate end-to-end: the localize-mutable-globals "
+    "pass (c_14) threads `struct XjGlobals *xjg` through indirectly-reached "
+    "functions without keeping the matching function-pointer types in sync, so 13 "
+    "of the 30 TUs do not compile and no final/ crate is produced. It gets the two "
+    "sides out of step in both directions: arp_loop/intf_loop/route_loop call "
+    "`callback(xjg, &entry, arg)` while the parameter keeps the 2-argument "
+    "`arp_handler`/`intf_handler`/`route_handler` typedef, and blob.c's "
+    "`blob_ascii_fmt[]` stays typed `blob_fmt_cb` while the fmt_* it holds all grow "
+    "an `xjg` parameter; conversely `struct mod`'s dispatch member "
+    "(test/dnet/mod.h) grows the parameter while the addr_main/eth_main/... "
+    "initializing it do not. Because those TUs fail to parse, the exported Clang "
+    "AST is invalid and both c2rusts panic (exit 101) before emitting a crate.",
+)
+def test_ofalk_libdnet(tenjin_fixtures: TenjinFixtures):
+    """Translate libdnet together with `dnet`, the test program under its ./test
+    directory, and require the translated program to agree with the C one."""
+    if platform.system() != "Linux":
+        pytest.skip("LIBDNET_LIB_SRCS is the source set libdnet's configure selects on Linux")
+
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/ofalk/libdnet.git", "024ab07d88a2f70ab161cfc0a41f460cb046133f"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    libdnet_lib_srcs = [
+        "src/addr-util.c",
+        "src/addr.c",
+        "src/blob.c",
+        "src/ip-util.c",
+        "src/ip6.c",
+        "src/rand.c",
+        "src/strlcat.c",
+        "src/strlcpy.c",
+        "src/arp-ioctl.c",
+        "src/eth-linux.c",
+        "src/fw-none.c",
+        "src/intf.c",
+        "src/ip.c",
+        "src/route-linux.c",
+        "src/ndisc-linux.c",
+        "src/tun-linux.c",
+    ]
+
+    libdnet_dnet_srcs = [
+        "test/dnet/addr.c",
+        "test/dnet/arp.c",
+        "test/dnet/aton.c",
+        "test/dnet/dnet.c",
+        "test/dnet/eth.c",
+        "test/dnet/fw.c",
+        "test/dnet/hex.c",
+        "test/dnet/icmp.c",
+        "test/dnet/intf.c",
+        "test/dnet/ip.c",
+        "test/dnet/rand.c",
+        "test/dnet/route.c",
+        "test/dnet/send.c",
+        "test/dnet/tcp.c",
+        "test/dnet/udp.c",
+    ]
+
+    # `configure` generates include/config.h; --disable-check is needed because
+    # configure hard-errors when libcheck is absent, and --disable-shared keeps
+    # libtool out of the picture. The build itself is then a single compiler
+    # invocation, so the translation produces one crate with a `main` we can run.
+    prebuildcmd = "./configure --disable-shared --disable-check CC=cc"
+    # `-Isrc` is not needed to compile the C, but it is needed to translate it:
+    # the localize-mutable-globals pass writes its generated `xj_globals.h` next
+    # to the *first* source file in the compilation database (XREF:header_dir in
+    # cli/c_refact.py) and then has every TU that touches a mutable global
+    # `#include "xj_globals.h"`. Here the sources span two directories, so the
+    # TUs under test/dnet only find that header if src is on the include path.
+    buildcmd_args = [
+        "cc",
+        "-Iinclude",
+        "-Itest/dnet",
+        "-Isrc",
+        *libdnet_lib_srcs,
+        *libdnet_dnet_srcs,
+        "-o",
+        "dnet.exe",
+    ]
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="ofalk_libdnet",
+            prebuildcmd=prebuildcmd,
+            buildcmd=hermetic.shellize(buildcmd_args),
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    c_dnet = tmp_resultsdir / "_build_1" / "dnet.exe"
+    rs_dnet = tmp_resultsdir / "final" / "target" / "debug" / "ofalk_libdnet"
+
+    def run_dnet(binary: Path, args: str, stdin: bytes) -> tuple:
+        """Run one `dnet` command, normalizing the program name that err(3) prefixes
+        onto its messages (the C build is `dnet.exe`, the translated one is not)."""
+        cp = hermetic.run(
+            [str(binary), *args.split()], check=False, capture_output=True, input=stdin, timeout=60
+        )
+        return (cp.returncode, cp.stdout, cp.stderr.replace(binary.name.encode(), b"<prog>"))
+
+    def run_dnet_pipeline(binary: Path, stages: list[str], payload: bytes) -> list[tuple]:
+        """Feed `payload` through a chain of `dnet` commands, returning every stage's
+        result so that a divergence is attributed to the stage that introduced it."""
+        results = []
+        data = payload
+        for args in stages:
+            result = run_dnet(binary, args, data)
+            results.append(result)
+            if result[0] != 0:
+                break
+            data = result[1]
+        return results
+
+    # Chains of commands, each stage reading the previous one's stdout, as the
+    # examples in dnet(8) do with shell pipes.
+    libdnet_dnet_pipelines: list[tuple[list[str], bytes]] = [
+        # "Send a UDP datagram containing random shellcode", minus the `dnet send`.
+        (
+            [
+                r"hex \xeb\x1f\x5e\x89\x76\x08\x31\xc0/bin/sh",
+                "udp sport 555 dport 666",
+                "ip tos 0 id 1234 off 0 ttl 64 proto udp src 1.2.3.4 dst 5.6.7.8",
+            ],
+            b"",
+        ),
+        # "Save an ARP request in a file and send it twice", minus the sending.
+        (
+            [
+                "arp op req sha 0:d:e:a:d:0 spa 10.0.0.3 tha 0:0:0:0:0:0 tpa 10.0.0.4",
+                "eth type arp src 0:d:e:a:d:0 dst ff:ff:ff:ff:ff:ff",
+            ],
+            b"",
+        ),
+        # "Send a fragmented ping packet": the ICMP checksum covers the payload and
+        # the IP checksum covers the ICMP header, so this chain exercises
+        # ip_checksum() over both layers.
+        (
+            [
+                "icmp type 8 code 0",
+                "ip tos 0 id 1 off 0+ ttl 64 proto icmp src 1.2.3.4 dst 5.6.7.8",
+            ],
+            b"monkey monkey monkey monkey\n",
+        ),
+        # A whole TCP/IP frame, down to the Ethernet header.
+        (
+            [
+                "tcp sport 1234 dport 80 flags S seq 1 ack 0 win 5840 urp 0",
+                "ip tos 0 id 7 off 0 ttl 64 proto tcp src 192.168.1.2 dst 192.168.1.3",
+                "eth type ip src 0:1:2:3:4:5 dst 6:7:8:9:a:b",
+            ],
+            b"GET / HTTP/1.0\r\n\r\n",
+        ),
+    ]
+
+    # Sanity-check the C build against known-good bytes before using it as the
+    # reference: three addresses packed back to back, and an ARP request wrapped
+    # in a broadcast Ethernet frame.
+    c_addr = run_dnet(c_dnet, "addr 1.2.3.4 10.0.0.1/24 255.255.255.0", b"")
+    assert c_addr == (0, b"\x01\x02\x03\x04\x0a\x00\x00\xff\xff\xff\x00", b""), (
+        f"Unexpected output from the C `dnet addr`: {c_addr!r}"
+    )
+    c_arp = run_dnet_pipeline(c_dnet, *libdnet_dnet_pipelines[1])
+    assert c_arp[-1] == (
+        0,
+        bytes.fromhex(
+            "ffffffffffff000d0e0a0d0008060001080006040001000d0e0a0d000a0000030000000000000a000004"
+        ),
+        b"",
+    ), f"Unexpected output from the C `dnet arp | dnet eth`: {c_arp[-1]!r}"
+
+    # (arguments, stdin) pairs; the arguments are whitespace-split. Header
+    # fields that `dnet` would otherwise default to `rand()` after
+    # `srand(time(NULL))` -- the IP id/protocol/addresses and the TCP/UDP ports
+    # and sequence number -- are always given explicitly, so that every
+    # invocation below is reproducible. `dnet rand` and `dnet send` are left
+    # out entirely: the former is random by construction, and the latter needs
+    # privileges and puts packets on the wire.
+    libdnet_dnet_invocations: list[tuple[str, bytes]] = [
+        # Usage messages: no command, an unknown command, and each module's own.
+        ("", b""),
+        ("bogus", b""),
+        ("addr -x", b""),
+        ("hex -x", b""),
+        ("eth -h", b""),
+        ("arp -h", b""),
+        ("ip -h", b""),
+        ("icmp -h", b""),
+        ("tcp -h", b""),
+        ("udp -h", b""),
+        ("fw -h", b""),
+        ("intf -h", b""),
+        ("route -h", b""),
+        # Address parsing: IPv4, CIDR prefixes, MAC addresses, IPv6. Only numeric
+        # forms, so that addr_aton() never falls back to resolving a hostname.
+        ("addr 1.2.3.4 10.0.0.1/24 255.255.255.0", b""),
+        ("addr 0:d:e:a:d:0 ff:ff:ff:ff:ff:ff", b""),
+        ("addr ::1 fe80::1/64 2001:db8::dead:beef/128", b""),
+        # C-style escape decoding, with and without a payload on stdin.
+        (r"hex \xeb\x1f\x5e\x89/bin/sh", b""),
+        (r"hex \x00\xff\x7f", b"trailing payload"),
+        # Header construction, one layer at a time.
+        ("eth", b"payload"),
+        ("eth type arp src 0:d:e:a:d:0 dst ff:ff:ff:ff:ff:ff", b"payload"),
+        ("eth type 0x86dd src 1:2:3:4:5:6 dst 6:5:4:3:2:1", b"payload"),
+        ("arp op req sha 0:d:e:a:d:0 spa 10.0.0.3 tha 0:0:0:0:0:0 tpa 10.0.0.4", b""),
+        ("arp op rep sha 0:d:e:a:d:0 spa 10.0.0.3 tha 1:2:3:4:5:6 tpa 10.0.0.4", b""),
+        ("ip tos 16 id 4660 off 0 ttl 64 proto tcp src 1.2.3.4 dst 5.6.7.8", b"payload"),
+        # `off 24` is a fragment offset; `off 0+` sets the more-fragments flag.
+        ("ip tos 0 id 1 off 24 ttl 255 proto icmp src 10.0.0.1 dst 10.0.0.2", b"payload"),
+        ("ip tos 0 id 2 off 0+ ttl 1 proto 47 src 10.0.0.1 dst 10.0.0.2", b"payload"),
+        ("icmp type 8 code 0", b"monkey monkey monkey"),
+        ("icmp type 3 code 4", b""),
+        ("tcp sport 1234 dport 80 flags SA seq 42 ack 43 win 4096 urp 0", b"payload"),
+        # A port given by name goes through getservbyname().
+        ("tcp sport http dport 65535 flags FPU seq 0 ack 0 win 1 urp 7", b""),
+        ("udp sport 555 dport 666", b"payload"),
+        # Kernel interface queries. `lo` is the one interface we can count on
+        # existing and on having a stable configuration; the other kernel modules
+        # (`arp show`, `fw show`, `route show`) report machine-specific -- and, for
+        # the ARP cache, changing -- state, so only their deterministic failure
+        # paths are exercised here.
+        ("intf get lo", b""),
+        ("intf get no-such-interface", b""),
+        ("route get 127.0.0.1", b""),
+    ]
+
+    for args, stdin in libdnet_dnet_invocations:
+        c_result = run_dnet(c_dnet, args, stdin)
+        rs_result = run_dnet(rs_dnet, args, stdin)
+        assert rs_result == c_result, (
+            f"`dnet {args}` (stdin {stdin!r}) differed; Rust: {rs_result!r}, C: {c_result!r}"
+        )
+
+    for stages, payload in libdnet_dnet_pipelines:
+        label = " | ".join(f"dnet {args}" for args in stages)
+        c_results = run_dnet_pipeline(c_dnet, stages, payload)
+        rs_results = run_dnet_pipeline(rs_dnet, stages, payload)
+        assert rs_results == c_results, (
+            f"`{label}` (payload {payload!r}) differed; Rust: {rs_results!r}, C: {c_results!r}"
+        )
+
+    print(
+        f"libdnet's dnet agreed with the C build on {len(libdnet_dnet_invocations)} invocations"
+        f" and {len(libdnet_dnet_pipelines)} pipelines."
+    )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
