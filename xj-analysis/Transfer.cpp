@@ -260,7 +260,7 @@ namespace xj::analysis
       break;
     }
 
-    havocAliases(Dest, State);
+    havocInvalidated(Dest, State);
   }
 
   void Transfer::havocReachable(SED &State) const
@@ -273,11 +273,17 @@ namespace xj::analysis
     }
   }
 
-  void Transfer::havocAliases(CellId Dest, SED &State) const
+  void Transfer::havocInvalidated(CellId Dest, SED &State) const
   {
     for (CellId C : Cells.ids())
     {
-      if (C != Dest && mayAlias(C, Dest, Cells, Escapes))
+      if (C == Dest)
+        continue;
+      // The two ways a store falsifies a recorded equality, which are not
+      // the same question: the store may have changed what `C`'s storage
+      // *holds*, or it may have changed *which storage* `C` names.
+      if (denotationDependsOn(C, Dest, Cells) ||
+          mayOverlap(C, Dest, Cells, Escapes))
         State.detach(C);
     }
   }

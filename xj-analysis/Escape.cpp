@@ -111,8 +111,21 @@ namespace xj::analysis
     return true;
   }
 
-  bool mayAlias(CellId P, CellId Q, const CellUniverse &Cells,
-                const EscapeInfo &Escapes)
+  namespace
+  {
+    // Do the steps of `Path` from `From` onwards leave the storage the path
+    // had reached by then, by going out through a pointer?
+    bool tailContainsDeref(llvm::ArrayRef<Step> Path, unsigned From)
+    {
+      for (unsigned I = From, N = Path.size(); I != N; ++I)
+        if (Path[I].kind() == Step::Kind::Deref)
+          return true;
+      return false;
+    }
+  } // namespace
+
+  bool mayOverlap(CellId P, CellId Q, const CellUniverse &Cells,
+                  const EscapeInfo &Escapes)
   {
     if (P == Q)
       return true;
@@ -132,17 +145,31 @@ namespace xj::analysis
     while (I != N && A.Path[I] == B.Path[I])
       ++I;
 
-    // One path is a prefix of the other. `x` and `x.f` overlap by
-    // containment; `t` and `t->f` do not, but answering true for both is
-    // sound and this is not where the precision that matters lives.
     if (I == N)
-      return true;
+    {
+      // same root, one path a prefix of the other.
+      // Suppose we have x.e1 = ...;
+      // When might this touch x.e2.e3?
 
-    // They diverge. Distinct members of one struct do not overlap — a fact
-    // about C's object model, not an assumption, and the only clause here
-    // that buys anything. It is what lets `t->len = n` leave `t->storage`
-    // alone, which is the whole of examples/table_storage.c's third case.
-    //
+      // One path is a prefix of the other. Cells are interned, so `P != Q`
+      // means one of them is strictly longer.
+      const bool AIsShorter = A.Path.size() < B.Path.size();
+      const CellId Shorter = AIsShorter ? P : Q;
+      const Cell &Longer = AIsShorter ? B : A;
+
+      // The extra steps stay inside the shorter cell, so the
+      // longer one is a sub-object of it and a write to either reaches the
+      // other: `x` and `x.buf`, whatever either address has done.
+      if (!tailContainsDeref(Longer.Path, I))
+        return true;
+
+      // The extra steps leave through a pointer, so if the shorter
+      // path is out of reach, it can not be the target of the longer
+      // path's dereference.
+      return !isOutOfReach(Shorter, Cells, Escapes);
+    }
+
+    // They diverge. Distinct members of one struct do not overlap.
     // Union members are excluded deliberately: that is where type punning
     // lives, and two members of a union share storage by construction.
     const Step &SA = A.Path[I];
@@ -154,6 +181,33 @@ namespace xj::analysis
       return false;
 
     return true;
+  }
+
+  bool denotationDependsOn(CellId C, CellId Stored, const CellUniverse &Cells)
+  {
+    if (C == Stored)
+      return false;
+
+    const Cell &Cl = Cells.get(C);
+    const Cell &S = Cells.get(Stored);
+
+    // Only storage a path actually walks through can move it, and a path
+    // walks through nothing but its own proper prefixes — which share its
+    // root. A store that merely *overlaps* such a prefix moves it too, and
+    // that case is left to `mayOverlap`: the pair is either two cells with
+    // different roots, both necessarily in reach, or two union members.
+    if (Cl.Root != S.Root || S.Path.size() >= Cl.Path.size())
+      return false;
+    for (unsigned I = 0, N = S.Path.size(); I != N; ++I)
+      if (S.Path[I] != Cl.Path[I])
+        return false;
+
+    // Reaching `C` from `Stored` has to go out through a pointer for the
+    // store to move anything. If the remaining steps are all fields then
+    // `C` sits at a fixed offset inside `Stored`, and the store changes
+    // what `C` holds rather than where `C` is — `mayOverlap`'s containment
+    // case, and not this one.
+    return tailContainsDeref(Cl.Path, S.Path.size());
   }
 
 } // namespace xj::analysis

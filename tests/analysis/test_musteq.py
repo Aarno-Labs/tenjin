@@ -23,7 +23,7 @@ import repo_root
 # (example, number of xj-expect annotations it carries)
 _EXAMPLES = [
     ("copy_propagation.c", 12),
-    ("field_paths.c", 10),
+    ("field_paths.c", 12),
     ("table_storage.c", 4),
     # The pre-transform shape, kept as documentation of what the pointer
     # pass sees. It has no annotations; what it must do is parse and run

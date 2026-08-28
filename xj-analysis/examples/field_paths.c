@@ -22,6 +22,8 @@ struct table
     unsigned len;
 };
 
+extern void use2(struct table *);
+
 struct box
 {
     char *buf;
@@ -151,13 +153,50 @@ void store_through_pointer(struct table *t, char **q)
    pointer is reassigned. `t->storage` after `t = u` is a different object,
    so the equality `p` had with it cannot survive.
 
-   Nothing special handles this. `Var(t)` is a prefix of `Var(t).Deref.
-   Field(storage)`, so the weak kill of the assignment to `t` detaches the
-   path — which is why mayAlias answers true for a prefix even when the
-   extra steps begin with a Deref and there is no containment. */
+   This is the whole reason `denotationDependsOn` exists beside
+   `mayOverlap`. Not one byte of the old `*t` is written by `t = u`, and
+   the two cells do not overlap: `Var(t)` is the pointer variable,
+   `Var(t).Deref.Field(storage)` is a field of somebody else's object. What
+   breaks is that the path no longer *reaches* the storage the equality was
+   about. `Var(t)` is a proper prefix of the path and the steps below it go
+   out through a Deref, so the store moves it. */
 void reassign_base(struct table *t, struct table *u)
 {
     char *p = t->storage;
     t = u;
     use(p); /* xj-expect: reassign_base: p -> none */
+}
+
+/* 11. The converse of 10, and what the prefix/overlap split bought. The
+   store goes *through* `t` rather than to it, so `t`'s own value is
+   untouched: `t->len` is storage in the pointee, `t` is a pointer variable
+   whose address is never taken, and nothing can point back into it. The
+   equality `t` has with `s` survives.
+
+   Under the old single `mayAlias` this reported `none`. The prefix case
+   answered true in both directions, so the analysis was more precise about
+   the fields of `*t` — case 4 — than about `t` itself. */
+void store_through_pointer_keeps_root(struct table *s, unsigned n)
+{
+    struct table *t = s;
+    t->len = n;
+    use2(t); /* xj-expect: store_through_pointer_keeps_root: t -> s */
+}
+
+/* 12. ...and the guard on 11, which is why the narrowed clause asks about
+   reach rather than answering false outright. `t` is punned to point at
+   its own storage, so `(*t).storage` — the first member — *is* the bytes of
+   `t`, and `t->storage = q` writes `t` after all. Forming that pointer
+   needs `&t`, which puts `t` in reach and brings the overlap back.
+
+   Strictly this program is a strict-aliasing violation, so one could argue
+   the clause could be unconditional. The analysis declines to rely on
+   that: tenjin translates C that is routinely built -fno-strict-aliasing,
+   and the reach test costs one comparison. */
+void self_pointing(char *q)
+{
+    struct table *t = (struct table *)&t;
+    struct table *u = t; /* class {t, u} */
+    t->storage = q;      /* writes *t, which is t */
+    use2(u);             /* xj-expect: self_pointing: u -> none */
 }

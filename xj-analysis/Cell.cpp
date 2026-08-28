@@ -161,7 +161,7 @@ namespace xj::analysis
       // Every `x.f` and `x->f` the body mentions, whatever its type. A
       // non-pointer field is never a resolution candidate worth reporting,
       // but it has to be a *cell*: `t->len = 0` must be a resolvable store
-      // before mayAlias can rule it disjoint from `t->storage`.
+      // before mayOverlap can rule it disjoint from `t->storage`.
       bool VisitMemberExpr(clang::MemberExpr *ME)
       {
         if (auto C = cellOf(ME))

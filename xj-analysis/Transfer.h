@@ -7,7 +7,9 @@
 //               Constant(k) -> classFor(Const(k))
 //               Opaque      -> a new empty class
 //         move D into K,
-//         then detach every other cell that mayAlias(D)
+//         then detach every other cell the store invalidates: those whose
+//         storage mayOverlap(D), and those whose path walks through D and
+//         so no longer denotes what it did
 //   T2  a store whose destination is not nameable
 //                                         -> detach every cell not out of reach
 //   T3  a call                            -> detach every cell not out of reach
@@ -65,7 +67,7 @@ namespace xj::analysis
 
   private:
     // T1: move `Dest` into the class the rvalue denotes, then detach
-    // everything that may alias it.
+    // everything the store invalidates.
     void store(CellId Dest, const RValue &V, SED &State) const;
 
     // T2/T3: detach every cell not out of reach. A callee cannot name a
@@ -74,9 +76,13 @@ namespace xj::analysis
     // destination this function could not name. Everything else, it might.
     void havocReachable(SED &State) const;
 
-    // The weak kill of T1: detach mayAlias(`Dest`) other than `Dest`, which
-    // the caller has already moved.
-    void havocAliases(CellId Dest, SED &State) const;
+    // The weak kill of T1: detach every cell the store to `Dest`
+    // invalidates, other than `Dest`, which the caller has already moved.
+    // Two disjoint reasons — see Escape.h. A cell may have had its
+    // *contents* rewritten (`mayOverlap`), or it may have kept its contents
+    // and lost its *meaning*, because the store moved a pointer the cell's
+    // path walks through (`denotationDependsOn`).
+    void havocInvalidated(CellId Dest, SED &State) const;
 
     // T4, the blanket rule: detach the entire universe.
     void havocAll(SED &State) const;
