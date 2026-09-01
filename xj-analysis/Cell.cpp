@@ -122,11 +122,11 @@ namespace xj::analysis
       return std::nullopt;
     }
 
-    // Collects the alphabet: every variable the function names, and — at M2
-    // — every field path it mentions.
+    // Collects the alphabet: every variable the function names, plus every
+    // field path it mentions.
     //
     // "Every variable", rather than only the pointer-typed ones, is
-    // load-bearing at M2 and was not at M1. A store whose destination is not
+    // load-bearing once field paths are cells. A store whose destination is not
     // a cell is an *unresolvable* store, and T2 answers one of those by
     // detaching every cell not out of reach — which is every Deref-bearing
     // cell there is. So with `t->storage` in the alphabet, leaving `i` out

@@ -136,8 +136,8 @@ namespace xj::analysis
     CellId intern(const Cell &C);
 
     llvm::SmallVector<Cell, 16> Cells;
-    // Fast path for the deref-free, field-free case, which is every cell at
-    // M1 and most of them at M2.
+    // Fast path for the deref-free, field-free case, which is most cells in
+    // most functions.
     llvm::DenseMap<const clang::VarDecl *, unsigned> ByVar;
   };
 

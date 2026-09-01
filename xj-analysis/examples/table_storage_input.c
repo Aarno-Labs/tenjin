@@ -1,15 +1,5 @@
-/* The input side of the `table->storage` example: what the pointer pass
- * sees today, before anything has been rewritten.
- *
- * `p` is a moving cursor whose base is the lvalue path `t->storage`. Today
- * xj-prepare-pointertransform recognises that textually, via
- * BaseMutationFinder, and *collapses* the cursor: `p` is deleted and its
- * accesses are rewritten against the base. See README.md for the recorded
- * metadata and the rewritten source.
- *
- * That collapse is the behaviour PR 3 relocates into this library. It is
- * why memory reasoning is not a new capability here — it is what keeps an
- * existing one.
+/* The same loop before any rewriting: `p` is a cursor whose base is the
+ * lvalue path `t->storage`.
  */
 
 struct table

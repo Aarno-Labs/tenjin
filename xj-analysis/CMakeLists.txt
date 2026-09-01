@@ -5,12 +5,6 @@ project(xj-analysis)
 # the cells provably equal at each program point, plus clients that reduce
 # those states to a fact — ResolveParameter answers "does this pointer hold
 # the same value as some nameable lvalue at every one of its use sites?".
-# Design in base_resolution_domain_design.md.
-#
-# Built as a static library so that consumers pull it in with
-# `add_subdirectory` while staying their own CMake projects, as
-# base_resolution_library_design.md §3 describes. Nothing links it yet;
-# building it on its own is how the stub is typechecked.
 
 set(XJ_LLVM_ROOT "${CMAKE_CURRENT_LIST_DIR}/../_local/xj-llvm")
 
