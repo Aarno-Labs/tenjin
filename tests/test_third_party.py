@@ -1140,6 +1140,36 @@ kilka linijek</li>
     )
 
 
+@pytest.mark.slow  # expected runtime: 30 seconds
+def test_itsjustme27__dns_tool_exe(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/tenjin-corpus/Itsjustme27__DNS_TOOL.git",
+        "ad89485bce151d18710c1561e1f93c8fa0c32875",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="cc dns_tool.c -o dt",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    cp = hermetic.run(
+        ["target/debug/dt", "google.com"],
+        capture_output=True,
+        cwd=tmp_resultsdir / "final",
+    )
+
+    assert cp.returncode == 0
+    assert b"Answer section starts at offset" in cp.stdout
+
+
 @pytest.mark.slow  # expected runtime: 15 minutes
 def test_lemon_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
