@@ -495,6 +495,10 @@ limitations to its support:
 * If you see `gcc: error: unrecognized command-line option ‘-fcoverage-mapping’`
   the project you're trying to translate is using GCC but we require Clang.
 
+* If you see `AssertionError: Failed to intercept commands from build` it probably
+  means that a Make-style build system didn't run any build steps because the
+  artifacts it was supposed to build were already up to date.
+
 * If you see `failed to load manifest for dependency 'ld_linux_x86_64_2'` the issue is probably that the
 project's build system is using `gcc` as the linker
 driver. For classic Make builds, try passing
