@@ -23,6 +23,21 @@ namespace xj
         // Source text of the base array this pointer indexes into (e.g. "buf",
         // "bs->buf"). Empty when the pointer is its own base (a parameter).
         std::string base_text;
+
+        // Spelling position of the pointer's *declaring identifier*.
+        //
+        // A bare name is ambiguous under shadowing, so the base tool needs
+        // a position to match a VarDecl on — but the position has to be
+        // valid in the file the base tool parses, which is the pointer
+        // pass's *output*. The pointer pass therefore maps the location
+        // through its Rewriter at end of TU, once every edit is applied.
+        //
+        // Valid only in that intermediate. The base tool rewrites the file
+        // in turn, so it clears these when it re-emits the side-file rather
+        // than leave a stale position for a later consumer to trust. 0
+        // means "no position recorded".
+        int decl_line = 0;
+        int decl_col = 0;
     };
 
     struct PtrIndexFunctionRecord

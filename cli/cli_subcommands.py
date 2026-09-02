@@ -164,6 +164,7 @@ def do_build_star(capture_output: bool = False):
     do_build_xj_prepare_locatejoineddecls(capture_output=capture_output)
     do_build_xj_prepare_unionbitcasts(capture_output=capture_output)
     do_build_xj_prepare_pointertransform(capture_output=capture_output)
+    do_build_xj_prepare_baserewrite(capture_output=capture_output)
     do_build_xj_prepare_slicetransform(capture_output=capture_output)
     do_build_xj_localize_errno(capture_output=capture_output)
 
@@ -223,6 +224,37 @@ def do_build_xj_localize_errno(capture_output: bool = False):
     )
 
 
+def do_build_xj_analysis(capture_output: bool = False):
+    # Deliberately not part of `do_build_star`: nothing links this library
+    # yet, so a translation run has no reason to pay for it. Build it by
+    # hand with `10j build-analysis` while working on the must-equality
+    # domain.
+    root = repo_root.find_repo_root_dir_Path()
+    builddir = hermetic.xj_analysis_build_dir(repo_root.localdir())
+
+    if not builddir.exists():
+        hermetic.run(
+            [
+                "cmake",
+                "-GNinja",
+                "-S",
+                (root / "xj-analysis").as_posix(),
+                "-B",
+                builddir.as_posix(),
+            ],
+            cwd=root,
+            check=True,
+            capture_output=capture_output,
+        )
+
+    hermetic.run(
+        ["cmake", "--build", builddir.as_posix(), "--", "--quiet"],
+        cwd=root,
+        check=True,
+        capture_output=capture_output,
+    )
+
+
 def do_build_xj_prepare_unionbitcasts(capture_output: bool = False):
     root = repo_root.find_repo_root_dir_Path()
     builddir = hermetic.xj_prepare_unionbitcasts_build_dir(repo_root.localdir())
@@ -261,6 +293,36 @@ def do_build_xj_prepare_pointertransform(capture_output: bool = False):
                 "-GNinja",
                 "-S",
                 (root / "xj-prepare-pointertransform").as_posix(),
+                "-B",
+                builddir.as_posix(),
+            ],
+            cwd=root,
+            check=True,
+            capture_output=capture_output,
+        )
+
+    hermetic.run(
+        ["cmake", "--build", builddir.as_posix(), "--", "--quiet"],
+        cwd=root,
+        check=True,
+        capture_output=capture_output,
+    )
+
+
+def do_build_xj_prepare_baserewrite(capture_output: bool = False):
+    # This one builds xj-analysis itself, via add_subdirectory — so
+    # do_build_xj_analysis stays separate, for working on the library and
+    # its check tools rather than for the pipeline.
+    root = repo_root.find_repo_root_dir_Path()
+    builddir = hermetic.xj_prepare_baserewrite_build_dir(repo_root.localdir())
+
+    if not builddir.exists():
+        hermetic.run(
+            [
+                "cmake",
+                "-GNinja",
+                "-S",
+                (root / "xj-prepare-baserewrite").as_posix(),
                 "-B",
                 builddir.as_posix(),
             ],

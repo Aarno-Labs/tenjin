@@ -99,12 +99,20 @@ def xj_prepare_pointertransform_build_dir(localdir: Path) -> Path:
     return localdir / "_build_pointertransform"
 
 
+def xj_prepare_baserewrite_build_dir(localdir: Path) -> Path:
+    return localdir / "_build_baserewrite"
+
+
 def xj_prepare_slicetransform_build_dir(localdir: Path) -> Path:
     return localdir / "_build_slicetransform"
 
 
 def xj_localize_errno_build_dir(localdir: Path) -> Path:
     return localdir / "_build_localize_errno"
+
+
+def xj_analysis_build_dir(localdir: Path) -> Path:
+    return localdir / "_build_analysis"
 
 
 def mk_env_for(localdir: Path, with_tenjin_deps=True, env_ext=None, **kwargs) -> dict[str, str]:
