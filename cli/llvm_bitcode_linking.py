@@ -82,7 +82,8 @@ def compile_and_link_bitcode(
 
             # Add flags to emit LLVM bitcode that is easy to analyze; we're not
             # going to run this code, or even use it for subsequent translation.
-            clang_args.extend(["-emit-llvm", "-g", "-O0", "-c", "-o", str(bc_file)])
+            clang_args.extend(["-emit-llvm", "-g", "-O0", "-Xclang", "-disable-O0-optnone"])
+            clang_args.extend(["-c", "-o", str(bc_file)])
 
             # For reasons I don't yet understand, while Clang 18 picks up our
             # default config file automatically, Clang 14 needs it spelled out.
