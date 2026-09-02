@@ -1091,6 +1091,55 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.slow  # expected runtime: 25 seconds
+def test_piotrl__c_markdown_exe(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/tenjin-corpus/piotrl__c-markdown.git",
+        "60c376337c17ff0163c90027bb658ca51c7c9e73",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    lists_output: bytes = hermetic.run(
+        ["target/debug/main", tmp_codebase / "tests" / "lists.txt"],
+        capture_output=True,
+        cwd=tmp_resultsdir / "final",
+    ).stdout
+
+    assert (
+        lists_output
+        == b"""
+
+<h1>akapit</h1>
+
+<hr />
+
+<ul>
+<li> lista1 <em>kursywa</em>
+ lista2 <em>kursywa</em></li>
+<li> lista3</li>
+<li> lista <strong>na</strong> 
+kilka linijek</li>
+</ul>
+### akapit
+######### bledny akapit
+--- bledny hr
+
+"""  # noqa: W291
+    )
+
+
 @pytest.mark.slow  # expected runtime: 15 minutes
 def test_lemon_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
