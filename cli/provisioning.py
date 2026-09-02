@@ -669,6 +669,23 @@ def cook_pkg_config_placeholders_within(target: Path) -> None:
         pc_file.write_text(data, encoding="utf-8")
 
 
+def cook_pkg_config_sysroot_prefixes_within(sysroot: Path) -> None:
+    """Point absolute /usr pkg-config prefixes into an installed sysroot."""
+    installed_usr = (sysroot / "usr").resolve().as_posix()
+    old_prefix = "prefix=/usr"
+
+    for pc_file in sysroot.rglob("*.pc"):
+        data = pc_file.read_text(encoding="utf-8")
+        rewritten = "".join(
+            f"prefix={installed_usr}{line[len(old_prefix) :]}"
+            if line.rstrip("\r\n") == old_prefix
+            else line
+            for line in data.splitlines(keepends=True)
+        )
+        if rewritten != data:
+            pc_file.write_text(rewritten, encoding="utf-8")
+
+
 def want_10j_more_deps():
     def provision_10j_more_deps_with(version: str, keyname: str):
         loweros = {"Linux": "linux", "Darwin": "macos"}[platform.system()]
@@ -973,6 +990,7 @@ def provision_debian_bullseye_sysroot_with(dest_sysroot: Path):
         raise ProvisioningError("Sysroot hash verification failed!")
     shutil.unpack_archive(tarball, dest_sysroot, filter="tar")
     tarball.unlink()
+    cook_pkg_config_sysroot_prefixes_within(dest_sysroot)
 
 
 def provision_opam_binary_with(opam_version: str) -> None:
