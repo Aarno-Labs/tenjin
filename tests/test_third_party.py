@@ -1226,6 +1226,40 @@ Valid command line options for "target/debug/lemon" are:
 
 
 @pytest.mark.slow  # expected runtime: 220 seconds
+def test_socat_exe(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/tenjin-corpus/socat.git", "2386c3ff7b85b25511c13cf099c4165826326004"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            prebuildcmd="autoconf && ./configure --disable-openssl --disable-readline --disable-libwrap CC=cc",
+            buildcmd="make socat",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    help_output: bytes = hermetic.run(
+        [tmp_resultsdir / "final" / "target" / "debug" / "socat", "-h"],
+        capture_output=True,
+    ).stdout
+
+    assert help_output.splitlines()[:5] == [
+        b"socat by Gerhard Rieger and contributors - see www.dest-unreach.org",
+        b"Usage:",
+        b"socat [options] <bi-address> <bi-address>",
+        b"   options (general command line options):",
+        b"      -V     print version and feature information to stdout, and exit",
+    ]
+
+
+@pytest.mark.slow  # expected runtime: 220 seconds
 def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
