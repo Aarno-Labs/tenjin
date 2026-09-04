@@ -135,5 +135,18 @@ def compile_and_link_bitcode(
                 click.echo(f"Stderr: {e.stderr.decode('utf-8', errors='replace')}")
                 raise
 
+        # Run analysis-friendly optimizations on the final module.
+        try:
+            hermetic.run(
+                ["opt", "-passes=mem2reg,gvn", destination_path, "-o", destination_path],
+                check=True,
+                capture_output=True,
+                env_ext={"XJ_USE_LLVM14": "1"} if use_llvm14 else None,
+            )
+        except CalledProcessError as e:
+            click.echo(f"Failed to optimize bitcode file: {destination_path}")
+            click.echo(f"Stderr: {e.stderr.decode('utf-8', errors='replace')}")
+            raise
+
         # Intermediate bitcode files are automatically cleaned up when
         # the temporary directory context exits
