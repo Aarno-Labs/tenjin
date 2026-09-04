@@ -1091,6 +1091,85 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.slow  # expected runtime: 25 seconds
+def test_piotrl__c_markdown_exe(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/tenjin-corpus/piotrl__c-markdown.git",
+        "60c376337c17ff0163c90027bb658ca51c7c9e73",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="make",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    lists_output: bytes = hermetic.run(
+        ["target/debug/main", tmp_codebase / "tests" / "lists.txt"],
+        capture_output=True,
+        cwd=tmp_resultsdir / "final",
+    ).stdout
+
+    assert (
+        lists_output
+        == b"""
+
+<h1>akapit</h1>
+
+<hr />
+
+<ul>
+<li> lista1 <em>kursywa</em>
+ lista2 <em>kursywa</em></li>
+<li> lista3</li>
+<li> lista <strong>na</strong> 
+kilka linijek</li>
+</ul>
+### akapit
+######### bledny akapit
+--- bledny hr
+
+"""  # noqa: W291
+    )
+
+
+@pytest.mark.slow  # expected runtime: 30 seconds
+def test_itsjustme27__dns_tool_exe(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/tenjin-corpus/Itsjustme27__DNS_TOOL.git",
+        "ad89485bce151d18710c1561e1f93c8fa0c32875",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="cc dns_tool.c -o dt",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    cp = hermetic.run(
+        ["target/debug/dt", "google.com"],
+        capture_output=True,
+        cwd=tmp_resultsdir / "final",
+    )
+
+    assert cp.returncode == 0
+    assert b"Answer section starts at offset" in cp.stdout
+
+
 @pytest.mark.slow  # expected runtime: 15 minutes
 def test_lemon_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
@@ -1144,6 +1223,40 @@ Valid command line options for "target/debug/lemon" are:
   -W<string>   Ignored.  (Placeholder for '-W' compiler options.)
 """
     )
+
+
+@pytest.mark.slow  # expected runtime: 220 seconds
+def test_socat_exe(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/tenjin-corpus/socat.git", "2386c3ff7b85b25511c13cf099c4165826326004"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            prebuildcmd="autoconf && ./configure --disable-openssl --disable-readline --disable-libwrap CC=cc",
+            buildcmd="make socat",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    help_output: bytes = hermetic.run(
+        [tmp_resultsdir / "final" / "target" / "debug" / "socat", "-h"],
+        capture_output=True,
+    ).stdout
+
+    assert help_output.splitlines()[:5] == [
+        b"socat by Gerhard Rieger and contributors - see www.dest-unreach.org",
+        b"Usage:",
+        b"socat [options] <bi-address> <bi-address>",
+        b"   options (general command line options):",
+        b"      -V     print version and feature information to stdout, and exit",
+    ]
 
 
 @pytest.mark.slow  # expected runtime: 220 seconds
