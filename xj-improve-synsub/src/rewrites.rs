@@ -216,6 +216,48 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite `isatty()` calls on the three standard file descriptors to the
+    /// safe, cross-platform [`atty`] equivalent.  `atty` only models standard
+    /// streams, so calls with arbitrary descriptors deliberately remain FFI.
+    pub fn rewrite_isatty_standard_stream(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        if !func.path.is_ident("isatty") || call.args.len() != 1 {
+            return None;
+        }
+
+        let stream = match expr_strip_casts(&call.args[0]) {
+            Expr::Path(path) if path.path.is_ident("STDIN_FILENO") => "Stdin",
+            Expr::Path(path) if path.path.is_ident("STDOUT_FILENO") => "Stdout",
+            Expr::Path(path) if path.path.is_ident("STDERR_FILENO") => "Stderr",
+            Expr::Lit(ExprLit {
+                lit: syn::Lit::Int(fd),
+                ..
+            }) => match fd.base10_parse::<u8>().ok()? {
+                0 => "Stdin",
+                1 => "Stdout",
+                2 => "Stderr",
+                _ => return None,
+            },
+            _ => return None,
+        };
+
+        let stream_ident = syn::Ident::new(stream, call.args[0].span());
+        self.add_dep("atty");
+        let replacement: Expr = syn::parse_quote! {
+            atty::is(atty::Stream::#stream_ident) as ::core::ffi::c_int
+        };
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite `xj_isinf(e as f64) != 0` into `e.is_infinite()`, and similarly for `isnan`.
     /// Rewrite `xj_isinf(e as f64) == 0` into `!e.is_infinite()`, and similarly for `isnan`.
     pub fn rewrite_isinf_isnan_comparisons(

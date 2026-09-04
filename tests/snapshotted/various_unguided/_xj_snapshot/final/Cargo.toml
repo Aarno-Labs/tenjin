@@ -12,6 +12,7 @@ name = "tenjinized"
 path = "lib.rs"
 crate-type = ["staticlib", "rlib"]
 [dependencies]
+atty = "0.2.14"
 
 
 

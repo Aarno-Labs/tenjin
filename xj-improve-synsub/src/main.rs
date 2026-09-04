@@ -32,6 +32,7 @@ fn main() -> Result<()> {
     let mut rw = Rewriter::new();
 
     rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
+    rw.add_expr_rewrite(Rewriter::rewrite_isatty_standard_stream);
     rw.add_expr_rewrite(Rewriter::rewrite_print_byte);
     //rw.add_expr_rewrite(Rewriter::rewrite_strstr);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
@@ -125,6 +126,7 @@ fn dep_version(crate_name: &str) -> &'static str {
         "xj_ctime" => "0.1.1",
         "xj_cstr" => "0.1.4",
         "xj_scanf" => "0.2.6",
+        "atty" => "0.2.14",
         "bytemuck" => "1.25.0",
         _ => "*",
     }

@@ -939,4 +939,23 @@ mod tests {
         assert!(rewritten.contains("use ::xj_cstr::ByteSlice;"));
         assert!(rewritten.contains(".as_u8_slice()"));
     }
+
+    #[test]
+    fn rewrite_isatty_standard_streams() {
+        let mut rw = Rewriter::new();
+        rw.add_expr_rewrite(Rewriter::rewrite_isatty_standard_stream);
+
+        let mut file = syn::parse_file(
+            "fn demo() { isatty(STDIN_FILENO); isatty(1 as ::core::ffi::c_int); isatty(fd); }",
+        )
+        .unwrap();
+
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&file);
+        assert!(rewritten.contains("atty::is(atty::Stream::Stdin)"));
+        assert!(rewritten.contains("atty::is(atty::Stream::Stdout)"));
+        assert!(rewritten.contains("isatty(fd)"));
+        assert_eq!(rw.deps(), ["atty".to_owned()].into());
+    }
 }
