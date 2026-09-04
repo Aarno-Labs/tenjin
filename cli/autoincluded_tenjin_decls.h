@@ -10,3 +10,13 @@
 // accomodate pointer-typed expressions.
 */
 void assert(_Bool);
+
+/*
+// The FD_* operations are usually macros defined by <sys/select.h>.  Use void
+// pointers here because this header is included before the application's own
+// headers define fd_set.  c2rust redirects these markers to typed Rust helpers.
+*/
+void FD_ZERO(void *);
+void FD_SET(int, void *);
+void FD_CLR(int, void *);
+int FD_ISSET(int, const void *);

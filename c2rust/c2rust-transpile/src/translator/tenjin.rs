@@ -1221,6 +1221,18 @@ impl Translation<'_> {
                 _ if tenjin::is_path_exactly_1(path, "assert") => {
                     self.recognize_preconversion_call_assert(ctx, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "FD_ZERO") => {
+                    self.recognize_preconversion_call_fd_zero(ctx, cargs)
+                }
+                _ if tenjin::is_path_exactly_1(path, "FD_SET") => {
+                    self.recognize_preconversion_call_fd_set(ctx, cargs, "xj_fd_set")
+                }
+                _ if tenjin::is_path_exactly_1(path, "FD_CLR") => {
+                    self.recognize_preconversion_call_fd_set(ctx, cargs, "xj_fd_clr")
+                }
+                _ if tenjin::is_path_exactly_1(path, "FD_ISSET") => {
+                    self.recognize_preconversion_call_fd_set(ctx, cargs, "xj_fd_isset")
+                }
                 _ if tenjin::is_path_exactly_1(path, "fputs") => {
                     self.recognize_preconversion_call_fputs_stdout_guided(ctx, func, cargs)
                 }
@@ -1485,6 +1497,104 @@ impl Translation<'_> {
         }
 
         Ok(None)
+    }
+
+    fn recognize_preconversion_call_fd_zero(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() != 1 {
+            return Ok(None);
+        }
+
+        self.use_crate(ExternCrate::Libc);
+        self.with_cur_file_item_store(|item_store| {
+            item_store.add_item_str_once(
+                "pub fn xj_fd_zero(set: &mut libc::fd_set) {
+                    // SAFETY: sound because fd_set is a plain array of integers with no invalid bit patterns.
+                    *set = unsafe { std::mem::zeroed() };
+                }",
+            );
+        });
+        let set = self.convert_fd_set_arg(ctx, cargs[0], true)?;
+        Ok(Some(set.and_then(|set| {
+            WithStmts::new_val(mk().call_expr(mk().path_expr(vec!["xj_fd_zero"]), vec![set]))
+        })))
+    }
+
+    fn recognize_preconversion_call_fd_set(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+        helper_name: &'static str,
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() != 2 {
+            return Ok(None);
+        }
+
+        self.use_crate(ExternCrate::Libc);
+        self.with_cur_file_item_store(|item_store| {
+            item_store.add_item_str_once(
+                "pub fn xj_fd_set(fd: libc::c_int, set: &mut libc::fd_set) {
+                    assert!((0..libc::FD_SETSIZE as libc::c_int).contains(&fd));
+                    // SAFETY: sound due to unconditional checked `assert!`
+                    unsafe { libc::FD_SET(fd, set) }
+                }",
+            );
+            item_store.add_item_str_once(
+                "pub fn xj_fd_clr(fd: libc::c_int, set: &mut libc::fd_set) {
+                    assert!((0..libc::FD_SETSIZE as libc::c_int).contains(&fd));
+                    // SAFETY: sound due to unconditional checked `assert!`
+                    unsafe { libc::FD_CLR(fd, set) }
+                }",
+            );
+            item_store.add_item_str_once(
+                "pub fn xj_fd_isset(fd: libc::c_int, set: &libc::fd_set) -> libc::c_int {
+                    assert!((0..libc::FD_SETSIZE as libc::c_int).contains(&fd));
+                    // SAFETY: sound due to unconditional checked `assert!`
+                    unsafe { libc::FD_ISSET(fd, set) as libc::c_int }
+                }",
+            );
+        });
+        let fd = self.convert_expr(ctx.used(), cargs[0], None)?;
+        let set = self.convert_fd_set_arg(ctx, cargs[1], helper_name != "xj_fd_isset")?;
+        Ok(Some(fd.and_then(|fd| {
+            set.and_then(|set| {
+                WithStmts::new_val(mk().call_expr(mk().path_expr(vec![helper_name]), vec![fd, set]))
+            })
+        })))
+    }
+
+    fn convert_fd_set_arg(
+        &self,
+        ctx: ExprContext,
+        cexpr: CExprId,
+        mutbl: bool,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let set = self.convert_expr(ctx.used(), cexpr, None)?;
+        Ok(set.and_then(|set| {
+            // The macro argument has been cast to void* by the marker declaration.
+            // Preserve its raw borrow, then retarget it to libc's fd_set before
+            // making the safe reference required by the helper.
+            let raw_set = Box::new(tenjin::expr_strip_casts(&set).clone());
+            let fd_set_ty = mk().path_ty(mk().path(vec!["libc", "fd_set"]));
+            let fd_set_ptr = if mutbl {
+                mk().mutbl().ptr_ty(fd_set_ty)
+            } else {
+                mk().ptr_ty(fd_set_ty)
+            };
+            let set = mk().unary_expr(
+                UnOp::Deref(Default::default()),
+                mk().cast_expr(raw_set, fd_set_ptr),
+            );
+            let set = if mutbl {
+                mk().mutbl().borrow_expr(set)
+            } else {
+                mk().borrow_expr(set)
+            };
+            WithStmts::new_val(set)
+        }))
     }
 
     /// Recognizes the C idiom `COND && "message"`, returning the condition along with

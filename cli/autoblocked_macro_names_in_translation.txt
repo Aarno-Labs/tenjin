@@ -9,6 +9,12 @@
 # assumed to be from <assert.h>
 assert
 
+# assumed to be from <sys/select.h>
+FD_ZERO
+FD_SET
+FD_CLR
+FD_ISSET
+
 # assumed to be from <ctype.h>
 isalnum
 isalpha
