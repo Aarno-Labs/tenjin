@@ -33,7 +33,7 @@ fn main() -> Result<()> {
 
     rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
     rw.add_expr_rewrite(Rewriter::rewrite_print_byte);
-    rw.add_expr_rewrite(Rewriter::rewrite_strstr);
+    //rw.add_expr_rewrite(Rewriter::rewrite_strstr);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
     rw.add_expr_rewrite(Rewriter::rewrite_usize_array_subscript_literal);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_deref);
