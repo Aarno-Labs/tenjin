@@ -66,6 +66,8 @@ impl Depth {
 pub struct SymbolTable {
     /// Maps a symbol name to its type.
     pub items: HashMap<String, syn::Type>,
+    /// Maps a named struct type to its named field types.
+    pub fields: HashMap<String, HashMap<String, syn::Type>>,
 }
 
 impl SymbolTable {
@@ -95,6 +97,37 @@ impl SymbolTable {
         self.items.remove(name);
     }
 
+    /// Determine the type of a simple path or named-field expression.
+    pub fn type_of_expr(&self, expr: &syn::Expr) -> Option<syn::Type> {
+        match expr {
+            syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
+                self.get(&path.path.segments[0].ident.to_string()).cloned()
+            }
+            syn::Expr::Field(field) => {
+                let receiver_ty = self.type_of_expr(&field.base)?;
+                let struct_name = named_type(&receiver_ty)?;
+                let syn::Member::Named(field_name) = &field.member else {
+                    return None;
+                };
+                self.fields
+                    .get(&struct_name)?
+                    .get(&field_name.to_string())
+                    .cloned()
+            }
+            syn::Expr::Paren(paren) => self.type_of_expr(&paren.expr),
+            syn::Expr::Group(group) => self.type_of_expr(&group.expr),
+            syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+                let ty = self.type_of_expr(&unary.expr)?;
+                match ty {
+                    syn::Type::Reference(reference) => Some(*reference.elem),
+                    syn::Type::Ptr(pointer) => Some(*pointer.elem),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Build a symbol table of global variables (statics and consts) by
     /// scanning every file.  Inline modules are descended recursively.
     pub fn from_files(files: &[(PathBuf, syn::File)]) -> Self {
@@ -121,6 +154,15 @@ impl SymbolTable {
                 syn::Item::Static(i) => {
                     self.insert(i.ident.to_string(), (*i.ty).clone());
                 }
+                syn::Item::Struct(i) => {
+                    let mut fields = HashMap::new();
+                    for field in &i.fields {
+                        if let Some(ident) = &field.ident {
+                            fields.insert(ident.to_string(), field.ty.clone());
+                        }
+                    }
+                    self.fields.insert(i.ident.to_string(), fields);
+                }
                 syn::Item::Mod(i) => {
                     if let Some((_, ref inner)) = i.content {
                         self.collect_globals(inner);
@@ -129,6 +171,20 @@ impl SymbolTable {
                 _ => {}
             }
         }
+    }
+}
+
+fn named_type(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Reference(reference) => named_type(&reference.elem),
+        syn::Type::Paren(paren) => named_type(&paren.elem),
+        syn::Type::Group(group) => named_type(&group.elem),
+        syn::Type::Path(path) if path.qself.is_none() => path
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string()),
+        _ => None,
     }
 }
 
@@ -298,6 +354,9 @@ impl Rewriter {
     /// rewriting begins.  Function arguments and let-bindings are added
     /// to the table as the visitor descends into each scope.
     pub fn rewrite_crate(&self, files: &mut [(PathBuf, syn::File)], depth: Depth) {
+        for (_, file) in files.iter_mut() {
+            AtomicTypeNormalizer.visit_file_mut(file);
+        }
         let globals = SymbolTable::from_files(files);
         let root_path = files.first().map(|(path, _)| path.clone());
         *self.root_file.borrow_mut() = root_path;
@@ -320,6 +379,7 @@ impl Rewriter {
     ///
     /// Globals are collected from this file only.
     pub fn rewrite_file(&self, file: &mut syn::File, depth: Depth) {
+        AtomicTypeNormalizer.visit_file_mut(file);
         let globals = SymbolTable::from_file(file);
         self.root_file.borrow_mut().take();
         self.cur_file.borrow_mut().take();
@@ -386,6 +446,114 @@ impl Rewriter {
             .iter()
             .find_map(|rw| rw(self, symbols, stmt))
     }
+}
+
+struct AtomicTypeNormalizer;
+
+impl VisitMut for AtomicTypeNormalizer {
+    fn visit_type_mut(&mut self, ty: &mut syn::Type) {
+        if let syn::Type::Path(path) = ty
+            && path.qself.is_none()
+            && path.path.segments.len() == 1
+            && let Some(rust_name) = c_atomic_rust_name(&path.path.segments[0].ident.to_string())
+        {
+            *ty = syn::parse_str(&format!("::core::sync::atomic::{rust_name}"))
+                .expect("valid Rust atomic type");
+            return;
+        }
+        visit_mut::visit_type_mut(self, ty);
+    }
+
+    fn visit_item_struct_mut(&mut self, item: &mut syn::ItemStruct) {
+        visit_mut::visit_item_struct_mut(self, item);
+        if item
+            .fields
+            .iter()
+            .any(|field| atomic_kind(&field.ty).is_some())
+        {
+            remove_copy_clone_derives(&mut item.attrs);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AtomicKind {
+    Bool,
+    Integer,
+    Pointer,
+}
+
+/// Return the category of a Rust atomic type supported by `core`.
+pub(crate) fn atomic_kind(ty: &syn::Type) -> Option<AtomicKind> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() {
+        return None;
+    }
+    let segment = path.path.segments.last()?;
+    let kind = atomic_kind_from_name(&segment.ident.to_string())?;
+    match (&segment.arguments, kind) {
+        (syn::PathArguments::None, AtomicKind::Bool | AtomicKind::Integer)
+        | (syn::PathArguments::AngleBracketed(_), AtomicKind::Pointer) => Some(kind),
+        _ => None,
+    }
+}
+
+pub(crate) fn atomic_kind_from_name(name: &str) -> Option<AtomicKind> {
+    match name {
+        "AtomicBool" => Some(AtomicKind::Bool),
+        "AtomicI8" | "AtomicI16" | "AtomicI32" | "AtomicI64" | "AtomicI128" | "AtomicIsize"
+        | "AtomicU8" | "AtomicU16" | "AtomicU32" | "AtomicU64" | "AtomicU128" | "AtomicUsize" => {
+            Some(AtomicKind::Integer)
+        }
+        "AtomicPtr" => Some(AtomicKind::Pointer),
+        _ => None,
+    }
+}
+
+/// Map fixed-representation C11 atomic typedefs to Rust atomic wrappers.
+///
+/// Target-dependent aliases such as `atomic_char`, `atomic_long`, and the
+/// `atomic_*_fast*_t` family are intentionally left for explicit
+/// `vars_of_type` guidance.
+fn c_atomic_rust_name(c_name: &str) -> Option<&'static str> {
+    match c_name {
+        "atomic_bool" => Some("AtomicBool"),
+        "atomic_schar" | "atomic_int_least8_t" => Some("AtomicI8"),
+        "atomic_uchar" | "atomic_char8_t" | "atomic_uint_least8_t" => Some("AtomicU8"),
+        "atomic_short" | "atomic_int_least16_t" => Some("AtomicI16"),
+        "atomic_ushort" | "atomic_char16_t" | "atomic_uint_least16_t" => Some("AtomicU16"),
+        "atomic_int" | "atomic_int_least32_t" => Some("AtomicI32"),
+        "atomic_uint" | "atomic_char32_t" | "atomic_uint_least32_t" => Some("AtomicU32"),
+        "atomic_llong" | "atomic_int_least64_t" | "atomic_intmax_t" => Some("AtomicI64"),
+        "atomic_ullong" | "atomic_uint_least64_t" | "atomic_uintmax_t" => Some("AtomicU64"),
+        "atomic_intptr_t" | "atomic_ptrdiff_t" => Some("AtomicIsize"),
+        "atomic_uintptr_t" | "atomic_size_t" => Some("AtomicUsize"),
+        _ => None,
+    }
+}
+
+fn remove_copy_clone_derives(attrs: &mut Vec<syn::Attribute>) {
+    attrs.retain_mut(|attr| {
+        if !attr.path().is_ident("derive") {
+            return true;
+        }
+        let Ok(paths) = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+        ) else {
+            return true;
+        };
+        let retained = paths
+            .into_iter()
+            .filter(|path| !path.is_ident("Copy") && !path.is_ident("Clone"))
+            .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>();
+        if retained.is_empty() {
+            return false;
+        }
+        *attr = syn::parse_quote! { #[derive(#retained)] };
+        true
+    });
 }
 
 // ── AST visitor ──────────────────────────────────────────────────────

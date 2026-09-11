@@ -32,6 +32,8 @@ fn main() -> Result<()> {
     let mut rw = Rewriter::new();
 
     rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
     rw.add_expr_rewrite(Rewriter::rewrite_isatty_standard_stream);
     rw.add_expr_rewrite(Rewriter::rewrite_print_byte);
     //rw.add_expr_rewrite(Rewriter::rewrite_strstr);

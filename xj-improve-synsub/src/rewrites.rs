@@ -5,7 +5,7 @@ use syn::{
     Expr, ExprCast, ExprLit, ExprPath, ExprUnary, LitByteStr, LitInt, Pat, Path, Stmt, Type,
 };
 
-use crate::{Depth, Rewriter, SymbolTable};
+use crate::{AtomicKind, Depth, Rewriter, SymbolTable, atomic_kind, atomic_kind_from_name};
 
 fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
     if let Expr::Cast(_) = expr {
@@ -16,6 +16,98 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    /// Wrap plain values assigned to guided atomic places in the matching
+    /// atomic type's `new` constructor. This covers assignments emitted for
+    /// `atomic_init` and fields in aggregate initializers.
+    pub fn rewrite_atomic_initialization(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        match expr {
+            Expr::Assign(assign) => {
+                let place = atomic_assignment_place(&assign.left);
+                let ty = symbols.type_of_expr(place)?;
+                if atomic_kind(&ty).is_none() || is_atomic_constructor(&assign.right) {
+                    return None;
+                }
+
+                let mut replacement = assign.clone();
+                replacement.right = Box::new(atomic_constructor(&ty, &assign.right)?);
+                Some((Expr::Assign(replacement), Depth::Limited(0)))
+            }
+            Expr::Struct(expr_struct) => {
+                let struct_name = expr_struct.path.segments.last()?.ident.to_string();
+                let field_types = symbols.fields.get(&struct_name)?;
+                let mut replacement = expr_struct.clone();
+                let mut changed = false;
+
+                for field in &mut replacement.fields {
+                    let syn::Member::Named(field_name) = &field.member else {
+                        continue;
+                    };
+                    // A shorthand field already has the declared type; only explicit
+                    // `field: value` initializers need construction.
+                    let Some(field_ty) = field_types.get(&field_name.to_string()) else {
+                        continue;
+                    };
+                    if field.colon_token.is_none()
+                        || atomic_kind(field_ty).is_none()
+                        || is_atomic_constructor(&field.expr)
+                    {
+                        continue;
+                    }
+                    field.expr = atomic_constructor(field_ty, &field.expr)?;
+                    changed = true;
+                }
+
+                changed.then_some((Expr::Struct(replacement), Depth::Limited(0)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Replace legacy core atomic intrinsics on guided atomic places with
+    /// atomic methods.
+    pub fn rewrite_atomic_intrinsic(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(function) = &*call.func else {
+            return None;
+        };
+        let Expr::RawAddr(raw_addr) = expr_strip_parens(call.args.first()?) else {
+            return None;
+        };
+        if !matches!(raw_addr.mutability, syn::PointerMutability::Mut(_)) {
+            return None;
+        }
+        let receiver_ty = symbols.type_of_expr(&raw_addr.expr)?;
+        let kind = atomic_kind(&receiver_ty)?;
+        let (method, ordering, value_arity) = atomic_intrinsic_method(&function.path, kind)?;
+        if call.args.len() != value_arity + 1 {
+            return None;
+        }
+
+        let receiver = &raw_addr.expr;
+        let values = call
+            .args
+            .iter()
+            .skip(1)
+            .map(|value| coerce_atomic_method_value(&receiver_ty, method, value))
+            .collect::<Vec<_>>();
+        let method = syn::Ident::new(method, function.path.span());
+        let ordering = syn::Ident::new(ordering, function.path.span());
+        let replacement: Expr = syn::parse_quote! {
+            #receiver.#method(#(#values,)* ::core::sync::atomic::Ordering::#ordering)
+        };
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite `array[Nusize]` into `array[N]`. Array indexing already constrains
     /// an unsuffixed integer literal to `usize`, so the suffix is redundant.
     pub fn rewrite_usize_array_subscript_literal(
@@ -920,6 +1012,13 @@ impl Rewriter {
             return None;
         };
 
+        if atomic_kind(&pat_type.ty).is_some() && !is_atomic_constructor(&localinit.expr) {
+            let mut replacement = local.clone();
+            replacement.init.as_mut()?.expr =
+                Box::new(atomic_constructor(&pat_type.ty, &localinit.expr)?);
+            return Some((Stmt::Local(replacement), Depth::Limited(0)));
+        }
+
         if let Some(elt_ty) = type_of_slice_ref(&pat_type.ty) {
             if is_u8_type(elt_ty) {
                 let init_expr = &localinit.expr;
@@ -1067,6 +1166,144 @@ impl Rewriter {
             ScanfArgCategory::Other => None,
         }
     }
+}
+
+fn is_atomic_constructor(expr: &Expr) -> bool {
+    let Expr::Call(call) = expr_strip_parens(expr) else {
+        return false;
+    };
+    let Expr::Path(function) = &*call.func else {
+        return false;
+    };
+    let mut segments = function.path.segments.iter().rev();
+    matches!(
+        (segments.next(), segments.next()),
+        (Some(new), Some(atomic))
+            if new.ident == "new"
+                && atomic_kind_from_name(&atomic.ident.to_string()).is_some()
+    )
+}
+
+fn atomic_constructor(ty: &Type, value: &Expr) -> Option<Expr> {
+    atomic_kind(ty)?;
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let mut constructor_path = type_path.path.clone();
+    if let Some(last) = constructor_path.segments.last_mut()
+        && let syn::PathArguments::AngleBracketed(arguments) = &mut last.arguments
+    {
+        arguments.colon2_token = Some(Default::default());
+    }
+    let value = coerce_pointer_sized_atomic_value(ty, value);
+    Some(syn::parse_quote! { #constructor_path::new(#value) })
+}
+
+fn coerce_atomic_method_value(ty: &Type, method: &str, value: &Expr) -> Expr {
+    if atomic_kind(ty) == Some(AtomicKind::Pointer) && method.starts_with("fetch_") {
+        return syn::parse_quote! { (#value) as usize };
+    }
+    coerce_pointer_sized_atomic_value(ty, value)
+}
+
+fn coerce_pointer_sized_atomic_value(ty: &Type, value: &Expr) -> Expr {
+    let Type::Path(type_path) = ty else {
+        return value.clone();
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return value.clone();
+    };
+    match segment.ident.to_string().as_str() {
+        "AtomicIsize" => syn::parse_quote! { (#value) as isize },
+        "AtomicUsize" => syn::parse_quote! { (#value) as usize },
+        _ => value.clone(),
+    }
+}
+
+fn atomic_assignment_place(expr: &Expr) -> &Expr {
+    let expr = expr_strip_parens(expr);
+    let Expr::Unary(unary) = expr else {
+        return expr;
+    };
+    if !matches!(unary.op, syn::UnOp::Deref(_)) {
+        return expr;
+    }
+    let Expr::RawAddr(raw_addr) = expr_strip_parens(&unary.expr) else {
+        return expr;
+    };
+    &raw_addr.expr
+}
+
+/// Return `(method, Ordering variant, non-receiver argument count)`.
+fn atomic_intrinsic_method(
+    path: &Path,
+    kind: AtomicKind,
+) -> Option<(&'static str, &'static str, usize)> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    if segments.len() != 3 || segments[0] != "core" || segments[1] != "intrinsics" {
+        return None;
+    }
+    let name = segments[2].strip_prefix("atomic_")?;
+    let integer_operations = [
+        ("store", "store", 1),
+        ("load", "load", 0),
+        ("xadd", "fetch_add", 1),
+        ("xsub", "fetch_sub", 1),
+        ("and", "fetch_and", 1),
+        ("or", "fetch_or", 1),
+        ("xor", "fetch_xor", 1),
+        ("nand", "fetch_nand", 1),
+        ("xchg", "swap", 1),
+    ];
+    let bool_operations = [
+        ("store", "store", 1),
+        ("load", "load", 0),
+        ("and", "fetch_and", 1),
+        ("or", "fetch_or", 1),
+        ("xor", "fetch_xor", 1),
+        ("nand", "fetch_nand", 1),
+        ("xchg", "swap", 1),
+    ];
+    let pointer_operations = [
+        ("store", "store", 1),
+        ("load", "load", 0),
+        ("xadd", "fetch_ptr_add", 1),
+        ("xsub", "fetch_ptr_sub", 1),
+        ("and", "fetch_and", 1),
+        ("or", "fetch_or", 1),
+        ("xor", "fetch_xor", 1),
+        ("xchg", "swap", 1),
+    ];
+    let orderings = [
+        ("unordered", "Relaxed"),
+        ("relaxed", "Relaxed"),
+        ("acquire", "Acquire"),
+        ("release", "Release"),
+        ("acqrel", "AcqRel"),
+        ("seqcst", "SeqCst"),
+    ];
+
+    let operations: &[(&str, &str, usize)] = match kind {
+        AtomicKind::Bool => &bool_operations,
+        AtomicKind::Integer => &integer_operations,
+        AtomicKind::Pointer => &pointer_operations,
+    };
+    for &(operation, method, arity) in operations {
+        let Some(suffix) = name
+            .strip_prefix(operation)
+            .and_then(|rest| rest.strip_prefix('_'))
+        else {
+            continue;
+        };
+        if let Some((_, ordering)) = orderings.iter().find(|(name, _)| *name == suffix) {
+            return Some((method, ordering, arity));
+        }
+    }
+    None
 }
 
 enum ScanfArgCategory {

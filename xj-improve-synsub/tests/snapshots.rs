@@ -20,6 +20,188 @@ fn check(rw: &Rewriter, input: &str, expected: Expect) {
 }
 
 #[test]
+fn atomic_local_initialization_and_intrinsics() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+    rw.add_stmt_rewrite(Rewriter::rewrite_local);
+    check(
+        &rw,
+        r#"fn demo() {
+            let mut value: ::core::sync::atomic::AtomicI32 = 5 as i32;
+            ::core::intrinsics::atomic_store_seqcst(&raw mut value, 10);
+            let _ = ::core::intrinsics::atomic_load_acquire(&raw mut value);
+            let _ = ::core::intrinsics::atomic_xadd_relaxed(&raw mut value, 3);
+            let _ = ::core::intrinsics::atomic_xchg_seqcst(&raw mut value, 42);
+        }"#,
+        expect![[r#"
+            fn demo() {
+                let mut value: ::core::sync::atomic::AtomicI32 = ::core::sync::atomic::AtomicI32::new(
+                    5 as i32,
+                );
+                value.store(10, ::core::sync::atomic::Ordering::SeqCst);
+                let _ = value.load(::core::sync::atomic::Ordering::Acquire);
+                let _ = value.fetch_add(3, ::core::sync::atomic::Ordering::Relaxed);
+                let _ = value.swap(42, ::core::sync::atomic::Ordering::SeqCst);
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn atomic_struct_initialization_and_intrinsics() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+    check(
+        &rw,
+        r#"#[derive(Copy, Clone)]
+        struct Globals {
+            initialized: atomic_int,
+            stored: atomic_int,
+        }
+        fn demo(xjg: &mut Globals) {
+            *&raw mut xjg.initialized = 5;
+            ::core::intrinsics::atomic_store_release(&raw mut xjg.stored, 10);
+        }
+        fn make() -> Globals { Globals { initialized: 0, stored: 0 } }"#,
+        expect![[r#"
+            struct Globals {
+                initialized: ::core::sync::atomic::AtomicI32,
+                stored: ::core::sync::atomic::AtomicI32,
+            }
+            fn demo(xjg: &mut Globals) {
+                *&raw mut xjg.initialized = ::core::sync::atomic::AtomicI32::new(5);
+                xjg.stored.store(10, ::core::sync::atomic::Ordering::Release);
+            }
+            fn make() -> Globals {
+                Globals {
+                    initialized: ::core::sync::atomic::AtomicI32::new(0),
+                    stored: ::core::sync::atomic::AtomicI32::new(0),
+                }
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn all_rust_atomic_types_get_constructors_and_method_calls() {
+    let cases = [
+        ("AtomicBool", "false", "false", "fetch_and"),
+        ("AtomicI8", "0i8", "1i8", "fetch_add"),
+        ("AtomicI16", "0i16", "1i16", "fetch_add"),
+        ("AtomicI32", "0i32", "1i32", "fetch_add"),
+        ("AtomicI64", "0i64", "1i64", "fetch_add"),
+        ("AtomicI128", "0i128", "1i128", "fetch_add"),
+        ("AtomicIsize", "0isize", "1isize", "fetch_add"),
+        ("AtomicU8", "0u8", "1u8", "fetch_add"),
+        ("AtomicU16", "0u16", "1u16", "fetch_add"),
+        ("AtomicU32", "0u32", "1u32", "fetch_add"),
+        ("AtomicU64", "0u64", "1u64", "fetch_add"),
+        ("AtomicU128", "0u128", "1u128", "fetch_add"),
+        ("AtomicUsize", "0usize", "1usize", "fetch_add"),
+    ];
+
+    for (atomic_type, initial, operand, expected_method) in cases {
+        let mut rw = Rewriter::new();
+        rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+        rw.add_stmt_rewrite(Rewriter::rewrite_local);
+        let input = format!(
+            "fn demo() {{\n\
+                 let mut value: ::core::sync::atomic::{atomic_type} = {initial};\n\
+                 ::core::intrinsics::atomic_load_acquire(&raw mut value);\n\
+                 ::core::intrinsics::atomic_{}_relaxed(&raw mut value, {operand});\n\
+             }}",
+            if atomic_type == "AtomicBool" {
+                "and"
+            } else {
+                "xadd"
+            }
+        );
+        let mut file = syn::parse_file(&input).expect("parsing atomic snippet");
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+        let output = prettyplease::unparse(&file);
+        let compact_output = output.split_whitespace().collect::<String>();
+
+        assert!(
+            compact_output.contains(&format!("{atomic_type}::new(")),
+            "missing {atomic_type} constructor in:\n{output}"
+        );
+        assert!(
+            output.contains(&format!("value.{expected_method}")),
+            "missing {expected_method} call for {atomic_type} in:\n{output}"
+        );
+        assert!(!output.contains("::core::intrinsics::atomic_"), "{output}");
+    }
+
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+    rw.add_stmt_rewrite(Rewriter::rewrite_local);
+    let mut file = syn::parse_file(
+        r#"fn demo() {
+            let mut value: ::core::sync::atomic::AtomicPtr<u8> = ::core::ptr::null_mut();
+            ::core::intrinsics::atomic_load_acquire(&raw mut value);
+            ::core::intrinsics::atomic_xadd_relaxed(&raw mut value, 1usize);
+        }"#,
+    )
+    .expect("parsing AtomicPtr snippet");
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+    let compact_output = output.split_whitespace().collect::<String>();
+    assert!(
+        compact_output.contains("AtomicPtr::<u8,>::new(::core::ptr::null_mut()"),
+        "missing AtomicPtr constructor in:\n{output}"
+    );
+    assert!(output.contains("value.fetch_ptr_add"));
+    assert!(!output.contains("::core::intrinsics::atomic_"));
+}
+
+#[test]
+fn fixed_representation_c_atomic_typedefs_are_normalized() {
+    let rw = Rewriter::new();
+    let mut file = syn::parse_file(
+        r#"#[derive(Copy, Clone, Debug)]
+        struct Atomics {
+            bool_value: atomic_bool,
+            i8_value: atomic_schar,
+            u8_value: atomic_uchar,
+            i16_value: atomic_short,
+            u16_value: atomic_ushort,
+            i32_value: atomic_int,
+            u32_value: atomic_uint,
+            i64_value: atomic_llong,
+            u64_value: atomic_ullong,
+            isize_value: atomic_intptr_t,
+            usize_value: atomic_size_t,
+        }"#,
+    )
+    .expect("parsing C atomic typedef snippet");
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+
+    for atomic_type in [
+        "AtomicBool",
+        "AtomicI8",
+        "AtomicU8",
+        "AtomicI16",
+        "AtomicU16",
+        "AtomicI32",
+        "AtomicU32",
+        "AtomicI64",
+        "AtomicU64",
+        "AtomicIsize",
+        "AtomicUsize",
+    ] {
+        assert!(
+            output.contains(atomic_type),
+            "missing {atomic_type} in:\n{output}"
+        );
+    }
+    assert!(!output.contains("Copy"));
+    assert!(!output.contains("Clone"));
+    assert!(output.contains("#[derive(Debug)]"));
+}
+
+#[test]
 fn outer_paren_stripping() {
     let mut rw = Rewriter::new();
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
