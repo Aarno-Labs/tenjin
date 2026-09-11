@@ -78,7 +78,6 @@ jobs:
         run: |
           echo "ocaml_key=$(python3 cli/constants.py ocaml-cache-key)" >> $GITHUB_OUTPUT
           echo "codehawk_key=$(python3 cli/constants.py codehawk-cache-key)" >> $GITHUB_OUTPUT
-          echo "upstream_c2rust_key=$(python3 cli/constants.py upstream-c2rust-cache-key)" >> $GITHUB_OUTPUT
 
       # We don't use setup-ocaml because it would compile OCaml in the runner's
       # environment, which has libraries that aren't available to the 10j toolchain.
@@ -105,14 +104,6 @@ jobs:
           path: |
             _local/codehawk
           key: ${{ steps.extract.outputs.codehawk_key }}
-
-      - name: Cache Upstream c2rust
-        id: cache-upstream-c2rust
-        uses: actions/cache@v5
-        with:
-          path: |
-            _local/upstream-c2rust
-          key: ${{ steps.extract.outputs.upstream_c2rust_key }}
 
       - name: Provision OCaml
         run: cli/10j provision ocaml 2>&1 | ./tss

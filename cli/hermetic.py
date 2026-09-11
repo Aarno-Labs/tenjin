@@ -63,10 +63,6 @@ def xj_llvm14_root(localdir: Path) -> Path:
     return localdir / "xj-llvm-14"
 
 
-def xj_upstream_c2rust(localdir: Path) -> Path:
-    return localdir / "upstream-c2rust"
-
-
 def xj_codehawk(localdir: Path) -> Path:
     return localdir / "codehawk"
 

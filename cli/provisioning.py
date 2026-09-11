@@ -242,7 +242,7 @@ def provision_desires(wanted: str):
             require_rustup()
 
         # First time install?
-        if wanted == "all" and HAVE.query("10j-reference-c2rust-tag") is None:
+        if wanted == "all" and HAVE.query("10j-codehawk-c") is None:
 
             def say(msg: str):
                 sez(msg, ctx="(overall-provisioning) ")
@@ -268,9 +268,6 @@ def provision_desires(wanted: str):
         if wanted in ("all", "ocaml"):
             want_dune()
             want_codehawk_c()
-
-        if wanted == "all":
-            want_10j_reference_c2rust_tag()
 
         HAVE.provisioning_depth -= 1
 
@@ -393,72 +390,6 @@ def want_10j_rust_toolchains():
 
 def want_10j_cargo_nextest():
     want("10j-cargo-nextest", "cargo-nextest", "cargo-nextest", provision_10j_cargo_nextest_with)
-
-
-def want_10j_reference_c2rust_tag():
-    def provision_10j_reference_c2rust_source_with(
-        version: str,
-        xj_upstream_c2rust: Path,
-    ):
-        clone_or_fetch_git_repo(
-            repo_url="https://github.com/immunant/c2rust.git",
-            target_dir=xj_upstream_c2rust,
-            version=version,
-            log_prefix="xj-c2rust",
-            display_name="C2Rust",
-            ctx="(c2rust) ",
-        )
-
-    def provision_10j_reference_c2rust_tag_with(
-        version: str,
-        keyname: str,
-    ):
-        xj_upstream_c2rust = hermetic.xj_upstream_c2rust(HAVE.localdir)
-
-        if (
-            hermetic.running_in_ci()
-            and xj_upstream_c2rust.is_dir()
-            and query_git_head(xj_upstream_c2rust) == version
-        ):
-            sez("Upstream c2rust restored from CI cache...", ctx="(c2rust) ")
-        else:
-            provision_10j_reference_c2rust_source_with(version, xj_upstream_c2rust)
-            rebuild_10j_upstream_c2rust(xj_upstream_c2rust)
-
-        HAVE.note_we_have(keyname, specifier=version)
-
-    want(
-        "10j-reference-c2rust-tag",
-        "c2rust",
-        "Upstream C2Rust",
-        provision_10j_reference_c2rust_tag_with,
-    )
-
-
-def rebuild_10j_upstream_c2rust(xj_upstream_c2rust: Path):
-    stdout_path = Path(xj_upstream_c2rust, "xj-c2rust-build.log")
-    stderr_path = Path(xj_upstream_c2rust, "xj-c2rust-build.err")
-
-    sez("Building upstream C2Rust...", ctx="(c2rust) ")
-    hermetic.run_command_with_progress(
-        [
-            "cargo",
-            hermetic.tenjin_cargo_toolchain_specifier(),
-            "build",
-            "--locked",
-            "-p",
-            "c2rust",
-            "-p",
-            "c2rust-transpile",
-        ],
-        stdout_file=stdout_path,
-        stderr_file=stderr_path,
-        cwd=xj_upstream_c2rust,
-        env_ext=hermetic.cargo_encoded_rustflags_env_ext(xj_upstream_c2rust, None),
-    )
-    # Ensure a clean checkout for future updates
-    stdout_path.unlink(missing_ok=True)
-    stderr_path.unlink(missing_ok=True)
 
 
 def want_codehawk():
@@ -1383,12 +1314,6 @@ def provision_10j_llvm_with(version: str, keyname: str):
         dirty = hermetic.xj_prepare_findfnptrdecls_build_dir(HAVE.localdir)
         if dirty.is_dir():
             shutil.rmtree(dirty, ignore_errors=False)
-
-        # Upstream c2rust is not rebuilt automatically, so we need to do it here.
-        upstream_c2rust_dir = hermetic.xj_upstream_c2rust(HAVE.localdir)
-        if upstream_c2rust_dir.is_dir():
-            hermetic.run_cargo_in(["clean"], upstream_c2rust_dir)
-            rebuild_10j_upstream_c2rust(upstream_c2rust_dir)
 
     create_goblint_gcc_wrapper()
     update_10j_llvm_have(keyname, version, llvm_version, xj_llvm_root)

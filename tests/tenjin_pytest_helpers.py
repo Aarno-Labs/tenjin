@@ -56,9 +56,7 @@ def annotate_pytest_request_with_translation_notes(fixtures: TenjinFixtures):
         fixtures.extras.append(pytest_html.extras.html("<pre>" + metadata_text + "</pre>"))
 
         before = (
-            metadata_json.get("results", {})
-            .get("c2rust_baseline", {})
-            .get("total_unsafe_fns_count")
+            metadata_json.get("results", {}).get("tenjin_initial", {}).get("total_unsafe_fns_count")
         )
         after = (
             metadata_json.get("results", {}).get("tenjin_final", {}).get("total_unsafe_fns_count")

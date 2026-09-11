@@ -23,7 +23,6 @@ WANT = {
     # Keep in sync with the version in `c2rust/c2rust-rust-tools/src/lib.rs`.
     "10j-edition2024-rust-toolchain": "nightly-2026-03-03",
     "10j-find_unsafe2-rust-toolchain": "nightly-2026-05-11",
-    "10j-reference-c2rust-tag": "3558805d0c94ce42b3efbce59e8cef784dcc78f4",
     "10j-ast-grep": "0.40.5",
     "10j-crat": "crat-f598249c3",
 }
@@ -53,8 +52,5 @@ if __name__ == "__main__":
         case [_, "codehawk-cache-key"]:
             codehawkparts = piece("codehawk")
             print(";".join([platform.system(), platform.machine(), codehawkparts]))
-        case [_, "upstream-c2rust-cache-key"]:
-            upstream_c2rust_tag = piece("reference-c2rust-tag")
-            print(";".join([platform.system(), platform.machine(), upstream_c2rust_tag]))
         case _:
             pass

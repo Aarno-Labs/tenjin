@@ -14,8 +14,7 @@ import tomllib
 import click
 
 import compilation_database
-from repo_root import find_repo_root_dir_Path, localdir
-import provisioning
+from repo_root import find_repo_root_dir_Path
 import ingest
 import ingest_tracking
 import targets
@@ -65,7 +64,6 @@ def stub_ingestion_record(
     assert tenjin_wcs.origin is not None, "Tenjin working copy has no origin URL?!?"
     assert tenjin_wcs.commit is not None, "Tenjin working copy has no commit hash?!?"
 
-    upstream_c2rust = provisioning.HAVE.query("10j-reference-c2rust-tag")
     return ingest.TranslationRecord(
         translation_uuid=uuid.uuid4(),
         inputs=ingest.TranslationInputs(
@@ -73,7 +71,7 @@ def stub_ingestion_record(
             host_platform=platform(),
             tenjin_git_repo_url=tenjin_wcs.origin,
             tenjin_git_commit=tenjin_wcs.commit,
-            c2rust_baseline_version=upstream_c2rust or "unknown",
+            c2rust_baseline_version="unknown",
             per_file_preprocessor_definitions={},
             do_not_refactor_headers_within=[
                 p.relative_to(codebase).as_posix() for p in do_not_refactor_headers_within
@@ -85,7 +83,6 @@ def stub_ingestion_record(
             translation_elapsed_ms=0,
             static_measurement_elapsed_ms=0,
             transformations=[],
-            c2rust_baseline=None,
             tenjin_initial=None,
             tenjin_final=None,
         ),
@@ -314,19 +311,14 @@ def do_translate_with_tracker(
     # We must explicitly pass c2rust our sysroot
     compilation_database.munge_compile_commands_for_hermetic_translation(compdb)
 
-    click.echo("Running upstream c2rust translation...")
-    # First run the upstream c2rust tool to get a baseline translation.
-    upstream_c2rust_ok = run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output)
-
-    output = output.rename(output.with_name("vanilla_c2rust"))
+    # This is where we would want to run upstream c2rust: after munging for
+    # hermetic translation, and before munging for Tenjin translation.
 
     # After upstream c2rust finishes, we can munge the compilation database
     # to make Tenjin-specific tweaks to the compilation process.
     compilation_database.munge_compile_commands_for_tenjin_translation(compdb)
 
     # Then run our version, using guidance and preanalysis.
-    output = resultsdir / translation_flags.cratename
-    output.mkdir(parents=True, exist_ok=False)
     target_subdir = environ.get("XJ_BUILD_RS_PROFILE", "debug")
     c2rust_bin = translation_flags.root / "c2rust" / "target" / target_subdir / "c2rust"
     try:
@@ -392,16 +384,6 @@ def do_translate_with_tracker(
         xj_start_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "00_out")
         xj_final_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "final")
 
-        if upstream_c2rust_ok:
-            baseline_metrics = static_measurements_rust.static_rust_metrics(
-                resultsdir / "vanilla_c2rust"
-            )
-
-            print("Baseline from upstream c2rust:")
-            pprint.pprint(baseline_metrics)
-        else:
-            baseline_metrics = {}
-
         print("Tenjin's initial, un-improved Rust output:")
         pprint.pprint(xj_start_metrics)
 
@@ -410,42 +392,8 @@ def do_translate_with_tracker(
 
         mb_mut_res = tracker.mb_mut_translation_results()
         if mb_mut_res:
-            mb_mut_res.c2rust_baseline = baseline_metrics
             mb_mut_res.tenjin_initial = xj_start_metrics
             mb_mut_res.tenjin_final = xj_final_metrics
-
-
-def run_upstream_c2rust(tracker, c2rust_transpile_flags, compdb, output) -> bool:
-    upstream_c2rust_bin = localdir() / "upstream-c2rust" / "target" / "debug" / "c2rust"
-    try:
-        _up_cp = run_c2rust(
-            tracker,
-            "upstream-c2rust",
-            upstream_c2rust_bin,
-            compdb,
-            output,
-            c2rust_transpile_flags,
-        )
-    except CalledProcessError as e:
-
-        def oops(msg: str):
-            click.secho("TENJIN: " + msg, err=True, fg="red", bg="white")
-
-        oops("The command we ran was:")
-        click.echo(" ".join(e.cmd))
-        oops("    but note that it was invoked in a modified environment.")
-        oops("The compilation database was:")
-        click.echo(compdb.read_text(encoding="utf-8"))
-        oops("Here was stdout:")
-        click.echo(e.stdout)
-        oops("and stderr:")
-        click.echo(e.stderr)
-        oops("")
-        oops(f"Upstream c2rust failed with error code {e.returncode}. See details above.")
-        oops("Usually this means that Tenjin will encounter the same problem.")
-        oops("But we'll try, at least. Fingers crossed!")
-        return False
-    return True
 
 
 def load_and_parse_guidance(guidance_path_or_literal: str) -> dict:

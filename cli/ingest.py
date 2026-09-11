@@ -33,7 +33,7 @@ class TranslationInputs:
     per_file_preprocessor_definitions: PerFilePreprocessorDefinitions
     tenjin_git_repo_url: str
     tenjin_git_commit: str
-    c2rust_baseline_version: str
+    c2rust_baseline_version: str  # obsolete, but may need to remove from clients/consumers
     guidance: dict
     do_not_refactor_headers_within: list[RelativeFilePathStr]
 
@@ -45,7 +45,6 @@ class TranslationResults:
     translation_elapsed_ms: int
     static_measurement_elapsed_ms: int
     transformations: list[TransformationRecord]
-    c2rust_baseline: dict[str, int | float] | None
     tenjin_initial: dict[str, int | float] | None
     tenjin_final: dict[str, int | float] | None
 
