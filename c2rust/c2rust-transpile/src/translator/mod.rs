@@ -5966,6 +5966,18 @@ impl<'c> Translation<'c> {
             return Ok(val);
         }
 
+        if guided_type
+            .as_ref()
+            .is_some_and(|guided| guided.is_slice_or_array_ref())
+            && matches!(source_ty_kind, CTypeKind::Pointer(_))
+            && matches!(target_ty_kind, CTypeKind::Pointer(_))
+        {
+            // The guided reference replaces the entire C pointer representation.
+            // Do not reintroduce a raw-pointer cast solely because the C pointee
+            // types differ.
+            return Ok(val);
+        }
+
         if source_ty_kind == target_ty_kind {
             if let Some(guided_type) = guided_type {
                 let target_ty = self.convert_type(target_cty.ctype)?;
@@ -6012,7 +6024,7 @@ impl<'c> Translation<'c> {
 
         match kind {
             CastKind::BitCast | CastKind::NoOp => {
-                self.convert_pointer_to_pointer_cast(source_cty, target_cty, val, expr, None)
+                self.convert_pointer_to_pointer_cast(source_cty, target_cty, val, expr, guided_type)
             }
 
             CastKind::IntegralToPointer => {

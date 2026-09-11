@@ -386,7 +386,7 @@ pub unsafe fn pass_slice_offset(mut idx: ::core::ffi::c_int) {
         0,
         0,
     ];
-    receive_slice(&(&mut arr)[(idx + 2 as ::core::ffi::c_int) as usize..]);
+    receive_slice(&arr[(idx + 2 as ::core::ffi::c_int) as usize..]);
 }
 unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
     if ptr.is_null() {
