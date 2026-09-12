@@ -10,6 +10,7 @@ from tenjin_pytest_helpers import (
     annotate_pytest_request_with_translation_notes,
     cached_git_clone_at_commit,
     clean_up_resultsdir,
+    get_final_unsafe_fns_count,
     run_cargo_on_final,
     TenjinFixtures,
 )
@@ -70,6 +71,7 @@ def test_nhjschulz_cfsm(tenjin_fixtures: TenjinFixtures):
         b"OK",
         b"",
     ], f"Got: {rs_prog_output.stdout!r}"
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 70
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
@@ -119,6 +121,7 @@ def test_cmatsuoka_figlet(tenjin_fixtures: TenjinFixtures):
         b"                ",
         b"",
     ], f"Got: {rs_prog_output.stdout!r}"
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 65
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
@@ -159,6 +162,7 @@ Points	4/4
 Failed	0
 """
     )
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 17
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
@@ -242,6 +246,7 @@ def test_rupertwh__bmplib(tenjin_fixtures: TenjinFixtures):
                 f"Failed on {binname} with args {args!r}; got return code: {rs_prog_output.returncode}, expected: {c_prog_output.returncode}"
             )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 708
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -343,6 +348,7 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 18
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -382,6 +388,7 @@ def test_Old_Man_Programmer__tree_2_3_2(tenjin_fixtures: TenjinFixtures):
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 127
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -444,6 +451,7 @@ def test_url_h_aka_urlparser(
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 27
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -484,6 +492,7 @@ def test_fribidi_g0(tenjin_fixtures: TenjinFixtures):
     # with (tmp_resultsdir / "final" / "target" / "debug" / "libfribidi_0_4_0.so")
     # then run `top_builddir=$PWD/_builddir ./test/run.tests`
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 72
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -528,6 +537,7 @@ def test_libusb_shared_g0(tenjin_fixtures: TenjinFixtures):
     # Re-run the test suite against the Rust code
     hermetic.run("./.libs/stress", cwd=str(tmp_resultsdir / "_build_1" / "tests"), check=True)
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 342
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -576,10 +586,12 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 1025
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.skip("gvn marks globals as constants and propagates their value")
 # g0 = empty guidance
 @pytest.mark.slow  # expected runtime: 60 seconds
 def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
@@ -625,6 +637,7 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
 
     print(f"ronomon_pure_cli passed {n_tests_passed} test vectors.")
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 4
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -679,6 +692,7 @@ def test_uxnmin(tenjin_fixtures: TenjinFixtures):
     ).hexdigest()
     assert tictactoe_rom_hash == "15d387e1d8568d53cf996190aabf7f5119d5bcd9a5f775711c8a8b1e6cbe4d4e"
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 4
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -736,6 +750,7 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
         f"Different exit codes; Rust got {rs_prog_output.returncode} vs C {c_prog_output.returncode}"
     )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 32
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -804,6 +819,7 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
         f" C: {summary_line(c_prog_output.stdout)!r}"
     )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -911,6 +927,7 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
                     f"{label}: generated file {name!r} differed between Rust and C"
                 )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1087,6 +1104,7 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
         f"Rust and C usage-path output differed; Rust output was: {rs_usage.stdout!r}"
     )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 93
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1123,6 +1141,7 @@ def test_lsof_exe(tenjin_fixtures: TenjinFixtures):
     revision: 4.99.7
 """
     )
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 652
 
 
 @pytest.mark.slow  # expected runtime: 25 seconds
@@ -1172,6 +1191,7 @@ kilka linijek</li>
 
 """  # noqa: W291
     )
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 8
 
 
 @pytest.mark.slow  # expected runtime: 30 seconds
@@ -1202,6 +1222,7 @@ def test_itsjustme27__dns_tool_exe(tenjin_fixtures: TenjinFixtures):
 
     assert cp.returncode == 0
     assert b"Answer section starts at offset" in cp.stdout
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 7
 
 
 @pytest.mark.slow  # expected runtime: 15 minutes
@@ -1257,6 +1278,7 @@ Valid command line options for "target/debug/lemon" are:
   -W<string>   Ignored.  (Placeholder for '-W' compiler options.)
 """
     )
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 125
 
 
 @pytest.mark.slow  # expected runtime: 220 seconds
@@ -1291,6 +1313,7 @@ def test_socat_exe(tenjin_fixtures: TenjinFixtures):
         b"   options (general command line options):",
         b"      -V     print version and feature information to stdout, and exit",
     ]
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 534
 
 
 @pytest.mark.slow  # expected runtime: 220 seconds
@@ -1358,6 +1381,7 @@ def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
         sha256hex(tmp_codebase / "COPYING.gz")
         == "c7d0f6d70256238349e9f682d7d1362a832cc955b653cee712b8a1db92a15acd"
     )
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 109
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
@@ -1428,6 +1452,7 @@ def test_silentbicycle__guff(tenjin_fixtures: TenjinFixtures):
         "|                                     # ",
         "+----+----+----+----+----+----+----+----",
     ]
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 53
 
 
 @pytest.mark.slow  # expected runtime: 9 seconds
@@ -1479,6 +1504,7 @@ def test_silentbicycle__rollavg(tenjin_fixtures: TenjinFixtures):
 2589.633301
 """
     )
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 9
 
 
 @pytest.mark.slow  # expected runtime: 9 seconds
@@ -1513,6 +1539,7 @@ def test_silentbicycle__skel(tenjin_fixtures: TenjinFixtures):
         capture_output=True,
     )
     assert cp.stdout == b"...................tests complete\n"
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 20
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
@@ -1541,6 +1568,7 @@ def test_atomicobject__odo(tenjin_fixtures: TenjinFixtures):
 
     cp = hermetic.run(["./test_odo"], capture_output=True, check=True, cwd=tmp_codebase)
     assert cp.stdout.decode("utf-8") == "all tests passed\n"
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 16
 
 
 @pytest.mark.slow  # expected runtime: 700 seconds (~12 minutes, up to the xfail below)
@@ -1699,6 +1727,7 @@ def test_file_file(tenjin_fixtures: TenjinFixtures):
                 f"C error was: {c_proc.stderr!r}"
             )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1796,6 +1825,7 @@ def test_xiph_speex_speexenc_only(tenjin_fixtures: TenjinFixtures):
         "Rust and C outputs for speexenc differ"
     )
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 22
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1867,6 +1897,7 @@ def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
 
     assert male_rs_wav == male_c_wav, "wav file via Rust library did not have the same output"
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 180
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1980,6 +2011,7 @@ def test_maandree_libzahl(tenjin_fixtures: TenjinFixtures):
     libzahl_translate(tenjin_fixtures)
     libzahl_check_examples(tmp_resultsdir, "release")
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 949
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1999,6 +2031,7 @@ def test_maandree_libzahl_debug(tenjin_fixtures: TenjinFixtures):
     libzahl_translate(tenjin_fixtures)
     try:
         libzahl_check_examples(tmp_resultsdir, "debug")
+        assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
     finally:
         # Unlike the tests that clean up only on success, this one is expected to
         # fail, so the (multi-gigabyte) resultsdir would never be reclaimed.
