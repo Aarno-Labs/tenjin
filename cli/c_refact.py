@@ -2238,6 +2238,14 @@ def localize_mutable_globals(
 
                                 if global_name in phase1results.globals_without_initializers:
                                     initializer = "{0}"
+                                    try:
+                                        if var_cursor.type.get_canonical().spelling.startswith(
+                                            "_Atomic("
+                                        ):
+                                            # Clang considers it an error to put braces on atomic initializers!
+                                            initializer = "0"
+                                    except:  # noqa: E722
+                                        pass
                                 elif var_cursor.is_definition():
                                     child_node = list(var_cursor.get_children())[-1]
                                     if child_node.kind == CursorKind.TYPE_REF:
