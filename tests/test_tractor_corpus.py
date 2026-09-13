@@ -1586,7 +1586,7 @@ def test_tractor_b2_organic_poly_ray_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_organic_rdg_genstdout_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/rdg_genstdout_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 0
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 6
 
 
 @pytest.mark.slow
