@@ -91,6 +91,10 @@ def xj_prepare_unionbitcasts_build_dir(localdir: Path) -> Path:
     return localdir / "_build_unionbitcasts"
 
 
+def xj_prepare_atomics_build_dir(localdir: Path) -> Path:
+    return localdir / "_build_atomics"
+
+
 def xj_prepare_pointertransform_build_dir(localdir: Path) -> Path:
     return localdir / "_build_pointertransform"
 

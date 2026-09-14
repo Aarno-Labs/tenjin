@@ -3535,6 +3535,12 @@ impl<'c> Translation<'c> {
                     .query_decl_type(self, decl_id);
                 // XREF:static_var_nonmutbl
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
+                // Rust atomic wrappers provide mutation through shared references,
+                // so atomic statics themselves do not need `static mut`.
+                let is_atomic = matches!(
+                    self.ast_context.resolve_type(typ.ctype).kind,
+                    CTypeKind::Atomic(_)
+                );
 
                 let mut static_def = if is_externally_visible {
                     mk_linkage(false, new_name, ident, self.tcfg.edition)
@@ -3548,7 +3554,11 @@ impl<'c> Translation<'c> {
 
                 // Force mutability due to the potential for raw pointers occurring in the type
                 // and because we may be assigning to these variables in the external initializer
-                match guided_mutbl.unwrap_or(Mutability::Mutable) {
+                match if is_atomic {
+                    Mutability::Immutable
+                } else {
+                    guided_mutbl.unwrap_or(Mutability::Mutable)
+                } {
                     Mutability::Mutable => {
                         static_def = static_def.mutbl();
                     }

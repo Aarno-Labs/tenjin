@@ -5,6 +5,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(unused_assignments)]
 #![allow(unused_mut)]
+#![feature(core_intrinsics)]
 #![feature(raw_ref_op)]
 
 pub mod src {

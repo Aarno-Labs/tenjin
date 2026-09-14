@@ -2225,6 +2225,62 @@ def run_preparation_passes(
         print(cp.stderr.decode("utf-8"))
         return cp
 
+    def prep_promote_atomics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        builddir = hermetic.xj_prepare_atomics_build_dir(repo_root.localdir())
+        assert builddir.exists(), (
+            f"Build directory {builddir} does not exist, should have been built already"
+        )
+
+        # Keep in sync with `xj-prepare-atomics/CMakeLists.txt`.
+        binary_path = builddir / "xj-prepare-atomics"
+
+        compdb_path = current_codebase / "compile_commands.json"
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
+        with open(compdb_path, encoding="utf-8") as f:
+            compdb_entries = json.load(f)
+        source_files = [entry["file"] for entry in compdb_entries]
+        assert source_files, (
+            "No source files found in compilation database: " + compdb_path.as_posix()
+        )
+
+        xj_clang_resource_dir = (
+            hermetic.run(["clang", "-print-resource-dir"], capture_output=True, check=True)
+            .stdout.decode()
+            .strip()
+        )
+        xj_start = time.time()
+        cp = run_modifying_subprocess_or_restore_prev(
+            prev,
+            current_codebase,
+            "xj-prepare-atomics",
+            lambda: hermetic.run(
+                [
+                    binary_path.as_posix(),
+                    "--inplace",
+                    "-p",
+                    current_codebase.as_posix(),
+                    "--extra-arg=-Wno-zero-length-array",
+                    "--extra-arg=-Wno-implicit-int-conversion",
+                    "--extra-arg=-Wno-unused-function",
+                    f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+                    *source_files,
+                ],
+                cwd=current_codebase,
+                check=True,
+                capture_output=True,
+            ),
+        )
+        xj_elapsed = time.time() - xj_start
+        if cp.returncode == 0:
+            print(f"xj-prepare-atomics completed in {xj_elapsed:.1f} seconds")
+        else:
+            print(
+                f"xj-prepare-atomics failed in {xj_elapsed:.1f} seconds; restored previous contents"
+            )
+        print("xj-prepare-atomics stderr:")
+        print(cp.stderr.decode("utf-8"))
+        return cp
+
     def prep_pointertransform(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         """Pointer arithmetic reduction + RustSlice signature reshaping."""
         ptr_builddir = hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
@@ -2361,6 +2417,7 @@ def run_preparation_passes(
         ("eliminate_knr", prep_eliminate_knr),
         ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
+        ("promote_atomics", prep_promote_atomics),
         ("pointertransform", prep_pointertransform),
         ("uniquify_statics", prep_uniquify_statics),
     ]

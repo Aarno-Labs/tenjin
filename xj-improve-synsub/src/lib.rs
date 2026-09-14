@@ -474,6 +474,15 @@ impl VisitMut for AtomicTypeNormalizer {
             remove_copy_clone_derives(&mut item.attrs);
         }
     }
+
+    fn visit_item_static_mut(&mut self, item: &mut syn::ItemStatic) {
+        visit_mut::visit_item_static_mut(self, item);
+        if atomic_kind(&item.ty).is_some() && !rewrites::is_atomic_constructor(&item.expr) {
+            if let Some(initializer) = rewrites::atomic_constructor(&item.ty, &item.expr) {
+                item.expr = Box::new(initializer);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,17 +528,28 @@ pub(crate) fn atomic_kind_from_name(name: &str) -> Option<AtomicKind> {
 /// `vars_of_type` guidance.
 fn c_atomic_rust_name(c_name: &str) -> Option<&'static str> {
     match c_name {
-        "atomic_bool" => Some("AtomicBool"),
-        "atomic_schar" | "atomic_int_least8_t" => Some("AtomicI8"),
-        "atomic_uchar" | "atomic_char8_t" | "atomic_uint_least8_t" => Some("AtomicU8"),
-        "atomic_short" | "atomic_int_least16_t" => Some("AtomicI16"),
-        "atomic_ushort" | "atomic_char16_t" | "atomic_uint_least16_t" => Some("AtomicU16"),
-        "atomic_int" | "atomic_int_least32_t" => Some("AtomicI32"),
-        "atomic_uint" | "atomic_char32_t" | "atomic_uint_least32_t" => Some("AtomicU32"),
-        "atomic_llong" | "atomic_int_least64_t" | "atomic_intmax_t" => Some("AtomicI64"),
-        "atomic_ullong" | "atomic_uint_least64_t" | "atomic_uintmax_t" => Some("AtomicU64"),
-        "atomic_intptr_t" | "atomic_ptrdiff_t" => Some("AtomicIsize"),
-        "atomic_uintptr_t" | "atomic_size_t" => Some("AtomicUsize"),
+        "atomic_bool" | "__tenjin_atomic_bool_t" => Some("AtomicBool"),
+        "atomic_schar" | "atomic_int_least8_t" | "__tenjin_atomic_i8_t" => Some("AtomicI8"),
+        "atomic_uchar" | "atomic_char8_t" | "atomic_uint_least8_t" | "__tenjin_atomic_u8_t" => {
+            Some("AtomicU8")
+        }
+        "atomic_short" | "atomic_int_least16_t" | "__tenjin_atomic_i16_t" => Some("AtomicI16"),
+        "atomic_ushort" | "atomic_char16_t" | "atomic_uint_least16_t" | "__tenjin_atomic_u16_t" => {
+            Some("AtomicU16")
+        }
+        "atomic_int" | "atomic_int_least32_t" | "__tenjin_atomic_i32_t" => Some("AtomicI32"),
+        "atomic_uint" | "atomic_char32_t" | "atomic_uint_least32_t" | "__tenjin_atomic_u32_t" => {
+            Some("AtomicU32")
+        }
+        "atomic_llong" | "atomic_int_least64_t" | "atomic_intmax_t" | "__tenjin_atomic_i64_t" => {
+            Some("AtomicI64")
+        }
+        "atomic_ullong"
+        | "atomic_uint_least64_t"
+        | "atomic_uintmax_t"
+        | "__tenjin_atomic_u64_t" => Some("AtomicU64"),
+        "atomic_intptr_t" | "atomic_ptrdiff_t" | "__tenjin_atomic_isize_t" => Some("AtomicIsize"),
+        "atomic_uintptr_t" | "atomic_size_t" | "__tenjin_atomic_usize_t" => Some("AtomicUsize"),
         _ => None,
     }
 }

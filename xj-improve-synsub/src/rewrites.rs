@@ -1168,7 +1168,7 @@ impl Rewriter {
     }
 }
 
-fn is_atomic_constructor(expr: &Expr) -> bool {
+pub(crate) fn is_atomic_constructor(expr: &Expr) -> bool {
     let Expr::Call(call) = expr_strip_parens(expr) else {
         return false;
     };
@@ -1184,7 +1184,7 @@ fn is_atomic_constructor(expr: &Expr) -> bool {
     )
 }
 
-fn atomic_constructor(ty: &Type, value: &Expr) -> Option<Expr> {
+pub(crate) fn atomic_constructor(ty: &Type, value: &Expr) -> Option<Expr> {
     atomic_kind(ty)?;
     let Type::Path(type_path) = ty else {
         return None;
