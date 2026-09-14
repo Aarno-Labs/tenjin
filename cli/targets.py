@@ -247,7 +247,7 @@ class BuildInfo:
             c.output for c in self._intercepted_commands if c.compile_only and c.output is not None
         ]
         assert len(c_outputs_list) == len(set(c_outputs_list)), (
-            "Duplicate object file outputs detected"
+            f"Duplicate object file outputs detected in {self._intercepted_commands=}"
         )
 
         # Sanity check: ensure no duplicate target keys

@@ -168,6 +168,53 @@ Failed	0
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.slow  # expected runtime: 30 s
+def test_envyen__libbmp_g0(tenjin_fixtures: TenjinFixtures):
+    eval_envyen__libbmp(tenjin_fixtures, guidance="{}", expected_unsafe_fns_count=32)
+    # future guidance will need to handle the malloc within `bmp_create`.
+
+
+def eval_envyen__libbmp(
+    tenjin_fixtures: TenjinFixtures, guidance: str, expected_unsafe_fns_count: int
+):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/tenjin-corpus/envyen__libbmp.git",
+        "1572e197ba737c627e6e624d19ef0bde10aaaa83",
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            buildcmd="cc src/bmpfile.c test/test.c -I src -o test/bmptest -lm",
+        ),
+        guidance_path_or_literal=guidance,
+    )
+
+    hermetic.run(
+        [(tmp_resultsdir / "_build_1" / "test" / "bmptest").as_posix(), "C.bmp", "64", "64", "8"],
+        cwd=str(tmp_resultsdir),
+        check=True,
+    )
+
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_prog_output = run_cargo_on_final(
+        tmp_resultsdir / "final", ["run", "R.bmp", "64", "64", "8"], capture_output=True
+    )
+    rs_prog_output.check_returncode()
+
+    assert (tmp_resultsdir / "final" / "R.bmp").read_bytes() == (
+        tmp_resultsdir / "C.bmp"
+    ).read_bytes()
+
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == expected_unsafe_fns_count
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
 @pytest.mark.slow  # expected runtime: 70 s
 def test_rupertwh__bmplib(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir

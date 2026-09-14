@@ -531,6 +531,10 @@ project's build system is using `gcc` as the linker
 driver. For classic Make builds, try passing
 `--buildcmd 'make LD=cc'`.
 
+* If you see `Duplicate object file outputs detected` it may be due to an Autotools-based build system
+re-running configuration during the build itself. To avoid this error, make sure that the `prebuildcmd`
+leaves the codebase in a state where `make` will not re-run `configure`.
+
 * If you see something like
 ```
 AssertionError: Link command missing target output: InterceptedCommand(entry={'type': 'ar', 'directory': ..., 'arguments': ['.../tenjin/_local/xj-llvm/bin/ar', 'cru', ...
