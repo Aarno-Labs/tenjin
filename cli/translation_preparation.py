@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import Callable
 from subprocess import CalledProcessError, CompletedProcess
-import hashlib
 from collections import defaultdict
 import dataclasses
 from enum import Enum
@@ -34,7 +33,7 @@ import llvm_bitcode_linking
 import targets_from_intercept
 from targets import BuildInfo, TargetType
 from caching_file_contents import CachingFileContents
-from constants import WANT, XJ_GUIDANCE_FILENAME, PTR_INDEX_METADATA_FILENAME
+from constants import XJ_GUIDANCE_FILENAME, PTR_INDEX_METADATA_FILENAME
 from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr
 import tenj_types
 from translation_types import TranslationFlags
@@ -43,6 +42,42 @@ from translation_types import TranslationFlags
 def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     """Calculate elapsed time in milliseconds from nanoseconds."""
     return (end_ns - start_ns) / 1_000_000.0
+
+
+def add_immutable_dispositions_to_guidance(manifest_path: Path, guidance_path: Path) -> set[str]:
+    """Default PANGS-immutable globals to immutable Rust declarations.
+
+    Explicit user guidance wins: an existing ``vars_mut`` entry is never
+    changed, regardless of its value.
+    """
+    with manifest_path.open("r", encoding="utf-8") as manifest_file:
+        manifest = json.load(manifest_file)
+    if manifest.get("schema_version") != 8:
+        raise ValueError("Tenjin requires PANGS disposition manifest schema version 8")
+
+    globals_ = manifest.get("globals")
+    if not isinstance(globals_, list):
+        raise TypeError("PANGS disposition manifest 'globals' must be a JSON array")
+
+    immutable_names = {
+        c_refact.demangle_meg(global_["meta"]["llvm_name"])
+        for global_ in globals_
+        if global_.get("disposition", {}).get("chosen") == "immutable"
+    }
+
+    with guidance_path.open("r", encoding="utf-8") as guidance_file:
+        guidance = json.load(guidance_file)
+    vars_mut = guidance.setdefault("vars_mut", {})
+    if not isinstance(vars_mut, dict):
+        raise TypeError("Tenjin guidance 'vars_mut' must be a JSON object")
+
+    added = immutable_names - vars_mut.keys()
+    if added:
+        for name in sorted(added):
+            vars_mut[name] = False
+        with guidance_path.open("w", encoding="utf-8") as guidance_file:
+            json.dump(guidance, guidance_file, indent=2)
+    return added
 
 
 def _remap_path_prefix_in_argument(s: str, source: Path, dest: Path) -> str:
@@ -1173,11 +1208,11 @@ def run_preparation_passes(
     def prep_localize_mutable_globals(
         prev: Path, current_codebase: Path, store: PrepPassResultStore
     ):
-        xj_cclyzer_path = current_codebase / "xj-cclyzer.json"
-        if not xj_cclyzer_path.exists():
+        disposition_manifest = prev / "pangs-disposition" / "pangs-manifest.json"
+        if not disposition_manifest.exists():
             print(
-                "TENJIN: WARNING: Skipping localization of mutable globals because cclyzer++ results not found.\n"
-                "This likely means that the cclyzer++ analysis failed or was skipped.\n"
+                "TENJIN: WARNING: Skipping localization of mutable globals because the PANGS disposition manifest was not found.\n"
+                "This likely means that PANGS analysis failed.\n"
             )
             return
         # XREF:NON_TRIVIAL_REFACTORING_PRECONDITIONS
@@ -1199,101 +1234,47 @@ def run_preparation_passes(
             # Case A
             compdb = store.build_info.compdb_for_target_within(all_targets[0].key, current_codebase)
 
-            c_refact.localize_mutable_globals(xj_cclyzer_path, compdb, prev, current_codebase)
+            c_refact.localize_mutable_globals(disposition_manifest, compdb, prev, current_codebase)
         else:
             # Case B
             print(
                 "TENJIN: NOTE: Skipping localization of mutable globals for multi-target codebase."
             )
 
-    def should_use_cclyzer_cache():
-        # Don't use cached results during parallel tests.
-        return "PYTEST_XDIST_WORKER" not in os.environ
-
-    def get_cached_cclyzer_results(
-        cache_signature: list[str], xj_cclyzer_results_cache_path: Path
-    ) -> dict | None:
-        if xj_cclyzer_results_cache_path.exists():
-            cache_data = json.load(open(xj_cclyzer_results_cache_path, "r", encoding="utf-8"))
-            print("cached  signature:", cache_data["signature"])
-            print("current signature:", cache_signature)
-            if cache_data["signature"] == cache_signature:
-                return cache_data["contents"]
-            if cache_data["signature"][0] == cache_signature[0]:
-                print(
-                    "Bitcode matches cached cclyzer++ results, but flags differ; recomputing analysis..."
-                )
-            else:
-                print("Bitcode differs from cached cclyzer++ results; recomputing analysis...")
-        return None
-
-    def run_cc2json_or_cached(bitcode_module_path: Path, current_codebase: Path) -> None:
-        """Postcondition: produces `xj-cclyzer.json` in `current_codebase`, containing
-        the results of cclyzer++ analysis on the bitcode module.
-        """
+    def run_pangs_disposition(bitcode_module_path: Path, current_codebase: Path) -> None:
+        """Produce a finalized PANGS disposition manifest for source rewriting."""
         assert bitcode_module_path.exists()
-
-        cp = hermetic.run(
-            ["llvm-nm", str(bitcode_module_path)],
-            capture_output=True,
-            check=True,
-        )
-
-        main_func_defined = cp.stdout.decode().find(" T main") != -1
-        # TODO: could also accept guidance to override this decision
-        internalize_globals_flag = ["--internalize-globals"] if main_func_defined else []
-
-        json_out_path = current_codebase / "xj-cclyzer.json"
-
-        cache_relevant_cc2json_flags = [
-            "--datalog-analysis=unification",
-            "--debug-datalog=false",
-            "--context-sensitivity=insensitive",
-            "--entrypoints=library",  # consider all functions to be reachable
-            *internalize_globals_flag,
-        ]
-
-        bitcode_hash = hashlib.sha256(bitcode_module_path.read_bytes()).hexdigest()
-        cache_signature = [bitcode_hash, WANT["10j-more-deps"], *cache_relevant_cc2json_flags]
-
-        xj_cclyzer_results_cache_path = repo_root.localdir() / "xj-cclyzer-cache.json"
-        if should_use_cclyzer_cache():
-            cached_results = get_cached_cclyzer_results(
-                cache_signature, xj_cclyzer_results_cache_path
-            )
-            if cached_results is not None:
-                print("Reusing cached cclyzer++ analysis results...")
-                json.dump(cached_results, open(json_out_path, "w", encoding="utf-8"), indent=2)
-                return
-
-        print("Running cclyzer++ analysis, this can take a while for larger programs...")
+        out_dir = current_codebase / "pangs-disposition"
+        print("Running PANGS disposition analysis; this can take a while for larger programs...")
         hermetic.run_command_with_progress(
             [
-                "cc2json-llvm14",
+                hermetic.xj_pangs_exe(repo_root.localdir()),
+                "analyze",
                 str(bitcode_module_path),
-                *cache_relevant_cc2json_flags,
-                f"--json-out={json_out_path}",
+                "--out",
+                str(out_dir),
+                "--stage",
+                "andersen",
+                "--build-mode",
+                "executable",
+                "--dispose",
+                "--manifest-only",
+                "--repo-root",
+                str(current_codebase),
+                "--no-overrides",
+                "--validate",
             ],
-            current_codebase / "xj-cc2json-stdout.txt",
-            current_codebase / "xj-cc2json-stderr.txt",
-            # check=True,
+            current_codebase / "pangs-stdout.txt",
+            current_codebase / "pangs-stderr.txt",
             env_ext={"XJ_USE_LLVM14": "1"},
         )
 
-        if should_use_cclyzer_cache():
-            contents = json.load(open(json_out_path, "r", encoding="utf-8"))
-            json.dump(
-                {"signature": cache_signature, "contents": contents},
-                open(xj_cclyzer_results_cache_path, "w", encoding="utf-8"),
-                indent=2,
-            )
-
-    def prep_run_cclzyerpp_analysis(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+    def prep_run_pangs_disposition(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         # For now, we restrict analysis to single-target projects,
         # although this is not a fundamental limitation.
         all_build_targets = store.build_info.get_all_targets()
         if len(all_build_targets) != 1:
-            print("TENJIN: NOTE: Skipping cclyzer++ analysis for multi-target codebase.")
+            print("TENJIN: NOTE: Skipping PANGS disposition analysis for multi-target codebase.")
             return
 
         curr_compdb = store.build_info.compdb_for_target_within(
@@ -1312,9 +1293,11 @@ def run_preparation_passes(
             curr_compdb, bitcode_module_path, use_llvm14=True
         )
 
-        bitcode_is_small = bitcode_module_path.stat().st_size < 1 * 1024 * 1024
-        if bitcode_is_small or os.environ.get("XJ_FORCE_CCLYZERPP", "0") == "1":
-            run_cc2json_or_cached(bitcode_module_path, current_codebase)
+        run_pangs_disposition(bitcode_module_path, current_codebase)
+        add_immutable_dispositions_to_guidance(
+            current_codebase / "pangs-disposition" / "pangs-manifest.json",
+            current_codebase / XJ_GUIDANCE_FILENAME,
+        )
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         """The purpose of this pass is to rename static globals to have unique names,
@@ -2489,12 +2472,9 @@ def run_preparation_passes(
         ("uniquify_statics", prep_uniquify_statics),
     ]
 
-    if os.environ.get("XJ_SKIP_CCLYZERPP", "0") == "0":
-        # cclyzer++ can be expensive (7+ hours for Lua as of cclyzerpp 2077e60).
-        # Until we find a way to optimize its cost, we allow skipping it
-        # to allow translation of larger codebases.
+    if os.environ.get("XJ_SKIP_PANGS", "0") == "0":
         preparation_passes.extend([
-            ("run_cclzyerpp_analysis", prep_run_cclzyerpp_analysis),
+            ("run_pangs_disposition", prep_run_pangs_disposition),
             ("localize_mutable_globals", prep_localize_mutable_globals),
         ])
 

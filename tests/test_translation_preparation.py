@@ -65,6 +65,73 @@ def test_static_uniquification_avoids_occupied_names_and_preserves_source_suffix
     }
 
 
+def test_add_immutable_dispositions_to_guidance_preserves_existing_entries(tmp_path):
+    manifest_path = tmp_path / "pangs-manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "schema_version": 8,
+            "globals": [
+                {
+                    "meta": {"llvm_name": "global_immutable"},
+                    "disposition": {"chosen": "immutable"},
+                },
+                {
+                    "meta": {"llvm_name": "function.static_immutable_xjtr_0"},
+                    "disposition": {"chosen": "immutable"},
+                },
+                {
+                    "meta": {"llvm_name": "still_mutable"},
+                    "disposition": {"chosen": "unhandled"},
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    guidance_path = tmp_path / "xj-guidance.json"
+    guidance_path.write_text(
+        json.dumps({"vars_mut": {"global_immutable": True, "user_choice": False}}),
+        encoding="utf-8",
+    )
+
+    added = translation_preparation.add_immutable_dispositions_to_guidance(
+        manifest_path, guidance_path
+    )
+
+    assert added == {"static_immutable_xjtr_0"}
+    assert json.loads(guidance_path.read_text(encoding="utf-8")) == {
+        "vars_mut": {
+            "global_immutable": True,
+            "user_choice": False,
+            "static_immutable_xjtr_0": False,
+        }
+    }
+
+
+def test_add_immutable_dispositions_to_guidance_creates_vars_mut(tmp_path):
+    manifest_path = tmp_path / "pangs-manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "schema_version": 8,
+            "globals": [
+                {
+                    "meta": {"llvm_name": "global_immutable"},
+                    "disposition": {"chosen": "immutable"},
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    guidance_path = tmp_path / "xj-guidance.json"
+    guidance_path.write_text(json.dumps({"public_api": []}), encoding="utf-8")
+
+    translation_preparation.add_immutable_dispositions_to_guidance(manifest_path, guidance_path)
+
+    assert json.loads(guidance_path.read_text(encoding="utf-8")) == {
+        "public_api": [],
+        "vars_mut": {"global_immutable": False},
+    }
+
+
 def test_remap_path_prefix_in_argument_only_rewrites_absolute_path_components():
     remap = translation_preparation._remap_path_prefix_in_argument
     source = Path("/md4c")

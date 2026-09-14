@@ -78,7 +78,7 @@ def test_nhjschulz_cfsm(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow  # expected runtime: 180 s
+@pytest.mark.slow  # expected runtime: 90 s of which 30s is refolding
 def test_cmatsuoka_figlet(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -546,7 +546,6 @@ def test_fribidi_g0(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 1600 s (about half an hour)
-#                      of which 21 minutes is cclyzerpp and 4.5 minutes is refolding.
 def test_libusb_shared_g0(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -605,9 +604,7 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
         "lua",
     ]
 
-    # Note that cclyzer++ currently does not run on this codebase due to two
-    # incidental restrictions: we don't run it on multi-target codebases (lua + liblua),
-    # and we don't run it on bitcode files as large as liblua's.
+    # PANGS-driven localization does not run on this multi-target codebase (lua + liblua).
     translation.do_translate(
         translation_types.TranslationFlags.simple(
             root=tenjin_fixtures.root,
@@ -745,7 +742,7 @@ def test_uxnmin(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow
+@pytest.mark.slow  # expected runtime: 130 s
 def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
 
@@ -763,6 +760,7 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
         ),
         guidance_path_or_literal="{}",
     )
+    # TODO add a flag to combine the bin and lib targets
 
     c_prog_output = hermetic.run(
         [
@@ -804,7 +802,7 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
-@pytest.mark.skip(reason="This test fails the cclyzer globals-localization phase")
+# @pytest.mark.skip(reason="This test fails the mutable-globals localization phase")
 def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
 
@@ -980,7 +978,7 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow  # expected runtime: 110 s
+@pytest.mark.slow  # expected runtime: 85 s
 def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     """Translate Megalania's compressor and require it to behave exactly as the C
     build does: byte-identical compressed output on several inputs, and matching
@@ -994,8 +992,8 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     annealing search (top-k finder, slab neighbour, packet enumerator) are compiled
     but never run there, whereas compressing even a 64-byte input executes
     essentially all of the library. And translating both programs at once is not an
-    option: a codebase with more than one build target skips cclyzer++'s
-    globals localization and preprocessor refolding, which are two of the passes this
+    option: a codebase with more than one build target skips PANGS-driven globals
+    localization and preprocessor refolding, which are two of the passes this
     test is here to exercise.
     """
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir

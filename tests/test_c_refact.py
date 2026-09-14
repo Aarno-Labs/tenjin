@@ -1,6 +1,8 @@
+import json
 from pathlib import Path
 import re
 
+import pytest
 from clang.cindex import CursorKind  # type: ignore
 
 import c_refact
@@ -59,6 +61,22 @@ def write_compile_commands_for_sources(codebase: Path, sources: list[Path]) -> N
     compilation_database.CompileCommands(commands).to_json_file(codebase / "compile_commands.json")
 
 
+def disposition_manifest_for_localization(
+    functions: list[str], fields: list[dict] | None = None, callsites: list[dict] | None = None
+) -> dict:
+    return {
+        "schema_version": 8,
+        "context_rewrite": {
+            "selected": {
+                "fields": fields or [],
+                "accessors": [],
+                "functions": functions,
+                "rewrite_callsites": callsites or [],
+            }
+        },
+    }
+
+
 def build_info_for_single_source(codebase: Path, source: Path) -> targets.BuildInfo:
     build_info = targets.BuildInfo()
     build_info.for_single_file(
@@ -71,6 +89,41 @@ def build_info_for_single_source(codebase: Path, source: Path) -> targets.BuildI
         ),
     )
     return build_info
+
+
+def test_localize_mutable_globals_empty_selection_is_a_noop(tmp_codebase):
+    tmp_codebase.mkdir()
+    manifest_path = tmp_codebase / "pangs-manifest.json"
+    manifest_path.write_text(
+        json.dumps(disposition_manifest_for_localization([])), encoding="utf-8"
+    )
+
+    class UnusedCompdb:
+        def to_json_file(self, _path):
+            raise AssertionError("an empty selection must not enter the rewrite pipeline")
+
+    c_refact.localize_mutable_globals(manifest_path, UnusedCompdb(), tmp_codebase, tmp_codebase)
+
+
+def test_global_definition_blank_rewrite_preserves_width_and_lines():
+    source = b"static int global =\n    42;\nint next;\n"
+    extent_end = source.index(b"42") + len(b"42")
+
+    offset, length, replacement = c_refact.global_definition_blank_rewrite(source, 0, extent_end)
+    rewritten = source[:offset] + replacement.encode() + source[offset + length :]
+
+    assert len(rewritten) == len(source)
+    assert rewritten.count(b"\n") == source.count(b"\n")
+    assert rewritten.endswith(b"\nint next;\n")
+    assert rewritten[: rewritten.index(b"int next;")].strip() == b""
+
+
+def test_global_definition_blank_rewrite_rejects_joined_declaration():
+    source = b"int first = 1, second = 2;\n"
+    extent_end = source.index(b"1") + 1
+
+    with pytest.raises(ValueError, match="not a standalone declaration"):
+        c_refact.global_definition_blank_rewrite(source, 0, extent_end)
 
 
 def test_cursor_extent_contains_typedef_embedded_struct_definition(tmp_codebase):
@@ -231,7 +284,7 @@ def test_findfnptrdecls_marks_initialized_fnptr_vars_for_cross_tu_replication(ro
 
     output = c_refact.run_xj_prepare_findfnptrdecls(
         tmp_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
         all_function_names={"foo", "use_dispatch"},
     )
 
@@ -325,17 +378,10 @@ def test_localize_mutable_globals_phase1_clones_typedef_backed_field_types(root,
         compdb=compilation_database.CompileCommands.from_json_file(
             current_codebase / "compile_commands.json"
         ),
-        j={
-            "mutated_globals": [],
-            "escaped_globals": [],
-            "call_graph_components": [],
-            "unique_filenames": {},
-            "mutable_global_tissue": {"tissue": ["foo"]},
-            "global_initializer_references": {},
-        },
+        manifest=disposition_manifest_for_localization(["foo"]),
         current_codebase=current_codebase,
         prev=prev_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
     )
 
     rewritten_a = a_current.read_text(encoding="utf-8")
@@ -373,17 +419,10 @@ def test_localize_mutable_globals_phase1_clones_typedef_in_function_redeclaratio
         compdb=compilation_database.CompileCommands.from_json_file(
             current_codebase / "compile_commands.json"
         ),
-        j={
-            "mutated_globals": [],
-            "escaped_globals": [],
-            "call_graph_components": [],
-            "unique_filenames": {},
-            "mutable_global_tissue": {"tissue": ["foo"]},
-            "global_initializer_references": {},
-        },
+        manifest=disposition_manifest_for_localization(["foo"]),
         current_codebase=current_codebase,
         prev=prev_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
     )
 
     rewritten = current_file.read_text(encoding="utf-8")
@@ -421,17 +460,10 @@ def test_localize_mutable_globals_phase1_propagates_typedef_clone_from_param_to_
         compdb=compilation_database.CompileCommands.from_json_file(
             current_codebase / "compile_commands.json"
         ),
-        j={
-            "mutated_globals": [],
-            "escaped_globals": [],
-            "call_graph_components": [],
-            "unique_filenames": {},
-            "mutable_global_tissue": {"tissue": ["foo"]},
-            "global_initializer_references": {},
-        },
+        manifest=disposition_manifest_for_localization(["foo"]),
         current_codebase=current_codebase,
         prev=prev_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
     )
 
     rewritten = current_file.read_text(encoding="utf-8")
@@ -465,17 +497,10 @@ def test_localize_mutable_globals_phase1_propagates_typedef_clone_from_param_to_
         compdb=compilation_database.CompileCommands.from_json_file(
             current_codebase / "compile_commands.json"
         ),
-        j={
-            "mutated_globals": [],
-            "escaped_globals": [],
-            "call_graph_components": [],
-            "unique_filenames": {},
-            "mutable_global_tissue": {"tissue": ["foo"]},
-            "global_initializer_references": {},
-        },
+        manifest=disposition_manifest_for_localization(["foo"]),
         current_codebase=current_codebase,
         prev=prev_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
     )
 
     rewritten = current_file.read_text(encoding="utf-8")
@@ -506,17 +531,10 @@ def test_localize_mutable_globals_phase1_clones_explicit_cast_typedef_use(root, 
         compdb=compilation_database.CompileCommands.from_json_file(
             current_codebase / "compile_commands.json"
         ),
-        j={
-            "mutated_globals": [],
-            "escaped_globals": [],
-            "call_graph_components": [],
-            "unique_filenames": {},
-            "mutable_global_tissue": {"tissue": ["foo"]},
-            "global_initializer_references": {},
-        },
+        manifest=disposition_manifest_for_localization(["foo"]),
         current_codebase=current_codebase,
         prev=prev_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
     )
 
     rewritten = current_file.read_text(encoding="utf-8")
@@ -540,7 +558,7 @@ def test_findfnptrdecls_tracks_call_args_to_fnptr_params(root, tmp_codebase):
 
     output = c_refact.run_xj_prepare_findfnptrdecls(
         tmp_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
         all_function_names={"apply", "bar", "foo", "use"},
     )
 
@@ -574,7 +592,7 @@ def test_findfnptrdecls_inserts_wrapper_after_forward_declaration(root, tmp_code
 
     output = c_refact.run_xj_prepare_findfnptrdecls(
         tmp_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
         all_function_names={"apply", "bar", "foo", "use"},
     )
 
@@ -600,7 +618,7 @@ def test_findfnptrdecls_deduplicates_wrapper_across_function_redeclarations(root
 
     output = c_refact.run_xj_prepare_findfnptrdecls(
         tmp_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
         all_function_names={"apply", "bar", "foo", "use_after", "use_before"},
     )
 
@@ -630,7 +648,7 @@ def test_findfnptrdecls_tracks_ampersand_call_args_to_fnptr_params(root, tmp_cod
 
     output = c_refact.run_xj_prepare_findfnptrdecls(
         tmp_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
         all_function_names={"apply", "bar", "foo", "use"},
     )
 
@@ -663,7 +681,7 @@ def test_findfnptrdecls_tracks_ampersand_assignments_and_var_initializers(root, 
 
     output = c_refact.run_xj_prepare_findfnptrdecls(
         tmp_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
         all_function_names={"bar", "foo", "use"},
     )
 
@@ -692,7 +710,7 @@ def test_findfnptrdecls_tracks_ampersand_init_list_entries(root, tmp_codebase):
 
     output = c_refact.run_xj_prepare_findfnptrdecls(
         tmp_codebase,
-        nonmain_tissue_functions={"foo"},
+        nonmain_context_functions={"foo"},
         all_function_names={"bar", "foo"},
     )
 
@@ -741,45 +759,29 @@ def test_localize_mutable_globals_phase1_skips_direct_calls_to_nontissue_functio
 
     direct_sites = {name: max(sites) for name, sites in direct_sites_by_name.items() if sites}
 
-    j = {
-        "mutated_globals": [],
-        "escaped_globals": [],
-        "call_graph_components": [
+    manifest = disposition_manifest_for_localization(
+        ["tissue"],
+        callsites=[
             {
-                "call_sites": [
-                    {
-                        "line": direct_sites["tissue"][0],
-                        "col": direct_sites["tissue"][1],
-                        "p": "caller",
-                        "uf": "sample",
-                    },
-                    {
-                        "line": direct_sites["target"][0],
-                        "col": direct_sites["target"][1],
-                        "p": "caller",
-                        "uf": "sample",
-                    },
-                ],
-                "call_targets": ["<llvm-link>:tissue", "<llvm-link>:target"],
-                "all_mutable": True,
+                "key": "caller@sample#0",
+                "caller": "caller",
+                "callees": ["tissue"],
+                "unresolved": False,
+                "site": {
+                    "file": prev_file.as_posix(),
+                    "line": direct_sites["tissue"][0],
+                    "col": direct_sites["tissue"][1],
+                },
             }
         ],
-        "unique_filenames": {
-            "sample": {
-                "directory": prev_codebase.as_posix(),
-                "filename": "sample.nolines.i",
-            }
-        },
-        "mutable_global_tissue": {"tissue": ["tissue"]},
-        "global_initializer_references": {},
-    }
+    )
 
     c_refact.localize_mutable_globals_phase1(
         compdb=compdb,
-        j=j,
+        manifest=manifest,
         current_codebase=current_codebase,
         prev=prev_codebase,
-        nonmain_tissue_functions={"tissue"},
+        nonmain_context_functions={"tissue"},
     )
 
     rewritten = current_file.read_text(encoding="utf-8")

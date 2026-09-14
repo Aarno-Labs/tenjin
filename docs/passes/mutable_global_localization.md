@@ -4,7 +4,7 @@
 
 - [cli/c_refact.py](/cli/c_refact.py)
 - [cli/c_refact_decl_splitter.py](/cli/c_refact_decl_splitter.py)
-- [@brk/cclyzerpp](https://github.com/brk/cclyzerpp/tree/tenjin)
+- PANGS disposition manifest schema v8
 
 ## What
 
@@ -18,19 +18,19 @@ Mutable global variables are unsafe in Rust.
 
 ## How
 
-- `cclyzerpp` computes a pointer analysis and call graph
-- Based on the points-to and call graphs, we compute mutability.
-  - Pointers that escape to unknown functions are assumed to be mutated.
-- The call graph feeds into an updatability determination:
-  - We construct a bipartite graph of call sites and callees.
-  - Either may be "unknown". Unknown call sites correspond to callback invocations
-    outside of our control.
-  - Any connected component which contains an unknown element is not updatable.
-- The call graph also determines the "mutable tissue" -- the set of functions which
-access mutable globals, plus the transitive closure of their callers.
-- Updatable call sites are modified to pass a context struct pointer.
-- Updatable function definitions are modified to take a context struct pointer,
-and to use it when accessing mutable globals.
+- PANGS computes a separate context-rewrite candidate for every defined mutable global.
+  Each candidate names direct source accessors, the transitive internal callers that
+  need a context parameter, exact callsites that must pass it, and any safety blockers.
+- PANGS disposition policy chooses among immutable, atomic, localization, and unhandled
+  outcomes. Its finalized manifest projects only `localize`-selected candidate fields
+  into `context_rewrite.selected`.
+- Tenjin treats that projection as authoritative. It does not infer localization from
+  mutation, escape, or call-graph-component summaries.
+- Selected callsites are modified to pass a context struct pointer. Selected functions
+  are modified to receive it and redirect accesses to selected globals through it.
+- After their declarations and initializers have been copied into the context construction,
+  selected globals' original definitions are overwritten with whitespace. Newlines and byte
+  widths are preserved so later source locations remain stable.
 
 ## Other Notes
 
