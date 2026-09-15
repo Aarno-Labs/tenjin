@@ -2142,28 +2142,7 @@ def test_maandree_libzahl_debug(tenjin_fixtures: TenjinFixtures):
         annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow  # expected runtime: ~390 s to reach the xfail below
-@pytest.mark.xfail(
-    reason="bzip2 fails the localize-mutable-globals phase (c_14). bzip2.c installs "
-    "signal handlers -- signal(SIGSEGV/SIGBUS, mySIGSEGVorSIGBUScatcher) and "
-    "signal(SIGINT/SIGTERM/SIGHUP, mySignalCatcher) -- and both handlers reach "
-    "mutable globals (opMode directly; srcMode, deleteOutputOnInterrupt, inName, "
-    "outName, outputHandleJustInCase, ... via cleanUpAndFail). cclyzer++ therefore "
-    "reports them in `mutable_global_tissue.tissue` (transitively; they are "
-    "non-main tissue functions, so the pass wants to thread an extra "
-    "`struct XjGlobals *` parameter through them) and also in `escaped_globals` "
-    "(their addresses are handed to libc, so their call sites are outside our "
-    "control and their signatures cannot be changed). `get_call_sites_from_json` "
-    "in cli/c_refact.py intersects those two sets, and a non-empty intersection -- "
-    "here exactly {mySIGSEGVorSIGBUScatcher_xjtr_0, mySignalCatcher_xjtr_0} -- is "
-    "the condition the pass refuses to proceed past, so it raises "
-    "`ValueError: please look ABOVE traceback for error info`. The diagnostic "
-    "suggests listing such functions under `assume_no_unknown_call_sites` in the "
-    "guidance, but that key is not read anywhere -- it exists only in the message "
-    "string in cli/c_refact.py -- and the assumption would be false here anyway, "
-    "since the kernel really does call these handlers with their original "
-    "signature.",
-)
+@pytest.mark.slow  # expected runtime: ~130 s
 def test_bzip2_bzip2(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -2209,7 +2188,7 @@ def test_bzip2_bzip2(tenjin_fixtures: TenjinFixtures):
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
 
     c_bzip2 = tmp_resultsdir / "_build_1" / "bzip2.exe"
-    rs_bzip2 = tmp_resultsdir / "final" / "target" / "debug" / "bzip2_bzip2"
+    rs_bzip2 = tmp_resultsdir / "final" / "target" / "debug" / "bzip2"
 
     def run_both(args: list[str]) -> tuple[bytes, bytes]:
         """Run the C and Rust binaries with the same arguments and require identical results."""
@@ -2283,9 +2262,9 @@ def test_bzip2_bzip2(tenjin_fixtures: TenjinFixtures):
 
     print(f"bzip2 passed {n_vectors} quick test vectors.")
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 101
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
-
 
 
 @pytest.mark.slow  # expected runtime: 650 seconds (~11 minutes)
