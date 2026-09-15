@@ -642,8 +642,25 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
 
 
 # g0 = empty guidance
-@pytest.mark.slow  # expected runtime: 60 seconds
+@pytest.mark.slow  # expected runtime: 30 seconds
 def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
+    translate_ronomon_pure_with_guidance(tenjin_fixtures, "{}", expected_unsafe_fns_count=50)
+
+
+@pytest.mark.slow  # expected runtime: 30 seconds
+def test_ronomon_pure_cli_gx(tenjin_fixtures: TenjinFixtures):
+    guidance = json.dumps({
+        "vars_of_type": {"[&'static [u8]; 165]": ["PURE_E_CODES", "PURE_E_STRINGS"]},
+        "use_crates": ["libz-rs-sys"],
+    })
+    translate_ronomon_pure_with_guidance(tenjin_fixtures, guidance, expected_unsafe_fns_count=50)
+
+
+def translate_ronomon_pure_with_guidance(
+    tenjin_fixtures: TenjinFixtures,
+    guidance_path_or_literal: str,
+    expected_unsafe_fns_count: int,
+):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
         "https://github.com/brk/ronomon-pure.git", "242bb30df50610d73907de26495c5d1344888abe"
@@ -657,7 +674,7 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
             resultsdir=tmp_resultsdir,
             buildcmd="make -f Makefile.pure_cli",
         ),
-        guidance_path_or_literal="{}",
+        guidance_path_or_literal=guidance_path_or_literal,
     )
 
     shutil.copytree(tmp_codebase / "tests", tmp_resultsdir / "final" / "tests")
@@ -686,7 +703,7 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
 
     print(f"ronomon_pure_cli passed {n_tests_passed} test vectors.")
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 52
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == expected_unsafe_fns_count
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -2980,3 +2997,5 @@ def test_google_brotli(tenjin_fixtures: TenjinFixtures):
     assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 22
