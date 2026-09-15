@@ -405,8 +405,10 @@ impl ParsedGuidance {
                     }
                     let ty = syn::parse_str::<syn::Type>(unparsed_ty)
                         .unwrap_or_else(|_| panic!("Failed to parse type: {unparsed_ty}"));
-                    //log::warn!("Parsed type key vars_of_type: {:#?}", ty);
-                    declspecs_of_type.insert(ty, parsed_declspecs);
+                    declspecs_of_type
+                        .entry(ty)
+                        .or_default()
+                        .extend(parsed_declspecs);
                 }
             }
         }
@@ -5190,7 +5192,16 @@ impl<'c> Translation<'c> {
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             ArraySubscript(_, lhs, rhs, lrvalue) => self
-                .convert_array_subscript(ctx, override_ty, lhs, rhs, lrvalue, true, ctx_guided_type)
+                .convert_array_subscript(
+                    ctx,
+                    override_ty,
+                    Some(expr_id),
+                    lhs,
+                    rhs,
+                    lrvalue,
+                    true,
+                    ctx_guided_type,
+                )
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             Call(call_expr_ty, func_id, ref args) => {
@@ -5210,7 +5221,14 @@ impl<'c> Translation<'c> {
             }
 
             InitList(ty, ref ids, opt_union_field_id, _) => {
-                let arr = self.convert_init_list(ctx, override_ty, ty, ids, opt_union_field_id);
+                let arr = self.convert_init_list(
+                    ctx,
+                    override_ty,
+                    ty,
+                    ids,
+                    opt_union_field_id,
+                    ctx_guided_type,
+                );
                 if ctx_guided_type
                     .as_ref()
                     .is_some_and(|gt| tenjin::type_is_vec(gt.strip_refs()))
@@ -5926,6 +5944,18 @@ impl<'c> Translation<'c> {
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let source_ty_kind = &self.ast_context.resolve_type(source_cty.ctype).kind;
         let target_ty_kind = &self.ast_context.resolve_type(target_cty.ctype).kind;
+
+        if guided_type
+            .as_ref()
+            .is_some_and(|guided| guided.is_slice_or_array_ref())
+            && matches!(source_ty_kind, CTypeKind::Pointer(_))
+            && matches!(target_ty_kind, CTypeKind::Pointer(_))
+        {
+            // The guided reference replaces the entire C pointer representation.
+            // Do not reintroduce a raw-pointer cast solely because the C pointee
+            // types differ.
+            return Ok(val);
+        }
 
         if source_ty_kind == target_ty_kind {
             if let Some(guided_type) = guided_type {

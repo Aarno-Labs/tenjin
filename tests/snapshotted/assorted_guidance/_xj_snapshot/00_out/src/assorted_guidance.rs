@@ -119,8 +119,7 @@ pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
 }
 #[no_mangle]
 pub unsafe fn guided_immutable_u8_pointer() {
-    let mut rsu8: &[u8] =
-        b"\0".as_ptr() as *const ::core::ffi::c_char as *const ::core::ffi::c_uchar;
+    let mut rsu8: &[u8] = b"\0";
     strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
 }
 #[no_mangle]

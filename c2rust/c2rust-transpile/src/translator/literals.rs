@@ -340,16 +340,27 @@ impl Translation<'_> {
         result_type_id: CQualTypeId,
         ids: &[CExprId],
         opt_union_field_id: Option<CFieldId>,
+        guided_type: &Option<GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let result_type_id = expected_type_id.unwrap_or(result_type_id);
 
         match self.ast_context.resolve_type(result_type_id.ctype).kind {
             CTypeKind::ConstantArray(element_type_id, n) => {
+                let guided_element_type = guided_type
+                    .as_ref()
+                    .and_then(|guided| tenjin::type_try_arraylike_element(&guided.parsed))
+                    .cloned()
+                    .map(GuidedType::from_type);
+
                 // Convert all of the provided initializer values
 
                 let to_array_element = |id: CExprId| -> TranslationResult<_> {
-                    let val =
-                        self.convert_expr(ctx.used(), id, Some(CQualTypeId::new(element_type_id)))?;
+                    let val = self.convert_expr_guided(
+                        ctx.used(),
+                        id,
+                        Some(CQualTypeId::new(element_type_id)),
+                        &guided_element_type,
+                    )?;
                     val.try_map(|x| {
                         // Array literals require all of their elements to be
                         // the correct type; they will not use implicit casts to
@@ -407,7 +418,11 @@ impl Translation<'_> {
                         // This was likely a C array of the form `int x[16] = {}`.
                         // We'll emit that as [0; 16].
                         let len = mk().lit_expr(mk().int_unsuffixed_lit(n as u128));
-                        let zeroed = self.implicit_default_expr(ctx, element_type_id)?;
+                        let zeroed = self.implicit_default_expr_guided(
+                            &guided_element_type,
+                            ctx,
+                            element_type_id,
+                        )?;
                         Ok(zeroed.map(|default_value| mk().repeat_expr(default_value, len)))
                     }
                     &[single] if is_string_literal(single) => {
@@ -416,7 +431,7 @@ impl Translation<'_> {
                         // * `ptr_extra_braces`
                         // * `array_of_ptrs`
                         // * `array_of_arrays`
-                        self.convert_expr(ctx.used(), single, expected_type_id)
+                        self.convert_expr_guided(ctx.used(), single, expected_type_id, guided_type)
                     }
                     &[single] if is_zero_literal(single) && n > 1 => {
                         // This was likely a C array of the form `int x[16] = { 0 }`.
@@ -433,7 +448,11 @@ impl Translation<'_> {
                             .chain(
                                 // Pad out the array literal with default values to the desired size
                                 std::iter::repeat_n(
-                                    self.implicit_default_expr(ctx, element_type_id),
+                                    self.implicit_default_expr_guided(
+                                        &guided_element_type,
+                                        ctx,
+                                        element_type_id,
+                                    ),
                                     n - ids.len(),
                                 ),
                             )
@@ -457,9 +476,9 @@ impl Translation<'_> {
             }
             ref kind if kind.is_scalar() => {
                 if let Some(&first) = ids.first() {
-                    self.convert_expr(ctx.used(), first, expected_type_id)
+                    self.convert_expr_guided(ctx.used(), first, expected_type_id, guided_type)
                 } else {
-                    self.implicit_default_expr(ctx.used(), result_type_id.ctype)
+                    self.implicit_default_expr_guided(guided_type, ctx.used(), result_type_id.ctype)
                 }
             }
             ref t => Err(format_err!("Init list not implemented for {:?}", t).into()),
