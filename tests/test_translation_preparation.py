@@ -4,6 +4,7 @@ from pathlib import Path
 
 import c_refact
 import targets
+import compilation_database
 import translation_preparation
 
 
@@ -94,7 +95,9 @@ def test_add_immutable_dispositions_to_guidance_preserves_existing_entries(tmp_p
     )
 
     added = translation_preparation.add_immutable_dispositions_to_guidance(
-        manifest_path, guidance_path
+        manifest_path,
+        guidance_path,
+        {"global_immutable", "static_immutable_xjtr_0", "still_mutable"},
     )
 
     assert added == {"static_immutable_xjtr_0"}
@@ -124,11 +127,64 @@ def test_add_immutable_dispositions_to_guidance_creates_vars_mut(tmp_path):
     guidance_path = tmp_path / "xj-guidance.json"
     guidance_path.write_text(json.dumps({"public_api": []}), encoding="utf-8")
 
-    translation_preparation.add_immutable_dispositions_to_guidance(manifest_path, guidance_path)
+    translation_preparation.add_immutable_dispositions_to_guidance(
+        manifest_path, guidance_path, {"global_immutable"}
+    )
 
     assert json.loads(guidance_path.read_text(encoding="utf-8")) == {
         "public_api": [],
         "vars_mut": {"global_immutable": False},
+    }
+
+
+def test_missing_disposition_defaults_source_global_to_immutable(tmp_path):
+    manifest_path = tmp_path / "pangs-manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "schema_version": 8,
+            "globals": [
+                {
+                    "meta": {"llvm_name": "explicitly_unhandled"},
+                    "disposition": {"chosen": "unhandled"},
+                },
+                {
+                    "meta": {"llvm_name": "record_without_disposition"},
+                    "disposition": None,
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    guidance_path = tmp_path / "xj-guidance.json"
+    guidance_path.write_text("{}", encoding="utf-8")
+
+    added = translation_preparation.add_immutable_dispositions_to_guidance(
+        manifest_path,
+        guidance_path,
+        {"optimized_out", "explicitly_unhandled", "record_without_disposition"},
+    )
+
+    assert added == {"optimized_out", "record_without_disposition"}
+    assert json.loads(guidance_path.read_text(encoding="utf-8"))["vars_mut"] == {
+        "optimized_out": False,
+        "record_without_disposition": False,
+    }
+
+
+def test_source_level_global_names_uses_libclang_and_excludes_non_globals(tmp_path):
+    source = tmp_path / "globals.c"
+    source.write_text(
+        "int external_global = 1;\n"
+        "static int file_static;\n"
+        "extern int declaration_only;\n"
+        "void function(void) { static int function_static; }\n",
+        encoding="utf-8",
+    )
+    compdb = compilation_database.synthetic_compile_commands_for_c_file(source, tmp_path)
+
+    assert translation_preparation.source_level_global_names(compdb) == {
+        "external_global",
+        "file_static",
     }
 
 

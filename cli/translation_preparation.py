@@ -44,8 +44,25 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     return (end_ns - start_ns) / 1_000_000.0
 
 
-def add_immutable_dispositions_to_guidance(manifest_path: Path, guidance_path: Path) -> set[str]:
-    """Default PANGS-immutable globals to immutable Rust declarations.
+def source_level_global_names(
+    compdb: compilation_database.CompileCommands,
+) -> set[str]:
+    """Use libclang to list top-level source variable definitions."""
+    cursors = c_refact.compute_globals_and_statics_for_project(compdb, elide_functions=True)
+    return {
+        cursor.spelling
+        for cursor in cursors
+        if cursor.semantic_parent is not None
+        and cursor.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+    }
+
+
+def add_immutable_dispositions_to_guidance(
+    manifest_path: Path,
+    guidance_path: Path,
+    source_globals: set[str],
+) -> set[str]:
+    """Default proven or optimization-elided immutable globals to immutable Rust declarations.
 
     Explicit user guidance wins: an existing ``vars_mut`` entry is never
     changed, regardless of its value.
@@ -59,11 +76,20 @@ def add_immutable_dispositions_to_guidance(manifest_path: Path, guidance_path: P
     if not isinstance(globals_, list):
         raise TypeError("PANGS disposition manifest 'globals' must be a JSON array")
 
-    immutable_names = {
-        c_refact.demangle_meg(global_["meta"]["llvm_name"])
+    dispositions_by_name = {
+        c_refact.demangle_meg(global_["meta"]["llvm_name"]): (global_.get("disposition") or {}).get(
+            "chosen"
+        )
         for global_ in globals_
-        if global_.get("disposition", {}).get("chosen") == "immutable"
     }
+    immutable_names = {
+        name for name, disposition in dispositions_by_name.items() if disposition == "immutable"
+    }
+    assigned_names = {
+        name for name, disposition in dispositions_by_name.items() if disposition is not None
+    }
+    optimization_elided_names = source_globals - assigned_names
+    default_immutable_names = immutable_names | optimization_elided_names
 
     with guidance_path.open("r", encoding="utf-8") as guidance_file:
         guidance = json.load(guidance_file)
@@ -71,7 +97,7 @@ def add_immutable_dispositions_to_guidance(manifest_path: Path, guidance_path: P
     if not isinstance(vars_mut, dict):
         raise TypeError("Tenjin guidance 'vars_mut' must be a JSON object")
 
-    added = immutable_names - vars_mut.keys()
+    added = default_immutable_names - vars_mut.keys()
     if added:
         for name in sorted(added):
             vars_mut[name] = False
@@ -1297,6 +1323,7 @@ def run_preparation_passes(
         add_immutable_dispositions_to_guidance(
             current_codebase / "pangs-disposition" / "pangs-manifest.json",
             current_codebase / XJ_GUIDANCE_FILENAME,
+            source_level_global_names(curr_compdb),
         )
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
