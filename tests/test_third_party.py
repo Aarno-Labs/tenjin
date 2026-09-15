@@ -1,6 +1,7 @@
 import hashlib
 from pathlib import Path
 import shutil
+import json
 import platform
 import re
 import subprocess
@@ -1411,6 +1412,64 @@ def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
         == "c7d0f6d70256238349e9f682d7d1362a832cc955b653cee712b8a1db92a15acd"
     )
     assert get_final_unsafe_fns_count(tmp_resultsdir) == 100
+
+
+@pytest.mark.slow  # expected runtime: 80 seconds
+def test_Orc__discount(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/Orc/discount.git", "abd97acee020a874065a2dd01555e104d55a9138"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    tenjin_fixtures.monkeypatch.setenv("XJ_GENERATED_SOURCES", "blocktags")
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            prebuildcmd="./configure.sh && make blocktags branch",
+            buildcmd="make -j3 makepage",
+        ),
+        guidance_path_or_literal=json.dumps({"vars_mut": {"opts": True}}),
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    target_out = tmp_resultsdir / "final" / "target" / "debug"
+    rs_exe = target_out / "makepage"
+    if not rs_exe.exists():
+        rs_exe = target_out / "makepage_nolines"
+
+    out_1: str = hermetic.run(
+        [str(rs_exe), "tests/embedlinks.text"],
+        check=True,
+        capture_output=True,
+        cwd=tmp_codebase,
+    ).stdout.decode(encoding="utf-8")
+
+    assert (
+        out_1
+        == """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html  PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title></title></head>
+<body>
+<ul>
+<li>[<img src="http://dustmite.org/mite.jpg" height="50" width="50" alt="an image" />] (http://dustmite.org)</li>
+<li><a href="http://willwork.org">[an embedded link](http://wontwork.org)</a></li>
+<li>[<img src="http://dustmite.org/mite.jpg" alt="dustmite" />] (http:/dustmite.org)</li>
+<li><img src="http://dustmite.org/mite.jpg" alt="dustmite" /></li>
+<li><img src="http://dustmite.org/mite.jpg" alt="dustmite" /></li>
+<li><a href="http://I.am.cheating">&lt;a href=&ldquo;http://cheating.us&rdquo;>cheat me</a></a></li>
+</ul>
+
+</body>
+</html>
+"""
+    )
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 235
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
