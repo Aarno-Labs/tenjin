@@ -61,14 +61,14 @@ pub struct PodGuided {
     pub a: ::core::ffi::c_int,
     pub b: ::core::ffi::c_int,
 }
-static static_int_nonmutbl_xjtr_0: __tenjin_atomic_i32_t = 0 as ::core::ffi::c_int;
+static static_int_nonmutbl: __tenjin_atomic_i32_t = 0 as ::core::ffi::c_int;
 #[no_mangle]
 pub unsafe fn use_global_ints() {
-    static static_local_nonmutbl_xjtr_0: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
+    static static_local_nonmutbl: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
     extern_int_unguided = 5 as ::core::ffi::c_int
         + extern_int_nonmutbl
-        + ::core::intrinsics::atomic_load_seqcst(&raw mut static_int_nonmutbl_xjtr_0)
-        + static_local_nonmutbl_xjtr_0;
+        + ::core::intrinsics::atomic_load_seqcst(&raw mut static_int_nonmutbl)
+        + static_local_nonmutbl;
 }
 #[no_mangle]
 pub unsafe fn print_owned_String(mut ostr: String) {
@@ -134,7 +134,7 @@ pub unsafe fn recognize_int_float_bitcast() {
 }
 #[no_mangle]
 pub unsafe fn guided_static() {
-    static mut u8_xjtr_0: u8 = 0;
+    static mut u8: u8 = 0;
 }
 #[no_mangle]
 pub unsafe fn guided_ret_ostr() -> String {
@@ -244,7 +244,7 @@ pub unsafe fn struct_guided_ptr_with_guided_members(mut gm_ptr: &mut StructWithM
     *gm_ptr.uptr.offset(0 as isize) = 42 as ::core::ffi::c_uchar;
     gm_ptr.zu8 = 43 as ::core::ffi::c_uchar;
 }
-unsafe fn __tenjin_bvm_167_7_float_to_unsigned_int_xjtr_0(
+unsafe fn __tenjin_bvm_167_7_float_to_unsigned_int(
     mut x: ::core::ffi::c_float,
     mut out: *mut ::core::ffi::c_uint,
 ) {
@@ -263,7 +263,7 @@ pub unsafe fn guided_union_float_int_bitcast(mut f: ::core::ffi::c_float) -> ::c
     __tenjin_tmp_out_u = __tenjin_tmp_in_u.to_bits() as ::core::ffi::c_uint;
     return __tenjin_tmp_out_u;
 }
-unsafe fn __tenjin_bvm_167_7_unsigned_int_to_float_xjtr_0(
+unsafe fn __tenjin_bvm_167_7_unsigned_int_to_float(
     mut x: ::core::ffi::c_uint,
     mut out: *mut ::core::ffi::c_float,
 ) {

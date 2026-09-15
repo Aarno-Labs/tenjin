@@ -17,7 +17,7 @@ extern "C" {
 }
 pub type __time_t = ::core::ffi::c_long;
 pub type time_t = __time_t;
-unsafe fn _xj_wrap_time_xjtr_0(mut _xj_errno: &mut i32, mut __timer: *mut time_t) -> time_t {
+unsafe fn _xj_wrap_time(mut _xj_errno: &mut i32, mut __timer: *mut time_t) -> time_t {
     let mut ret = xj_ctime::compat::time(__timer.as_mut());
     *_xj_errno = *__errno_location();
     ret
@@ -29,7 +29,7 @@ unsafe fn main_0(
     let mut _xj_local_errno: i32 = 0;
     _xj_local_errno = 0;
     let mut t: time_t = 0;
-    _xj_wrap_time_xjtr_0(&mut _xj_local_errno, &raw mut t);
+    _xj_wrap_time(&mut _xj_local_errno, &raw mut t);
     if _xj_local_errno == 0 {
         return 0;
     }

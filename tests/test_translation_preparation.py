@@ -1,7 +1,66 @@
 import os
 from pathlib import Path
 
+import c_refact
 import translation_preparation
+
+
+def _named_decl(name: str, usr: str, offset: int = 0) -> c_refact.NamedDeclInfo:
+    return c_refact.NamedDeclInfo(
+        spelling=name,
+        file_path="/code/main.i",
+        decl_start_byte_offset=offset,
+        decl_end_byte_offset=offset + 1,
+        decl_location_byte_offset=offset,
+        start_line=1,
+        start_col=1,
+        end_line=1,
+        end_col=2,
+        usr=usr,
+    )
+
+
+def test_static_uniquification_only_suffixes_collisions():
+    singleton = _named_decl("singleton", "static-singleton")
+    singleton_redecl = _named_decl("singleton", "static-singleton", 10)
+    duplicate_1 = _named_decl("duplicate", "static-duplicate-1", 20)
+    duplicate_2 = _named_decl("duplicate", "static-duplicate-2", 30)
+    external_collision = _named_decl("external_collision", "static-external", 40)
+    external = _named_decl("external_collision", "external", 50)
+
+    statics = [
+        singleton,
+        singleton_redecl,
+        duplicate_1,
+        duplicate_2,
+        external_collision,
+    ]
+    plan = translation_preparation._plan_static_uniquification(statics, [*statics, external])
+
+    assert plan == {
+        "static-singleton": "singleton",
+        "static-duplicate-1": "duplicate_xjtr_0",
+        "static-duplicate-2": "duplicate_xjtr_1",
+        "static-external": "external_collision_xjtr_0",
+    }
+
+
+def test_static_uniquification_avoids_occupied_names_and_preserves_source_suffixes():
+    duplicate_1 = _named_decl("duplicate", "static-duplicate-1")
+    duplicate_2 = _named_decl("duplicate", "static-duplicate-2", 10)
+    occupied_candidate = _named_decl("duplicate_xjtr_0", "external-occupied", 20)
+    source_name_using_reserved_suffix = _named_decl("natural_xjtr_0", "static-natural", 30)
+
+    statics = [duplicate_1, duplicate_2, source_name_using_reserved_suffix]
+    plan = translation_preparation._plan_static_uniquification(
+        statics, [*statics, occupied_candidate]
+    )
+
+    assert plan == {
+        "static-duplicate-1": "duplicate_xjtr_1",
+        "static-duplicate-2": "duplicate_xjtr_2",
+        "static-natural": "natural_xjtr_0",
+    }
 
 
 def test_remap_path_prefix_in_argument_only_rewrites_absolute_path_components():

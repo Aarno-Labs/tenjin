@@ -55,6 +55,48 @@ def _remap_path_prefix_in_argument(s: str, source: Path, dest: Path) -> str:
     return re.sub(pattern, lambda match: match.group(1) + str(dest), s)
 
 
+def _plan_static_uniquification(
+    statics_in_deterministic_order: list[c_refact.NamedDeclInfo],
+    project_symbols: list[c_refact.NamedDeclInfo],
+) -> dict[tenj_types.ClangUSR, tenj_types.CIdentifier]:
+    """Choose names for statics, suffixing only genuine collision groups.
+
+    Multiple declarations with the same USR describe one entity. A static can
+    retain its spelling only when no distinct project symbol occupies that
+    spelling. Generated names are recorded separately so source names which
+    already happen to end in ``_xjtr_N`` do not need special treatment.
+    """
+
+    project_usrs_by_name: dict[tenj_types.CIdentifier, set[tenj_types.ClangUSR]] = defaultdict(set)
+    for symbol in project_symbols:
+        project_usrs_by_name[symbol.spelling].add(symbol.usr)
+
+    occupied_names = {symbol.spelling for symbol in project_symbols}
+    next_suffix_by_base: dict[tenj_types.CIdentifier, int] = {}
+    planned_names: dict[tenj_types.ClangUSR, tenj_types.CIdentifier] = {}
+
+    def make_unique_name(base: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
+        while True:
+            n = next_suffix_by_base.get(base, 0)
+            next_suffix_by_base[base] = n + 1
+            candidate = f"{base}_xjtr_{n}"
+            if candidate not in occupied_names:
+                occupied_names.add(candidate)
+                return candidate
+
+    for static in statics_in_deterministic_order:
+        if static.usr in planned_names:
+            continue
+        distinct_entities = project_usrs_by_name[static.spelling]
+        is_singleton = distinct_entities == {static.usr}
+        if is_singleton:
+            planned_names[static.usr] = static.spelling
+        else:
+            planned_names[static.usr] = make_unique_name(static.spelling)
+
+    return planned_names
+
+
 def run_modifying_subprocess_or_restore_prev(
     prev: Path,
     current_codebase: Path,
@@ -748,6 +790,9 @@ class PrepPassResultStore:
     consolidation_data_by_rel_tu: dict[RelativeFilePathStr, c_refact.ConsolidationRevertContext] = (
         dataclasses.field(default_factory=dict)
     )
+    static_uniquification_base_by_generated_name: dict[
+        tenj_types.CIdentifier, tenj_types.CIdentifier
+    ] = dataclasses.field(default_factory=dict)
 
 
 # Matches `weak` spelled as its own token, which covers `__attribute__((weak))`,
@@ -1262,8 +1307,13 @@ def run_preparation_passes(
             all_build_targets[0].key, current_codebase
         )
 
-        all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
-            compdb, statics_only=True
+        index = cindex_helpers.create_xj_clang_index()
+        translation_units = list(c_refact.parse_project(index, compdb).values())
+        all_pgs_cursors = c_refact.compute_globals_and_statics_for_translation_units(
+            translation_units, statics_only=True
+        )
+        project_symbol_cursors = c_refact.compute_global_symbol_inventory_for_translation_units(
+            translation_units
         )
         # Sharing the same name/spelling is orthogonal to whether two cursors
         # refer to the same entity. Two identically-named statics in different
@@ -1283,27 +1333,17 @@ def run_preparation_passes(
             assert g_s.file_path is not None, f"Expected file_path for global/static: {g_s}"
             assert g_s.file_path.startswith(current_codebase_dir)
 
-        uniquifiers: dict[str, int] = {}
-        usr_names: dict[tenj_types.ClangUSR, tenj_types.CIdentifier] = {}
-
         pgs_in_deterministic_order = sorted(
             all_pgs, key=lambda g: (g.file_path or "", g.decl_start_byte_offset)
         )
-
-        def mk_unique_name(base: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
-            while True:
-                n = uniquifiers.get(base, 0)
-                uniquifiers[base] = n + 1
-                candidate = f"{base}_xjtr_{n}"
-                if candidate not in all_global_names:
-                    return candidate
-
-        all_global_names = set(g_s.spelling for g_s in all_pgs)
-
-        for g_s in pgs_in_deterministic_order:
-            if g_s.usr in usr_names:
-                continue  # already renamed this entity via another declaration
-            usr_names[g_s.usr] = mk_unique_name(g_s.spelling)
+        project_symbols = [c_refact.mk_NamedDeclInfo(c) for c in project_symbol_cursors]
+        usr_names = _plan_static_uniquification(pgs_in_deterministic_order, project_symbols)
+        original_name_by_usr = {g_s.usr: g_s.spelling for g_s in pgs_in_deterministic_order}
+        store.static_uniquification_base_by_generated_name = {
+            generated_name: original_name_by_usr[usr]
+            for usr, generated_name in usr_names.items()
+            if generated_name != original_name_by_usr[usr]
+        }
 
         rewrites_per_file: dict[
             tenj_types.FilePathStr,
@@ -1315,6 +1355,8 @@ def run_preparation_passes(
             if g_s.usr in seen_usrs_in_this_file:
                 continue  # already renamed this entity in this file
             seen_usrs_in_this_file.add(g_s.usr)
+            if usr_names[g_s.usr] == g_s.spelling:
+                continue  # this entity has no project-wide name collision
             rewrites_per_file.setdefault(g_s.file_path or "", {})[g_s.decl_start_byte_offset] = (
                 g_s.decl_end_byte_offset,
                 usr_names[g_s.usr],
@@ -1406,7 +1448,7 @@ def run_preparation_passes(
         )
 
         def is_unique_name(name: tenj_types.CIdentifier) -> bool:
-            return "_xjtr_" in name and name[-1].isdigit()
+            return name in store.static_uniquification_base_by_generated_name
 
         def is_static_inline_function(cursor: Cursor) -> bool:
             """Note that all cursors returned by `compute_globals_and_statics_for_project`
@@ -1427,13 +1469,10 @@ def run_preparation_passes(
             return False
 
         all_pgs_static_inline_funcs = [
-            c_refact.mk_NamedDeclInfo(c) for c in all_pgs_cursors if is_static_inline_function(c)
+            c_refact.mk_NamedDeclInfo(c)
+            for c in all_pgs_cursors
+            if is_static_inline_function(c) and is_unique_name(c.spelling)
         ]
-
-        for g_s in all_pgs_static_inline_funcs:
-            assert is_unique_name(g_s.spelling), (
-                f"Expected unique name for static inline function: {g_s.spelling}"
-            )
 
         # We can safely strip the suffix as far as C is concerned; that's how the code
         # was originally. And we already apply guidance by ignoring uniquification suffixes.
@@ -1468,7 +1507,7 @@ def run_preparation_passes(
         # modified in divergent ways across files and refolding them would silently
         # merge inconsistent versions; omit such names from un-uniquification below.
         def strip_suffix(unique_name: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
-            return re.sub(r"_xjtr_\d+$", "", unique_name)
+            return store.static_uniquification_base_by_generated_name[unique_name]
 
         decls_by_base_name: dict[tenj_types.CIdentifier, list[c_refact.NamedDeclInfo]] = (
             defaultdict(list)
