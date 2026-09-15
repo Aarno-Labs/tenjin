@@ -70,7 +70,7 @@ fn atomic_struct_initialization_and_intrinsics() {
                 stored: ::core::sync::atomic::AtomicI32,
             }
             fn demo(xjg: &mut Globals) {
-                *&raw mut xjg.initialized = ::core::sync::atomic::AtomicI32::new(5);
+                xjg.initialized.store(5, ::core::sync::atomic::Ordering::SeqCst);
                 xjg.stored.store(10, ::core::sync::atomic::Ordering::Release);
             }
             fn make() -> Globals {
@@ -78,6 +78,29 @@ fn atomic_struct_initialization_and_intrinsics() {
                     initialized: ::core::sync::atomic::AtomicI32::new(0),
                     stored: ::core::sync::atomic::AtomicI32::new(0),
                 }
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn assignment_to_immutable_atomic_global_becomes_store() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
+    check(
+        &rw,
+        r#"static global_initialized: ::core::sync::atomic::AtomicI32 =
+            ::core::sync::atomic::AtomicI32::new(0);
+        fn demo() {
+            *&raw mut global_initialized = 5 as ::core::ffi::c_int;
+        }"#,
+        expect![[r#"
+            static global_initialized: ::core::sync::atomic::AtomicI32 = ::core::sync::atomic::AtomicI32::new(
+                0,
+            );
+            fn demo() {
+                global_initialized
+                    .store(5 as ::core::ffi::c_int, ::core::sync::atomic::Ordering::SeqCst);
             }
         "#]],
     );

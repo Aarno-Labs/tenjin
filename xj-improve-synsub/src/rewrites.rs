@@ -16,9 +16,8 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
-    /// Wrap plain values assigned to guided atomic places in the matching
-    /// atomic type's `new` constructor. This covers assignments emitted for
-    /// `atomic_init` and fields in aggregate initializers.
+    /// Turn writes to existing atomic places into sequentially consistent
+    /// stores, and construct atomic values in aggregate initializers.
     pub fn rewrite_atomic_initialization(
         &self,
         symbols: &SymbolTable,
@@ -32,9 +31,11 @@ impl Rewriter {
                     return None;
                 }
 
-                let mut replacement = assign.clone();
-                replacement.right = Box::new(atomic_constructor(&ty, &assign.right)?);
-                Some((Expr::Assign(replacement), Depth::Limited(0)))
+                let value = coerce_atomic_method_value(&ty, "store", &assign.right);
+                let replacement: Expr = syn::parse_quote! {
+                    #place.store(#value, ::core::sync::atomic::Ordering::SeqCst)
+                };
+                Some((replacement, Depth::Limited(0)))
             }
             Expr::Struct(expr_struct) => {
                 let struct_name = expr_struct.path.segments.last()?.ident.to_string();
