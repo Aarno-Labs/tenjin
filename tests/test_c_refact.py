@@ -339,7 +339,7 @@ def test_findfnptrdecls_does_not_cross_tu_replicate_local_fnptr_types(root, tmp_
 
     output = c_refact.run_xj_prepare_findfnptrdecls(
         tmp_codebase,
-        nonmain_tissue_functions={"needs_globals"},
+        nonmain_context_functions={"needs_globals"},
         all_function_names={"needs_globals", "use_needs_globals", "stays_plain", "use_stays_plain"},
     )
 

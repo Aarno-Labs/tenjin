@@ -81,6 +81,10 @@ def test_add_immutable_dispositions_to_guidance_preserves_existing_entries(tmp_p
                     "disposition": {"chosen": "immutable"},
                 },
                 {
+                    "meta": {"llvm_name": "explicitly_immutable"},
+                    "disposition": {"chosen": "immutable"},
+                },
+                {
                     "meta": {"llvm_name": "still_mutable"},
                     "disposition": {"chosen": "unhandled"},
                 },
@@ -90,27 +94,39 @@ def test_add_immutable_dispositions_to_guidance_preserves_existing_entries(tmp_p
     )
     guidance_path = tmp_path / "xj-guidance.json"
     guidance_path.write_text(
-        json.dumps({"vars_mut": {"global_immutable": True, "user_choice": False}}),
+        json.dumps({
+            "vars_mut": {
+                "global_immutable": True,
+                "explicitly_immutable": False,
+                "user_choice": False,
+            }
+        }),
         encoding="utf-8",
     )
 
     added = translation_preparation.add_immutable_dispositions_to_guidance(
         manifest_path,
         guidance_path,
-        {"global_immutable", "static_immutable_xjtr_0", "still_mutable"},
+        {
+            "global_immutable",
+            "static_immutable_xjtr_0",
+            "explicitly_immutable",
+            "still_mutable",
+        },
     )
 
     assert added == {"static_immutable_xjtr_0"}
     assert json.loads(guidance_path.read_text(encoding="utf-8")) == {
         "vars_mut": {
             "global_immutable": True,
+            "explicitly_immutable": False,
             "user_choice": False,
-            "static_immutable_xjtr_0": False,
-        }
+        },
+        "semantically_immutable_globals": ["static_immutable_xjtr_0"],
     }
 
 
-def test_add_immutable_dispositions_to_guidance_creates_vars_mut(tmp_path):
+def test_add_immutable_dispositions_to_guidance_creates_semantic_entry(tmp_path):
     manifest_path = tmp_path / "pangs-manifest.json"
     manifest_path.write_text(
         json.dumps({
@@ -133,7 +149,8 @@ def test_add_immutable_dispositions_to_guidance_creates_vars_mut(tmp_path):
 
     assert json.loads(guidance_path.read_text(encoding="utf-8")) == {
         "public_api": [],
-        "vars_mut": {"global_immutable": False},
+        "vars_mut": {},
+        "semantically_immutable_globals": ["global_immutable"],
     }
 
 
@@ -165,9 +182,48 @@ def test_missing_disposition_defaults_source_global_to_immutable(tmp_path):
     )
 
     assert added == {"optimized_out", "record_without_disposition"}
-    assert json.loads(guidance_path.read_text(encoding="utf-8"))["vars_mut"] == {
-        "optimized_out": False,
-        "record_without_disposition": False,
+    guidance = json.loads(guidance_path.read_text(encoding="utf-8"))
+    assert guidance["vars_mut"] == {}
+    assert guidance["semantically_immutable_globals"] == [
+        "optimized_out",
+        "record_without_disposition",
+    ]
+
+
+def test_add_immutable_dispositions_preserves_existing_semantic_entries(tmp_path):
+    manifest_path = tmp_path / "pangs-manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "schema_version": 8,
+            "globals": [
+                {
+                    "meta": {"llvm_name": "already_recorded"},
+                    "disposition": {"chosen": "immutable"},
+                },
+                {
+                    "meta": {"llvm_name": "newly_recorded"},
+                    "disposition": {"chosen": "immutable"},
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    guidance_path = tmp_path / "xj-guidance.json"
+    guidance_path.write_text(
+        json.dumps({"semantically_immutable_globals": ["already_recorded"]}),
+        encoding="utf-8",
+    )
+
+    added = translation_preparation.add_immutable_dispositions_to_guidance(
+        manifest_path,
+        guidance_path,
+        {"already_recorded", "newly_recorded"},
+    )
+
+    assert added == {"newly_recorded"}
+    assert json.loads(guidance_path.read_text(encoding="utf-8")) == {
+        "vars_mut": {},
+        "semantically_immutable_globals": ["already_recorded", "newly_recorded"],
     }
 
 

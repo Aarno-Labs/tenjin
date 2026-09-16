@@ -62,10 +62,11 @@ def add_immutable_dispositions_to_guidance(
     guidance_path: Path,
     source_globals: set[str],
 ) -> set[str]:
-    """Default proven or optimization-elided immutable globals to immutable Rust declarations.
+    """Record proven or optimization-elided globals as semantically immutable.
 
-    Explicit user guidance wins: an existing ``vars_mut`` entry is never
-    changed, regardless of its value.
+    Explicit ``vars_mut`` guidance remains a hard override.  The Rust
+    transpiler uses this weaker semantic fact together with the translated
+    type to decide whether the declaration can omit ``mut``.
     """
     with manifest_path.open("r", encoding="utf-8") as manifest_file:
         manifest = json.load(manifest_file)
@@ -97,10 +98,17 @@ def add_immutable_dispositions_to_guidance(
     if not isinstance(vars_mut, dict):
         raise TypeError("Tenjin guidance 'vars_mut' must be a JSON object")
 
-    added = default_immutable_names - vars_mut.keys()
+    semantically_immutable = guidance.setdefault("semantically_immutable_globals", [])
+    if not isinstance(semantically_immutable, list) or not all(
+        isinstance(name, str) for name in semantically_immutable
+    ):
+        raise TypeError(
+            "Tenjin guidance 'semantically_immutable_globals' must be a JSON string array"
+        )
+
+    added = default_immutable_names - vars_mut.keys() - set(semantically_immutable)
     if added:
-        for name in sorted(added):
-            vars_mut[name] = False
+        semantically_immutable.extend(sorted(added))
         with guidance_path.open("w", encoding="utf-8") as guidance_file:
             json.dump(guidance, guidance_file, indent=2)
     return added

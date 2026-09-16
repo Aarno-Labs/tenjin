@@ -825,7 +825,7 @@ def test_tractor_b1_organic_read_scalefactors_lib(tenjin_fixtures: TenjinFixture
 def test_tractor_b1_organic_refine_block_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Hidden-Tests/B01_organic/refine_block_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 3
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 1
 
 
 @pytest.mark.slow
@@ -1235,7 +1235,7 @@ def test_tractor_b2_synthetic_charinbuf_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_checkshift_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/checkshift_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 10
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 7
 
 
 @pytest.mark.slow
@@ -1341,7 +1341,7 @@ def test_tractor_b2_synthetic_matrix_mult_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_matrix_sum_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/matrix_sum_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 6
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 5
 
 
 @pytest.mark.slow
@@ -1390,7 +1390,7 @@ def test_tractor_b2_organic_aabb_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_organic_agglom_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/agglom_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 8
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 7
 
 
 @pytest.mark.slow
@@ -1804,7 +1804,7 @@ def test_tractor_b2_organic_underhanded_c_luggage_app(tenjin_fixtures: TenjinFix
 def test_tractor_b2_synthetic_tu_linkage_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/tu_linkage"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 29
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 26
 
 
 # ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗    ██████╗     ██╗     ██╗██████╗ ███████╗

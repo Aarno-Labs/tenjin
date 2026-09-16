@@ -1,0 +1,94 @@
+---
+source: c2rust-transpile/tests/snapshots.rs
+expression: cat tests/snapshots/tenjin_semantic_immutability.2024.clang15.rs
+---
+#![allow(
+    clippy::missing_safety_doc,
+    dead_code,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    unsafe_op_in_unsafe_fn,
+    unused_assignments,
+    unused_mut
+)]
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct Plain {
+    pub value: ::core::ffi::c_int,
+}
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct HasRaw {
+    pub raw: *mut ::core::ffi::c_int,
+}
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct AllGuided {
+    pub guided: &'static [u8],
+}
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub union HasRawUnion {
+    pub scalar: ::core::ffi::c_int,
+    pub raw: *mut ::core::ffi::c_int,
+}
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct NestedRaw {
+    pub values: [HasRaw; 2],
+}
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct NestedGuided {
+    pub values: [AllGuided; 2],
+}
+#[unsafe(no_mangle)]
+pub static plain_scalar: ::core::ffi::c_int = 0;
+#[unsafe(no_mangle)]
+pub static mut forced_mut_scalar: ::core::ffi::c_int = 0;
+#[unsafe(no_mangle)]
+pub static mut raw_pointer: *mut ::core::ffi::c_int = ::core::ptr::null_mut::<::core::ffi::c_int>();
+#[unsafe(no_mangle)]
+pub static forced_immutable_raw_pointer: *mut ::core::ffi::c_int =
+    ::core::ptr::null_mut::<::core::ffi::c_int>();
+#[unsafe(no_mangle)]
+pub static guided_pointer: &'static [u8] = b"\0";
+#[unsafe(no_mangle)]
+pub static plain_record: Plain = Plain { value: 0 };
+#[unsafe(no_mangle)]
+pub static mut raw_record: HasRaw = HasRaw {
+    raw: ::core::ptr::null_mut::<::core::ffi::c_int>(),
+};
+#[unsafe(no_mangle)]
+pub static mut raw_union: HasRawUnion = HasRawUnion { scalar: 0 };
+#[unsafe(no_mangle)]
+pub static guided_record: AllGuided = AllGuided {
+    guided: b"guided\0".as_ptr() as *const ::core::ffi::c_char as *const ::core::ffi::c_uchar,
+};
+#[unsafe(no_mangle)]
+pub static mut nested_raw_record_array: NestedRaw = NestedRaw {
+    values: [HasRaw {
+        raw: ::core::ptr::null_mut::<::core::ffi::c_int>(),
+    }; 2],
+};
+#[unsafe(no_mangle)]
+pub static nested_guided_record_array: NestedGuided = NestedGuided {
+    values: [
+        AllGuided {
+            guided: b"first\0".as_ptr() as *const ::core::ffi::c_char
+                as *const ::core::ffi::c_uchar,
+        },
+        AllGuided {
+            guided: b"second\0".as_ptr() as *const ::core::ffi::c_char
+                as *const ::core::ffi::c_uchar,
+        },
+    ],
+};
+#[unsafe(no_mangle)]
+pub static mut raw_pointer_array: [*mut ::core::ffi::c_int; 2] =
+    [::core::ptr::null_mut::<::core::ffi::c_int>(); 2];
+#[unsafe(no_mangle)]
+pub static function_pointer: Option<
+    unsafe extern "C" fn(::core::ffi::c_int) -> ::core::ffi::c_int,
+> = None;
