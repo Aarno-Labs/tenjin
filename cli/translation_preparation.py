@@ -3,6 +3,7 @@ import platform
 import re
 import json
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable
@@ -320,12 +321,22 @@ def compute_build_info_in(
 
     click.secho(f"((( Building via `{buildcmd}`", fg="cyan", bold=True)
     if prebuildcmd is not None:
-        cp = hermetic.run(
-            prebuildcmd,
-            cwd=build_cwd,
-            shell=isinstance(buildcmd, str),
-            check=True,
-        )
+        # Configuration steps may discover tool paths and bake them into generated
+        # build scripts. We must run them with the interceptor wrappers on PATH so an
+        # absolute path baked into a script still points at a wrapper during the
+        # actual build. Prebuild activity should not, however, be saved into the
+        # final target graph.
+        with tempfile.TemporaryDirectory(prefix="tenjin-prebuild-commands-") as prebuildcmds:
+            cp = hermetic.run(
+                prebuildcmd,
+                cwd=build_cwd,
+                shell=isinstance(prebuildcmd, str),
+                check=True,
+                env_ext={
+                    "BUILD_COMMANDS_DIRECTORY": prebuildcmds,
+                    "pre-Tenjin PATH prefix": [str(cc_ld_intercept_dir)],
+                },
+            )
     cp = hermetic.run(
         buildcmd,
         cwd=build_cwd,

@@ -1,7 +1,9 @@
 import os
+import json
 from pathlib import Path
 
 import c_refact
+import targets
 import translation_preparation
 
 
@@ -112,6 +114,49 @@ def test_xj_generated_sources_preserves_extensionless_prebuild_output(tmp_path, 
     assert (builddir / "blocktags").exists()
     assert (current_codebase / "blocktags").exists()
     assert os.access(current_codebase / "blocktags", os.X_OK)
+
+
+def test_prebuild_uses_interceptors_but_discards_its_commands(tmp_path):
+    codebase = tmp_path / "codebase"
+    builddir = tmp_path / "build"
+    codebase.mkdir()
+
+    (codebase / "prebuild.c").write_text("int configured_probe;\n", encoding="utf-8")
+    configure = codebase / "configure.sh"
+    configure.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "cc -c prebuild.c -o prebuild.o\n"
+        "ar_path=$(command -v ar)\n"
+        'printf \'#!/bin/sh\\n"%s" rcs libfrombuild.a\\n\' "$ar_path" > build.sh\n'
+        "chmod +x build.sh\n",
+        encoding="utf-8",
+    )
+    configure.chmod(0o755)
+
+    build_info = targets.BuildInfo()
+    translation_preparation.compute_build_info_in(
+        builddir=builddir,
+        codebase=codebase,
+        prebuildcmd="./configure.sh && true",
+        buildcmd=["./build.sh"],
+        tracker=None,  # type: ignore[arg-type]
+        mut_build_info=build_info,
+    )
+
+    # The prebuild compiler probe was captured only in a disposable directory.
+    # The generated build script's absolute `ar` path still names an interceptor,
+    # so its build-time invocation is the sole retained target-producing command.
+    assert build_info.get_all_targets() == [
+        targets.BuildTarget(
+            key="libfrombuild.a",
+            type=targets.TargetType.STATIC,
+            stem_not_unique="libfrombuild",
+        )
+    ]
+    retained_commands = list((codebase / ".xj-build-commands").glob("*.json"))
+    assert len(retained_commands) == 1
+    assert json.loads(retained_commands[0].read_text(encoding="utf-8"))["type"] == "ar"
 
 
 def test_copy_preparation_stage_omits_refold_maps(tmp_path):
