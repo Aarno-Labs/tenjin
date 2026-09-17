@@ -1,3 +1,6 @@
+import pytest
+import platform
+
 from tenjin_pytest_helpers import (
     TenjinFixtures,
     annotate_pytest_request_with_translation_notes,
@@ -34,6 +37,16 @@ def single_file_check_translation(
 
 def test_errno_global(test_dir, tenjin_fixtures):
     single_file_check_translation("errno_global", "main.c", test_dir, tenjin_fixtures)
+
+
+def test_float_classification_macros(test_dir, tenjin_fixtures):
+    if platform.system() == "Darwin":
+        return pytest.skip("mac currently exposes a refolder bug")
+    single_file_check_translation("isnormal", "main.c", test_dir, tenjin_fixtures)
+    rs_prog = run_cargo_on_final(
+        tenjin_fixtures.tmp_resultsdir / "final", ["run"], capture_output=True
+    )
+    assert rs_prog.returncode == 0
 
 
 def test_time_coercion_unguided(test_dir, tenjin_fixtures):

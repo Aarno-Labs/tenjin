@@ -1429,6 +1429,14 @@ impl Translation<'_> {
                 _ if (tenjin::is_path_exactly_1(path, "isnan")) => {
                     self.recognize_preconversion_call_isnan(ctx, cargs)
                 }
+                _ if tenjin::is_path_exactly_1(path, "isnormal") => {
+                    self.recognize_preconversion_call_float_predicate(ctx, cargs, "is_normal")
+                }
+                _ if tenjin::is_path_exactly_1(path, "isfinite") => {
+                    self.recognize_preconversion_call_float_predicate(ctx, cargs, "is_finite")
+                }
+                _ if tenjin::is_path_exactly_1(path, "signbit") => self
+                    .recognize_preconversion_call_float_predicate(ctx, cargs, "is_sign_negative"),
                 _ if (tenjin::is_path_exactly_1(path, "fmin")
                     || tenjin::is_path_exactly_1(path, "fminf")
                     || tenjin::is_path_exactly_1(path, "fminl")) =>
@@ -2271,6 +2279,27 @@ impl Translation<'_> {
             let cast = mk().cast_expr(e1.to_expr(), mk().path_ty(vec!["f64"]));
             let call = mk().call_expr(mk().path_expr(vec!["xj_isnan"]), vec![cast]);
             return Ok(Some(WithStmts::new_val(call)));
+        }
+        Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_float_predicate(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+        method_name: &str,
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() == 1 {
+            // Invoke the method on the translated operand itself.  Casting to
+            // a common floating-point type can change classification (for
+            // example, an f32 subnormal is a normal f64).
+            self.import_num_traits(cargs[0])?;
+            let value = self.convert_expr(ctx.used(), cargs[0], None)?;
+            return Ok(Some(value.map(|value| {
+                let predicate = mk().method_call_expr(value, method_name, Vec::new());
+                mk().cast_expr(predicate, mk().abs_path_ty(vec!["core", "ffi", "c_int"]))
+            })));
         }
         Ok(None)
     }
