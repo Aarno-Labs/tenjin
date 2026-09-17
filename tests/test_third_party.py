@@ -1622,12 +1622,9 @@ def test_atomicobject__odo(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow  # expected runtime: 700 seconds (~12 minutes, up to the xfail below)
 @pytest.mark.skip(
     reason="file(1) does not yet translate end-to-end: refold emits valid C for all 27 "
-    "TUs, but xj-c2rust's raw output (00_out) fails `cargo check` with 6 errors from "
-    "two causes. (1) softmagic.c's magiccheck() uses isunordered(); xj-c2rust reports "
-    "'Unimplemented builtin __builtin_isunordered' and drops the definition while "
-    "keeping its two call sites -> 2x E0425 in softmagic.rs. (2) compress.c calls "
-    "FD_ZERO, which glibc implements as x86-64 inline asm; the translation passes "
-    "`&raw mut` locals (*mut i32) to c2rust_asm_casts::AsmCast::cast_in/cast_out, "
+    "TUs, but xj-c2rust's raw output (00_out) fails `cargo check` because compress.c "
+    "calls FD_ZERO, which glibc implements as x86-64 inline asm; the translation "
+    "passes `&raw mut` locals (*mut i32) to c2rust_asm_casts::AsmCast::cast_in/cast_out, "
     "which expect `&mut _` -> 4x E0308 in compress.rs. The `cargo check` gate after "
     "improvement_pass_02_lift-call-args then raises CalledProcessError, so no final/ "
     "crate is produced.",

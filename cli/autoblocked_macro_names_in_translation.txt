@@ -38,3 +38,9 @@ isfinite
 isinf
 isnan
 signbit
+isgreater
+isgreaterequal
+isless
+islessequal
+islessgreater
+isunordered
