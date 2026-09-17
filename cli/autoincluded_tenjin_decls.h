@@ -48,3 +48,34 @@ int signbit(float) __attribute__((overloadable));
 int signbit(double) __attribute__((overloadable));
 int signbit(long double) __attribute__((overloadable));
 #endif
+
+/*
+// Floating-point comparison macros accept operands of different types.  List
+// every pair so Clang selects an exact overload; Tenjin then applies the usual
+// arithmetic conversion before emitting the Rust comparison.
+*/
+#ifdef __cplusplus
+#define XJ_OVERLOADABLE
+#else
+#define XJ_OVERLOADABLE __attribute__((overloadable))
+#endif
+#define XJ_DECLARE_FLOAT_COMPARISON(name) \
+    int name(float, float) XJ_OVERLOADABLE; \
+    int name(float, double) XJ_OVERLOADABLE; \
+    int name(float, long double) XJ_OVERLOADABLE; \
+    int name(double, float) XJ_OVERLOADABLE; \
+    int name(double, double) XJ_OVERLOADABLE; \
+    int name(double, long double) XJ_OVERLOADABLE; \
+    int name(long double, float) XJ_OVERLOADABLE; \
+    int name(long double, double) XJ_OVERLOADABLE; \
+    int name(long double, long double) XJ_OVERLOADABLE
+
+XJ_DECLARE_FLOAT_COMPARISON(isgreater);
+XJ_DECLARE_FLOAT_COMPARISON(isgreaterequal);
+XJ_DECLARE_FLOAT_COMPARISON(isless);
+XJ_DECLARE_FLOAT_COMPARISON(islessequal);
+XJ_DECLARE_FLOAT_COMPARISON(islessgreater);
+XJ_DECLARE_FLOAT_COMPARISON(isunordered);
+
+#undef XJ_DECLARE_FLOAT_COMPARISON
+#undef XJ_OVERLOADABLE

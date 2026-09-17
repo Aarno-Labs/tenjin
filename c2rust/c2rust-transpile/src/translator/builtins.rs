@@ -180,6 +180,55 @@ impl<'c> Translation<'c> {
                     mk().cast_expr(call, mk().path_ty(vec!["i32"]))
                 }))
             }
+            "__builtin_fpclassify" => {
+                if args.len() != 6 {
+                    return Err(format_translation_err!(
+                        self.ast_context.display_loc(src_loc),
+                        "Expected six arguments to __builtin_fpclassify"
+                    ));
+                }
+
+                self.import_num_traits(args[5])?;
+                let categories: WithStmts<Vec<_>> = args[..5]
+                    .iter()
+                    .map(|arg| self.convert_expr(ctx.used(), *arg, None))
+                    .collect::<TranslationResult<_>>()?;
+                let value = self.convert_expr(ctx.used(), args[5], None)?;
+
+                Ok(categories.zip(value).and_then(|(categories, value)| {
+                    let mut categories = categories.into_iter();
+                    let nan = categories.next().unwrap();
+                    let infinite = categories.next().unwrap();
+                    let normal = categories.next().unwrap();
+                    let subnormal = categories.next().unwrap();
+                    let zero = categories.next().unwrap();
+
+                    let value_name = self
+                        .renamer
+                        .borrow_mut()
+                        .pick_name("c2rust_fpclassify_value", Namespaces::values());
+                    let value_let = mk().local_stmt(Box::new(mk().local(
+                        mk().ident_pat(&value_name),
+                        None,
+                        Some(value),
+                    )));
+
+                    let mut result = zero;
+                    for (method, category) in [
+                        ("is_subnormal", subnormal),
+                        ("is_normal", normal),
+                        ("is_infinite", infinite),
+                        ("is_nan", nan),
+                    ] {
+                        let condition =
+                            mk().method_call_expr(mk().ident_expr(&value_name), method, Vec::new());
+                        let category = mk().block(vec![mk().expr_stmt(category)]);
+                        result = mk().ifte_expr(condition, category, Some(result));
+                    }
+
+                    WithStmts::new(vec![value_let], result)
+                }))
+            }
             "__builtin_isinf_sign" => {
                 self.import_num_traits(args[0])?;
 

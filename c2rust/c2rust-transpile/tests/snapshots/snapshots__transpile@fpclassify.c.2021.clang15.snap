@@ -1,0 +1,46 @@
+---
+source: c2rust-transpile/tests/snapshots.rs
+expression: cat tests/snapshots/fpclassify.2021.clang15.rs
+---
+#![allow(
+    clippy::missing_safety_doc,
+    dead_code,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    unused_assignments,
+    unused_mut
+)]
+extern "C" {
+    fn next_float() -> ::core::ffi::c_float;
+}
+#[no_mangle]
+pub unsafe extern "C" fn classify_float() -> ::core::ffi::c_int {
+    let c2rust_fpclassify_value = next_float();
+    return if c2rust_fpclassify_value.is_nan() {
+        10 as ::core::ffi::c_int
+    } else if c2rust_fpclassify_value.is_infinite() {
+        20 as ::core::ffi::c_int
+    } else if c2rust_fpclassify_value.is_normal() {
+        30 as ::core::ffi::c_int
+    } else if c2rust_fpclassify_value.is_subnormal() {
+        40 as ::core::ffi::c_int
+    } else {
+        50 as ::core::ffi::c_int
+    };
+}
+#[no_mangle]
+pub unsafe extern "C" fn classify_double(mut value: ::core::ffi::c_double) -> ::core::ffi::c_int {
+    let c2rust_fpclassify_value = value;
+    return if c2rust_fpclassify_value.is_nan() {
+        -1 as ::core::ffi::c_int
+    } else if c2rust_fpclassify_value.is_infinite() {
+        -2 as ::core::ffi::c_int
+    } else if c2rust_fpclassify_value.is_normal() {
+        -3 as ::core::ffi::c_int
+    } else if c2rust_fpclassify_value.is_subnormal() {
+        -4 as ::core::ffi::c_int
+    } else {
+        -5 as ::core::ffi::c_int
+    };
+}

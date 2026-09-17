@@ -573,7 +573,14 @@ def run_output_git(args: list[str], check=False) -> bytes:
     rootdir = repo_root.find_repo_root_dir_Path()
     jjdir = rootdir / ".jj"
     if jjdir.is_dir():
-        gitroot = subprocess.check_output(["jj", "git", "root"]).decode("utf-8").strip()
+        # This query only needs repository metadata. Avoid Jujutsu's default
+        # working-copy snapshot, which can race with transient build files
+        # created and removed by parallel tests.
+        gitroot = (
+            subprocess.check_output(["jj", "--ignore-working-copy", "git", "root"], cwd=rootdir)
+            .decode("utf-8")
+            .strip()
+        )
         cp = subprocess.run(
             ["git", "--git-dir", gitroot, "--work-tree", rootdir.as_posix(), *args],
             check=False,

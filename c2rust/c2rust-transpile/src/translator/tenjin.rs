@@ -1437,6 +1437,24 @@ impl Translation<'_> {
                 }
                 _ if tenjin::is_path_exactly_1(path, "signbit") => self
                     .recognize_preconversion_call_float_predicate(ctx, cargs, "is_sign_negative"),
+                _ if tenjin::is_path_exactly_1(path, "isgreater") => {
+                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "isgreater")
+                }
+                _ if tenjin::is_path_exactly_1(path, "isgreaterequal") => {
+                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "isgreaterequal")
+                }
+                _ if tenjin::is_path_exactly_1(path, "isless") => {
+                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "isless")
+                }
+                _ if tenjin::is_path_exactly_1(path, "islessequal") => {
+                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "islessequal")
+                }
+                _ if tenjin::is_path_exactly_1(path, "islessgreater") => {
+                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "islessgreater")
+                }
+                _ if tenjin::is_path_exactly_1(path, "isunordered") => {
+                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "isunordered")
+                }
                 _ if (tenjin::is_path_exactly_1(path, "fmin")
                     || tenjin::is_path_exactly_1(path, "fminf")
                     || tenjin::is_path_exactly_1(path, "fminl")) =>
@@ -2302,6 +2320,98 @@ impl Translation<'_> {
             })));
         }
         Ok(None)
+    }
+
+    #[allow(clippy::borrowed_box)]
+    fn recognize_preconversion_call_float_comparison(
+        &self,
+        ctx: ExprContext,
+        cargs: &[CExprId],
+        comparison_name: &str,
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        if cargs.len() != 2 {
+            return Ok(None);
+        }
+
+        self.import_num_traits(cargs[0])?;
+        self.import_num_traits(cargs[1])?;
+        let arg_type = |arg| {
+            self.ast_context
+                .index_unwrap_parens(arg)
+                .kind
+                .get_qual_type()
+                .ok_or_else(|| format_err!("floating-point comparison argument has no type"))
+        };
+        let lhs_type = arg_type(cargs[0])?;
+        let rhs_type = arg_type(cargs[1])?;
+        let float_rank =
+            |type_id: CQualTypeId| match self.ast_context.resolve_type(type_id.ctype).kind {
+                CTypeKind::Float => Some(0),
+                CTypeKind::Double => Some(1),
+                CTypeKind::LongDouble | CTypeKind::Float128 => Some(2),
+                _ => None,
+            };
+        let lhs_rank = float_rank(lhs_type)
+            .ok_or_else(|| format_err!("left comparison argument is not floating-point"))?;
+        let rhs_rank = float_rank(rhs_type)
+            .ok_or_else(|| format_err!("right comparison argument is not floating-point"))?;
+        let (common_type, common_rank) = if lhs_rank >= rhs_rank {
+            (lhs_type, lhs_rank)
+        } else {
+            (rhs_type, rhs_rank)
+        };
+        let lhs = if lhs_rank == common_rank {
+            self.convert_expr(ctx.used(), cargs[0], None)?
+        } else {
+            self.convert_expr_with_cast(ctx.used(), common_type, cargs[0], &None)?
+        };
+        let rhs = if rhs_rank == common_rank {
+            self.convert_expr(ctx.used(), cargs[1], None)?
+        } else {
+            self.convert_expr_with_cast(ctx.used(), common_type, cargs[1], &None)?
+        };
+
+        let lhs_name = self
+            .renamer
+            .borrow_mut()
+            .pick_name("c2rust_cmp_lhs", Namespaces::values());
+        let rhs_name = self
+            .renamer
+            .borrow_mut()
+            .pick_name("c2rust_cmp_rhs", Namespaces::values());
+        let lhs_let = mk().local_stmt(Box::new(mk().local(
+            mk().ident_pat(&lhs_name),
+            None,
+            Some(lhs.to_expr()),
+        )));
+        let rhs_let = mk().local_stmt(Box::new(mk().local(
+            mk().ident_pat(&rhs_name),
+            None,
+            Some(rhs.to_expr()),
+        )));
+
+        let lhs = mk().ident_expr(&lhs_name);
+        let rhs = mk().ident_expr(&rhs_name);
+        let predicate = match comparison_name {
+            "isgreater" => mk().binary_expr(BinOp::Gt(Default::default()), lhs, rhs),
+            "isgreaterequal" => mk().binary_expr(BinOp::Ge(Default::default()), lhs, rhs),
+            "isless" => mk().binary_expr(BinOp::Lt(Default::default()), lhs, rhs),
+            "islessequal" => mk().binary_expr(BinOp::Le(Default::default()), lhs, rhs),
+            "islessgreater" => {
+                let less =
+                    mk().binary_expr(BinOp::Lt(Default::default()), lhs.clone(), rhs.clone());
+                let greater = mk().binary_expr(BinOp::Gt(Default::default()), lhs, rhs);
+                mk().binary_expr(BinOp::Or(Default::default()), less, greater)
+            }
+            "isunordered" => {
+                let lhs_is_nan = mk().method_call_expr(lhs, "is_nan", Vec::new());
+                let rhs_is_nan = mk().method_call_expr(rhs, "is_nan", Vec::new());
+                mk().binary_expr(BinOp::Or(Default::default()), lhs_is_nan, rhs_is_nan)
+            }
+            _ => unreachable!("unrecognized float comparison: {comparison_name}"),
+        };
+        let result = mk().cast_expr(predicate, mk().abs_path_ty(vec!["core", "ffi", "c_int"]));
+        Ok(Some(WithStmts::new(vec![lhs_let, rhs_let], result)))
     }
 
     #[allow(clippy::borrowed_box)]
