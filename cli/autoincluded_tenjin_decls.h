@@ -20,3 +20,31 @@ void FD_ZERO(void *);
 void FD_SET(int, void *);
 void FD_CLR(int, void *);
 int FD_ISSET(int, const void *);
+
+/*
+// These are type-generic macros rather than declared functions on some
+// platforms.  Blocking their expansion therefore leaves Clang without
+// declarations.  Overloads retain each argument's floating-point type, which
+// is important for classification and sign tests.
+*/
+#ifdef __cplusplus
+int isnormal(float);
+int isnormal(double);
+int isnormal(long double);
+int isfinite(float);
+int isfinite(double);
+int isfinite(long double);
+int signbit(float);
+int signbit(double);
+int signbit(long double);
+#else
+int isnormal(float) __attribute__((overloadable));
+int isnormal(double) __attribute__((overloadable));
+int isnormal(long double) __attribute__((overloadable));
+int isfinite(float) __attribute__((overloadable));
+int isfinite(double) __attribute__((overloadable));
+int isfinite(long double) __attribute__((overloadable));
+int signbit(float) __attribute__((overloadable));
+int signbit(double) __attribute__((overloadable));
+int signbit(long double) __attribute__((overloadable));
+#endif

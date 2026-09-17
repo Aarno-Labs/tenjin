@@ -168,6 +168,32 @@ int use(void) {
     assert "return __c11_atomic_load(&ordinary, __ATOMIC_SEQ_CST);" in transformed
 
 
+def test_leaves_read_only_globals_untouched(root, tmp_codebase):
+    transformed = run_atomics(
+        root,
+        tmp_codebase,
+        """\
+static int initialized_once = 7;
+static int never_referenced;
+static int updated;
+
+int read(void) {
+    return initialized_once;
+}
+
+void update(void) {
+    updated++;
+}
+""",
+    )
+
+    assert "static int initialized_once = 7;" in transformed
+    assert "static int never_referenced;" in transformed
+    assert "return initialized_once;" in transformed
+    assert "static __tenjin_atomic_i32_t updated;" in transformed
+    assert "__c11_atomic_fetch_add(&updated, 1, __ATOMIC_SEQ_CST);" in transformed
+
+
 def test_promotes_volatile_sig_atomic_t_but_not_other_volatile_integers(root, tmp_codebase):
     transformed = run_atomics(
         root,

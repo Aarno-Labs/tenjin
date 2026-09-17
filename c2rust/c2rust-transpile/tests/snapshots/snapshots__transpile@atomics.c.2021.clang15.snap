@@ -12,6 +12,8 @@ expression: cat tests/snapshots/atomics.2021.clang15.rs
     unused_mut
 )]
 #![feature(core_intrinsics, raw_ref_op)]
+pub type size_t = usize;
+pub type uint64_t = u64;
 pub type atomic_int = ::core::ffi::c_int;
 #[no_mangle]
 pub unsafe extern "C" fn c11_atomics(mut x: ::core::ffi::c_int) -> ::core::ffi::c_int {
@@ -84,5 +86,18 @@ pub unsafe extern "C" fn fetch_after_atomics_unsigned(
 pub unsafe extern "C" fn initialized_atomic() -> ::core::ffi::c_int {
     let mut value: atomic_int = 5 as ::core::ffi::c_int;
     return ::core::intrinsics::atomic_load_seqcst(&raw mut value);
+}
+#[no_mangle]
+pub unsafe extern "C" fn atomic_size_t_remainder(
+    mut value: uint64_t,
+    mut atomic_numchars: size_t,
+) -> uint64_t {
+    return value.wrapping_rem(
+        ::core::intrinsics::atomic_load_seqcst(&raw mut atomic_numchars) as uint64_t,
+    );
+}
+#[no_mangle]
+pub unsafe extern "C" fn atomic_u64_add_size_t(mut total: uint64_t, mut amount: size_t) {
+    ::core::intrinsics::atomic_xadd_seqcst(&raw mut total, amount as uint64_t);
 }
 pub const __ATOMIC_SEQ_CST: ::core::ffi::c_int = 5 as ::core::ffi::c_int;

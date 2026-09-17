@@ -393,6 +393,17 @@ impl Rewriter {
             .expect("failed to insert generated items into rewritten file");
     }
 
+    /// Fully rewrite an expression before embedding it in an opaque token
+    /// stream, such as the arguments of a generated macro invocation.
+    fn rewrite_expr_fully(&self, symbols: &SymbolTable, expr: &mut syn::Expr) {
+        let mut visitor = RewriteVisitor {
+            rewriter: self,
+            depth: Depth::Unlimited,
+            symbols: symbols.clone(),
+        };
+        visitor.visit_expr_mut(expr);
+    }
+
     fn cur_file_path(&self) -> PathBuf {
         self.cur_file
             .borrow()
@@ -1018,6 +1029,62 @@ mod tests {
         assert!(rewritten.contains("value"));
         assert!(!rewritten.contains("((foo()));"));
         assert!(!rewritten.contains("(((value)))"));
+    }
+
+    #[test]
+    fn statement_replacement_rewrites_nested_subexpressions() {
+        let mut rw = Rewriter::new();
+        rw.add_expr_rewrite(Rewriter::rewrite_usleep);
+        rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
+
+        let mut file =
+            syn::parse_file("fn demo() { ((sink(usleep(1)))); }").expect("valid test input");
+
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&file);
+        assert!(rewritten.contains("std::thread::sleep"));
+        assert!(!rewritten.contains("usleep("));
+    }
+
+    #[test]
+    fn expression_replacement_rewrites_through_generated_wrappers() {
+        let mut rw = Rewriter::new();
+        rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
+        rw.add_expr_rewrite(Rewriter::rewrite_print_byte);
+
+        let mut file =
+            syn::parse_file(r#"fn demo() { xj_astgrep_print("{:}", getchar() as char); }"#)
+                .expect("valid test input");
+
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&file);
+        assert!(rewritten.contains("xj_getchar_i() as u8"));
+        assert!(!rewritten.contains("getchar()"));
+    }
+
+    #[test]
+    fn scanf_rewrites_arguments_before_making_them_macro_tokens() {
+        let mut rw = Rewriter::new();
+        rw.add_expr_rewrite(Rewriter::rewrite_isatty_standard_stream);
+        rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
+
+        let mut file = syn::parse_file(
+            r#"fn demo(values: &mut [i32; 2]) {
+                scanf(
+                    b"%d\0" as *const u8 as *const i8,
+                    &raw mut values[isatty(1) as usize],
+                );
+            }"#,
+        )
+        .expect("valid test input");
+
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+
+        let rewritten = prettyplease::unparse(&file);
+        assert!(rewritten.contains("atty::is(atty::Stream::Stdout)"));
+        assert!(!rewritten.contains("isatty("));
     }
 
     #[test]

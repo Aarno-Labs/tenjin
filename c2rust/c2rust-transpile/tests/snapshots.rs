@@ -34,6 +34,12 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "foo": "u8"
             }
         })
+    } else if c_path.ends_with("tenjin_guided_array.c") {
+        serde_json::json!({
+            "vars_of_type": {
+                "[&'static [u8]; 2]": "GUIDED_STRINGS"
+            }
+        })
     } else if c_path.ends_with("tenjin_slices.c") {
         serde_json::json!({
             "vars_of_type" : {
@@ -609,6 +615,11 @@ fn test_sigign() {
         .os_specific(true)
         .expect_unresolved_import("libc")
         .run();
+}
+
+#[test]
+fn test_tenjin_guided_array() {
+    transpile("tenjin_guided_array.c").run();
 }
 
 #[test]

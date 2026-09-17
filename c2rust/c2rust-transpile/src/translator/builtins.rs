@@ -656,7 +656,7 @@ impl<'c> Translation<'c> {
         }
     }
 
-    fn import_num_traits(&self, arg_id: CExprId) -> TranslationResult<()> {
+    pub(super) fn import_num_traits(&self, arg_id: CExprId) -> TranslationResult<()> {
         let arg_type_id = self
             .ast_context
             .index_unwrap_parens(arg_id)

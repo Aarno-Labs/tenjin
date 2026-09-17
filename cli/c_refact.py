@@ -271,6 +271,7 @@ def refold_build(
     t: targets.BuildTarget,
     target_dir_path: Path,
     consolidation_data_by_rel_tu: dict[str, ConsolidationRevertContext] | None = None,
+    refold_map_root: Path | None = None,
 ) -> None:
     """
     For each TU in compdb, run clang-refold to produce .c files from modified .i files
@@ -283,7 +284,11 @@ def refold_build(
         assert abs_src_path.suffixes[-2:] == [".nolines", ".i"]
         abs_src_path_base = abs_src_path.with_suffix("")
         c_path = abs_src_path_base.with_suffix(".c")
-        refold_map_path = abs_src_path_base.with_suffix(".nolines.refoldmap.json")
+        if refold_map_root is None:
+            refold_map_path = abs_src_path_base.with_suffix(".nolines.refoldmap.json")
+        else:
+            rel_src_path = abs_src_path.relative_to(target_dir_path)
+            refold_map_path = (refold_map_root / rel_src_path).with_suffix(".refoldmap.json")
         edit_map_path = abs_src_path_base.with_suffix(".nolines.editmap.json")
 
         print("Refolding", abs_src_path, "to", c_path)
@@ -670,6 +675,32 @@ def compute_globals_and_statics_for_translation_units(
             tu, elide_functions, statics_only
         )
         combined.extend(results)
+    return combined
+
+
+def compute_global_symbol_inventory_for_translation_units(
+    translation_units: list[TranslationUnit],
+) -> list[Cursor]:
+    """Collect declarations which can collide with a project static's name.
+
+    Unlike ``compute_globals_and_statics_for_translation_units``, this includes
+    declarations as well as definitions and includes externally linked functions.
+    The result is intended as a name-occupancy inventory, not as a list of
+    entities eligible for a source rewrite.
+    """
+
+    combined: list[Cursor] = []
+
+    def visit(node: Cursor):
+        if node.kind in (CursorKind.VAR_DECL, CursorKind.FUNCTION_DECL) and (
+            node.storage_class == StorageClass.STATIC or node.linkage == LinkageKind.EXTERNAL
+        ):
+            combined.append(node)
+        for child in node.get_children():
+            visit(child)
+
+    for translation_unit in translation_units:
+        visit(translation_unit.cursor)  # type: ignore[attr-defined]
     return combined
 
 
@@ -1634,6 +1665,28 @@ def cursor_extent_contains(outer: Cursor, inner: Cursor) -> bool:
     )
 
 
+def type_names_declared_before_offset(tu: TranslationUnit, offset: int) -> set[str]:
+    """Return named type declarations that are visible before ``offset``.
+
+    The translation units processed by mutable-global localization are flattened
+    ``.i`` files, so source offsets describe declaration order within the file.
+    A declaration later in the translation unit is not yet in scope at an
+    earlier insertion point.
+    """
+    type_declaration_kinds = {
+        CursorKind.STRUCT_DECL,
+        CursorKind.UNION_DECL,
+        CursorKind.TYPEDEF_DECL,
+    }
+    return {
+        cursor.spelling
+        for cursor in tu.cursor.walk_preorder()  # type: ignore[attr-defined]
+        if cursor.kind in type_declaration_kinds
+        and cursor.spelling
+        and cursor.extent.end.offset <= offset
+    }
+
+
 def localize_mutable_globals(
     json_path: Path,
     compdb: compilation_database.CompileCommands,
@@ -2283,35 +2336,37 @@ def localize_mutable_globals(
 
             # print(f"\n  Analyzing types in scope in TU: {tu_path}")
 
-            types_in_scope = set()  # Set of type names (struct/union/typedef)
+            # Keep the existing whole-TU struct/union behavior: copying a full
+            # definition earlier while leaving its original definition in place
+            # would redefine the tag. Typedefs, however, may be repeated when
+            # they name the same type, and must be copied when their original
+            # declaration occurs after the generated xj_globals.h include.
+            struct_union_types_in_tu = set()
 
-            # Find all struct/union/typedef declarations
+            # Find all struct/union declarations.
             for cursor in tu.cursor.walk_preorder():  # type:ignore[attr-defined]
                 if cursor.kind == CursorKind.STRUCT_DECL and cursor.spelling:
-                    types_in_scope.add(cursor.spelling)
+                    struct_union_types_in_tu.add(cursor.spelling)
                     # print(f"    Found struct in scope: {cursor.spelling}")
                 elif cursor.kind == CursorKind.UNION_DECL and cursor.spelling:
-                    types_in_scope.add(cursor.spelling)
+                    struct_union_types_in_tu.add(cursor.spelling)
                     # print(f"    Found union in scope: {cursor.spelling}")
-                elif cursor.kind == CursorKind.TYPEDEF_DECL and cursor.spelling:
-                    types_in_scope.add(cursor.spelling)
-                    # print(f"    Found typedef in scope: {cursor.spelling}")
 
-            # print(f"\n  Found {len(types_in_scope)} types already in scope in TU: {tu_path}")
+            types_declared_before_include = type_names_declared_before_offset(tu, offset)
 
             # Determine which types need to be emitted
             types_to_emit_structs: dict[str, Cursor] = {}  # name -> decl_cursor
             types_to_emit_typedefs: dict[str, Cursor] = {}  # name -> decl_cursor
 
             for type_name, decl_cursor in needed_struct_defs.items():
-                if type_name not in types_in_scope:
+                if type_name not in struct_union_types_in_tu:
                     types_to_emit_structs[type_name] = decl_cursor
                 #     print(f"    Will emit struct definition: {type_name}")
                 # else:
                 #     print(f"    Skipping struct (already in scope): {type_name}")
 
             for type_name, decl_cursor in needed_typedefs.items():
-                if type_name not in types_in_scope:
+                if type_name not in types_declared_before_include:
                     types_to_emit_typedefs[type_name] = decl_cursor[0]
                 #     print(f"    Will emit typedef: {type_name}")
                 # else:
@@ -2334,7 +2389,7 @@ def localize_mutable_globals(
             type_defs_lines.append("\n// Type definitions needed for XjGlobals")
 
             # Add forward declarations if needed
-            forward_decls_to_emit = forward_declarable_types - types_in_scope
+            forward_decls_to_emit = forward_declarable_types - types_declared_before_include
             if forward_decls_to_emit:
                 for type_name in sorted(forward_decls_to_emit):
                     type_defs_lines.append(f"struct {type_name};")

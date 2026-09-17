@@ -57,6 +57,7 @@ struct Candidate {
   std::vector<const VarDecl *> Declarations;
   std::vector<AccessEdit> Edits;
   std::string AtomicTypeName;
+  bool HasModification = false;
   bool Eligible = true;
   std::string RejectionReason;
 };
@@ -74,6 +75,7 @@ public:
 
     AccessVisitor RefVisitor(*this);
     RefVisitor.TraverseDecl(Ctx.getTranslationUnitDecl());
+    finishAccessChecks();
     rewrite(R);
   }
 
@@ -236,6 +238,17 @@ private:
     }
   }
 
+  void finishAccessChecks() {
+    // Atomics are needed to preserve concurrent updates.  Promoting globals
+    // that are only read changes their C type and can create needless Rust
+    // atomic statics, so leave those declarations and their loads alone.
+    for (auto &Entry : Candidates) {
+      Candidate &C = Entry.second;
+      if (C.Eligible && !C.HasModification)
+        reject(C, "variable is never modified");
+    }
+  }
+
   const Stmt *transparentParent(const Stmt *S) const {
     const Stmt *Current = S;
     while (true) {
@@ -281,6 +294,8 @@ private:
       reject(C, "access cannot be rewritten");
       return;
     }
+    if (Kind != EditKind::Load)
+      C.HasModification = true;
     C.Edits.push_back(
         {Kind, WholeExpr, Rhs, VD, Offsets->first, Offsets->second});
   }

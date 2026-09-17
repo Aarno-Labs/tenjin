@@ -1284,7 +1284,7 @@ def test_tractor_b2_synthetic_fallcalc_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_findrep_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/findrep_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 7
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 5
 
 
 @pytest.mark.slow
@@ -1306,7 +1306,7 @@ def test_tractor_b2_synthetic_gotomach_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_hatch_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/hatch_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 10
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 7
 
 
 @pytest.mark.slow
@@ -1804,7 +1804,7 @@ def test_tractor_b2_organic_underhanded_c_luggage_app(tenjin_fixtures: TenjinFix
 def test_tractor_b2_synthetic_tu_linkage_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/tu_linkage"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 31
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 29
 
 
 # ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗    ██████╗     ██╗     ██╗██████╗ ███████╗

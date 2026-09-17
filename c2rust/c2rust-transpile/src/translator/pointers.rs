@@ -36,6 +36,7 @@ impl<'c> Translation<'c> {
                 return self.convert_array_subscript(
                     ctx.used().needs_address(),
                     Some(cqual_type),
+                    Some(arg),
                     lhs,
                     rhs,
                     LRValue::RValue, // if we bypass the deref, we stay an RValue
@@ -181,6 +182,14 @@ impl<'c> Translation<'c> {
             }
 
             if is_array_decay {
+                if guided_type
+                    .as_ref()
+                    .is_some_and(|guided| guided.is_shared_borrow() && guided.is_slice_ref())
+                {
+                    // A byte string literal already has a shared reference-to-array type,
+                    // which Rust can coerce directly to the guided shared slice type.
+                    return Ok(val);
+                }
                 val = val.map(|val| mk().method_call_expr(val, "as_ptr", vec![]));
             } else {
                 let size = self.ast_context.array_len(literal_cty.ctype) * element_size as usize;
@@ -325,6 +334,7 @@ impl<'c> Translation<'c> {
         &self,
         ctx: ExprContext,
         expected_type_id: Option<CQualTypeId>,
+        subscript_expr_id: Option<CExprId>,
         lhs: CExprId,
         rhs: CExprId,
         lrvalue: LRValue,
@@ -391,14 +401,28 @@ impl<'c> Translation<'c> {
                 .get_type()
                 .ok_or_else(|| format_err!("bad arr type"))?;
             let array_type_kind = &self.ast_context.resolve_type(array_type_id).kind;
-            let var_elt_type_id = match *array_type_kind {
-                CTypeKind::ConstantArray(..) => None,
-                CTypeKind::IncompleteArray(..) => None,
-                CTypeKind::VariableArray(elt, _) => Some(elt),
+            let (array_element_type_id, var_elt_type_id) = match *array_type_kind {
+                CTypeKind::ConstantArray(elt, _) => (elt, None),
+                CTypeKind::IncompleteArray(elt) => (elt, None),
+                CTypeKind::VariableArray(elt, _) => (elt, Some(elt)),
                 ref other => panic!("Unexpected array type {:?}", other),
             };
 
-            let array_rs = self.convert_expr(ctx.used().not_needs_address(), array_id, None)?;
+            let array_guided_type = self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, array_id);
+            let guided_element_type = array_guided_type
+                .as_ref()
+                .and_then(|guided| tenjin::type_try_arraylike_element(&guided.parsed))
+                .cloned()
+                .map(GuidedType::from_type);
+            let array_rs = self.convert_expr_guided(
+                ctx.used().not_needs_address(),
+                array_id,
+                None,
+                &array_guided_type,
+            )?;
 
             // Don't dereference the offset if we're still within the variable portion
             let val = if let Some(elt_type_id) = var_elt_type_id {
@@ -424,6 +448,42 @@ impl<'c> Translation<'c> {
                     .zip(offset_rs)
                     .map(|(array_rs, offset_rs)| mk().index_expr(array_rs, offset_rs))
             };
+
+            let context_is_slice_or_array = ctx_guided_type
+                .as_ref()
+                .is_some_and(|guided| guided.is_slice_or_array_ref());
+            let element_is_c_pointer = matches!(
+                self.ast_context.resolve_type(array_element_type_id).kind,
+                CTypeKind::Pointer(_)
+            );
+            let subscript_is_base =
+                subscript_expr_id.is_some_and(|expr_id| self.wrapped_with_subscript_base(expr_id));
+            if !ctx.needs_address
+                && element_is_c_pointer
+                && !context_is_slice_or_array
+                && !subscript_is_base
+            {
+                if let Some(guided_element_type) = guided_element_type {
+                    if guided_element_type.is_slice_or_array_ref() {
+                        let method = if guided_element_type.is_exclusive_borrow() {
+                            "as_mut_ptr"
+                        } else {
+                            "as_ptr"
+                        };
+                        let target_type = self.convert_type(
+                            expected_type_id
+                                .unwrap_or(CQualTypeId::new(array_element_type_id))
+                                .ctype,
+                        )?;
+                        return Ok(val.map(|val| {
+                            mk().cast_expr(
+                                mk().method_call_expr(val, method, vec![]),
+                                target_type.clone(),
+                            )
+                        }));
+                    }
+                }
+            }
 
             Ok(val)
         } else {

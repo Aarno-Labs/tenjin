@@ -176,6 +176,11 @@ public:
     auto *VD = Result.Nodes.getNodeAs<VarDecl>("fn_ptr_var_decl");
     if (VD && VD->getBeginLoc().isValid()) {
       if (VD->getName().starts_with("__")) { return; }
+      // Only file-scope variables can denote the same object in another
+      // translation unit. This table drives cross-TU type-rewrite
+      // replication, so recording locals by bare name would conflate
+      // unrelated function pointers such as `fp` in separate functions.
+      if (!VD->isFileVarDecl()) { return; }
       auto *TSI = VD->getTypeSourceInfo();
       if (TSI) {
         FunctionTypeLoc FTL;

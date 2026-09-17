@@ -1,4 +1,5 @@
 #include <stdatomic.h>
+#include <stdint.h>
 
 _Atomic(int) c11_atomics(_Atomic(int) x) {
     __c11_atomic_init(&x, 0);
@@ -44,4 +45,15 @@ unsigned int fetch_after_atomics_unsigned(unsigned int x) {
 int initialized_atomic(void) {
     atomic_int value = 5;
     return atomic_load(&value);
+}
+
+uint64_t atomic_size_t_remainder(
+    uint64_t value,
+    _Atomic(size_t) atomic_numchars) {
+    /* C's usual arithmetic conversions promote this size_t load to uint64_t. */
+    return value % __c11_atomic_load(&atomic_numchars, __ATOMIC_SEQ_CST);
+}
+
+void atomic_u64_add_size_t(_Atomic(uint64_t) total, size_t amount) {
+    __c11_atomic_fetch_add(&total, amount, __ATOMIC_SEQ_CST);
 }

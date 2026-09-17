@@ -69,10 +69,7 @@ pub unsafe extern "C" fn doesnt_use_errno(mut f: *mut FILE) -> ::core::ffi::c_in
     fclose(f);
     return 0 as ::core::ffi::c_int;
 }
-unsafe fn _xj_wrap_fclose_xjtr_0(
-    mut _xj_errno: &mut i32,
-    mut __stream: *mut FILE,
-) -> ::core::ffi::c_int {
+unsafe fn _xj_wrap_fclose(mut _xj_errno: &mut i32, mut __stream: *mut FILE) -> ::core::ffi::c_int {
     let mut ret = fclose(__stream);
     *_xj_errno = *__errno_location();
     return ret;
@@ -80,13 +77,13 @@ unsafe fn _xj_wrap_fclose_xjtr_0(
 #[no_mangle]
 pub unsafe extern "C" fn does_use_errno(mut f: *mut FILE) -> ::core::ffi::c_int {
     let mut _xj_local_errno: i32 = 0;
-    let mut r = _xj_wrap_fclose_xjtr_0(&mut _xj_local_errno, f);
+    let mut r = _xj_wrap_fclose(&mut _xj_local_errno, f);
     if r < 0 as ::core::ffi::c_int {
         return _xj_local_errno;
     }
     return 0 as ::core::ffi::c_int;
 }
-unsafe fn _xj_wrap_strerror_xjtr_0(
+unsafe fn _xj_wrap_strerror(
     mut _xj_errno: &mut i32,
     mut __errnum: ::core::ffi::c_int,
 ) -> *mut ::core::ffi::c_char {
@@ -103,10 +100,8 @@ unsafe fn main_0(
     _xj_local_errno = 0 as ::core::ffi::c_int;
     if _xj_local_errno == EINVAL {
         println!("Error: [{:>}]", {
-            xj_str_from_ptr(
-                _xj_wrap_strerror_xjtr_0(&mut _xj_local_errno, _xj_local_errno)
-                    as *const core::ffi::c_char,
-            )
+            xj_str_from_ptr(_xj_wrap_strerror(&mut _xj_local_errno, _xj_local_errno)
+                as *const core::ffi::c_char)
         });
         bar();
     }

@@ -3,6 +3,7 @@ import platform
 import re
 import json
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable
@@ -55,6 +56,48 @@ def _remap_path_prefix_in_argument(s: str, source: Path, dest: Path) -> str:
     return re.sub(pattern, lambda match: match.group(1) + str(dest), s)
 
 
+def _plan_static_uniquification(
+    statics_in_deterministic_order: list[c_refact.NamedDeclInfo],
+    project_symbols: list[c_refact.NamedDeclInfo],
+) -> dict[tenj_types.ClangUSR, tenj_types.CIdentifier]:
+    """Choose names for statics, suffixing only genuine collision groups.
+
+    Multiple declarations with the same USR describe one entity. A static can
+    retain its spelling only when no distinct project symbol occupies that
+    spelling. Generated names are recorded separately so source names which
+    already happen to end in ``_xjtr_N`` do not need special treatment.
+    """
+
+    project_usrs_by_name: dict[tenj_types.CIdentifier, set[tenj_types.ClangUSR]] = defaultdict(set)
+    for symbol in project_symbols:
+        project_usrs_by_name[symbol.spelling].add(symbol.usr)
+
+    occupied_names = {symbol.spelling for symbol in project_symbols}
+    next_suffix_by_base: dict[tenj_types.CIdentifier, int] = {}
+    planned_names: dict[tenj_types.ClangUSR, tenj_types.CIdentifier] = {}
+
+    def make_unique_name(base: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
+        while True:
+            n = next_suffix_by_base.get(base, 0)
+            next_suffix_by_base[base] = n + 1
+            candidate = f"{base}_xjtr_{n}"
+            if candidate not in occupied_names:
+                occupied_names.add(candidate)
+                return candidate
+
+    for static in statics_in_deterministic_order:
+        if static.usr in planned_names:
+            continue
+        distinct_entities = project_usrs_by_name[static.spelling]
+        is_singleton = distinct_entities == {static.usr}
+        if is_singleton:
+            planned_names[static.usr] = static.spelling
+        else:
+            planned_names[static.usr] = make_unique_name(static.spelling)
+
+    return planned_names
+
+
 def run_modifying_subprocess_or_restore_prev(
     prev: Path,
     current_codebase: Path,
@@ -64,11 +107,11 @@ def run_modifying_subprocess_or_restore_prev(
     """Run a mutating subprocess, restoring `prev` on subprocess failure."""
 
     def restore_preparation_dir_from_prev():
-        """Replace `current_codebase` with the exact contents of `prev`."""
+        """Restore `current_codebase` from `prev`, excluding canonical refold maps."""
         assert prev.is_dir(), f"Expected previous preparation output to be a directory: {prev}"
         if current_codebase.exists():
             shutil.rmtree(current_codebase)
-        shutil.copytree(prev, current_codebase)
+        copy_preparation_stage(prev, current_codebase, remove_stale_compdb=False)
 
     try:
         cp = run_subprocess()
@@ -278,12 +321,22 @@ def compute_build_info_in(
 
     click.secho(f"((( Building via `{buildcmd}`", fg="cyan", bold=True)
     if prebuildcmd is not None:
-        cp = hermetic.run(
-            prebuildcmd,
-            cwd=build_cwd,
-            shell=isinstance(buildcmd, str),
-            check=True,
-        )
+        # Configuration steps may discover tool paths and bake them into generated
+        # build scripts. We must run them with the interceptor wrappers on PATH so an
+        # absolute path baked into a script still points at a wrapper during the
+        # actual build. Prebuild activity should not, however, be saved into the
+        # final target graph.
+        with tempfile.TemporaryDirectory(prefix="tenjin-prebuild-commands-") as prebuildcmds:
+            cp = hermetic.run(
+                prebuildcmd,
+                cwd=build_cwd,
+                shell=isinstance(prebuildcmd, str),
+                check=True,
+                env_ext={
+                    "BUILD_COMMANDS_DIRECTORY": prebuildcmds,
+                    "pre-Tenjin PATH prefix": [str(cc_ld_intercept_dir)],
+                },
+            )
     cp = hermetic.run(
         buildcmd,
         cwd=build_cwd,
@@ -445,6 +498,20 @@ def copy_codebase_dir(
     compdb_path = dst / "compile_commands.json"
     if compdb_path.exists():
         compdb_path.unlink()
+
+
+def copy_preparation_stage(src: Path, dst: Path, *, remove_stale_compdb: bool):
+    """Copy one preparation stage without duplicating canonical refold maps."""
+    assert src.is_dir()
+    shutil.copytree(
+        src,
+        dst,
+        ignore=lambda _directory, names: [
+            name for name in names if name.endswith(".refoldmap.json")
+        ],
+    )
+    if remove_stale_compdb:
+        (dst / "compile_commands.json").unlink(missing_ok=True)
 
 
 type QUSS = c_refact_type_mod_replicator.QuasiUniformSymbolSpecifier
@@ -748,6 +815,10 @@ class PrepPassResultStore:
     consolidation_data_by_rel_tu: dict[RelativeFilePathStr, c_refact.ConsolidationRevertContext] = (
         dataclasses.field(default_factory=dict)
     )
+    static_uniquification_base_by_generated_name: dict[
+        tenj_types.CIdentifier, tenj_types.CIdentifier
+    ] = dataclasses.field(default_factory=dict)
+    refold_map_root: Path | None = None
 
 
 # Matches `weak` spelled as its own token, which covers `__attribute__((weak))`,
@@ -1262,8 +1333,13 @@ def run_preparation_passes(
             all_build_targets[0].key, current_codebase
         )
 
-        all_pgs_cursors = c_refact.compute_globals_and_statics_for_project(
-            compdb, statics_only=True
+        index = cindex_helpers.create_xj_clang_index()
+        translation_units = list(c_refact.parse_project(index, compdb).values())
+        all_pgs_cursors = c_refact.compute_globals_and_statics_for_translation_units(
+            translation_units, statics_only=True
+        )
+        project_symbol_cursors = c_refact.compute_global_symbol_inventory_for_translation_units(
+            translation_units
         )
         # Sharing the same name/spelling is orthogonal to whether two cursors
         # refer to the same entity. Two identically-named statics in different
@@ -1283,27 +1359,17 @@ def run_preparation_passes(
             assert g_s.file_path is not None, f"Expected file_path for global/static: {g_s}"
             assert g_s.file_path.startswith(current_codebase_dir)
 
-        uniquifiers: dict[str, int] = {}
-        usr_names: dict[tenj_types.ClangUSR, tenj_types.CIdentifier] = {}
-
         pgs_in_deterministic_order = sorted(
             all_pgs, key=lambda g: (g.file_path or "", g.decl_start_byte_offset)
         )
-
-        def mk_unique_name(base: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
-            while True:
-                n = uniquifiers.get(base, 0)
-                uniquifiers[base] = n + 1
-                candidate = f"{base}_xjtr_{n}"
-                if candidate not in all_global_names:
-                    return candidate
-
-        all_global_names = set(g_s.spelling for g_s in all_pgs)
-
-        for g_s in pgs_in_deterministic_order:
-            if g_s.usr in usr_names:
-                continue  # already renamed this entity via another declaration
-            usr_names[g_s.usr] = mk_unique_name(g_s.spelling)
+        project_symbols = [c_refact.mk_NamedDeclInfo(c) for c in project_symbol_cursors]
+        usr_names = _plan_static_uniquification(pgs_in_deterministic_order, project_symbols)
+        original_name_by_usr = {g_s.usr: g_s.spelling for g_s in pgs_in_deterministic_order}
+        store.static_uniquification_base_by_generated_name = {
+            generated_name: original_name_by_usr[usr]
+            for usr, generated_name in usr_names.items()
+            if generated_name != original_name_by_usr[usr]
+        }
 
         rewrites_per_file: dict[
             tenj_types.FilePathStr,
@@ -1315,6 +1381,8 @@ def run_preparation_passes(
             if g_s.usr in seen_usrs_in_this_file:
                 continue  # already renamed this entity in this file
             seen_usrs_in_this_file.add(g_s.usr)
+            if usr_names[g_s.usr] == g_s.spelling:
+                continue  # this entity has no project-wide name collision
             rewrites_per_file.setdefault(g_s.file_path or "", {})[g_s.decl_start_byte_offset] = (
                 g_s.decl_end_byte_offset,
                 usr_names[g_s.usr],
@@ -1406,7 +1474,7 @@ def run_preparation_passes(
         )
 
         def is_unique_name(name: tenj_types.CIdentifier) -> bool:
-            return "_xjtr_" in name and name[-1].isdigit()
+            return name in store.static_uniquification_base_by_generated_name
 
         def is_static_inline_function(cursor: Cursor) -> bool:
             """Note that all cursors returned by `compute_globals_and_statics_for_project`
@@ -1427,13 +1495,10 @@ def run_preparation_passes(
             return False
 
         all_pgs_static_inline_funcs = [
-            c_refact.mk_NamedDeclInfo(c) for c in all_pgs_cursors if is_static_inline_function(c)
+            c_refact.mk_NamedDeclInfo(c)
+            for c in all_pgs_cursors
+            if is_static_inline_function(c) and is_unique_name(c.spelling)
         ]
-
-        for g_s in all_pgs_static_inline_funcs:
-            assert is_unique_name(g_s.spelling), (
-                f"Expected unique name for static inline function: {g_s.spelling}"
-            )
 
         # We can safely strip the suffix as far as C is concerned; that's how the code
         # was originally. And we already apply guidance by ignoring uniquification suffixes.
@@ -1468,7 +1533,7 @@ def run_preparation_passes(
         # modified in divergent ways across files and refolding them would silently
         # merge inconsistent versions; omit such names from un-uniquification below.
         def strip_suffix(unique_name: tenj_types.CIdentifier) -> tenj_types.CIdentifier:
-            return re.sub(r"_xjtr_\d+$", "", unique_name)
+            return store.static_uniquification_base_by_generated_name[unique_name]
 
         decls_by_base_name: dict[tenj_types.CIdentifier, list[c_refact.NamedDeclInfo]] = (
             defaultdict(list)
@@ -1991,6 +2056,7 @@ def run_preparation_passes(
 
         # Miscellaneous tasks over, onwards with preprocessor expansion!
         c_refact.preprocess_build(store.build_info, all_build_targets[0], current_codebase)
+        store.refold_map_root = current_codebase
         # build_info now marked to use preprocessed files, so re-generate compdb
         new_compdb: compilation_database.CompileCommands = (
             store.build_info.compdb_for_target_within(all_build_targets[0].key, current_codebase)
@@ -2399,6 +2465,7 @@ def run_preparation_passes(
             all_build_targets[0],
             current_codebase,
             consolidation_data_by_rel_tu=store.consolidation_data_by_rel_tu,
+            refold_map_root=store.refold_map_root,
         )
         # build_info now marked to use refolded files, for future steps
 
@@ -2457,7 +2524,7 @@ def run_preparation_passes(
         with tracker.tracking(f"preparation_pass_{counter:02d}_{tag}", newdir) as step:
             start_ns = time.perf_counter_ns()
             if counter > 0:
-                copy_codebase_dir(prev, newdir)
+                copy_preparation_stage(prev, newdir, remove_stale_compdb=True)
             cp_or_None: CompletedProcess | None = func(prev, newdir, store)
             if cp_or_None is not None:
                 step.update_sub(cp_or_None)

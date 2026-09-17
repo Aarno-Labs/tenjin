@@ -78,7 +78,7 @@ impl AtomicValue {
 }
 
 impl Translation<'_> {
-    pub(crate) fn atomic_value(&self, ptr_id: CExprId) -> TranslationResult<AtomicValue> {
+    fn atomic_value_type(&self, ptr_id: CExprId) -> TranslationResult<CQualTypeId> {
         let ptr_ty = self.ast_context[ptr_id].kind.get_qual_type().unwrap();
         let mut value_ty = self
             .ast_context
@@ -87,6 +87,11 @@ impl Translation<'_> {
         if let CTypeKind::Atomic(inner) = self.ast_context.resolve_type(value_ty.ctype).kind {
             value_ty = inner;
         }
+        Ok(value_ty)
+    }
+
+    pub(crate) fn atomic_value(&self, ptr_id: CExprId) -> TranslationResult<AtomicValue> {
+        let value_ty = self.atomic_value_type(ptr_id)?;
         let function_pointer = if self.ast_context.is_function_pointer(value_ty.ctype) {
             Some(self.convert_type(value_ty.ctype)?)
         } else {
@@ -206,12 +211,39 @@ impl Translation<'_> {
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let ptr = self.convert_expr(ctx.used(), ptr_id, None)?;
         let order = self.convert_memordering(order_id);
+        let value_ty = self.atomic_value_type(ptr_id)?;
+        // The C11 and `_n` atomic forms take their value arguments by value.
+        // Propagate the pointee type so that C's usual arithmetic conversions
+        // survive type mappings such as `size_t` -> `usize` and `uint64_t` ->
+        // `u64`.  The other GNU forms take pointers in these positions, and
+        // must retain their original argument type.
+        let scalar_value_ty = (!self
+            .ast_context
+            .resolve_type(value_ty.ctype)
+            .kind
+            .is_pointer())
+        .then_some(value_ty);
+        let val1_ty = match name {
+            "__atomic_store_n"
+            | "__atomic_exchange_n"
+            | "__c11_atomic_init"
+            | "__c11_atomic_store"
+            | "__c11_atomic_exchange" => scalar_value_ty,
+            _ if CAtomicBinOp::from_atomic_fn(name).is_some() => scalar_value_ty,
+            _ => None,
+        };
+        let val2_ty = match name {
+            "__atomic_compare_exchange_n"
+            | "__c11_atomic_compare_exchange_strong"
+            | "__c11_atomic_compare_exchange_weak" => scalar_value_ty,
+            _ => None,
+        };
         let val1 = val1_id
-            .map(|x| self.convert_expr(ctx.used(), x, None))
+            .map(|x| self.convert_expr(ctx.used(), x, val1_ty))
             .transpose()?;
         let order_fail = order_fail_id.and_then(|x| self.convert_memordering(x));
         let val2 = val2_id
-            .map(|x| self.convert_expr(ctx.used(), x, None))
+            .map(|x| self.convert_expr(ctx.used(), x, val2_ty))
             .transpose()?;
         let weak = weak_id.and_then(|x| self.convert_constant_bool(x));
 
