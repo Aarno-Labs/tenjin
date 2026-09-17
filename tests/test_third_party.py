@@ -2084,3 +2084,294 @@ def test_maandree_libzahl_debug(tenjin_fixtures: TenjinFixtures):
         # fail, so the (multi-gigabyte) resultsdir would never be reclaimed.
         clean_up_resultsdir(tmp_resultsdir)
         annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+LIBFUSE_VERSION = "3.19.0"
+LIBFUSE_REAL_SO = f"libfuse3.so.{LIBFUSE_VERSION}"
+# We build only the shared library: the helper programs must be installed setuid to
+# be useful, and the test suite and examples are not what we want to translate.
+LIBFUSE_MESON_SETUP = (
+    "meson setup _builddir -Dexamples=false -Dtests=false -Dutils=false -Dinitscriptdir=''"
+)
+
+
+def libfuse_git_clone() -> Path:
+    return cached_git_clone_at_commit(
+        "https://github.com/libfuse/libfuse.git", "b45649f5195414f8a038f10ff85034e3c27ebc36"
+    )
+
+
+def skip_unless_fuse_is_mountable():
+    """Mounting a FUSE filesystem needs /dev/fuse and the setuid helper `fusermount3`,
+    which cannot be built (let alone installed setuid) as part of a test."""
+    if platform.system() != "Linux":
+        pytest.skip("libfuse only supports Linux")
+    if not Path("/dev/fuse").exists():
+        pytest.skip("/dev/fuse is unavailable, so FUSE filesystems cannot be mounted")
+    if shutil.which("fusermount3") is None:
+        pytest.skip("fusermount3 is not installed")
+
+
+def run_libfuse_example(binary: Path, args: list[str]) -> tuple:
+    """Run an example program, normalizing the argv[0] echoed by its usage message."""
+    cp = hermetic.run([str(binary), *args], check=False, capture_output=True, timeout=60)
+    return (
+        cp.returncode,
+        cp.stdout.replace(str(binary).encode(), b"<prog>"),
+        cp.stderr.replace(str(binary).encode(), b"<prog>"),
+    )
+
+
+def mount_and_inspect_hello_filesystem(
+    binary: Path, mountpoint: Path, args: list[str] | None = None, filename: str = "hello"
+) -> tuple:
+    """Mount one of libfuse's hello-world example filesystems, look at the single file
+    it serves, and unmount it again."""
+    # These programs daemonize, and the daemon inherits whatever stdout/stderr it was
+    # given. Capturing through pipes would therefore block until the filesystem is
+    # unmounted -- which we cannot do until after we have inspected it -- so the output
+    # goes to files instead, which we read once the foreground process has exited.
+    stderr_path = mountpoint.parent / f"{binary.name}.mount.err"
+    with open(mountpoint.parent / f"{binary.name}.mount.out", "wb") as out_f:
+        with open(stderr_path, "wb") as err_f:
+            mount = hermetic.run(
+                [str(binary), *(args or []), str(mountpoint)],
+                check=False,
+                stdout=out_f,
+                stderr=err_f,
+                timeout=60,
+            )
+    mount_stderr = stderr_path.read_bytes()
+    if mount.returncode != 0:
+        return (mount.returncode, mount_stderr, None, None, None)
+    try:
+        # The mountpoint is inspected via subprocesses (rather than read directly) so
+        # that a filesystem which fails to answer cannot hang the test indefinitely.
+        listing = hermetic.run(
+            ["ls", "-1", str(mountpoint)], check=False, capture_output=True, timeout=60
+        )
+        contents = hermetic.run(
+            ["cat", str(mountpoint / filename)], check=False, capture_output=True, timeout=60
+        )
+        attributes = hermetic.run(
+            ["stat", "-c", "%s %A", str(mountpoint / filename)],
+            check=False,
+            capture_output=True,
+            timeout=60,
+        )
+    finally:
+        hermetic.run(["fusermount3", "-u", str(mountpoint)], check=False, timeout=60)
+    return (mount.returncode, mount_stderr, listing.stdout, contents.stdout, attributes.stdout)
+
+
+@pytest.mark.slow  # expected runtime: 32 s, plus the initial clone of libfuse
+def test_libfuse_hello_ll_example(tenjin_fixtures: TenjinFixtures):
+    """Translate libfuse's low-level "hello world" example filesystem (leaving libfuse
+    itself in C), then mount the translated filesystem and read from it."""
+    skip_unless_fuse_is_mountable()
+
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = libfuse_git_clone()
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # libfuse itself is built during the prebuild step, so that only the example
+    # program is translated. Meson leaves `libfuse3.so` and the SONAME `libfuse3.so.4`
+    # as symlinks to the real library, but Tenjin relocates built files one at a time,
+    # which leaves such symlink chains dangling; we make them real copies instead.
+    prebuildcmd = " && ".join([
+        LIBFUSE_MESON_SETUP,
+        "ninja -C _builddir",
+        f"cp --remove-destination _builddir/lib/{LIBFUSE_REAL_SO} _builddir/lib/libfuse3.so.4",
+        f"cp --remove-destination _builddir/lib/{LIBFUSE_REAL_SO} _builddir/lib/libfuse3.so",
+    ])
+    # Linking with -L/-l (rather than naming the .so directly) is what makes Tenjin
+    # treat libfuse3 as an external library rather than as a second crate to build.
+    buildcmd = (
+        "cc -D_FILE_OFFSET_BITS=64 -D_REENTRANT -Iinclude -I_builddir"
+        " example/hello_ll.c -o hello_ll.exe -L_builddir/lib -lfuse3"
+        " -Wl,-rpath,'$ORIGIN/_builddir/lib'"
+    )
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="libfuse_hello_ll",
+            prebuildcmd=prebuildcmd,
+            buildcmd=buildcmd,
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    # Tenjin's generated build.rs emits `cargo:rustc-link-lib=fuse3` but no search
+    # path, so we point the linker (and, via rpath, the loader) at the C library.
+    libdir = tmp_resultsdir / "_build_1" / "_builddir" / "lib"
+    hermetic.run_cargo_on_translated_code(
+        ["build"],
+        cwd=tmp_resultsdir / "final",
+        env_ext={"RUSTFLAGS": f"-L {libdir} -C link-arg=-Wl,-rpath,{libdir}"},
+    )
+
+    c_hello_ll = tmp_resultsdir / "_build_1" / "hello_ll.exe"
+    rs_hello_ll = tmp_resultsdir / "final" / "target" / "debug" / "hello_ll"
+    mountpoint = tmp_resultsdir / "mnt"
+    mountpoint.mkdir()
+
+    c_mounted = mount_and_inspect_hello_filesystem(c_hello_ll, mountpoint)
+    assert c_mounted[0] == 0, f"The C hello_ll failed to mount; stderr: {c_mounted[1]!r}"
+    assert c_mounted[2:] == (b"hello\n", b"Hello World!\n", b"13 -r--r--r--\n"), (
+        f"Unexpected contents for the C hello_ll filesystem: {c_mounted!r}"
+    )
+
+    rs_mounted = mount_and_inspect_hello_filesystem(rs_hello_ll, mountpoint)
+    assert rs_mounted == c_mounted, (
+        f"The translated filesystem behaved differently; Rust: {rs_mounted!r}, C: {c_mounted!r}"
+    )
+
+    # Also exercise the paths that do not mount anything: the usage message, the
+    # version banner, a missing mountpoint, and an unrecognized option.
+    for args in [[], ["--help"], ["-V"], ["--not-an-option"]]:
+        c_result = run_libfuse_example(c_hello_ll, args)
+        rs_result = run_libfuse_example(rs_hello_ll, args)
+        if args == ["-V"]:
+            # `-V` prints two lines of its own and also runs `fusermount3 --version`,
+            # which writes to the inherited stdout directly. The C and the translated
+            # build flush libc's stdout buffer at different points, so the three lines
+            # come out interleaved differently; only their contents are comparable.
+            c_result = (c_result[0], sorted(c_result[1].splitlines()), c_result[2])
+            rs_result = (rs_result[0], sorted(rs_result[1].splitlines()), rs_result[2])
+        assert rs_result == c_result, (
+            f"`hello_ll {' '.join(args)}` differed; Rust: {rs_result!r}, C: {c_result!r}"
+        )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow
+@pytest.mark.skip(
+    reason="The libfuse shared library does not reach a compilable crate: `cargo check` on "
+    "02_lift-call-args reports 4 errors, all already present in c2rust's output (00_out). "
+    "(1) E0080 x2: the `[FUSE_NOTIFY_REPLY] = { (void *) 1, ... }` sentinel in "
+    "fuse_lowlevel.c's fuse_ll_ops/fuse_ll_ops2 becomes an invalid function pointer in a "
+    "static. (2) E0308 x2: `_Atomic size_t se->bufsize` is assigned with an `as c_ulong` "
+    "cast, but the field is translated as `usize`. Refolding is not the cause: all 19 "
+    "refolded translation units pass clang-refold's --verify-output=fatal check."
+)
+def test_libfuse_libfuse(tenjin_fixtures: TenjinFixtures):
+    """Translate the libfuse shared library itself, then run libfuse's example
+    programs (which stay in C) against the translated library."""
+    skip_unless_fuse_is_mountable()
+
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = libfuse_git_clone()
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # As with fribidi, we build everything up front and then delete the library's own
+    # artifacts, so that `buildcmd` rebuilds exactly (and only) the library. The
+    # `libfuse3.so` and `libfuse3.so.4` symlinks are recreated only by an initial link,
+    # so they have to go too; otherwise they dangle and the copy of the build directory
+    # into the results directory fails.
+    prebuildcmd = " && ".join([
+        LIBFUSE_MESON_SETUP,
+        "ninja -C _builddir",
+        f"rm -rf _builddir/lib/libfuse3.so _builddir/lib/libfuse3.so.4"
+        f" _builddir/lib/{LIBFUSE_REAL_SO} _builddir/lib/{LIBFUSE_REAL_SO}.p/*",
+    ])
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="libfuse_libfuse",
+            prebuildcmd=prebuildcmd,
+            buildcmd="ninja -C _builddir",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    builddir = tmp_resultsdir / "_build_1"
+    libdir = builddir / "_builddir" / "lib"
+    c_library = libdir / LIBFUSE_REAL_SO
+    # Restore the SONAME symlink, which the rebuild did not recreate.
+    (libdir / "libfuse3.so.4").symlink_to(c_library.name)
+
+    rust_libraries = sorted((tmp_resultsdir / "final" / "target" / "debug").glob("*.so"))
+    assert len(rust_libraries) == 1, (
+        f"Expected exactly one translated shared library, got {rust_libraries}"
+    )
+
+    # Build the example programs, which we do not translate, against the C library.
+    examples_dir = tmp_resultsdir / "examples"
+    examples_dir.mkdir()
+    example_names = ["hello", "hello_ll", "printcap"]
+    for name in example_names:
+        hermetic.run(
+            [
+                "cc",
+                "-D_FILE_OFFSET_BITS=64",
+                "-D_REENTRANT",
+                f"-I{builddir / 'include'}",
+                f"-I{builddir / '_builddir'}",
+                str(builddir / "example" / f"{name}.c"),
+                "-o",
+                str(examples_dir / name),
+                str(c_library),
+                f"-Wl,-rpath,{libdir}",
+            ],
+            check=True,
+        )
+
+    mountpoint = tmp_resultsdir / "mnt"
+    mountpoint.mkdir()
+
+    def exercise_examples() -> dict[str, tuple]:
+        """Exercise the examples against whichever libfuse3 is currently in place."""
+        return {
+            # printcap mounts a filesystem, prints the capabilities the kernel offers,
+            # and exits; it exercises the low-level API's initialization handshake.
+            "printcap": run_libfuse_example(examples_dir / "printcap", []),
+            # `--help` exercises the option parser (fuse_opt) without mounting.
+            "hello --help": run_libfuse_example(examples_dir / "hello", ["--help"]),
+            # The high-level API, with default and with custom options...
+            "hello": mount_and_inspect_hello_filesystem(examples_dir / "hello", mountpoint),
+            "hello --name": mount_and_inspect_hello_filesystem(
+                examples_dir / "hello",
+                mountpoint,
+                args=["--name=greeting", "--contents=Bonjour!"],
+                filename="greeting",
+            ),
+            # ... and the low-level API.
+            "hello_ll": mount_and_inspect_hello_filesystem(examples_dir / "hello_ll", mountpoint),
+        }
+
+    c_observations = exercise_examples()
+
+    # Sanity-check the C build before comparing the Rust build against it.
+    for label in ["hello", "hello_ll"]:
+        returncode, stderr, listing, contents, attributes = c_observations[label]
+        assert returncode == 0, f"The C `{label}` failed to mount; stderr: {stderr!r}"
+        assert (listing, contents, attributes) == (
+            b"hello\n",
+            b"Hello World!\n",
+            b"13 -r--r--r--\n",
+        ), f"Unexpected contents for the C `{label}` filesystem: {c_observations[label]!r}"
+    assert b"FUSE library version" in c_observations["printcap"][1], (
+        f"Unexpected C printcap output: {c_observations['printcap'][1]!r}"
+    )
+
+    # Swap the translated library in for the C one and re-run the same examples.
+    shutil.copyfile(rust_libraries[0], c_library)
+    rust_observations = exercise_examples()
+
+    for label, c_result in c_observations.items():
+        assert rust_observations[label] == c_result, (
+            f"`{label}` behaved differently against the translated library;"
+            f" Rust: {rust_observations[label]!r}, C: {c_result!r}"
+        )
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
