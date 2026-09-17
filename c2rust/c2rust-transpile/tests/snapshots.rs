@@ -405,6 +405,11 @@ fn test_fn_attrs() {
 }
 
 #[test]
+fn test_fpclassify() {
+    transpile("fpclassify.c").run();
+}
+
+#[test]
 fn test_generics() {
     transpile("generics.c").run();
 }

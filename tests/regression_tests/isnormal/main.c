@@ -73,5 +73,24 @@ int main(void) {
         left_calls != 1 || right_calls != 1) {
         return 17;
     }
+    if (fpclassify(NAN) != FP_NAN) {
+        return 18;
+    }
+    if (fpclassify(INFINITY) != FP_INFINITE) {
+        return 19;
+    }
+    if (fpclassify(normal) != FP_NORMAL) {
+        return 20;
+    }
+    if (fpclassify(subnormal) != FP_SUBNORMAL) {
+        return 21;
+    }
+    if (fpclassify(negative_zero) != FP_ZERO) {
+        return 22;
+    }
+    left_calls = 0;
+    if (fpclassify(counted_left(normal)) != FP_NORMAL || left_calls != 1) {
+        return 23;
+    }
     return 0;
 }
