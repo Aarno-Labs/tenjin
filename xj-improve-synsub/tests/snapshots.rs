@@ -48,6 +48,36 @@ fn atomic_local_initialization_and_intrinsics() {
 }
 
 #[test]
+fn atomic_operations_accept_const_raw_addresses_cast_to_mutable_pointers() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+    check(
+        &rw,
+        r#"static value: ::core::sync::atomic::AtomicI32 =
+            ::core::sync::atomic::AtomicI32::new(0);
+        fn demo() {
+            *(&raw const value as *mut ::core::sync::atomic::AtomicI32) = 5;
+            ::core::intrinsics::atomic_store_seqcst(
+                &raw const value as *mut ::core::sync::atomic::AtomicI32,
+                10,
+            );
+            let _ = ::core::intrinsics::atomic_load_acquire(
+                &raw const value as *mut ::core::sync::atomic::AtomicI32,
+            );
+        }"#,
+        expect![[r#"
+            static value: ::core::sync::atomic::AtomicI32 = ::core::sync::atomic::AtomicI32::new(0);
+            fn demo() {
+                value.store(5, ::core::sync::atomic::Ordering::SeqCst);
+                value.store(10, ::core::sync::atomic::Ordering::SeqCst);
+                let _ = value.load(::core::sync::atomic::Ordering::Acquire);
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn atomic_struct_initialization_and_intrinsics() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);

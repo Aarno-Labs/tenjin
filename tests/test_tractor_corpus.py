@@ -1320,7 +1320,7 @@ def test_tractor_b2_synthetic_inreftree_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_jumpnode_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/jumpnode_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 4
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 3
 
 
 @pytest.mark.slow

@@ -17,6 +17,45 @@ use crate::{
 };
 
 impl<'c> Translation<'c> {
+    /// Find the static declaration whose storage contains the lvalue `expr`.
+    ///
+    /// Only follow projections which preserve storage identity. In particular,
+    /// do not follow pointer dereferences or `->`: an immutable static pointer
+    /// does not make the separately allocated object it points to immutable.
+    fn static_storage_root(&self, expr: CExprId) -> Option<crate::CDeclId> {
+        match self.ast_context.index_unwrap_parens(expr).kind {
+            CExprKind::DeclRef(_, decl_id, _) => {
+                self.static_decl_rust_mutability(decl_id).map(|_| decl_id)
+            }
+
+            CExprKind::Member(_, base, _, crate::c_ast::MemberKind::Dot, _) => {
+                self.static_storage_root(base)
+            }
+
+            CExprKind::ArraySubscript(_, base, _, _) => {
+                match self.ast_context.index_unwrap_parens(base).kind {
+                    CExprKind::ImplicitCast(_, array, CastKind::ArrayToPointerDecay, _, _)
+                    | CExprKind::ExplicitCast(_, array, CastKind::ArrayToPointerDecay, _, _) => {
+                        self.static_storage_root(array)
+                    }
+                    _ => None,
+                }
+            }
+
+            CExprKind::ConstantExpr(_, inner, _) => self.static_storage_root(inner),
+            _ => None,
+        }
+    }
+
+    fn expr_uses_immutable_static_storage(&self, expr: CExprId) -> bool {
+        self.static_storage_root(expr).is_some_and(|decl_id| {
+            matches!(
+                self.static_decl_rust_mutability(decl_id),
+                Some(Mutability::Immutable)
+            )
+        })
+    }
+
     pub fn convert_address_of(
         &self,
         mut ctx: ExprContext,
@@ -115,14 +154,19 @@ impl<'c> Translation<'c> {
 
         let mut needs_cast = false;
         let mut ref_cast_pointee_ty = None;
-        let mutbl = if ctx.is_const && !pointee_cty.qualifiers.is_const {
-            // const contexts aren't able to use &mut, so we work around that
-            // by using & and an extra cast through & to *const to *mut
-            // TODO: Rust 1.83: Allowed, so this can be removed.
+        let target_mutbl = pointee_cty.mutability();
+        let source_is_immutable_static =
+            arg.is_some_and(|arg| self.expr_uses_immutable_static_storage(arg));
+        let mutbl = if matches!(target_mutbl, Mutability::Mutable)
+            && (ctx.is_const || source_is_immutable_static)
+        {
+            // A mutable raw address cannot be formed from an immutable Rust
+            // static. Take a const raw address and cast it to the C expression's
+            // pointer type below. Const contexts use the same representation.
             needs_cast = true;
             Mutability::Immutable
         } else {
-            pointee_cty.mutability()
+            target_mutbl
         };
 
         if let Some(CExprKind::DeclRef(_cqti, decl_id, _lrval)) = arg_expr_kind {

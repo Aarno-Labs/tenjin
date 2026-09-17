@@ -3367,6 +3367,55 @@ impl<'c> Translation<'c> {
         self.type_contains_unguided_raw_pointer_inner(ctype, &mut HashSet::new())
     }
 
+    /// Return the mutability of the Rust `static` emitted for `decl_id`.
+    ///
+    /// Keep this decision centralized: expression lowering needs to know whether
+    /// it may form a mutable raw address of the emitted declaration.
+    fn static_decl_rust_mutability(&self, decl_id: CDeclId) -> Option<Mutability> {
+        let decl = self.ast_context.get_decl(&decl_id)?;
+        let (has_static_duration, has_thread_duration, typ) = match &decl.kind {
+            CDeclKind::Variable {
+                has_static_duration,
+                has_thread_duration,
+                typ,
+                ..
+            } => (*has_static_duration, *has_thread_duration, *typ),
+            _ => return None,
+        };
+        if !has_static_duration && !has_thread_duration {
+            return None;
+        }
+
+        let guided_type = self
+            .parsed_guidance
+            .borrow_mut()
+            .query_decl_type(self, decl_id);
+        // XREF:static_var_nonmutbl
+        let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
+        let is_semantically_immutable = self
+            .parsed_guidance
+            .borrow()
+            .query_decl_semantically_immutable(self, decl_id);
+        let semantic_immutability_is_rust_safe = is_semantically_immutable
+            && (guided_type.is_some() || !self.type_contains_unguided_raw_pointer(typ.ctype));
+        // Rust atomic wrappers provide mutation through shared references, so
+        // atomic statics themselves do not need `static mut`.
+        let is_atomic = matches!(
+            self.ast_context.resolve_type(typ.ctype).kind,
+            CTypeKind::Atomic(_)
+        );
+
+        Some(if is_atomic {
+            Mutability::Immutable
+        } else if let Some(guided_mutbl) = guided_mutbl {
+            guided_mutbl
+        } else if semantic_immutability_is_rust_safe {
+            Mutability::Immutable
+        } else {
+            Mutability::Mutable
+        })
+    }
+
     fn type_contains_unguided_raw_pointer_inner(
         &self,
         ctype: CTypeId,
@@ -3666,21 +3715,10 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
-                // XREF:static_var_nonmutbl
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
-                let is_semantically_immutable = self
-                    .parsed_guidance
-                    .borrow()
-                    .query_decl_semantically_immutable(self, decl_id);
-                let semantic_immutability_is_rust_safe = is_semantically_immutable
-                    && (guided_type.is_some()
-                        || !self.type_contains_unguided_raw_pointer(typ.ctype));
-                // Rust atomic wrappers provide mutation through shared references,
-                // so atomic statics themselves do not need `static mut`.
-                let is_atomic = matches!(
-                    self.ast_context.resolve_type(typ.ctype).kind,
-                    CTypeKind::Atomic(_)
-                );
+                let rust_mutbl = self
+                    .static_decl_rust_mutability(decl_id)
+                    .expect("static-duration variable should have Rust static mutability");
 
                 let mut static_def = if is_externally_visible {
                     mk_linkage(false, new_name, ident, self.tcfg.edition)
@@ -3695,15 +3733,7 @@ impl<'c> Translation<'c> {
                 // Explicit mutability guidance wins over semantic immutability.  Otherwise,
                 // omit `mut` only when PANGS proved the static immutable and its Rust type
                 // will not contain an unguided raw pointer requiring `Sync`.
-                match if is_atomic {
-                    Mutability::Immutable
-                } else if let Some(guided_mutbl) = guided_mutbl {
-                    guided_mutbl
-                } else if semantic_immutability_is_rust_safe {
-                    Mutability::Immutable
-                } else {
-                    Mutability::Mutable
-                } {
+                match rust_mutbl {
                     Mutability::Mutable => {
                         static_def = static_def.mutbl();
                     }

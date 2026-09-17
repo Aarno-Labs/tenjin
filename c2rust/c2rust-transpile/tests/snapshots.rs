@@ -65,6 +65,18 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "function_pointer"
             ]
         })
+    } else if c_path.ends_with("tenjin_semantic_immutable_addresses.c") {
+        serde_json::json!({
+            "vars_mut": {
+                "forced_mut_array": true
+            },
+            "semantically_immutable_globals": [
+                "direct_array",
+                "record",
+                "record_array",
+                "forced_mut_array"
+            ]
+        })
     } else if c_path.ends_with("tenjin_slices.c") {
         serde_json::json!({
             "vars_of_type" : {
@@ -659,6 +671,11 @@ fn test_tenjin_semantic_immutability() {
     transpile("tenjin_semantic_immutability.c")
         .expect_compile_error(true)
         .run();
+}
+
+#[test]
+fn test_tenjin_semantic_immutable_addresses() {
+    transpile("tenjin_semantic_immutable_addresses.c").run();
 }
 
 #[test]

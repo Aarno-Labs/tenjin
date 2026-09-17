@@ -81,12 +81,7 @@ impl Rewriter {
         let Expr::Path(function) = &*call.func else {
             return None;
         };
-        let Expr::RawAddr(raw_addr) = expr_strip_parens(call.args.first()?) else {
-            return None;
-        };
-        if !matches!(raw_addr.mutability, syn::PointerMutability::Mut(_)) {
-            return None;
-        }
+        let raw_addr = raw_addr_through_cast(call.args.first()?)?;
         let receiver_ty = symbols.type_of_expr(&raw_addr.expr)?;
         let kind = atomic_kind(&receiver_ty)?;
         let (method, ordering, value_arity) = atomic_intrinsic_method(&function.path, kind)?;
@@ -1236,10 +1231,23 @@ fn atomic_assignment_place(expr: &Expr) -> &Expr {
     if !matches!(unary.op, syn::UnOp::Deref(_)) {
         return expr;
     }
-    let Expr::RawAddr(raw_addr) = expr_strip_parens(&unary.expr) else {
+    let Some(raw_addr) = raw_addr_through_cast(&unary.expr) else {
         return expr;
     };
     &raw_addr.expr
+}
+
+/// Recognize a raw address directly or through the pointer cast emitted when
+/// an immutable Rust static has a mutable C pointer type.
+fn raw_addr_through_cast(expr: &Expr) -> Option<&syn::ExprRawAddr> {
+    match expr_strip_parens(expr) {
+        Expr::RawAddr(raw_addr) => Some(raw_addr),
+        Expr::Cast(cast) => match expr_strip_parens(&cast.expr) {
+            Expr::RawAddr(raw_addr) => Some(raw_addr),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Return `(method, Ordering variant, non-receiver argument count)`.
