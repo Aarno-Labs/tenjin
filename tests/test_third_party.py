@@ -2,6 +2,7 @@ import hashlib
 from pathlib import Path
 import shutil
 import platform
+import re
 import subprocess
 
 import pytest
@@ -2084,3 +2085,208 @@ def test_maandree_libzahl_debug(tenjin_fixtures: TenjinFixtures):
         # fail, so the (multi-gigabyte) resultsdir would never be reclaimed.
         clean_up_resultsdir(tmp_resultsdir)
         annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 860 seconds (~14 minutes, up to the xfail below)
+@pytest.mark.xfail(
+    reason="jq does not translate yet; two blockers, one behind the other. "
+    "(1) xj-c2rust exits 101 on src/builtin.c, whose isnormal builtin calls isnormal(). That name "
+    "is in autoblocked_macro_names_in_translation.txt, but unlike isinf/isnan glibc gives it no "
+    "function form and autoincluded_tenjin_decls.h no declaration, so the blocked call is an "
+    "implicit declaration and convert_call_args in translator/functions.rs trips "
+    "`arg_tys.len() == exprs.len()`. A declaration alone gets past c2rust but leaves an extern "
+    "isnormal that glibc does not export, so the fix also needs a tenjin.rs recognizer. isfinite "
+    "and signbit have the same gap, but jq does not call them. "
+    "(2) Behind that, `cargo check` after improvement_pass_02_lift-call-args fails: f128_internal "
+    "cannot find <quadmath.h> (it is in the sysroot, but under the unsearched GCC-internal "
+    "usr/lib/gcc/x86_64-linux-gnu/10/). f128 is pulled in by one call site -- nexttoward's "
+    "`long double` parameter -- whose f128 mapping is also ABI-wrong on x86-64. This one is "
+    "inherited from upstream c2rust, which emits the same dependency and signature and fails to "
+    "build the same way; translating nexttoward as nextafter would drop the dependency."
+)
+def test_jqlang_jq(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/jqlang/jq.git", "4bb50d772bd35666dcd3ae460f2ddfae3864e16c"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # Configure outside `do_translate` so the interceptor doesn't see conftest.c probes.
+    # - Oniguruma is a git submodule (absent from our clone), and only tests/onig.test uses it.
+    # - Maintainer mode makes `make` run flex/bison; their output isn't committed to git.
+    # - Tenjin's aclocal and libtoolize live under different prefixes, so point aclocal
+    #   at libtool.m4 explicitly.
+    # - `CC=cc` makes configure probe Tenjin's clang and sysroot.
+    hermetic.run(
+        "ACLOCAL_PATH=$(dirname $(dirname $(command -v libtoolize)))/share/aclocal"
+        " autoreconf -fi"
+        " && ./configure CC=cc --without-oniguruma --enable-maintainer-mode --disable-shared",
+        cwd=str(tmp_codebase),
+        shell=True,
+        check=True,
+    )
+    # Only the generated sources; the real build is the single `cc` below.
+    hermetic.run(
+        [
+            "make",
+            "src/lexer.c",
+            "src/lexer.h",
+            "src/parser.c",
+            "src/parser.h",
+            "src/builtin.inc",
+            "src/config_opts.inc",
+            "src/version.h",
+        ],
+        cwd=str(tmp_codebase),
+        check=True,
+    )
+
+    # jq has no config.h; configure's results are the ~110 -D flags in the Makefile's
+    # $(DEFS). `printf '%s\n'` keeps escaped values like -DPACKAGE_STRING=\"jq\ 1.8.2\"
+    # as one argument each.
+    defs = (
+        hermetic.run(
+            [
+                "make",
+                "-s",
+                """--eval=xj-print-defs: ; @printf '%s\\n' $(DEFS)""",
+                "xj-print-defs",
+            ],
+            cwd=str(tmp_codebase),
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode("utf-8")
+        .splitlines()
+    )
+    assert "-DIEEE_8087=1" in defs and "-DUSE_DECNUM=1" in defs, (
+        f"DEFS from the generated Makefile looks wrong: {defs!r}"
+    )
+
+    # `make` would build libjq plus jq, and a multi-target codebase disables the
+    # non-trivial refactoring passes, so link everything into one `jq.exe` instead.
+    libjq_src = [
+        "builtin.c",
+        "bytecode.c",
+        "compile.c",
+        "execute.c",
+        "jq_test.c",
+        "jv.c",
+        "jv_alloc.c",
+        "jv_aux.c",
+        "jv_dtoa.c",
+        "jv_file.c",
+        "jv_parse.c",
+        "jv_print.c",
+        "jv_unicode.c",
+        "linker.c",
+        "locfile.c",
+        "util.c",
+        "jv_dtoa_tsd.c",
+    ]
+    buildcmd_args = [
+        "cc",
+        *defs,
+        "-I.",
+        "-Isrc",
+        "-Ivendor",
+        # From configure's CFLAGS; src/jv_dtoa_tsd.c needs pthread_key_create.
+        "-pthread",
+        *[f"src/{name}" for name in libjq_src],
+        "src/lexer.c",
+        "src/parser.c",
+        "src/main.c",
+        # The only decNumber files $(libjq_src) uses.
+        "vendor/decNumber/decContext.c",
+        "vendor/decNumber/decNumber.c",
+        "-lm",
+        "-o",
+        "jq.exe",
+    ]
+    hermetic.run(buildcmd_args, cwd=str(tmp_codebase), check=True)
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="jqlang_jq",
+            buildcmd=hermetic.shellize(buildcmd_args),
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    c_jq = tmp_codebase / "jq.exe"
+    rs_jq = tmp_resultsdir / "final" / "target" / "debug" / "jq"
+
+    # Makefile.am's TESTS, minus the Oniguruma-only onigtest and manonigtest. Each driver
+    # sources tests/setup, which honours $JQ and pins LC_ALL=C.
+    drivers = [
+        "mantest",
+        "jqtest",
+        "shtest",
+        "utf8test",
+        "base64test",
+        "uritest",
+        "optionaltest",
+    ]
+    # Drivers that print a `--run-tests` summary line.
+    run_tests_drivers = {"mantest", "jqtest", "base64test", "uritest", "optionaltest"}
+    # These run under `sh -x`, so stderr is a trace with temp paths; compare only stdout
+    # and exit status.
+    traced_drivers = {"shtest", "utf8test"}
+
+    def run_driver(driver: str, jq_binary: Path) -> subprocess.CompletedProcess:
+        # tests/jq-f-test.sh re-execs plain `jq` from $PATH (codebase root first).
+        link = tmp_codebase / "jq"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(jq_binary)
+        return hermetic.run(
+            [str(tmp_codebase / "tests" / driver)],
+            cwd=str(tmp_codebase),
+            check=False,
+            capture_output=True,
+            env_ext={"JQ": str(jq_binary), "TZ": "UTC"},
+        )
+
+    # The C binary must pass first, which also validates the single-`cc` build.
+    c_results = {}
+    for driver in drivers:
+        cp = run_driver(driver, c_jq)
+        assert cp.returncode == 0, (
+            f"The C build failed jq's own tests/{driver}: exit {cp.returncode}, "
+            f"stdout {cp.stdout[-2000:]!r}, stderr {cp.stderr[-2000:]!r}"
+        )
+        if driver in run_tests_drivers:
+            assert re.search(
+                rb"^(\d+) of \1 tests passed \(0 malformed, 0 skipped\)$",
+                cp.stdout,
+                re.MULTILINE,
+            ), f"No passing summary line in C tests/{driver}: {cp.stdout[-2000:]!r}"
+        c_results[driver] = cp
+
+    problems = []
+    for driver in drivers:
+        c_cp, rs_cp = c_results[driver], run_driver(driver, rs_jq)
+        if rs_cp.returncode != c_cp.returncode:
+            problems.append(
+                f"tests/{driver}: exit {rs_cp.returncode} (Rust) vs {c_cp.returncode} (C); "
+                f"Rust stdout {rs_cp.stdout[-1500:]!r}, stderr {rs_cp.stderr[-1500:]!r}"
+            )
+        elif rs_cp.stdout != c_cp.stdout:
+            problems.append(
+                f"tests/{driver}: stdout differed; Rust {rs_cp.stdout[-1500:]!r} "
+                f"vs C {c_cp.stdout[-1500:]!r}"
+            )
+        elif driver not in traced_drivers and rs_cp.stderr != c_cp.stderr:
+            problems.append(
+                f"tests/{driver}: stderr differed; Rust {rs_cp.stderr[-1500:]!r} "
+                f"vs C {c_cp.stderr[-1500:]!r}"
+            )
+
+    assert not problems, "The Rust jq diverged from the C jq:\n" + "\n".join(problems)
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
