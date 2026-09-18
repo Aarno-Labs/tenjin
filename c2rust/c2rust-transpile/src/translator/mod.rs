@@ -3373,17 +3373,30 @@ impl<'c> Translation<'c> {
     /// it may form a mutable raw address of the emitted declaration.
     fn static_decl_rust_mutability(&self, decl_id: CDeclId) -> Option<Mutability> {
         let decl = self.ast_context.get_decl(&decl_id)?;
-        let (has_static_duration, has_thread_duration, typ) = match &decl.kind {
+        let (has_static_duration, has_thread_duration, initializer, typ) = match &decl.kind {
             CDeclKind::Variable {
                 has_static_duration,
                 has_thread_duration,
+                initializer,
                 typ,
                 ..
-            } => (*has_static_duration, *has_thread_duration, *typ),
+            } => (
+                *has_static_duration,
+                *has_thread_duration,
+                *initializer,
+                *typ,
+            ),
             _ => return None,
         };
         if !has_static_duration && !has_thread_duration {
             return None;
+        }
+
+        // A section-extracted initializer becomes an assignment in
+        // `c2rust_run_static_initializers`, so its destination must be mutable
+        // regardless of explicit or semantic immutability guidance.
+        if self.static_initializer_is_uncompilable(initializer, typ) {
+            return Some(Mutability::Mutable);
         }
 
         let guided_type = self

@@ -77,6 +77,13 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "forced_mut_array"
             ]
         })
+    } else if c_path.ends_with("snapshots/macros.c") {
+        serde_json::json!({
+            // This scalar's member-expression initializer is section-extracted.
+            // The generated static must remain mutable even under semantic-
+            // immutability guidance so the runtime initializer can assign it.
+            "semantically_immutable_globals": ["global_static_const_member"]
+        })
     } else if c_path.ends_with("tenjin_slices.c") {
         serde_json::json!({
             "vars_of_type" : {
