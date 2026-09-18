@@ -462,6 +462,24 @@ impl Rewriter {
 struct AtomicTypeNormalizer;
 
 impl VisitMut for AtomicTypeNormalizer {
+    fn visit_expr_cast_mut(&mut self, cast: &mut syn::ExprCast) {
+        self.visit_expr_mut(&mut cast.expr);
+
+        // Keep the C value type on casts of atomic intrinsic pointers.  The
+        // intrinsic rewrite uses it to preserve the result conversion when a
+        // Rust pointer-sized atomic method returns `usize` or `isize`.
+        if let syn::Type::Ptr(pointer) = &*cast.ty
+            && let syn::Type::Path(path) = &*pointer.elem
+            && path.qself.is_none()
+            && path.path.segments.len() == 1
+            && c_atomic_rust_name(&path.path.segments[0].ident.to_string()).is_some()
+        {
+            return;
+        }
+
+        self.visit_type_mut(&mut cast.ty);
+    }
+
     fn visit_type_mut(&mut self, ty: &mut syn::Type) {
         if let syn::Type::Path(path) = ty
             && path.qself.is_none()
@@ -537,7 +555,7 @@ pub(crate) fn atomic_kind_from_name(name: &str) -> Option<AtomicKind> {
 /// Target-dependent aliases such as `atomic_char`, `atomic_long`, and the
 /// `atomic_*_fast*_t` family are intentionally left for explicit
 /// `vars_of_type` guidance.
-fn c_atomic_rust_name(c_name: &str) -> Option<&'static str> {
+pub(crate) fn c_atomic_rust_name(c_name: &str) -> Option<&'static str> {
     match c_name {
         "atomic_bool" | "__tenjin_atomic_bool_t" => Some("AtomicBool"),
         "atomic_schar" | "atomic_int_least8_t" | "__tenjin_atomic_i8_t" => Some("AtomicI8"),
