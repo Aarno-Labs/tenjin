@@ -839,6 +839,8 @@ def test_localize_mutable_globals_phase1_seeds_source_only_global_users(root, tm
     prev_codebase = tmp_codebase.parent / "prev_codebase"
     current_codebase.mkdir()
     prev_codebase.mkdir()
+    (current_codebase / "demo").mkdir()
+    (prev_codebase / "demo").mkdir()
 
     source = (
         "static int localized_global;\n"
@@ -849,28 +851,34 @@ def test_localize_mutable_globals_phase1_seeds_source_only_global_users(root, tm
         "    return 0;\n"
         "}\n"
     )
-    current_file = current_codebase / "sample.nolines.i"
-    prev_file = prev_codebase / "sample.nolines.i"
+    current_file = current_codebase / "demo" / "sample.nolines.i"
+    prev_file = prev_codebase / "demo" / "sample.nolines.i"
     current_file.write_text(source, encoding="utf-8")
     prev_file.write_text(source, encoding="utf-8")
     write_compile_commands_for_sources(current_codebase, [current_file])
+    (current_codebase / "xj-guidance.json").write_text("{}", encoding="utf-8")
 
-    results = c_refact.localize_mutable_globals_phase1(
+    manifest_path = current_codebase / "pangs-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            disposition_manifest_for_localization([], fields=[{"llvm_name": "localized_global"}])
+        ),
+        encoding="utf-8",
+    )
+    c_refact.localize_mutable_globals(
+        manifest_path=manifest_path,
         compdb=compilation_database.CompileCommands.from_json_file(
             current_codebase / "compile_commands.json"
         ),
-        manifest=disposition_manifest_for_localization(
-            [], fields=[{"llvm_name": "localized_global"}]
-        ),
-        current_codebase=current_codebase,
         prev=prev_codebase,
-        nonmain_context_functions=set(),
+        current_codebase=current_codebase,
     )
 
     rewritten = current_file.read_text(encoding="utf-8")
-    assert results.nonmain_context_functions == {"dead_leaf", "dead_caller"}
     assert "dead_leaf(struct XjGlobals *xjg)" in rewritten
     assert "dead_caller(struct XjGlobals *xjg)" in rewritten
     assert "int main(void)" in rewritten
-    assert "dead_leaf(((struct XjGlobals*)0))" in rewritten
-    assert "dead_caller(((struct XjGlobals*)0))" in rewritten
+    assert "dead_leaf(xjg)" in rewritten
+    assert "dead_caller(xjg)" in rewritten
+    assert (current_codebase / "xj_globals.h").is_file()
+    assert '#include "../xj_globals.h"' in rewritten

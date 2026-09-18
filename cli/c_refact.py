@@ -8,6 +8,7 @@ import shutil
 from typing import TypedDict
 import pprint
 from os import environ
+import os
 
 from clang.cindex import (  # type: ignore
     Index,
@@ -2143,15 +2144,11 @@ def localize_mutable_globals(
         # Step 3: Create xj_globals.h header file
         print("\n  --- Step 3: Creating xj_globals.h ---")
 
-        # Get the directory where we should place the headers
-        # Use the directory from the compilation database
-        if compdb.get_source_files():
-            header_dir = compdb.get_source_files()[0].parent
-        else:
-            header_dir = Path(".")
-
         # Create xj_globals.h with full definitions
-        header_path = header_dir / "xj_globals.h"
+        # This is a generated project header, so it belongs at the root of the
+        # prepared codebase. A compilation database's sources can live in
+        # different subdirectories (and `get_source_files()` is unordered).
+        header_path = current_codebase / "xj_globals.h"
         print(f"  Creating full definition header at {header_path}")
 
         # Build the header content
@@ -2497,7 +2494,14 @@ def localize_mutable_globals(
                             type_defs_lines.append(struct_text + ";")
                             break
 
-            type_defs_lines.append('#include "xj_globals.h"')
+            # These are preprocessed `.i` files, for which Clang does not
+            # honor `-I` flags. Use a path relative to this translation unit
+            # so a source under (for example) `demo/` can still include the
+            # generated header at the prepared-codebase root.
+            header_include = Path(
+                os.path.relpath(header_path, start=Path(tu_path).parent)
+            ).as_posix()
+            type_defs_lines.append(f'#include "{header_include}"')
             type_defs_lines.append(f"/* @{q} end include block for XjGlobals */")
 
             type_defs_text = "\n".join(type_defs_lines) + "\n"
