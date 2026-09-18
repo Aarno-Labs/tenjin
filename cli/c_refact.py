@@ -9,6 +9,7 @@ from typing import TypedDict
 import pprint
 from os import environ
 import os
+import tempfile
 
 from clang.cindex import (  # type: ignore
     Index,
@@ -35,6 +36,7 @@ import c_refact_type_mod_replicator
 from constants import XJ_GUIDANCE_FILENAME
 import targets
 import tenj_types
+import pangs_source
 
 
 def xj_comp_db_from_directory(dir: str) -> compilation_database.CompileCommands:
@@ -1023,10 +1025,9 @@ def localize_mutable_globals_phase1(
     The first phase modifies function (pointer) types and
     inserts placeholder parameters for XjGlobals.
 
-    Some function pointer types, when used in higher-order ways,
-    cannot yet be reliably modified during phase 1, and currently
-    must be handled by a separate cleanup pass
-    (`speculatively_fix_higher_order_fn_ptr_types`).
+    Production uses PANGS's source-complete edits, including callable types.
+    The IR-only path below and its speculative cleanup are retained solely
+    for migration comparisons; the public materializer rejects such plans.
 
     Phase 1 does not:
         * Replace occurrences of mutable global variables
@@ -1034,6 +1035,19 @@ def localize_mutable_globals_phase1(
         * Define the XjGlobals struct in the main TU.
         * Add necessary typedefs for XjGlobals fields.
     """
+
+    if "source" in manifest["context_rewrite"]:
+        selected = manifest["context_rewrite"]["selected"]
+        return LocalizeMutableGlobalsPhase1Results(
+            all_function_names=set(selected["functions"]),
+            nonmain_context_functions=nonmain_context_functions,
+            localized_global_names={demangle_meg(f["llvm_name"]) for f in selected["fields"]},
+            globals_without_initializers=set(
+                manifest["context_rewrite"]["source"]["globals_without_initializers"]
+            ),
+            higher_order_potentially_modified_fn_ptr_type_locs={},
+            applied_rewrites=pangs_source.apply_signature_edits(manifest, current_codebase),
+        )
 
     phase1index = create_xj_clang_index()
     tus = parse_project(phase1index, compdb)
@@ -1790,6 +1804,63 @@ def localize_mutable_globals(
     prev: Path,
     current_codebase: Path,
 ):
+    """Materialize on a private copy, publishing only after both C validators pass."""
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    selected = manifest.get("context_rewrite", {}).get("selected")
+    if selected is not None and not selected["fields"]:
+        return
+    pangs_source.validate_plan(manifest, current_codebase)
+    with tempfile.TemporaryDirectory(
+        prefix="pangs-materialize-", dir=current_codebase.parent
+    ) as temp:
+        attempt_manifest = Path(temp) / "manifest.json"
+        attempt_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        selected = manifest["context_rewrite"]["selected"]
+        staged = Path(temp) / "stage"
+        shutil.copytree(current_codebase, staged, symlinks=True)
+        staged_compdb = pangs_source.relocate_compdb(compdb, current_codebase, staged)
+        try:
+            _localize_mutable_globals_in_place(attempt_manifest, staged_compdb, prev, staged)
+            pangs_source.validate_c(staged_compdb)
+            pangs_source.validate_cross_tu(
+                manifest, Path(manifest["run"]["analysis"]["repo_root"]), staged
+            )
+        except Exception as exc:
+            raise pangs_source.ContractViolation(
+                f"PANGS source-plan contract violated during materialization: {exc}"
+            ) from exc
+        for path in staged_compdb.get_source_files():
+            if XJG_PLACEHOLDER.encode() in path.read_bytes():
+                raise pangs_source.ContractViolation(
+                    f"PANGS source-plan contract violated: unmaterialized placeholder in {path}"
+                )
+        compdb.to_json_file(staged / "compile_commands.json")
+        manifest["materialization"] = {
+            "tool": {"name": "tenjin", "version": "source-plan-2"},
+            "marker_inventory": [],
+            "demotions": [],
+            "source_plan_version": 2,
+            "c_validation": ["clang-14", "clang-21"],
+            "applied_source_edits": len(selected["source_edits"]),
+        }
+        materialized_manifest = staged / "pangs-disposition" / "pangs-manifest.json"
+        materialized_manifest.parent.mkdir(parents=True, exist_ok=True)
+        materialized_manifest.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        original = Path(temp) / "original"
+        current_codebase.rename(original)
+        try:
+            staged.rename(current_codebase)
+        except BaseException:
+            original.rename(current_codebase)
+            raise
+
+
+def _localize_mutable_globals_in_place(
+    manifest_path: Path,
+    compdb: compilation_database.CompileCommands,
+    prev: Path,
+    current_codebase: Path,
+):
     manifest: dict = json.load(manifest_path.open("r"))
     if manifest.get("schema_version") != 8:
         raise ValueError("Tenjin requires PANGS disposition manifest schema version 8")
@@ -1837,7 +1908,10 @@ def localize_mutable_globals(
     time_elapsed = time.time() - time_start
     print(f"... localize_mutable_globals_phase1() done, elapsed: {time_elapsed:.1f}")
 
-    speculatively_fix_higher_order_fn_ptr_types(compdb, phase1results)
+    if "source" not in context_rewrite:
+        speculatively_fix_higher_order_fn_ptr_types(compdb, phase1results)
+    else:
+        pangs_source.validate_c(compdb)
 
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
@@ -1870,6 +1944,20 @@ def localize_mutable_globals(
             "PANGS selected globals absent from the source tree: "
             + ", ".join(sorted(missing_globals))
         )
+
+    if "source" in context_rewrite:
+        groups: dict[tuple[str, int], set[str]] = {}
+        for cursor in globals_and_statics:
+            groups.setdefault((cursor.location.file.name, cursor.extent.start.offset), set()).add(
+                cursor.spelling
+            )
+        for names in groups.values():
+            affected = names & phase1results.localized_global_names
+            if len(names) > 1 and affected:
+                raise pangs_source.ContractViolation(
+                    "PANGS selected an unsupported joined global declaration: "
+                    + ", ".join(sorted(affected))
+                )
 
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)

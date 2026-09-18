@@ -865,7 +865,9 @@ def test_localize_mutable_globals_phase1_seeds_source_only_global_users(root, tm
         ),
         encoding="utf-8",
     )
-    c_refact.localize_mutable_globals(
+    # Migration comparison for the legacy materializer, not the production
+    # entry point (which now requires a source-complete PANGS contract).
+    c_refact._localize_mutable_globals_in_place(
         manifest_path=manifest_path,
         compdb=compilation_database.CompileCommands.from_json_file(
             current_codebase / "compile_commands.json"

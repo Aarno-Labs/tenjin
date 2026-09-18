@@ -7,6 +7,7 @@ and link them into a single module.
 from __future__ import annotations
 
 import shutil
+import json
 import tempfile
 from pathlib import Path
 from subprocess import CalledProcessError
@@ -14,6 +15,7 @@ from subprocess import CalledProcessError
 import click
 
 import hermetic
+import repo_root
 from compilation_database import CompileCommands
 
 
@@ -21,6 +23,7 @@ def compile_and_link_bitcode(
     compile_commands: CompileCommands,
     destination_path: Path,
     use_llvm14: bool = False,
+    source_compdb_path: Path | None = None,
 ) -> None:
     """Compile translation units to LLVM bitcode and link them.
 
@@ -40,6 +43,7 @@ def compile_and_link_bitcode(
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir_path = Path(temp_dir)
         bitcode_files: list[Path] = []
+        effective_commands: list[dict] = []
 
         # Compile each translation unit to bitcode
         sorted_commands = sorted(compile_commands.commands, key=lambda c: c.absolute_file_path)
@@ -57,7 +61,12 @@ def compile_and_link_bitcode(
 
             # Build the clang command to emit LLVM bitcode
             # Start with clang and add the original compilation flags
-            clang_args = ["clang"]
+            llvm_root = (
+                hermetic.xj_llvm14_root(repo_root.localdir())
+                if use_llvm14
+                else hermetic.xj_llvm_root(repo_root.localdir())
+            )
+            clang_args = [str(llvm_root / "bin" / "clang")]
 
             # Add all flags from the original command except the compiler name
             # and any output specification
@@ -87,7 +96,12 @@ def compile_and_link_bitcode(
 
             # For reasons I don't yet understand, while Clang 18 picks up our
             # default config file automatically, Clang 14 needs it spelled out.
-            clang_args.extend(["--config", "clang.cfg"])
+            clang_args.extend(["--config", str(llvm_root / "bin" / "clang.cfg")])
+            effective_commands.append({
+                "directory": str(cmd.directory_path.resolve()),
+                "file": str(source_file.resolve()),
+                "arguments": clang_args,
+            })
 
             # Run clang to produce bitcode
             try:
@@ -150,3 +164,9 @@ def compile_and_link_bitcode(
 
         # Intermediate bitcode files are automatically cleaned up when
         # the temporary directory context exits
+        if source_compdb_path is not None:
+            # Keep the actual compiler, config, target/ABI and language flags.
+            # PANGS's frontend strips output/codegen options for AST extraction.
+            source_compdb_path.write_text(
+                json.dumps(effective_commands, indent=2), encoding="utf-8"
+            )

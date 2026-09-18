@@ -4,8 +4,9 @@ from pathlib import Path
 
 import c_refact
 import targets
-import compilation_database
 import translation_preparation
+import pangs_source
+import pytest
 
 
 def _named_decl(name: str, usr: str, offset: int = 0) -> c_refact.NamedDeclInfo:
@@ -66,24 +67,30 @@ def test_static_uniquification_avoids_occupied_names_and_preserves_source_suffix
     }
 
 
+def _immutable_global(name, declaration=None):
+    return {
+        "meta": {"llvm_name": name},
+        "disposition": {"chosen": "immutable"},
+        "facts": {
+            "source_obligations": {
+                "emitter": "tenjin-c2rust-default-v1",
+                "declaration": declaration or name,
+            }
+        },
+    }
+
+
 def test_add_immutable_dispositions_to_guidance_preserves_existing_entries(tmp_path):
     manifest_path = tmp_path / "pangs-manifest.json"
     manifest_path.write_text(
         json.dumps({
             "schema_version": 8,
             "globals": [
-                {
-                    "meta": {"llvm_name": "global_immutable"},
-                    "disposition": {"chosen": "immutable"},
-                },
-                {
-                    "meta": {"llvm_name": "function.static_immutable_xjtr_0"},
-                    "disposition": {"chosen": "immutable"},
-                },
-                {
-                    "meta": {"llvm_name": "explicitly_immutable"},
-                    "disposition": {"chosen": "immutable"},
-                },
+                _immutable_global("global_immutable"),
+                _immutable_global(
+                    "function.static_immutable_xjtr_0", "function:static_immutable_xjtr_0"
+                ),
+                _immutable_global("explicitly_immutable"),
                 {
                     "meta": {"llvm_name": "still_mutable"},
                     "disposition": {"chosen": "unhandled"},
@@ -107,22 +114,16 @@ def test_add_immutable_dispositions_to_guidance_preserves_existing_entries(tmp_p
     added = translation_preparation.add_immutable_dispositions_to_guidance(
         manifest_path,
         guidance_path,
-        {
-            "global_immutable",
-            "static_immutable_xjtr_0",
-            "explicitly_immutable",
-            "still_mutable",
-        },
     )
 
-    assert added == {"static_immutable_xjtr_0"}
+    assert added == {"function:static_immutable_xjtr_0"}
     assert json.loads(guidance_path.read_text(encoding="utf-8")) == {
         "vars_mut": {
             "global_immutable": True,
             "explicitly_immutable": False,
             "user_choice": False,
         },
-        "semantically_immutable_globals": ["static_immutable_xjtr_0"],
+        "semantically_immutable_globals": ["function:static_immutable_xjtr_0"],
     }
 
 
@@ -131,21 +132,14 @@ def test_add_immutable_dispositions_to_guidance_creates_semantic_entry(tmp_path)
     manifest_path.write_text(
         json.dumps({
             "schema_version": 8,
-            "globals": [
-                {
-                    "meta": {"llvm_name": "global_immutable"},
-                    "disposition": {"chosen": "immutable"},
-                }
-            ],
+            "globals": [_immutable_global("global_immutable")],
         }),
         encoding="utf-8",
     )
     guidance_path = tmp_path / "xj-guidance.json"
     guidance_path.write_text(json.dumps({"public_api": []}), encoding="utf-8")
 
-    translation_preparation.add_immutable_dispositions_to_guidance(
-        manifest_path, guidance_path, {"global_immutable"}
-    )
+    translation_preparation.add_immutable_dispositions_to_guidance(manifest_path, guidance_path)
 
     assert json.loads(guidance_path.read_text(encoding="utf-8")) == {
         "public_api": [],
@@ -154,7 +148,7 @@ def test_add_immutable_dispositions_to_guidance_creates_semantic_entry(tmp_path)
     }
 
 
-def test_missing_disposition_defaults_source_global_to_immutable(tmp_path):
+def test_missing_disposition_does_not_imply_immutability(tmp_path):
     manifest_path = tmp_path / "pangs-manifest.json"
     manifest_path.write_text(
         json.dumps({
@@ -178,16 +172,10 @@ def test_missing_disposition_defaults_source_global_to_immutable(tmp_path):
     added = translation_preparation.add_immutable_dispositions_to_guidance(
         manifest_path,
         guidance_path,
-        {"optimized_out", "explicitly_unhandled", "record_without_disposition"},
     )
 
-    assert added == {"optimized_out", "record_without_disposition"}
-    guidance = json.loads(guidance_path.read_text(encoding="utf-8"))
-    assert guidance["vars_mut"] == {}
-    assert guidance["semantically_immutable_globals"] == [
-        "optimized_out",
-        "record_without_disposition",
-    ]
+    assert added == set()
+    assert json.loads(guidance_path.read_text(encoding="utf-8")) == {}
 
 
 def test_add_immutable_dispositions_preserves_existing_semantic_entries(tmp_path):
@@ -196,14 +184,8 @@ def test_add_immutable_dispositions_preserves_existing_semantic_entries(tmp_path
         json.dumps({
             "schema_version": 8,
             "globals": [
-                {
-                    "meta": {"llvm_name": "already_recorded"},
-                    "disposition": {"chosen": "immutable"},
-                },
-                {
-                    "meta": {"llvm_name": "newly_recorded"},
-                    "disposition": {"chosen": "immutable"},
-                },
+                _immutable_global("already_recorded"),
+                _immutable_global("newly_recorded"),
             ],
         }),
         encoding="utf-8",
@@ -217,7 +199,6 @@ def test_add_immutable_dispositions_preserves_existing_semantic_entries(tmp_path
     added = translation_preparation.add_immutable_dispositions_to_guidance(
         manifest_path,
         guidance_path,
-        {"already_recorded", "newly_recorded"},
     )
 
     assert added == {"newly_recorded"}
@@ -227,21 +208,24 @@ def test_add_immutable_dispositions_preserves_existing_semantic_entries(tmp_path
     }
 
 
-def test_source_level_global_names_uses_libclang_and_excludes_non_globals(tmp_path):
-    source = tmp_path / "globals.c"
-    source.write_text(
-        "int external_global = 1;\n"
-        "static int file_static;\n"
-        "extern int declaration_only;\n"
-        "void function(void) { static int function_static; }\n",
-        encoding="utf-8",
+def test_immutable_selection_requires_an_emitter_binding(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({
+            "schema_version": 8,
+            "globals": [
+                {
+                    "meta": {"llvm_name": "g"},
+                    "disposition": {"chosen": "immutable"},
+                }
+            ],
+        })
     )
-    compdb = compilation_database.synthetic_compile_commands_for_c_file(source, tmp_path)
-
-    assert translation_preparation.source_level_global_names(compdb) == {
-        "external_global",
-        "file_static",
-    }
+    guidance = tmp_path / "guidance.json"
+    guidance.write_text("{}")
+    with pytest.raises(pangs_source.ContractViolation, match="declaration binding"):
+        translation_preparation.add_immutable_dispositions_to_guidance(manifest, guidance)
+    assert guidance.read_text() == "{}"
 
 
 def test_remap_path_prefix_in_argument_only_rewrites_absolute_path_components():

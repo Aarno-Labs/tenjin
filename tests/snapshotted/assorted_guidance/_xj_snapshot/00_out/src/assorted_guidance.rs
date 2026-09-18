@@ -131,7 +131,7 @@ pub unsafe fn recognize_int_float_bitcast() {
 }
 #[no_mangle]
 pub unsafe fn guided_static() {
-    static mut u8: u8 = 0;
+    static u8: u8 = 0;
 }
 #[no_mangle]
 pub unsafe fn guided_ret_ostr() -> String {

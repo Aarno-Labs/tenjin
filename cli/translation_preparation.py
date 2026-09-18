@@ -30,6 +30,7 @@ import hermetic
 import repo_root
 import ingest_tracking
 import llvm_bitcode_linking
+import pangs_source
 import targets_from_intercept
 from targets import BuildInfo, TargetType
 from caching_file_contents import CachingFileContents
@@ -44,29 +45,14 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     return (end_ns - start_ns) / 1_000_000.0
 
 
-def source_level_global_names(
-    compdb: compilation_database.CompileCommands,
-) -> set[str]:
-    """Use libclang to list top-level source variable definitions."""
-    cursors = c_refact.compute_globals_and_statics_for_project(compdb, elide_functions=True)
-    return {
-        cursor.spelling
-        for cursor in cursors
-        if cursor.semantic_parent is not None
-        and cursor.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
-    }
-
-
 def add_immutable_dispositions_to_guidance(
     manifest_path: Path,
     guidance_path: Path,
-    source_globals: set[str],
 ) -> set[str]:
-    """Record proven or optimization-elided globals as semantically immutable.
+    """Mechanically forward PANGS's finalized immutable selections to C2Rust.
 
-    Explicit ``vars_mut`` guidance remains a hard override.  The Rust
-    transpiler uses this weaker semantic fact together with the translated
-    type to decide whether the declaration can omit ``mut``.
+    PANGS checks the default emitter's representation before selection. Explicit
+    user guidance remains a hard override, outside that default profile.
     """
     with manifest_path.open("r", encoding="utf-8") as manifest_file:
         manifest = json.load(manifest_file)
@@ -77,27 +63,23 @@ def add_immutable_dispositions_to_guidance(
     if not isinstance(globals_, list):
         raise TypeError("PANGS disposition manifest 'globals' must be a JSON array")
 
-    dispositions_by_name = {
-        c_refact.demangle_meg(global_["meta"]["llvm_name"]): (global_.get("disposition") or {}).get(
-            "chosen"
-        )
-        for global_ in globals_
-    }
-    immutable_names = {
-        name for name, disposition in dispositions_by_name.items() if disposition == "immutable"
-    }
-    assigned_names = {
-        name for name, disposition in dispositions_by_name.items() if disposition is not None
-    }
-    optimization_elided_names = source_globals - assigned_names
-    default_immutable_names = immutable_names | optimization_elided_names
+    immutable_names = set()
+    for global_ in globals_:
+        if (global_.get("disposition") or {}).get("chosen") != "immutable":
+            continue
+        source = global_.get("facts", {}).get("source_obligations", {})
+        name = source.get("declaration")
+        if source.get("emitter") != "tenjin-c2rust-default-v1" or not isinstance(name, str):
+            raise pangs_source.ContractViolation(
+                "PANGS selected immutable storage without a C2Rust declaration binding"
+            )
+        immutable_names.add(name)
 
     with guidance_path.open("r", encoding="utf-8") as guidance_file:
         guidance = json.load(guidance_file)
     vars_mut = guidance.setdefault("vars_mut", {})
     if not isinstance(vars_mut, dict):
         raise TypeError("Tenjin guidance 'vars_mut' must be a JSON object")
-
     semantically_immutable = guidance.setdefault("semantically_immutable_globals", [])
     if not isinstance(semantically_immutable, list) or not all(
         isinstance(name, str) for name in semantically_immutable
@@ -106,7 +88,7 @@ def add_immutable_dispositions_to_guidance(
             "Tenjin guidance 'semantically_immutable_globals' must be a JSON string array"
         )
 
-    added = default_immutable_names - vars_mut.keys() - set(semantically_immutable)
+    added = immutable_names - vars_mut.keys() - set(semantically_immutable)
     if added:
         semantically_immutable.extend(sorted(added))
         with guidance_path.open("w", encoding="utf-8") as guidance_file:
@@ -1285,6 +1267,8 @@ def run_preparation_passes(
                 hermetic.xj_pangs_exe(repo_root.localdir()),
                 "analyze",
                 str(bitcode_module_path),
+                "--source-compdb",
+                str(current_codebase / "pangs-source-commands.json"),
                 "--out",
                 str(out_dir),
                 "--stage",
@@ -1324,14 +1308,16 @@ def run_preparation_passes(
         bitcode_module_path = current_codebase / "linked_module.bc"
 
         llvm_bitcode_linking.compile_and_link_bitcode(
-            curr_compdb, bitcode_module_path, use_llvm14=True
+            curr_compdb,
+            bitcode_module_path,
+            use_llvm14=True,
+            source_compdb_path=current_codebase / "pangs-source-commands.json",
         )
 
         run_pangs_disposition(bitcode_module_path, current_codebase)
         add_immutable_dispositions_to_guidance(
             current_codebase / "pangs-disposition" / "pangs-manifest.json",
             current_codebase / XJ_GUIDANCE_FILENAME,
-            source_level_global_names(curr_compdb),
         )
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):

@@ -84,6 +84,8 @@ def xj_pangs(localdir: Path) -> Path:
 
 
 def xj_pangs_exe(localdir: Path) -> Path:
+    if override := os.environ.get("XJ_PANGS_EXE"):
+        return Path(override).resolve(strict=True)
     return xj_pangs(localdir) / "bin" / "pangs"
 
 
