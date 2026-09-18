@@ -790,3 +790,87 @@ def test_localize_mutable_globals_phase1_skips_direct_calls_to_nontissue_functio
     assert "target(((struct XjGlobals*)0), x)" not in rewritten
     assert "target(((struct XjGlobals*)0), 1)" not in rewritten
     assert "((target)(((struct XjGlobals*)0), 1))" not in rewritten
+
+
+def test_localize_mutable_globals_phase1_closes_over_source_only_calls(root, tmp_codebase):
+    current_codebase = tmp_codebase
+    prev_codebase = tmp_codebase.parent / "prev_codebase"
+    current_codebase.mkdir()
+    prev_codebase.mkdir()
+
+    source = (
+        "static int context_leaf(int x) { return x + 1; }\n"
+        "static int dead_middle(int x) { return context_leaf(x); }\n"
+        "static int dead_outer(int x) { return dead_middle(x); }\n"
+        "int main(void) {\n"
+        '    if (sizeof("S_MP_WORD_TOO_SMALL_C") == 1u) return dead_outer(1);\n'
+        "    return 0;\n"
+        "}\n"
+    )
+    current_file = current_codebase / "sample.nolines.i"
+    prev_file = prev_codebase / "sample.nolines.i"
+    current_file.write_text(source, encoding="utf-8")
+    prev_file.write_text(source, encoding="utf-8")
+    write_compile_commands_for_sources(current_codebase, [current_file])
+
+    results = c_refact.localize_mutable_globals_phase1(
+        compdb=compilation_database.CompileCommands.from_json_file(
+            current_codebase / "compile_commands.json"
+        ),
+        manifest=disposition_manifest_for_localization(["context_leaf"]),
+        current_codebase=current_codebase,
+        prev=prev_codebase,
+        nonmain_context_functions={"context_leaf"},
+    )
+
+    rewritten = current_file.read_text(encoding="utf-8")
+    assert results.nonmain_context_functions == {"context_leaf", "dead_middle", "dead_outer"}
+    assert "context_leaf(struct XjGlobals *xjg, int x)" in rewritten
+    assert "dead_middle(struct XjGlobals *xjg, int x)" in rewritten
+    assert "dead_outer(struct XjGlobals *xjg, int x)" in rewritten
+    assert "int main(void)" in rewritten
+    assert "context_leaf(((struct XjGlobals*)0), x)" in rewritten
+    assert "dead_middle(((struct XjGlobals*)0), x)" in rewritten
+    assert "dead_outer(((struct XjGlobals*)0), 1)" in rewritten
+
+
+def test_localize_mutable_globals_phase1_seeds_source_only_global_users(root, tmp_codebase):
+    current_codebase = tmp_codebase
+    prev_codebase = tmp_codebase.parent / "prev_codebase"
+    current_codebase.mkdir()
+    prev_codebase.mkdir()
+
+    source = (
+        "static int localized_global;\n"
+        "static int dead_leaf(void) { return localized_global; }\n"
+        "static int dead_caller(void) { return dead_leaf(); }\n"
+        "int main(void) {\n"
+        '    if (sizeof("DEAD_C") == 1u) return dead_caller();\n'
+        "    return 0;\n"
+        "}\n"
+    )
+    current_file = current_codebase / "sample.nolines.i"
+    prev_file = prev_codebase / "sample.nolines.i"
+    current_file.write_text(source, encoding="utf-8")
+    prev_file.write_text(source, encoding="utf-8")
+    write_compile_commands_for_sources(current_codebase, [current_file])
+
+    results = c_refact.localize_mutable_globals_phase1(
+        compdb=compilation_database.CompileCommands.from_json_file(
+            current_codebase / "compile_commands.json"
+        ),
+        manifest=disposition_manifest_for_localization(
+            [], fields=[{"llvm_name": "localized_global"}]
+        ),
+        current_codebase=current_codebase,
+        prev=prev_codebase,
+        nonmain_context_functions=set(),
+    )
+
+    rewritten = current_file.read_text(encoding="utf-8")
+    assert results.nonmain_context_functions == {"dead_leaf", "dead_caller"}
+    assert "dead_leaf(struct XjGlobals *xjg)" in rewritten
+    assert "dead_caller(struct XjGlobals *xjg)" in rewritten
+    assert "int main(void)" in rewritten
+    assert "dead_leaf(((struct XjGlobals*)0))" in rewritten
+    assert "dead_caller(((struct XjGlobals*)0))" in rewritten

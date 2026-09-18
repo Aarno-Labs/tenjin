@@ -581,6 +581,14 @@ class ContextCallSiteInfo:
     col: int
 
 
+@dataclass
+class SourceContextCallSiteInfo:
+    caller_func: tenj_types.CIdentifier
+    callee_func: tenj_types.CIdentifier
+    i_file_path: tenj_types.FilePathStr
+    cursor: Cursor
+
+
 @dataclass(frozen=True)
 class WeakCapableFnDefn:
     """An external-linkage function definition, and whether it is `weak`."""
@@ -819,6 +827,85 @@ def direct_call_callee_name(call_expr: Cursor) -> tenj_types.CIdentifier | None:
     return referenced_decl.spelling
 
 
+def close_context_functions_over_source_calls(
+    tus: dict[str, TranslationUnit],
+    initial_context_functions: set[str],
+    localized_global_names: set[str],
+) -> tuple[set[str], list[SourceContextCallSiteInfo]]:
+    """Close context threading over global uses and calls present in the C AST.
+
+    PANGS derives its rewrite plan from linked LLVM. Clang can remove functions
+    and their global uses from that representation when it proves a source
+    branch dead, so the plan is not necessarily closed over the source that we
+    subsequently rewrite. Seed the context set with source functions that use a
+    localized global, then collect the source call graph and add their callers
+    until reaching a fixed point. ``main`` owns the context and is therefore
+    deliberately not added to the returned parameter-taking set.
+    """
+    source_calls: list[SourceContextCallSiteInfo] = []
+    source_global_users: set[str] = set()
+
+    def enclosing_function_name(ancestors) -> tenj_types.CIdentifier | None:
+        remaining_ancestors = ancestors
+        while True:
+            ancestor, parent_ancestors = remaining_ancestors
+            if ancestor.kind == CursorKind.FUNCTION_DECL and ancestor.is_definition():
+                return ancestor.spelling
+            if parent_ancestors is None:
+                return None
+            remaining_ancestors = parent_ancestors
+
+    for tu_path, tu in tus.items():
+        assert tu.cursor is not None, f"Translation unit {tu.spelling} has no cursor!"
+        for cursor, ancestors in yield_matching_cursors(
+            tu.cursor, [CursorKind.CALL_EXPR, CursorKind.DECL_REF_EXPR]
+        ):
+            caller_func = enclosing_function_name(ancestors)
+            if not caller_func:
+                continue
+
+            if cursor.kind == CursorKind.DECL_REF_EXPR:
+                referenced_decl = cursor.referenced
+                if (
+                    referenced_decl is not None
+                    and referenced_decl.kind == CursorKind.VAR_DECL
+                    and referenced_decl.spelling in localized_global_names
+                    and caller_func != "main"
+                ):
+                    source_global_users.add(caller_func)
+                continue
+
+            call_cursor = cursor
+            callee_func = direct_call_callee_name(call_cursor)
+            if callee_func is None:
+                continue
+
+            source_calls.append(
+                SourceContextCallSiteInfo(
+                    caller_func=caller_func,
+                    callee_func=callee_func,
+                    i_file_path=tu_path,
+                    cursor=call_cursor,
+                )
+            )
+
+    context_functions = set(initial_context_functions) | source_global_users
+    changed = True
+    while changed:
+        changed = False
+        for call in source_calls:
+            if (
+                call.callee_func in context_functions
+                and call.caller_func != "main"
+                and call.caller_func not in context_functions
+            ):
+                context_functions.add(call.caller_func)
+                changed = True
+
+    context_calls = [call for call in source_calls if call.callee_func in context_functions]
+    return context_functions, context_calls
+
+
 def duplicates_within(lst: list[str]) -> set[str]:
     seen = set()
     duplicates = set()
@@ -949,6 +1036,28 @@ def localize_mutable_globals_phase1(
 
     phase1index = create_xj_clang_index()
     tus = parse_project(phase1index, compdb)
+
+    selected = manifest["context_rewrite"]["selected"]
+    mangled_localized_globals = [field["llvm_name"] for field in selected["fields"]]
+    localized_global_names_list = [demangle_meg(name) for name in mangled_localized_globals]
+    localized_global_names = set(localized_global_names_list)
+    if len(localized_global_names) != len(localized_global_names_list):
+        raise ValueError(
+            "Expected all localized global names to be unique after demangling, "
+            + f"but saw duplicates of: {duplicates_within(localized_global_names_list)}"
+        )
+    print("localized_globals:", list(localized_global_names))
+
+    initial_context_functions = set(nonmain_context_functions)
+    nonmain_context_functions, source_context_calls = close_context_functions_over_source_calls(
+        tus, initial_context_functions, localized_global_names
+    )
+    source_added_context_functions = nonmain_context_functions - initial_context_functions
+    if source_added_context_functions:
+        print(
+            "Source C-AST closure added context functions: "
+            + ", ".join(sorted(source_added_context_functions))
+        )
 
     all_function_names, nonmain_context_function_cursors = extract_function_info(
         tus, nonmain_context_functions
@@ -1100,8 +1209,48 @@ def localize_mutable_globals_phase1(
 
                 rewriter.add_rewrite(func_info.file, insert_offset, overwrite_len, insert_text)
 
-        # Step 6: Modify call sites to pass placeholder-for-xjg (using JSON call site info)
+        # Step 6: Modify call sites to pass placeholder-for-xjg. Direct source calls
+        # come from the Clang AST so that calls optimized out of linked LLVM are
+        # still rewritten. Keep the PANGS sites as well for resolved indirect calls.
         print("phase1, adding rewrites for placeholder-for-xjg")
+        rewritten_call_offsets: set[tuple[str, int]] = set()
+
+        def add_context_call_rewrite(i_file_path: str, cursor: Cursor) -> bool:
+            content = rewriter.get_content(i_file_path)
+            callee_expr = next(cursor.get_children(), None)
+            if callee_expr:
+                # Ensure we skip past the callee when we look for the opening
+                # parenthesis.
+                call_start_offset = callee_expr.extent.end.offset
+            else:
+                call_start_offset = cursor.extent.start.offset
+
+            paren_pos = content.find(b"(", call_start_offset)
+            if paren_pos == -1:
+                return False
+
+            closing_paren_pos = content.find(b")", paren_pos)
+            if closing_paren_pos == -1:
+                return False
+
+            args_section = content[paren_pos + 1 : closing_paren_pos].strip()
+            insert_offset = paren_pos + 1
+            rewrite_key = (i_file_path, insert_offset)
+            if rewrite_key not in rewritten_call_offsets:
+                insert_text = XJG_PLACEHOLDER + (", " if args_section else "")
+                rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
+                rewritten_call_offsets.add(rewrite_key)
+            return True
+
+        for source_call in source_context_calls:
+            if not add_context_call_rewrite(source_call.i_file_path, source_call.cursor):
+                location = source_call.cursor.location
+                raise ValueError(
+                    "Could not rewrite source call from "
+                    f"{source_call.caller_func} to {source_call.callee_func} at "
+                    f"{source_call.i_file_path}:{location.line}:{location.column}"
+                )
+
         for call_info in call_sites_from_plan:
             caller_func = call_info.caller_func
             i_file_path = call_info.i_file_path
@@ -1116,8 +1265,6 @@ def localize_mutable_globals_phase1(
             )
             assert i_file_path in tus
 
-            param_to_pass = XJG_PLACEHOLDER
-
             # Find the call expression at the given location
             # We need to use libclang to find the exact offset
             found_call = False
@@ -1128,40 +1275,9 @@ def localize_mutable_globals_phase1(
                     # set lets us skip a different direct call at that location.
                     continue
 
-                # Read file to find parenthesis
-                content = rewriter.get_content(i_file_path)
-
-                callee_expr = next(cursor.get_children(), None)
-                if callee_expr:
-                    # Ensure we skip past the callee when we look for
-                    # the opening parenthesis.
-                    call_start_offset = callee_expr.extent.end.offset
-                else:
-                    call_start_offset = cursor.extent.start.offset
-
-                paren_pos = content.find(b"(", call_start_offset)
-                if paren_pos == -1:
+                if add_context_call_rewrite(i_file_path, cursor):
+                    found_call = True
                     break
-
-                # Check if there are existing arguments
-                closing_paren_pos = content.find(b")", paren_pos)
-                if closing_paren_pos == -1:
-                    break
-
-                args_section = content[paren_pos + 1 : closing_paren_pos].strip()
-
-                if args_section == b"":
-                    # No arguments
-                    insert_offset = paren_pos + 1
-                    insert_text = param_to_pass
-                else:
-                    # Has arguments, add as first argument with comma
-                    insert_offset = paren_pos + 1
-                    insert_text = param_to_pass + ", "
-
-                rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
-                found_call = True
-                break
 
             if not found_call:
                 raise ValueError(
@@ -1932,7 +2048,7 @@ def localize_mutable_globals(
     print("STEPS 5 & 6: Modifying function signatures and call sites")
     print("=" * 80)
 
-    print(f"\nContext functions to modify: {nonmain_context_functions}")
+    print(f"\nContext functions to modify: {phase1results.nonmain_context_functions}")
 
     with batching_rewriter.BatchingRewriter() as rewriter:
         global_definition_rewrites: list[tuple[str, int, int, str]] = []
