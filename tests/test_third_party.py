@@ -803,8 +803,7 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow
-# @pytest.mark.skip(reason="This test fails the mutable-globals localization phase")
+@pytest.mark.slow  # estimated runtime: 12 minutes (8 minutes in refolding)
 def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
 
