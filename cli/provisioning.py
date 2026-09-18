@@ -260,6 +260,7 @@ def provision_desires(wanted: str):
         want_10j_more_deps()
         want_10j_ast_grep()
         want_10j_crat()
+        want_10j_pangs()
 
         if wanted in ("all", "rust"):
             want_10j_rust_toolchains()
@@ -699,6 +700,45 @@ def provision_10j_crat_with(version: str, keyname: str):
     if target.is_dir():
         shutil.rmtree(target)
     download_and_extract_tarball(url, target, ctx="(crat) ")
+    HAVE.note_we_have(keyname, specifier=version)
+
+
+def pangs_release_asset_name(system: str, machine: str) -> str:
+    loweros = {"Linux": "linux", "Darwin": "macos"}.get(system)
+    supported = loweros is not None and (loweros, machine) in {
+        ("linux", "x86_64"),
+        ("linux", "aarch64"),
+        ("macos", "aarch64"),
+    }
+    if not supported:
+        raise ProvisioningError(f"PANGS: unsupported platform: {(system, machine)}")
+    return f"pangs_{loweros}-{machine}.tar.xz"
+
+
+def want_10j_pangs():
+    want("10j-pangs", "pangs", "PANGS", provision_10j_pangs_with)
+
+
+def provision_10j_pangs_with(version: str, keyname: str):
+    filename = pangs_release_asset_name(platform.system(), machine_normalized())
+    url = f"https://github.com/Aarno-Labs/tenjin-pangs/releases/download/{version}/{filename}"
+    target = hermetic.xj_pangs(HAVE.localdir)
+    if target.is_dir():
+        shutil.rmtree(target)
+    download_and_extract_tarball(url, target, ctx="(pangs) ")
+
+    binary = hermetic.xj_pangs_exe(HAVE.localdir)
+    if not binary.is_file():
+        raise ProvisioningError(f"PANGS binary not found after extraction: {binary}")
+
+    if platform.system() == "Darwin":
+        subprocess.check_call([
+            "install_name_tool",
+            "-add_rpath",
+            "@executable_path/../../xj-llvm-14/lib",
+            str(target / "bin" / "pangs"),
+        ])
+
     HAVE.note_we_have(keyname, specifier=version)
 
 
