@@ -3036,9 +3036,9 @@ impl<'c> Translation<'c> {
             return true;
         }
 
-        let iter = DFExpr::new(&self.ast_context, expr_id.into());
+        let mut iter = DFExpr::new(&self.ast_context, expr_id.into());
 
-        for i in iter {
+        while let Some(i) = iter.next() {
             let expr_id = match i {
                 SomeId::Expr(expr_id) => expr_id,
                 _ => unreachable!("Found static initializer type other than expr"),
@@ -3046,6 +3046,11 @@ impl<'c> Translation<'c> {
 
             use CExprKind::*;
             match self.ast_context.index_unwrap_parens(expr_id).kind {
+                // Expression-form sizeof is translated from its operand's type.
+                // Its unevaluated operand therefore cannot make the surrounding
+                // static initializer uncompilable.
+                UnaryType(_, CUnTypeOp::SizeOf, Some(_), _) => iter.prune(1),
+
                 // Technically we're being conservative here, but it's only the most
                 // contrived array indexing initializers that would be accepted
                 ArraySubscript(..) => return true,
@@ -3069,10 +3074,17 @@ impl<'c> Translation<'c> {
                 ImplicitCast(_, _, PointerToIntegral, _, _)
                 | ExplicitCast(_, _, PointerToIntegral, _, _) => return true,
 
-                Binary(typ, op, _, _, _, _) => {
+                Binary(typ, op, lhs, rhs, _, _) => {
                     if op.is_arithmetic() {
                         let k = &self.ast_context.resolve_type(typ.ctype).kind;
-                        if k.is_unsigned_integral_type() || k.is_pointer() {
+                        let operands_are_sizeof = [lhs, rhs].into_iter().all(|operand| {
+                            matches!(
+                                self.ast_context.index_unwrap_parens(operand).kind,
+                                UnaryType(_, CUnTypeOp::SizeOf, _, _)
+                            )
+                        });
+                        if k.is_pointer() || (k.is_unsigned_integral_type() && !operands_are_sizeof)
+                        {
                             return true;
                         }
                     }

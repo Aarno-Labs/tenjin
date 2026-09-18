@@ -1769,7 +1769,7 @@ def test_tractor_b2_synthetic_pointer_comparison_ascii_art_app(tenjin_fixtures: 
 def test_tractor_b2_synthetic_static_vars_fpts_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/static_vars_fpts"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 23
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 22
 
 
 @pytest.mark.slow

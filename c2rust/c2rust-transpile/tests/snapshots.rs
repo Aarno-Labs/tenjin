@@ -62,7 +62,8 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "nested_raw_record_array",
                 "nested_guided_record_array",
                 "raw_pointer_array",
-                "function_pointer"
+                "function_pointer",
+                "immutable_sizeof_subscript"
             ]
         })
     } else if c_path.ends_with("tenjin_semantic_immutable_addresses.c") {

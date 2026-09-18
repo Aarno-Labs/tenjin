@@ -36,3 +36,6 @@ NestedRaw nested_raw_record_array;
 NestedGuided nested_guided_record_array = {{{"first"}, {"second"}}};
 int *raw_pointer_array[2];
 int (*function_pointer)(int);
+static const char *immutable_keywords[] = {"if", "else"};
+unsigned long immutable_sizeof_subscript =
+    sizeof(immutable_keywords) / sizeof(immutable_keywords[0]);

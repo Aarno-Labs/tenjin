@@ -91,3 +91,11 @@ pub static mut raw_pointer_array: [*mut ::core::ffi::c_int; 2] =
 pub static function_pointer: Option<
     unsafe extern "C" fn(::core::ffi::c_int) -> ::core::ffi::c_int,
 > = None;
+static mut immutable_keywords: [*const ::core::ffi::c_char; 2] = [
+    b"if\0".as_ptr() as *const ::core::ffi::c_char,
+    b"else\0".as_ptr() as *const ::core::ffi::c_char,
+];
+#[no_mangle]
+pub static immutable_sizeof_subscript: ::core::ffi::c_ulong =
+    (::core::mem::size_of::<[*const ::core::ffi::c_char; 2]>() as ::core::ffi::c_ulong)
+        .wrapping_div(::core::mem::size_of::<*const ::core::ffi::c_char>() as ::core::ffi::c_ulong);
