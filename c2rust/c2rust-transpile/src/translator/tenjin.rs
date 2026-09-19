@@ -84,33 +84,6 @@ impl GuidedType {
     pub fn is_slice_or_array(&self) -> bool {
         matches!(self.parsed, Type::Slice(..) | Type::Array(_))
     }
-
-    pub fn wrap_slice(&self) -> GuidedType {
-        let p = self.parsed.clone();
-        Self {
-            pretty: format!("[{}]", &self.pretty),
-            parsed: syn::parse_quote! {
-                [#p]
-            },
-        }
-    }
-
-    pub fn index(&self) -> Option<GuidedType> {
-        type_try_arraylike_element(&self.parsed).map(|e| Self {
-            pretty: String::new(),
-            parsed: e.clone(),
-        })
-    }
-
-    pub fn strip_ref(&self) -> Option<Self> {
-        match &self.parsed {
-            Type::Reference(r) => Some(Self {
-                pretty: String::new(),
-                parsed: *r.elem.clone(),
-            }),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -514,7 +487,7 @@ pub fn type_of_array_ref(ty: &Type) -> Option<&Type> {
 
 pub fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
     match t {
-        Type::Path(p) => path_get_1_segment(&p.path)
+        Type::Path(p) if tenjin::type_is_vec(t) /* this was a bug */ => path_get_1_segment(&p.path)
             .and_then(|s| segment_get_1_bracket_argument(s))
             .and_then(|args| match args {
                 GenericArgument::Type(t) => Some(t),
@@ -2925,8 +2898,6 @@ impl Translation<'_> {
                     } else {
                         expr
                     };
-                    // Could have an ArrayDecay to pointer
-                    // let expr = if expr_guided_type.is_ar
                     return mk().borrow_expr(expr);
                 }
 
@@ -3040,10 +3011,10 @@ impl Translation<'_> {
 
     /// return `true` if guidance indicates the type of `c_ptr` is subscriptable
     pub fn can_subscript(&self, c_ptr: CExprId) -> bool {
-        match self.try_compute_guided_type(c_ptr).as_ref() {
-            Some(t) => type_try_arraylike_element(t).is_some(),
-            None => false,
-        }
+        self.try_compute_guided_type(c_ptr)
+            .as_ref()
+            .and_then(|ty| type_try_arraylike_element(ty))
+            .is_some()
     }
 
     pub fn is_array(&self, c_ptr: CExprId) -> bool {
@@ -3131,17 +3102,6 @@ impl Translation<'_> {
             return (
                 lhs_type.is_pointer().then(|| t.clone()),
                 rhs_type.is_pointer().then(|| t.clone()),
-            );
-        }
-
-        if t.is_borrow() && op.is_pointer_arithmetic() {
-            /* TODO */
-            return (
-                lhs_type.is_pointer().then(|| {
-                    let base = t.parsed.clone();
-                    GuidedType::from_type(syn::parse_quote! { &[#base] })
-                }),
-                None,
             );
         }
 

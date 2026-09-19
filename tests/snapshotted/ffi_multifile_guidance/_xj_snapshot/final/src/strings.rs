@@ -10,7 +10,7 @@ pub fn zero_first(mut buf: &mut [u8], mut n: ::core::ffi::c_int) {
 #[no_mangle]
 pub extern "C" fn strings_demo() -> ::core::ffi::c_int {
     let mut buf: [::core::ffi::c_uchar; 4] = [9, 9, 9, 9];
-    zero_first(buf.as_mut(), 4);
+    zero_first(&mut buf, 4);
     buf[0] as ::core::ffi::c_int
 }
 pub mod xj_ffi {
@@ -19,8 +19,8 @@ pub mod xj_ffi {
     #[no_mangle]
     pub unsafe extern "C" fn first_byte(s: *const ::core::ffi::c_char) -> ::core::ffi::c_uchar {
         super::first_byte({
-            let __lift_2_926_0 = libc::strlen(s) + 1;
-            std::slice::from_raw_parts(s.cast(), __lift_2_926_0)
+            let __lift_2_922_0 = libc::strlen(s) + 1;
+            std::slice::from_raw_parts(s.cast(), __lift_2_922_0)
         })
     }
     #[no_mangle]

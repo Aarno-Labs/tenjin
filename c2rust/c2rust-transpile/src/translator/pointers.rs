@@ -51,12 +51,8 @@ impl<'c> Translation<'c> {
             _ => (),
         }
 
-        let val = self.convert_expr_guided(
-            ctx.used().needs_address(),
-            arg,
-            None,
-            ctx_guided_type,
-        )?;
+        let val =
+            self.convert_expr_guided(ctx.used().needs_address(), arg, None, ctx_guided_type)?;
 
         // & becomes a no-op when applied to a function.
         if self.ast_context.is_function_pointer(cqual_type.ctype) {
@@ -159,9 +155,9 @@ impl<'c> Translation<'c> {
                     return Ok(val);
                 }
 
-                if let Some(_) = guided_type {
-                    if tenjin::type_try_arraylike_element(&eg.parsed).is_some() {
-                        // If the destination is guided to a slice type and the source is
+                if let Some(gt) = guided_type {
+                    if gt.is_borrow() && tenjin::type_try_arraylike_element(&eg.parsed).is_some() {
+                        // If the destination is guided to a reference type and the source is
                         // array-like with the same element type, then we can skip the decay.
                         //
                         // If the element types are different but compatible via bytemucking,
@@ -172,18 +168,15 @@ impl<'c> Translation<'c> {
                         return Ok(val);
                     }
                 }
-                // If the value is a slice but the context still wants a pointer,
+                // If the value is a reference but the context still wants a pointer,
                 // we'll fall through to the normal decay logic.
             } else if src_array {
                 let will_index = arg
                     .map(|cexpr| self.wrapped_with_subscript_base(cexpr))
                     .unwrap_or(false);
                 if let Some(cg) = guided_type {
-                    if tenjin::type_try_arraylike_element(&cg.parsed).is_some() {
-                        return Ok(val);
-                    }
                     if !will_index && tenjin::type_try_arraylike_element(&cg.parsed).is_none() {
-                        // as above
+                        // Insert implicit dereference at offset 0 to coerce to reference
                         return Ok(val.map(|val| {
                             mk().set_mutbl(mutbl).borrow_expr(
                                 mk().index_expr(val, mk().lit_expr(mk().int_unsuffixed_lit(0))),
@@ -828,120 +821,95 @@ impl<'c> Translation<'c> {
             //}
             let source_ty_kind = &self.ast_context.resolve_type(source_cty.ctype).kind;
             let target_ty_kind = &self.ast_context.resolve_type(target_cty.ctype).kind;
-            let have_dst_guidance = guided_type.is_some();
-            let guided_type: Option<tenjin::GuidedType> = match (guided_type, c_expr) {
-                (Some(gt), _) => Some(gt.clone()),
-                (None, Some(expr)) => self
-                    .parsed_guidance
+            let expr_guidance = c_expr.and_then(|expr| {
+                self.parsed_guidance
                     .borrow_mut()
-                    .query_expr_type(self, expr),
-                _ => {
-                    log::warn!(
-                        "No guided type and no C exprid for cast from {:?} to {:?}",
-                        source_ty_kind,
-                        target_ty_kind
-                    );
-                    None
-                }
-            };
-            if let Some(guided_type) = guided_type {
-                if let CTypeKind::Pointer(pcq) = source_ty_kind {
-                    let pcq_kind = &self.ast_context.resolve_type(pcq.ctype).kind;
-                    match pcq_kind {
-                        CTypeKind::ConstantArray(elem, _)
-                            if guided_type.is_borrow() 
-                            // This is only OK if we have guidance on the destination, 
-                            // i.e. we know that we won't decay to a pointer
-                            // 
-                            // consider 
-                            //    const unsigned char *p = ...; 
-                            //    foo((const char *)p); 
-                            // where we have guidance that p => &[u8], but foo's argument is unguided.
-                            && /* have_dst_guidance */ true =>
-                        {
-                            if matches!(target_ty_kind, CTypeKind::Pointer(_))
-                                && self.ast_context.resolve_type(*elem).kind.is_integral_type()
-                            {
-                                return Ok(val.map(|x| {
-                                    tenjin::expr_bytemuck_cast_reference(
-                                        self,
-                                        &x,
-                                        &guided_type.parsed,
-                                    )
-                                }));
-                            }
-                        }
-                        _ if guided_type.is_borrow()
-                            && pcq_kind.is_integral_type()
-                            && /* have_dst_guidance */ true =>
-                        {
-                            if matches!(target_ty_kind, CTypeKind::Pointer(_)) {
-                                return Ok(val.map(|x| {
-                                    tenjin::expr_bytemuck_cast_reference(
-                                        self,
-                                        &x,
-                                        &guided_type.parsed,
-                                    )
-                                }));
-                            }
-                        }
-                        CTypeKind::Struct(s) => {
-                            // Casting from a pointer-to-struct
+                    .query_expr_type(self, expr)
+            });
+            if guided_type.is_none() && expr_guidance.is_none() {
+                log::warn!(
+                    "No guided type and no C exprid for cast from {:?} to {:?}",
+                    source_ty_kind,
+                    target_ty_kind
+                );
+            }
 
-                            // Can we use bytemuck to do the cast safely?
-                            let name = self.type_converter.borrow().resolve_decl_name(*s).unwrap();
-                            if self.parsed_guidance.borrow().pod_types.contains(&name) {
-                                match &guided_type.parsed {
-                                    Type::Reference(tref) => {
-                                        if tenjin::type_is_vec(&tref.elem) {
-                                            // emit bytemuck::cast_slice_mut(&mut x)
-                                            return Ok(val.map(|x| {
-                                                mk().call_expr(
-                                                    mk().path_expr(vec![
-                                                        "bytemuck",
-                                                        "cast_slice_mut",
-                                                    ]),
-                                                    vec![mk()
-                                                        .set_mutbl(Mutability::Mutable)
-                                                        .borrow_expr(x)],
-                                                )
-                                            }));
-                                        }
-                                        // emit bytemuck::cast_mut(&mut x)
+            if let CTypeKind::Pointer(pcq) = source_ty_kind {
+                let pcq_kind = &self.ast_context.resolve_type(pcq.ctype).kind;
+                match (pcq_kind, guided_type.as_ref(), expr_guidance.as_ref()) {
+                    (CTypeKind::ConstantArray(elem, _), Some(gt), _)
+                        if gt.is_borrow()
+                            && self.ast_context.resolve_type(*elem).kind.is_integral_type() =>
+                    {
+                        // This is only OK if we have guidance on the destination,
+                        // i.e. we know that we won't decay to a pointer
+                        //
+                        // consider
+                        //    const unsigned char *p = ...;
+                        //    foo((const char *)p);
+                        // where we have guidance that p => &[u8], but foo's argument is unguided.
+                        return Ok(
+                            val.map(|x| tenjin::expr_bytemuck_cast_reference(self, &x, &gt.parsed))
+                        );
+                    }
+                    (_, Some(gt), _) if gt.is_borrow() && pcq_kind.is_integral_type() => {
+                        // Same as above
+                        return Ok(
+                            val.map(|x| tenjin::expr_bytemuck_cast_reference(self, &x, &gt.parsed))
+                        );
+                    }
+
+                    (CTypeKind::Struct(s), Some(gt), _) | (CTypeKind::Struct(s), _, Some(gt)) => {
+                        // Casting from a pointer-to-struct
+
+                        // Can we use bytemuck to do the cast safely?
+                        let name = self.type_converter.borrow().resolve_decl_name(*s).unwrap();
+                        if self.parsed_guidance.borrow().pod_types.contains(&name) {
+                            match &gt.parsed {
+                                Type::Reference(tref) => {
+                                    if tenjin::type_is_vec(&tref.elem) {
+                                        // emit bytemuck::cast_slice_mut(&mut x)
                                         return Ok(val.map(|x| {
                                             mk().call_expr(
-                                                mk().path_expr(vec!["bytemuck", "cast_mut"]),
+                                                mk().path_expr(vec!["bytemuck", "cast_slice_mut"]),
                                                 vec![mk()
                                                     .set_mutbl(Mutability::Mutable)
                                                     .borrow_expr(x)],
                                             )
                                         }));
                                     }
-                                    _ => {
-                                        log::error!(
-                                            "Unhandled type guidance for cast: {:?}",
-                                            guided_type
-                                        );
-                                    }
+                                    // emit bytemuck::cast_mut(&mut x)
+                                    return Ok(val.map(|x| {
+                                        mk().call_expr(
+                                            mk().path_expr(vec!["bytemuck", "cast_mut"]),
+                                            vec![mk()
+                                                .set_mutbl(Mutability::Mutable)
+                                                .borrow_expr(x)],
+                                        )
+                                    }));
+                                }
+                                _ => {
+                                    log::error!("Unhandled type guidance for cast: {:?}", gt);
                                 }
                             }
                         }
-                        _ => {
-                            // Casting from a pointer type, not a pointer-to-struct
+                    }
+
+                    (_, Some(gt), _) | (_, _, Some(gt)) if tenjin::type_is_vec(&gt.parsed) => {
+                        // Casting from a pointer type.
+                        // If our guidance is that we actually have a Vec, we need
+                        // to insert an as_mut_ptr() call here.
+                        {
+                            let target_ty = self.convert_type(target_cty.ctype)?;
+                            return Ok(val.map(|x| {
+                                let x_as_ptr =
+                                    mk().method_call_expr(x, "as_mut_ptr", Vec::<Box<Expr>>::new());
+
+                                mk().cast_expr(x_as_ptr, target_ty)
+                            }));
                         }
                     }
-                    // Casting from a pointer type.
-                    // If our guidance is that we actually have a Vec, we need
-                    // to insert an as_mut_ptr() call here.
-                    if tenjin::type_is_vec(&guided_type.parsed) {
-                        let target_ty = self.convert_type(target_cty.ctype)?;
-                        return Ok(val.map(|x| {
-                            let x_as_ptr =
-                                mk().method_call_expr(x, "as_mut_ptr", Vec::<Box<Expr>>::new());
-
-                            mk().cast_expr(x_as_ptr, target_ty)
-                        }));
-                    }
+                    _ => {}
                 }
             }
 

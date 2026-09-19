@@ -18,7 +18,7 @@ pub fn bump(mut p: &mut ::core::ffi::c_int) -> ::core::ffi::c_int {
 #[no_mangle]
 pub unsafe extern "C" fn numbers_demo() -> ::core::ffi::c_int {
     let mut xs: [::core::ffi::c_int; 3] = [1, 2, 3];
-    let mut total = sum_n(xs.as_ref(), 3 as ::core::ffi::c_int);
+    let mut total = sum_n(&xs, 3 as ::core::ffi::c_int);
     total += bump(&mut xs[0]);
     total += first_byte(b"world\0".as_ptr() as *const ::core::ffi::c_char) as ::core::ffi::c_int;
     total + strings_demo()
