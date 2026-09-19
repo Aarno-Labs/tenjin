@@ -4,7 +4,7 @@
 - Most scripts within `cli/` are meant to be run indirectly via `10j`
 - After any change to Python code, run `./cli/10j check-py`
 - After any change to Rust code, run `./cli/10j check-rs && 10j test-unit-rs`. This should take about 15 seconds to run.
-- When finished with a task, run `./cli/10j pytest tests -n auto`. This takes about 60 seconds to run.
+- When finished with a task that modified Tenjin's code, run `./cli/10j pytest tests -n auto`. This takes about 60 seconds to run.
 - Results from `10j pytest` runs can be found in `/tmp/pytest-of-$USER/`
 - Snapshot tests (in `tests/snapshotted/`) auto-update their stored
 snapshots on first run when output changes, and raise a failure to
