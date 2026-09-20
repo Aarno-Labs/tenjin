@@ -32,6 +32,10 @@ Mutable global variables are unsafe in Rust.
   keep those calls well-typed. Tenjin applies these edits without discovering
   additional functions, generating callback wrappers, or repairing compiler errors.
   Unsupported callback forms block localization during planning.
+- Context construction brings required initializer function declarations into
+  `main`'s translation unit and moves late type definitions before the context
+  header. PANGS leaves callback storage in place if moving its initializer would
+  require naming another translation unit's private function.
 - After their declarations and initializers have been copied into the context construction,
   selected globals' original definitions are overwritten with whitespace. Newlines and byte
   widths are preserved so later source locations remain stable.

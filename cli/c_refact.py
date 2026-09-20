@@ -972,6 +972,7 @@ def type_names_declared_before_offset(tu: TranslationUnit, offset: int) -> set[s
     type_declaration_kinds = {
         CursorKind.STRUCT_DECL,
         CursorKind.UNION_DECL,
+        CursorKind.ENUM_DECL,
         CursorKind.TYPEDEF_DECL,
     }
     return {
@@ -979,8 +980,51 @@ def type_names_declared_before_offset(tu: TranslationUnit, offset: int) -> set[s
         for cursor in tu.cursor.walk_preorder()  # type: ignore[attr-defined]
         if cursor.kind in type_declaration_kinds
         and cursor.spelling
+        and cursor.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
         and cursor.extent.end.offset <= offset
     }
+
+
+def order_context_type_declarations(declarations: list[Cursor]) -> list[Cursor]:
+    """Order copied type declarations so their dependencies are declared first."""
+    tag_kinds = (CursorKind.STRUCT_DECL, CursorKind.UNION_DECL, CursorKind.ENUM_DECL)
+    owners = {}
+    for declaration in declarations:
+        for child in declaration.walk_preorder():
+            if child.kind in (*tag_kinds, CursorKind.TYPEDEF_DECL):
+                owners[child.kind, child.spelling] = declaration
+    result: list[Cursor] = []
+    visited = set()
+
+    def visit(declaration):
+        key = (declaration.kind, declaration.spelling)
+        if key in visited:
+            return
+        visited.add(key)
+
+        def dependencies(cursor):
+            for child in cursor.get_children():
+                if child.kind == CursorKind.TYPE_REF and child.referenced:
+                    referenced = child.referenced
+                    if (
+                        referenced.kind in tag_kinds
+                        and cursor.type.get_canonical().kind == TypeKind.POINTER
+                    ):
+                        # Tag forward declarations suffice for pointer fields.
+                        continue
+                    owner = owners.get((referenced.kind, referenced.spelling))
+                    if owner is not None:
+                        visit(owner)
+                dependencies(child)
+
+        dependencies(declaration)
+        result.append(declaration)
+
+    for declaration in sorted(
+        declarations, key=lambda c: (c.location.file.name, c.extent.start.offset)
+    ):
+        visit(declaration)
+    return result
 
 
 def localize_mutable_globals(
@@ -1143,7 +1187,7 @@ def _localize_mutable_globals_in_place(
 
     needed_struct_defs = {}
     needed_typedefs: dict[str, tuple[Cursor, str]] = {}
-    forward_declarable_types = set()
+    forward_declarable_types: dict[str, str] = {}
 
     def collect_type_dependencies(type_obj_noncanonical, depth=0):
         """Recursively collect struct/union types needed to define this type."""
@@ -1201,6 +1245,10 @@ def _localize_mutable_globals_in_place(
 
         if type_obj_noncanonical.kind == TypeKind.TYPEDEF:
             typedef_decl = type_obj_noncanonical.get_declaration()
+            needed_typedefs.setdefault(
+                typedef_decl.spelling,
+                (typedef_decl, typedef_decl.underlying_typedef_type.get_canonical().spelling),
+            )
             # print(f"{indent}  Saw typedef...")
             # print(f"{indent}    typedef cursor: {typedef_decl.kind}")
             # print(f"{indent}    typedef cursor: {typedef_decl.extent}")
@@ -1209,7 +1257,7 @@ def _localize_mutable_globals_in_place(
             # print(f"{indent}    underlying type: {typedef_decl.underlying_typedef_type.kind}")
             # print(f"{indent}    referenced type: {typedef_decl.get_definition().referenced.kind}")
             collect_type_dependencies(typedef_decl.underlying_typedef_type, depth + 1)
-            pass
+            return
 
         if type_obj_canonical.kind == TypeKind.POINTER:
             while type_obj_noncanonical.kind == TypeKind.TYPEDEF:
@@ -1227,7 +1275,9 @@ def _localize_mutable_globals_in_place(
             # Check if pointee is a struct/union
             decl = pointee_canonical.get_declaration()
             if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
-                forward_declarable_types.add(decl.spelling)
+                forward_declarable_types[decl.spelling] = (
+                    "union" if decl.kind == CursorKind.UNION_DECL else "struct"
+                )
                 # print(f"{indent}  -> Can forward-declare: {decl.spelling}")
 
             collect_type_dependencies(pointee, depth + 1)
@@ -1254,8 +1304,9 @@ def _localize_mutable_globals_in_place(
 
         # If it's a struct or union, we need its full definition
         decl = type_obj_noncanonical.get_declaration()
+        decl = decl.get_definition() or decl
 
-        if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
+        if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL, CursorKind.ENUM_DECL]:
             type_name = decl.spelling
             if type_name and type_name not in needed_struct_defs:
                 # print(f"{indent}  -> Need full definition: {type_name}")
@@ -1270,6 +1321,15 @@ def _localize_mutable_globals_in_place(
     for cursor in localized_globals_and_statics:
         # print(f"\nAnalyzing dependencies for {cursor.spelling}:")
         collect_type_dependencies(cursor.type, depth=1)
+
+    initializer_functions: dict[str, Cursor] = {}
+    for var_cursor in localized_globals_and_statics:
+        for child in var_cursor.walk_preorder():
+            if child.kind == CursorKind.DECL_REF_EXPR:
+                referenced = child.referenced
+                if referenced and referenced.kind == CursorKind.FUNCTION_DECL:
+                    initializer_functions[referenced.get_usr()] = referenced
+                    collect_type_dependencies(referenced.type)
 
     print("\n" + "=" * 80)
     print("SUMMARY")
@@ -1335,6 +1395,7 @@ def _localize_mutable_globals_in_place(
 
         # TU -> offset of first fn using mutable globals
         lowest_mutable_accessing_fn_starts: dict[str, tuple[int, str]] = {}
+        initializer_prototypes: dict[str, list[str]] = {}
 
         def record_mutable_accessing_fn_start(tu_path: str, fn_start: tuple[int, str] | None):
             if fn_start is None:
@@ -1425,9 +1486,7 @@ def _localize_mutable_globals_in_place(
         # Add forward declarations if needed
         if forward_declarable_types:
             for type_name in sorted(forward_declarable_types):
-                # Determine if it's a struct or union
-                # We'll default to struct (can improve this later)
-                header_lines.append(f"struct {type_name};")
+                header_lines.append(f"{forward_declarable_types[type_name]} {type_name};")
             header_lines.append("")
 
         # Add typedefs
@@ -1539,6 +1598,42 @@ def _localize_mutable_globals_in_place(
                     # `main()` may not access mutable globals directly, but it needs to see the full
                     # declaration of the XjGlobals struct because it needs to construct the singleton.
                     record_mutable_accessing_fn_start(tu_path, (cursor.extent.start.offset, "main"))
+
+                    visible_functions = {
+                        decl.get_usr()
+                        for decl in tu.cursor.get_children()
+                        if decl.kind == CursorKind.FUNCTION_DECL
+                        and decl.extent.start.offset < cursor.extent.start.offset
+                    }
+                    for usr, function in sorted(initializer_functions.items()):
+                        if usr in visible_functions:
+                            continue
+                        if (
+                            function.linkage == LinkageKind.INTERNAL
+                            and function.location.file.name != tu_path
+                        ):
+                            raise pangs_source.ContractViolation(
+                                f"Cannot move initializer referencing private function "
+                                f"{function.spelling} from {function.location.file.name} into {tu_path}"
+                            )
+                        # Keep the rewritten signature's typedefs, qualifiers and attributes.
+                        body = next(
+                            (
+                                c
+                                for c in function.get_children()
+                                if c.kind == CursorKind.COMPOUND_STMT
+                            ),
+                            None,
+                        )
+                        end = body.extent.start.offset if body else function.extent.end.offset
+                        declaration = (
+                            rewriter.get_content(function.location.file.name)[
+                                function.extent.start.offset : end
+                            ]
+                            .decode("utf-8")
+                            .strip()
+                        )
+                        initializer_prototypes.setdefault(tu_path, []).append(declaration + ";")
 
                     globals_and_statics_by_name = {c.spelling: c for c in globals_and_statics}
 
@@ -1674,21 +1769,23 @@ def _localize_mutable_globals_in_place(
 
             # print(f"\n  Analyzing types in scope in TU: {tu_path}")
 
-            # Keep the existing whole-TU struct/union behavior: copying a full
-            # definition earlier while leaving its original definition in place
-            # would redefine the tag. Typedefs, however, may be repeated when
-            # they name the same type, and must be copied when their original
-            # declaration occurs after the generated xj_globals.h include.
-            struct_union_types_in_tu = set()
-
-            # Find all struct/union declarations.
+            # Use this TU's own definitions when available, and distinguish a
+            # visible complete definition from a forward declaration or a late one.
+            local_type_definitions = {}
             for cursor in tu.cursor.walk_preorder():  # type:ignore[attr-defined]
-                if cursor.kind == CursorKind.STRUCT_DECL and cursor.spelling:
-                    struct_union_types_in_tu.add(cursor.spelling)
-                    # print(f"    Found struct in scope: {cursor.spelling}")
-                elif cursor.kind == CursorKind.UNION_DECL and cursor.spelling:
-                    struct_union_types_in_tu.add(cursor.spelling)
-                    # print(f"    Found union in scope: {cursor.spelling}")
+                if (
+                    cursor.kind
+                    in (
+                        CursorKind.STRUCT_DECL,
+                        CursorKind.UNION_DECL,
+                        CursorKind.ENUM_DECL,
+                        CursorKind.TYPEDEF_DECL,
+                    )
+                    and cursor.spelling
+                    and cursor.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+                    and (cursor.kind == CursorKind.TYPEDEF_DECL or cursor.is_definition())
+                ):
+                    local_type_definitions[cursor.kind, cursor.spelling] = cursor
 
             types_declared_before_include = type_names_declared_before_offset(tu, offset)
 
@@ -1697,15 +1794,25 @@ def _localize_mutable_globals_in_place(
             types_to_emit_typedefs: dict[str, Cursor] = {}  # name -> decl_cursor
 
             for type_name, decl_cursor in needed_struct_defs.items():
-                if type_name not in struct_union_types_in_tu:
+                decl_cursor = local_type_definitions.get((decl_cursor.kind, type_name), decl_cursor)
+                if (
+                    decl_cursor.location.file.name != tu_path
+                    or decl_cursor.extent.end.offset > offset
+                ):
                     types_to_emit_structs[type_name] = decl_cursor
                 #     print(f"    Will emit struct definition: {type_name}")
                 # else:
                 #     print(f"    Skipping struct (already in scope): {type_name}")
 
             for type_name, decl_cursor in needed_typedefs.items():
-                if type_name not in types_declared_before_include:
-                    types_to_emit_typedefs[type_name] = decl_cursor[0]
+                declaration = local_type_definitions.get(
+                    (CursorKind.TYPEDEF_DECL, type_name), decl_cursor[0]
+                )
+                if (
+                    declaration.location.file.name != tu_path
+                    or declaration.extent.end.offset > offset
+                ):
+                    types_to_emit_typedefs[type_name] = declaration
                 #     print(f"    Will emit typedef: {type_name}")
                 # else:
                 #     print(f"    Skipping typedef (already in scope): {type_name}")
@@ -1727,37 +1834,41 @@ def _localize_mutable_globals_in_place(
             type_defs_lines.append("\n// Type definitions needed for XjGlobals")
 
             # Add forward declarations if needed
-            forward_decls_to_emit = forward_declarable_types - types_declared_before_include
+            forward_decls_to_emit = forward_declarable_types.keys() - types_declared_before_include
             if forward_decls_to_emit:
                 for type_name in sorted(forward_decls_to_emit):
-                    type_defs_lines.append(f"struct {type_name};")
+                    type_defs_lines.append(f"{forward_declarable_types[type_name]} {type_name};")
 
-            # Add typedefs
-            if types_to_emit_typedefs:
-                typedefs_sorted = sorted(
-                    list(types_to_emit_typedefs.items()), key=lambda item: item[1].location.line
-                )
-                for name, decl_cursor in typedefs_sorted:
-                    start_offset = decl_cursor.extent.start.offset
-                    end_offset = decl_cursor.extent.end.offset
-                    for local_tu_path, _ in tus.items():
-                        if str(local_tu_path) == decl_cursor.location.file.name:  # type:ignore[attr-defined]
-                            content = rewriter.get_content(local_tu_path)
-                            typedef_text = content[start_offset:end_offset].decode("utf-8")
-                            type_defs_lines.append(typedef_text + ";")
-                            break
-
-            # Add struct/union definitions
-            if types_to_emit_structs:
-                for type_name, decl_cursor in types_to_emit_structs.items():
-                    start_offset = decl_cursor.extent.start.offset
-                    end_offset = decl_cursor.extent.end.offset
-                    for local_tu_path, _ in tus.items():
-                        if str(local_tu_path) == decl_cursor.location.file.name:  # type:ignore[attr-defined]
-                            content = rewriter.get_content(local_tu_path)
-                            struct_text = content[start_offset:end_offset].decode("utf-8")
-                            type_defs_lines.append(struct_text + ";")
-                            break
+            # Preserve declaration order between tags and typedefs. Late local
+            # definitions are moved, not duplicated; leave any surrounding
+            # variable declarator intact when moving an embedded tag.
+            declarations = order_context_type_declarations(
+                [*types_to_emit_typedefs.values(), *types_to_emit_structs.values()],
+            )
+            for decl_cursor in declarations:
+                start_offset = decl_cursor.extent.start.offset
+                end_offset = decl_cursor.extent.end.offset
+                source_path = decl_cursor.location.file.name
+                content = rewriter.get_content(source_path)
+                type_defs_lines.append(content[start_offset:end_offset].decode("utf-8") + ";")
+                if source_path == tu_path and not any(
+                    start <= start_offset and end_offset <= end
+                    for start, end in global_definition_ranges.get(tu_path, [])
+                ):
+                    if decl_cursor.kind == CursorKind.TYPEDEF_DECL or content[
+                        end_offset:
+                    ].lstrip().startswith(b";"):
+                        replacement = ""
+                    else:
+                        tag = {
+                            CursorKind.STRUCT_DECL: "struct",
+                            CursorKind.UNION_DECL: "union",
+                            CursorKind.ENUM_DECL: "enum",
+                        }[decl_cursor.kind]
+                        replacement = f"{tag} {decl_cursor.spelling}"
+                    rewriter.add_rewrite(
+                        tu_path, start_offset, end_offset - start_offset, replacement
+                    )
 
             # These are preprocessed `.i` files, for which Clang does not
             # honor `-I` flags. Use a path relative to this translation unit
@@ -1767,6 +1878,7 @@ def _localize_mutable_globals_in_place(
                 os.path.relpath(header_path, start=Path(tu_path).parent)
             ).as_posix()
             type_defs_lines.append(f'#include "{header_include}"')
+            type_defs_lines.extend(initializer_prototypes.get(tu_path, []))
             type_defs_lines.append(f"/* @{q} end include block for XjGlobals */")
 
             type_defs_text = "\n".join(type_defs_lines) + "\n"

@@ -448,7 +448,7 @@ def test_callback_addresses_in_initializers_and_assignments(tmp_path, source_pan
 
 
 @pytest.mark.parametrize(
-    "sources,error",
+    "sources",
     [
         pytest.param(
             {
@@ -456,13 +456,7 @@ def test_callback_addresses_in_initializers_and_assignments(tmp_path, source_pan
                 "int main(void){return dispatch(7);}\n",
                 "b.nolines.i": "int g;\nint foo(int x){return ++g+x;}\nint (*dispatch)(int)=foo;\n",
             },
-            "use of undeclared identifier 'foo'",
             id="initializer-function-declared-in-another-file",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=pangs_source.ContractViolation,
-                reason="Moving dispatch's initializer to main requires a declaration of foo",
-            ),
         ),
         pytest.param(
             {
@@ -470,22 +464,127 @@ def test_callback_addresses_in_initializers_and_assignments(tmp_path, source_pan
                 "struct Holder {int (*cb)(int);};\nstruct Holder holder={foo};\n"
                 "int main(void){return holder.cb(7);}\n",
             },
-            "field has incomplete type 'struct Holder'",
             id="context-field-type-declared-after-first-accessor",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=pangs_source.ContractViolation,
-                reason="Generated context header precedes the complete Holder definition",
-            ),
         ),
     ],
 )
-def test_localizing_callback_container_storage(tmp_path, source_pangs, sources, error):
-    try:
-        materialize_sources(source_pangs, tmp_path, sources)
-    except pangs_source.ContractViolation as exc:
-        assert error in str(exc)
-        raise
+def test_localizing_callback_container_storage(tmp_path, source_pangs, sources):
+    manifest, rewritten = materialize_sources(source_pangs, tmp_path, sources)
+    assert all(g["disposition"]["chosen"] == "localize" for g in manifest["globals"])
+    text = "\n".join(rewritten.values())
+    assert "struct XjGlobals xjgv" in text
+    if "a.nolines.i" in rewritten:
+        assert "int foo(struct XjGlobals *xjg, int x);" in rewritten["a.nolines.i"]
+    else:
+        assert text.count("struct Holder {") == 1
+        assert text.index("struct Holder {") < text.index('#include "xj_globals.h"')
+
+
+@pytest.mark.parametrize(
+    "declarations,field_type",
+    [
+        ("struct Holder {int (*cb)(int);};", "struct Holder"),
+        ("typedef struct Holder {int (*cb)(int);} Holder;", "Holder"),
+        (
+            "typedef int (*Callback)(int);\n"
+            "struct Base {int value;};\n"
+            "typedef struct Base Base;\n"
+            "struct Holder {Callback cb; Base base;};",
+            "struct Holder",
+        ),
+        (
+            "enum State {READY};\nstruct Holder {int (*cb)(int); enum State state;};",
+            "struct Holder",
+        ),
+        (
+            "union Value {int x; long y;};\n"
+            "struct Holder {int (*cb)(int); union Value value; union Value *p;};",
+            "struct Holder",
+        ),
+        (
+            "struct Tail;\n"
+            "struct Holder {int (*cb)(int); struct Tail *tail;};\n"
+            "struct Tail {struct Holder holder;};",
+            "struct Holder",
+        ),
+    ],
+    ids=[
+        "forward-tag",
+        "embedded-typedef",
+        "nested-types",
+        "enum-field",
+        "union-field",
+        "pointer-cycle",
+    ],
+)
+def test_context_storage_hoists_late_type_dependencies(
+    tmp_path, source_pangs, declarations, field_type
+):
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "struct Holder;\nstatic int g;\n"
+            "static int foo(int x){return ++g+x;}\n"
+            + declarations
+            + f"\n{field_type} holder={{foo}};\n"
+            "int main(void){return holder.cb(7);}\n"
+        },
+    )
+    text = rewritten["test.nolines.i"]
+    assert text.count("struct Holder {") == 1
+    assert text.index("struct Holder {") < text.index('#include "xj_globals.h"')
+    assert "static int foo(struct XjGlobals *xjg, int x)" in text
+
+
+def test_callback_initializer_prototype_preserves_qualifiers_and_typedefs(tmp_path, source_pangs):
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "a.nolines.i": "extern int (*dispatch)(const int *);\n"
+            "int main(void){int x=7;return dispatch(&x);}\n",
+            "b.nolines.i": "typedef const int *Input;\nint g;\n"
+            "int foo(Input x){return ++g+*x;}\nint (*dispatch)(const int *)=foo;\n",
+        },
+    )
+    text = rewritten["a.nolines.i"]
+    assert "typedef const int *Input;" in text
+    assert "int foo(struct XjGlobals *xjg, Input x);" in text
+
+
+def test_hoisting_embedded_tag_keeps_unselected_storage(tmp_path, source_pangs):
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g;\nint foo(int x){return ++g+x;}\n"
+            "struct Holder {int (*cb)(int);} spare;\nstruct Holder holder={foo};\n"
+            "int main(void){spare.cb=foo;return holder.cb(7)+spare.cb(1);}\n"
+        },
+        leave_globals=("test.nolines.i::spare",),
+    )
+    text = rewritten["test.nolines.i"]
+    assert text.count("struct Holder {") == 1
+    assert "struct Holder spare;" in text
+
+
+def test_private_callback_initializer_stays_in_its_translation_unit(tmp_path, source_pangs):
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "a.nolines.i": "extern int (*dispatch)(int);\nint main(void){return dispatch(7);}\n",
+            "b.nolines.i": "int g;\nstatic int foo(int x){return ++g+x;}\n"
+            "int (*dispatch)(int)=foo;\n",
+        },
+    )
+    dispatch = next(g for g in manifest["globals"] if g["meta"]["llvm_name"] == "dispatch")
+    assert dispatch["disposition"]["chosen"] == "unhandled"
+    field = next(f for f in manifest["context_rewrite"]["fields"] if f["llvm_name"] == "dispatch")
+    assert "source-private-initializer-function" in {b["kind"] for b in field["blockers"]}
+    assert "foo" not in rewritten["a.nolines.i"]
+    assert "static int foo(struct XjGlobals *xjg, int x)" in rewritten["b.nolines.i"]
 
 
 def test_context_caller_does_not_change_unrelated_direct_or_indirect_callees(
