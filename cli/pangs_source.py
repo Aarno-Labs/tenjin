@@ -1,12 +1,11 @@
 """Prepare C source for moving global variables into a context passed between functions.
 
-Check PANGS's rewrite plan for consistency, apply its function,
-call-site, and pruning edits, and validate the rewritten C before Rust translation.
+Check PANGS's rewrite plan, apply its signature, callback-adapter, call-site,
+and pruning edits, and validate the rewritten C before Rust translation.
 """
 
 from __future__ import annotations
 
-import json
 import re
 import tempfile
 from subprocess import CalledProcessError
@@ -53,13 +52,13 @@ def snapshot_path(root: Path, relative: str) -> Path:
 
 
 def validate_plan(manifest: dict, root: Path) -> dict:
-    """Check that the rewrite plan is supported and internally consistent.
+    """Check finalized plan metadata and the structure of its source edits.
 
     Return the validated source metadata from the manifest.
     """
     source = manifest.get("context_rewrite", {}).get("source", {})
-    if source.get("version") != 2 or source.get("complete") is not True:
-        raise ValueError("Tenjin requires PANGS source-complete plan version 2; rerun analysis")
+    if source.get("version") != 3 or source.get("complete") is not True:
+        raise ValueError("Tenjin requires PANGS source-complete plan version 3; rerun analysis")
     if source.get("retention") != {
         "policy": "c2rust-declaration-dependencies",
         "version": 1,
@@ -85,16 +84,14 @@ def validate_plan(manifest: dict, root: Path) -> dict:
     if {f["global"] for f in selected["fields"]} != chosen:
         raise ValueError("PANGS selected fields differ from final dispositions")
     candidates = {f["global"]: f for f in manifest["context_rewrite"]["fields"]}
-    edits = {}
     for field in selected["fields"]:
         if field != candidates.get(field["global"]) or field["blockers"]:
             raise ValueError("PANGS selected recipe is blocked or differs from analysis")
-        for edit in field["source_edits"]:
-            edits[json.dumps(edit, sort_keys=True)] = edit
-    if sorted(edits) != sorted(json.dumps(e, sort_keys=True) for e in selected["source_edits"]):
-        raise ValueError("PANGS selected edits differ from recipe union")
+    functions = {name for f in selected["fields"] for name in f["functions"]}
+    if functions != set(selected["functions"]):
+        raise ValueError("PANGS selected functions differ from recipe union")
     previous = None
-    for edit in sorted(edits.values(), key=lambda e: (e["file"], e["start"], e["end"])):
+    for edit in sorted(selected["source_edits"], key=lambda e: (e["file"], e["start"], e["end"])):
         path = snapshot_path(root, edit["file"])
         if path not in files or edit["kind"] not in {
             "signature",
@@ -103,6 +100,9 @@ def validate_plan(manifest: dict, root: Path) -> dict:
             "typedef-use",
             "prune-declaration",
             "prune-expression",
+            "wrapper-declaration",
+            "wrapper-definition",
+            "wrapper-use",
         }:
             raise ValueError("Unsupported PANGS source edit")
         start, end = edit["start"], edit["end"]
@@ -119,17 +119,17 @@ def validate_plan(manifest: dict, root: Path) -> dict:
 
 
 def apply_source_edits(manifest: dict, root: Path) -> None:
-    """Apply planned edits to pass the globals context and remove discarded C code."""
+    """Apply planned context passing, callback adapters, and discarded-code removal."""
     selected = manifest["context_rewrite"]["selected"]
     with batching_rewriter.BatchingRewriter() as rewriter:
+        for entry in manifest["context_rewrite"]["source"]["files"]:
+            rewriter.add_rewrite(
+                str(snapshot_path(root, entry["path"])), 0, 0, "struct XjGlobals;\n"
+            )
         for edit in selected["source_edits"]:
             path = snapshot_path(root, edit["file"])
             rewriter.add_rewrite(
                 str(path), edit["start"], edit["end"] - edit["start"], edit["replacement"]
-            )
-        for entry in manifest["context_rewrite"]["source"]["files"]:
-            rewriter.add_rewrite(
-                str(snapshot_path(root, entry["path"])), 0, 0, "struct XjGlobals;\n"
             )
 
 

@@ -28,9 +28,17 @@ Mutable global variables are unsafe in Rust.
   mutation, escape, or call-graph-component summaries.
 - Selected callsites are modified to pass a context struct pointer. Selected functions
   are modified to receive it and redirect accesses to selected globals through it.
-- PANGS also supplies the callback-type, typedef, and declaration edits needed to
-  keep those calls well-typed. Tenjin applies these edits without discovering
-  additional functions, generating callback wrappers, or repairing compiler errors.
+- PANGS supplies source-plan-v3 callback-type, typedef, declaration, and `_xjw`
+  adapter edits to keep those calls well-typed. An adapter ignores the context
+  and forwards to an unchanged function, preserving its original signature,
+  direct calls, and unrelated callback uses. One adapter identity is shared by
+  all affected uses of the same function, including across translation units.
+  When another selected global requires that function to take context, the
+  combined plan omits its adapter. PANGS alone composes and validates the final
+  edit list; Tenjin checks supported operations, paths, ranges, and overlaps.
+  Tenjin applies the finalized edits without reconstructing candidate recipes,
+  discovering additional functions, choosing callback wrappers, or repairing
+  compiler errors.
   Unsupported callback forms block localization during planning.
 - Context construction brings required initializer function declarations into
   `main`'s translation unit and moves late type definitions before the context

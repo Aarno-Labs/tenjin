@@ -825,7 +825,12 @@ def test_tractor_b1_organic_read_scalefactors_lib(tenjin_fixtures: TenjinFixture
 def test_tractor_b1_organic_refine_block_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Hidden-Tests/B01_organic/refine_block_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 1
+    resultsdir = tenjin_fixtures.tmp_resultsdir / Path(case_dir).name
+    emitted = (resultsdir / "final/codebase/src/lib.rs").read_text()
+    for name in ("stb__midpoints5", "stb__midpoints6"):
+        assert f"static {name}:" in emitted
+        assert f"static mut {name}:" not in emitted
+    assert get_final_unsafe_fns_count(resultsdir) == 1
 
 
 @pytest.mark.slow

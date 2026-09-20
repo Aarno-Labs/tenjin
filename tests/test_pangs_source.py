@@ -47,7 +47,7 @@ def contract(root, source, edits=None):
         ],
         "context_rewrite": {
             "source": {
-                "version": 2,
+                "version": 3,
                 "emitter": "tenjin-c2rust-default-v1",
                 "retention": {
                     "policy": "c2rust-declaration-dependencies",
@@ -90,6 +90,74 @@ def test_plan_rejects_legacy_conflicting_and_escaping_edits(tmp_path):
 def test_plan_validation_needs_only_manifest_metadata(tmp_path):
     manifest = contract(tmp_path, tmp_path / "test.i")
     assert pangs_source.validate_plan(manifest, tmp_path) == manifest["context_rewrite"]["source"]
+
+
+def test_plan_consumes_final_edits_without_interpreting_wrapper_recipes(tmp_path):
+    source = tmp_path / "test.i"
+    code = "int plain(void){return 2;}\n"
+    source.write_text(code)
+    manifest = contract(tmp_path, source)
+    field = manifest["context_rewrite"]["fields"][0]
+    # Candidate recipe formats belong to PANGS, not the edit consumer.
+    field.pop("source_edits")
+    field["source_wrappers"] = {"opaque_planning_metadata": True}
+    selected = manifest["context_rewrite"]["selected"]
+    wrapper = "int plain_xjw(struct XjGlobals *xjg){(void)xjg;return plain();}\n"
+    selected["source_edits"] = [
+        {
+            "file": source.name,
+            "start": len(code),
+            "end": len(code),
+            "replacement": wrapper,
+            "kind": "wrapper-definition",
+        }
+    ]
+    original_manifest = json.dumps(manifest, sort_keys=True)
+    pangs_source.validate_plan(manifest, tmp_path)
+    pangs_source.apply_source_edits(manifest, tmp_path)
+    assert source.read_text() == "struct XjGlobals;\n" + code + wrapper
+    assert json.dumps(manifest, sort_keys=True) == original_manifest
+
+
+@pytest.mark.parametrize(
+    "changes,match",
+    [
+        ({"file": "../outside.i"}, "escapes"),
+        ({"file": "unlisted.i"}, "Unsupported PANGS source edit"),
+        ({"kind": "unsupported-operation"}, "Unsupported PANGS source edit"),
+    ],
+)
+def test_plan_checks_final_edit_paths_and_operations(tmp_path, changes, match):
+    manifest = contract(tmp_path, tmp_path / "test.i")
+    manifest["context_rewrite"]["selected"]["source_edits"] = [
+        {
+            "file": "test.i",
+            "start": 0,
+            "end": 0,
+            "replacement": "",
+            "kind": "signature",
+            **changes,
+        }
+    ]
+    with pytest.raises(ValueError, match=match):
+        pangs_source.validate_plan(manifest, tmp_path)
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+def test_plan_checks_final_edit_overlap_independently_of_list_order(tmp_path, overlap):
+    manifest = contract(tmp_path, tmp_path / "test.i")
+    edits = [
+        {"file": "test.i", "start": start, "end": end, "replacement": "", "kind": "signature"}
+        for start, end in [(4, 5), (0, 6 if overlap else 4)]
+    ]
+    manifest["context_rewrite"]["selected"]["source_edits"] = edits
+    original_manifest = json.dumps(manifest, sort_keys=True)
+    if overlap:
+        with pytest.raises(ValueError, match="Conflicting"):
+            pangs_source.validate_plan(manifest, tmp_path)
+    else:
+        pangs_source.validate_plan(manifest, tmp_path)
+    assert json.dumps(manifest, sort_keys=True) == original_manifest
 
 
 @pytest.mark.parametrize("start,end", [(-1, 0), (2, 1)])
@@ -250,7 +318,8 @@ def test_source_plan_materializes_indirect_mixed_targets_and_preserves_behavior(
     assert "Callback__pangs_context" in rewritten
     assert "dead(struct XjGlobals *xjg" in rewritten
     assert "p->fn(xjg)" in rewritten
-    assert "ordinary(struct XjGlobals *xjg" in rewritten
+    assert "ordinary(void)" in rewritten
+    assert "ordinary_xjw(struct XjGlobals *xjg)" in rewritten
     assert c_refact.XJG_PLACEHOLDER not in rewritten
     executable = tmp_path / "after"
     hermetic.run(["clang", "-x", "c", source, "-o", executable], check=True, capture_output=True)
@@ -282,7 +351,6 @@ def materialize_sources(source_pangs, tmp_path, sources, *, leave_globals=()):
     c_refact.localize_mutable_globals(path, compdb, root)
     rewritten = {name: (root / name).read_text() for name in sources}
     assert all(c_refact.XJG_PLACEHOLDER not in text for text in rewritten.values())
-    assert all("_xjw" not in text for text in rewritten.values())
     assert run_c("after") == before
     assert json.loads(path.read_text())["globals"] == manifest["globals"]
     rust = tmp_path / "rust"
@@ -397,7 +465,7 @@ def test_callback_typedef_flow_updates_redeclarations(tmp_path, source_pangs, fl
 
 
 @pytest.mark.parametrize("address", ["", "&"], ids=["implicit-address", "explicit-address"])
-def test_mixed_callbacks_update_all_function_redeclarations_without_wrappers(
+def test_mixed_callbacks_adapt_values_without_changing_original_function(
     tmp_path, source_pangs, address
 ):
     manifest, rewritten = materialize_sources(
@@ -413,12 +481,145 @@ def test_mixed_callbacks_update_all_function_redeclarations_without_wrappers(
             "int main(void){return before()+after();}\n",
         },
     )
-    assert {"foo", "bar", "apply", "before", "after"} <= set(
+    assert {"foo", "apply", "before", "after"} <= set(
         manifest["context_rewrite"]["selected"]["functions"]
     )
+    assert "bar" not in manifest["context_rewrite"]["selected"]["functions"]
     text = rewritten["test.nolines.i"]
-    assert text.count("bar(struct XjGlobals *xjg, int x)") == 2
+    assert text.count("bar(int x)") == 2
+    assert "bar_xjw(struct XjGlobals *xjg, int _xjw_arg_0)" in text
+    assert f"apply(xjg, {address}bar_xjw,2)" in text
     assert "(*cb)(struct XjGlobals *, int)" in text
+
+
+def test_adapters_leave_direct_calls_and_unrelated_callback_slots_unchanged(tmp_path, source_pangs):
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g;\n"
+            "int needs(int x){return ++g+x;}\nint plain(int x){return x+3;}\n"
+            "int direct(void){return plain(2);}\n"
+            "int separate(void){int (*q)(int)=plain;return q(3);}\n"
+            "int main(int argc,char **argv){int (*p)(int)=argc>1?needs:plain;"
+            "return p(1)+direct()+separate()+(p==plain);}\n",
+        },
+    )
+    functions = set(manifest["context_rewrite"]["selected"]["functions"])
+    assert not functions & {"plain", "direct", "separate"}
+    text = rewritten["test.nolines.i"]
+    assert "direct(void){return plain(2);}" in text
+    assert "int (*q)(int)=plain;return q(3);" in text
+    assert "argc>1?needs:plain_xjw" in text
+    assert "(p==plain_xjw)" in text
+
+
+def test_retained_external_callback_producer_can_be_adapted(tmp_path, source_pangs):
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "extern int abs(int);\nstatic int g;\n"
+            "int needs(int x){return ++g+x;}\n"
+            "int main(void){int (*p)(int)=needs;if(0)p=abs;"
+            "return p(-2)+abs(-3);}\n",
+        },
+    )
+    assert "abs" not in manifest["context_rewrite"]["selected"]["functions"]
+    text = rewritten["test.nolines.i"]
+    assert "extern int abs(int);" in text
+    assert "if(0)p=abs_xjw" in text
+    assert "return abs(_xjw_arg_0);" in text
+    assert "+abs(-3);" in text
+
+
+def test_multiple_wrappers_share_a_definition_insertion(tmp_path, source_pangs):
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g;\n"
+            "int needs(int x){return ++g+x;}\nint first(int x){return x+2;}\n"
+            "int second(int x){return x+3;}\n"
+            "int main(void){int (*p[3])(int)={needs,first,second};"
+            "return p[0](1)+p[1](2)+p[2](3);}\n"
+        },
+    )
+    assert not set(manifest["context_rewrite"]["selected"]["functions"]) & {"first", "second"}
+    text = rewritten["test.nolines.i"]
+    assert "{needs,first_xjw,second_xjw}" in text
+    assert text.count("return first(_xjw_arg_0);") == 1
+    assert text.count("return second(_xjw_arg_0);") == 1
+
+
+@pytest.mark.parametrize("localize_h", [False, True])
+def test_wrapper_selection_composes_across_localized_globals(tmp_path, source_pangs, localize_h):
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g;\nstatic int h;\n"
+            "int first(int x){return ++g+x;}\nint second(int x){return ++h+x;}\n"
+            "int main(int argc,char **argv){int (*p)(int)=argc>1?first:second;return p(2);}\n",
+        },
+        leave_globals=() if localize_h else ("test.nolines.i::h",),
+    )
+    text = rewritten["test.nolines.i"]
+    assert ("second" in manifest["context_rewrite"]["selected"]["functions"]) == localize_h
+    if localize_h:
+        assert "_xjw" not in text
+        assert "second(struct XjGlobals *xjg, int x)" in text
+    else:
+        assert "second(int x)" in text
+        assert "second_xjw(struct XjGlobals *xjg, int _xjw_arg_0)" in text
+
+
+def test_wrapper_identity_is_shared_across_translation_units(tmp_path, source_pangs):
+    shared = "struct Ops {int (*cb)(int);};\nint plain(int);\n"
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "a.nolines.i": shared + "int g;\nint needs(int x){return ++g+x;}\n"
+            "struct Ops a={plain};\nstruct Ops changed={needs};\n"
+            "extern struct Ops b;\nint main(void){return changed.cb(1)+(a.cb!=b.cb);}\n",
+            "b.nolines.i": shared + "int plain(int x){return x+3;}\nstruct Ops b={plain};\n",
+        },
+        leave_globals=("a.nolines.i::a", "a.nolines.i::changed", "b.nolines.i::b"),
+    )
+    assert "plain" not in manifest["context_rewrite"]["selected"]["functions"]
+    assert all("plain_xjw(struct XjGlobals *xjg, int _xjw_arg_0);" in t for t in rewritten.values())
+    assert sum(t.count("return plain(_xjw_arg_0);") for t in rewritten.values()) == 1
+
+
+@pytest.mark.parametrize(
+    "declarations,body,expected",
+    [
+        (
+            "static void needs(int *p){*p=++g;}\nstatic void plain(int *p){*p=2;}\n",
+            "int x=0;void (*p)(int *)=argc>1?needs:plain;p(&x);return x;",
+            "plain(_xjw_arg_0);",
+        ),
+        (
+            "typedef const int *Input;\nstatic Input plain(Input);\n"
+            "static Input needs(Input p){++g;return p;}\nstatic Input plain(Input p){return p;}\n",
+            "int x=3;Input (*p)(Input)=argc>1?needs:plain;return *p(&x);",
+            "return plain(_xjw_arg_0);",
+        ),
+    ],
+    ids=["void-return", "pointer-return-and-typedef-parameters"],
+)
+def test_wrapper_signatures_and_forwarding(tmp_path, source_pangs, declarations, body, expected):
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g;\n"
+            + declarations
+            + f"int main(int argc,char **argv){{{body}}}\n"
+        },
+    )
+    assert expected in rewritten["test.nolines.i"]
 
 
 @pytest.mark.parametrize("storage", ["variable", "aggregate"])
@@ -444,7 +645,8 @@ def test_callback_addresses_in_initializers_and_assignments(tmp_path, source_pan
         leave_globals=leave_globals,
     )
     assert expected_type in rewritten["test.nolines.i"]
-    assert "bar(struct XjGlobals *xjg, int x)" in rewritten["test.nolines.i"]
+    assert "bar(int x)" in rewritten["test.nolines.i"]
+    assert "bar_xjw(struct XjGlobals *xjg, int _xjw_arg_0)" in rewritten["test.nolines.i"]
 
 
 @pytest.mark.parametrize(
