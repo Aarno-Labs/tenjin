@@ -1,5 +1,4 @@
 import json
-import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +13,6 @@ import tempfile
 from clang.cindex import (  # type: ignore
     Index,
     CursorKind,
-    Diagnostic,
     LinkageKind,
     StorageClass,
     TranslationUnit,
@@ -27,12 +25,12 @@ import hermetic
 import repo_root
 import compilation_database
 import batching_rewriter
+import cindex_helpers
 from cindex_helpers import (
     create_xj_clang_index,
     render_declaration_sans_qualifiers,
     yield_matching_cursors,
 )
-import c_refact_type_mod_replicator
 from constants import XJ_GUIDANCE_FILENAME
 import targets
 import tenj_types
@@ -568,30 +566,6 @@ class NamedDeclInfo:
     usr: tenj_types.ClangUSR
 
 
-@dataclass
-class ContextFunctionCursorInfo:
-    cursor: Cursor
-    file: tenj_types.FilePathStr
-    is_definition: bool
-
-
-@dataclass
-class ContextCallSiteInfo:
-    caller_func: tenj_types.CIdentifier
-    callee_funcs: list[tenj_types.CIdentifier]
-    i_file_path: tenj_types.FilePathStr
-    line: int
-    col: int
-
-
-@dataclass
-class SourceContextCallSiteInfo:
-    caller_func: tenj_types.CIdentifier
-    callee_func: tenj_types.CIdentifier
-    i_file_path: tenj_types.FilePathStr
-    cursor: Cursor
-
-
 @dataclass(frozen=True)
 class WeakCapableFnDefn:
     """An external-linkage function definition, and whether it is `weak`."""
@@ -778,148 +752,6 @@ def compute_globals_and_statics_for_translation_unit(
     return results
 
 
-def loc_key(c: Cursor) -> tuple[int, int, str]:
-    file_path = c.location.file.name if c.location.file else "<unknown>"
-    return (c.location.line, c.location.column, file_path)
-
-
-def collect_cursors_by_loc(
-    tus: dict[str, TranslationUnit],
-    cursor_kind_filter: list[CursorKind] = [],
-) -> dict[tuple[int, int, str], list[Cursor]]:
-    """Group cursors by the (line, col, file) they are located in."""
-    by_loc: dict[tuple[int, int, str], list[Cursor]] = {}
-    for tu in tus.values():
-        for c in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
-            # When looking for CALL_EXPR nodes in github.com/Old-Man-Programmer/tree
-            # the filter reduces time taken from 1.2s to 0.3s
-            if cursor_kind_filter and c.kind not in cursor_kind_filter:
-                continue
-            key = loc_key(c)
-            if key not in by_loc:
-                by_loc[key] = []
-            by_loc[key].append(c)
-    return by_loc
-
-
-def unwrap_call_callee_expr(c: Cursor) -> Cursor:
-    while c.kind in (CursorKind.UNEXPOSED_EXPR, CursorKind.PAREN_EXPR):
-        children = list(c.get_children())
-        if len(children) != 1:
-            break
-        c = children[0]
-    return c
-
-
-def direct_call_callee_name(call_expr: Cursor) -> tenj_types.CIdentifier | None:
-    if call_expr.kind != CursorKind.CALL_EXPR:
-        return None
-
-    callee_expr = next(call_expr.get_children(), None)
-    if callee_expr is None:
-        return None
-
-    callee_expr = unwrap_call_callee_expr(callee_expr)
-    referenced_decl = callee_expr.referenced
-    if referenced_decl is None or referenced_decl.kind != CursorKind.FUNCTION_DECL:
-        return None
-
-    if callee_expr.type.kind not in (TypeKind.FUNCTIONPROTO, TypeKind.FUNCTIONNOPROTO):
-        return None
-
-    return referenced_decl.spelling
-
-
-def close_context_functions_over_source_calls(
-    tus: dict[str, TranslationUnit],
-    initial_context_functions: set[str],
-    localized_global_names: set[str],
-) -> tuple[set[str], list[SourceContextCallSiteInfo]]:
-    """Close context threading over global uses and calls present in the C AST.
-
-    PANGS derives its rewrite plan from linked LLVM. Clang can remove functions
-    and their global uses from that representation when it proves a source
-    branch dead, so the plan is not necessarily closed over the source that we
-    subsequently rewrite. Seed the context set with source functions that use a
-    localized global, then collect the source call graph and add their callers
-    until reaching a fixed point. ``main`` owns the context and is therefore
-    deliberately not added to the returned parameter-taking set.
-    """
-    source_calls: list[SourceContextCallSiteInfo] = []
-    source_global_users: set[str] = set()
-
-    def enclosing_function_name(ancestors) -> tenj_types.CIdentifier | None:
-        remaining_ancestors = ancestors
-        while True:
-            ancestor, parent_ancestors = remaining_ancestors
-            if ancestor.kind == CursorKind.FUNCTION_DECL and ancestor.is_definition():
-                return ancestor.spelling
-            if parent_ancestors is None:
-                return None
-            remaining_ancestors = parent_ancestors
-
-    for tu_path, tu in tus.items():
-        assert tu.cursor is not None, f"Translation unit {tu.spelling} has no cursor!"
-        for cursor, ancestors in yield_matching_cursors(
-            tu.cursor, [CursorKind.CALL_EXPR, CursorKind.DECL_REF_EXPR]
-        ):
-            caller_func = enclosing_function_name(ancestors)
-            if not caller_func:
-                continue
-
-            if cursor.kind == CursorKind.DECL_REF_EXPR:
-                referenced_decl = cursor.referenced
-                if (
-                    referenced_decl is not None
-                    and referenced_decl.kind == CursorKind.VAR_DECL
-                    and referenced_decl.spelling in localized_global_names
-                    and caller_func != "main"
-                ):
-                    source_global_users.add(caller_func)
-                continue
-
-            call_cursor = cursor
-            callee_func = direct_call_callee_name(call_cursor)
-            if callee_func is None:
-                continue
-
-            source_calls.append(
-                SourceContextCallSiteInfo(
-                    caller_func=caller_func,
-                    callee_func=callee_func,
-                    i_file_path=tu_path,
-                    cursor=call_cursor,
-                )
-            )
-
-    context_functions = set(initial_context_functions) | source_global_users
-    changed = True
-    while changed:
-        changed = False
-        for call in source_calls:
-            if (
-                call.callee_func in context_functions
-                and call.caller_func != "main"
-                and call.caller_func not in context_functions
-            ):
-                context_functions.add(call.caller_func)
-                changed = True
-
-    context_calls = [call for call in source_calls if call.callee_func in context_functions]
-    return context_functions, context_calls
-
-
-def duplicates_within(lst: list[str]) -> set[str]:
-    seen = set()
-    duplicates = set()
-    for item in lst:
-        if item in seen:
-            duplicates.add(item)
-        else:
-            seen.add(item)
-    return duplicates
-
-
 def global_definition_blank_rewrite(
     content: bytes, start_offset: int, extent_end_offset: int
 ) -> tuple[int, int, str]:
@@ -946,538 +778,6 @@ def global_definition_blank_rewrite(
 
 
 XJG_PLACEHOLDER = "((struct XjGlobals*)0)"
-
-
-@dataclass
-class LocalizeMutableGlobalsPhase1Results:
-    nonmain_context_functions: set[str]
-    all_function_names: set[str]
-    localized_global_names: set[str]
-    globals_without_initializers: set[str]
-    higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[tuple[int, int]]]
-    applied_rewrites: dict[str, list[tuple[int, int, str]]]
-
-
-TYPEDEF_CLONE_SUFFIX = "_xjtp"
-
-
-def rewrite_fn_ptr_params_text(original_text: str, lparen_offset: int, rparen_offset: int) -> str:
-    between_parens = original_text[lparen_offset + 1 : rparen_offset].strip()
-    if between_parens == "void" or not between_parens:
-        target_offset = rparen_offset
-        replacement = "struct XjGlobals *"
-    else:
-        target_offset = lparen_offset + 1
-        replacement = "struct XjGlobals *, "
-
-    after_opening_paren = lparen_offset + 1
-    return original_text[:after_opening_paren] + replacement + original_text[target_offset:]
-
-
-def clone_fn_ptr_typedef_text(
-    original_text: str, typedef_decl: "FnPtrTypedefDecl", clone_name: str
-) -> str:
-    rel_start = typedef_decl["def_start_offset"]
-    rel_name = typedef_decl["name_offset"] - rel_start
-    rel_lparen = typedef_decl["lparen_offset"] - rel_start
-    rel_rparen = typedef_decl["rparen_offset"] - rel_start
-    original_name = typedef_decl["name"]
-
-    if original_text[rel_name : rel_name + len(original_name)] != original_name:
-        raise ValueError(
-            f"Unable to locate typedef name {original_name!r} inside typedef declaration text"
-        )
-
-    clone_text = (
-        original_text[:rel_name] + clone_name + original_text[rel_name + len(original_name) :]
-    )
-    rel_lparen += len(clone_name) - len(original_name)
-    rel_rparen += len(clone_name) - len(original_name)
-    return rewrite_fn_ptr_params_text(clone_text, rel_lparen, rel_rparen)
-
-
-def choose_typedef_clone_names(
-    source_typedef_names: set[str], contents_by_file: dict[str, bytes]
-) -> dict[str, str]:
-    all_text = "\n".join(content.decode("utf-8") for content in contents_by_file.values())
-    clone_names: dict[str, str] = {}
-    for typedef_name in sorted(source_typedef_names):
-        candidate = f"{typedef_name}{TYPEDEF_CLONE_SUFFIX}"
-        suffix_num = 0
-        while (
-            candidate in clone_names.values()
-            or re.search(rf"\b{re.escape(candidate)}\b", all_text) is not None
-        ):
-            suffix_num += 1
-            candidate = f"{typedef_name}{TYPEDEF_CLONE_SUFFIX}_{suffix_num}"
-        clone_names[typedef_name] = candidate
-    return clone_names
-
-
-def localize_mutable_globals_phase1(
-    compdb: compilation_database.CompileCommands,
-    manifest: dict,
-    current_codebase: Path,
-    prev: Path,
-    nonmain_context_functions: set[str],
-) -> LocalizeMutableGlobalsPhase1Results:
-    """
-    The first phase modifies function (pointer) types and
-    inserts placeholder parameters for XjGlobals.
-
-    Production uses PANGS's source-complete edits, including callable types.
-    The IR-only path below and its speculative cleanup are retained solely
-    for migration comparisons; the public materializer rejects such plans.
-
-    Phase 1 does not:
-        * Replace occurrences of mutable global variables
-            to use the corresponding lifted struct field.
-        * Define the XjGlobals struct in the main TU.
-        * Add necessary typedefs for XjGlobals fields.
-    """
-
-    if "source" in manifest["context_rewrite"]:
-        selected = manifest["context_rewrite"]["selected"]
-        return LocalizeMutableGlobalsPhase1Results(
-            all_function_names=set(selected["functions"]),
-            nonmain_context_functions=nonmain_context_functions,
-            localized_global_names={demangle_meg(f["llvm_name"]) for f in selected["fields"]},
-            globals_without_initializers=set(
-                manifest["context_rewrite"]["source"]["globals_without_initializers"]
-            ),
-            higher_order_potentially_modified_fn_ptr_type_locs={},
-            applied_rewrites=pangs_source.apply_signature_edits(manifest, current_codebase),
-        )
-
-    phase1index = create_xj_clang_index()
-    tus = parse_project(phase1index, compdb)
-
-    selected = manifest["context_rewrite"]["selected"]
-    mangled_localized_globals = [field["llvm_name"] for field in selected["fields"]]
-    localized_global_names_list = [demangle_meg(name) for name in mangled_localized_globals]
-    localized_global_names = set(localized_global_names_list)
-    if len(localized_global_names) != len(localized_global_names_list):
-        raise ValueError(
-            "Expected all localized global names to be unique after demangling, "
-            + f"but saw duplicates of: {duplicates_within(localized_global_names_list)}"
-        )
-    print("localized_globals:", list(localized_global_names))
-
-    initial_context_functions = set(nonmain_context_functions)
-    nonmain_context_functions, source_context_calls = close_context_functions_over_source_calls(
-        tus, initial_context_functions, localized_global_names
-    )
-    source_added_context_functions = nonmain_context_functions - initial_context_functions
-    if source_added_context_functions:
-        print(
-            "Source C-AST closure added context functions: "
-            + ", ".join(sorted(source_added_context_functions))
-        )
-
-    all_function_names, nonmain_context_function_cursors = extract_function_info(
-        tus, nonmain_context_functions
-    )
-    missing_functions = nonmain_context_functions - nonmain_context_function_cursors.keys()
-    if missing_functions:
-        raise ValueError(
-            "PANGS selected context functions absent from the source tree: "
-            + ", ".join(sorted(missing_functions))
-        )
-
-    fpd_output = run_xj_prepare_findfnptrdecls(
-        current_codebase, nonmain_context_functions, all_function_names
-    )
-
-    call_sites_from_plan = get_call_sites_from_plan(prev, current_codebase, selected)
-
-    results = LocalizeMutableGlobalsPhase1Results(
-        all_function_names=all_function_names,
-        nonmain_context_functions=nonmain_context_functions,
-        localized_global_names=localized_global_names,
-        higher_order_potentially_modified_fn_ptr_type_locs=fpd_output[
-            "higher_order_potentially_modified_fn_ptr_type_locs"
-        ],
-        globals_without_initializers=set(fpd_output["globals_without_initializers"]),
-        applied_rewrites={},
-    )
-
-    cbl_start = time.time()
-    call_expr_cursors_by_loc = collect_cursors_by_loc(tus, [CursorKind.CALL_EXPR])
-    cbl_elapsed = time.time() - cbl_start
-    print(f"  collect_cursors_by_loc took {cbl_elapsed:.3f} seconds")
-
-    with batching_rewriter.BatchingRewriter() as rewriter:
-        typedefs_to_clone = {
-            use["clone_source_typedef_name"]
-            for uses in fpd_output["modified_fn_ptr_typedef_uses"].values()
-            for use in uses
-        }
-        contents_by_file = {filepath: rewriter.get_content(filepath) for filepath in tus}
-        typedef_clone_names = choose_typedef_clone_names(typedefs_to_clone, contents_by_file)
-        typedef_decls_by_name: dict[str, list[tuple[str, FnPtrTypedefDecl]]] = {}
-        for filepath_str, typedef_decls in fpd_output["fn_ptr_typedef_decls"].items():
-            for typedef_decl in typedef_decls:
-                typedef_decls_by_name.setdefault(typedef_decl["name"], []).append((
-                    filepath_str,
-                    typedef_decl,
-                ))
-
-        print("phase1, cloning typedef-backed function pointer types")
-        for source_typedef_name, clone_name in typedef_clone_names.items():
-            for filepath_str, typedef_decl in typedef_decls_by_name.get(source_typedef_name, []):
-                original_text = contents_by_file[filepath_str][
-                    typedef_decl["def_start_offset"] : typedef_decl["decl_post_offset"]
-                ].decode("utf-8")
-                clone_text = clone_fn_ptr_typedef_text(original_text, typedef_decl, clone_name)
-                rewriter.add_rewrite(
-                    filepath_str,
-                    typedef_decl["decl_post_offset"],
-                    0,
-                    "\n" + clone_text,
-                )
-
-        print("phase1, renaming typedef-backed function pointer use sites")
-        for filepath_str, typedef_uses in fpd_output["modified_fn_ptr_typedef_uses"].items():
-            for typedef_use in typedef_uses:
-                rewriter.add_rewrite(
-                    filepath_str,
-                    typedef_use["use_offset"],
-                    len(typedef_use["written_typedef_name"]),
-                    typedef_clone_names[typedef_use["clone_source_typedef_name"]],
-                )
-
-        # In each translation unit,
-        #   for each identified function pointer type,
-        #       modify it to add 'struct XjGlobals *' as first parameter.
-        # This may require removing 'void' if it's the only parameter.
-        # In non-empty parameter lists, we must add a trailing comma.
-        print("phase1, adding rewrites for modified_fn_ptr_type_locs")
-        for filepath_str, ranges in fpd_output["modified_fn_ptr_type_locs"].items():
-            content = rewriter.get_content(filepath_str)
-
-            for start_offset, end_offset in ranges:
-                original_text = content[start_offset:end_offset].decode("utf-8")
-                between_parens = original_text[1:].strip()
-                add_trailing_comma = False
-                if between_parens == "void" or not between_parens:
-                    target_offset = end_offset  # replace void (and whitespace)
-                else:
-                    add_trailing_comma = True
-                    target_offset = start_offset + 1
-
-                after_opening_paren = start_offset + 1
-                rewriter.add_rewrite(
-                    filepath_str,
-                    after_opening_paren,
-                    target_offset - after_opening_paren,
-                    f"struct XjGlobals *{', ' if add_trailing_comma else ''}",
-                )
-
-        print("phase1, adding rewrites for unmod_fn_occ_wrappers")
-        for filepath_str, wrappers in fpd_output["unmod_fn_occ_wrappers"].items():
-            for combined_wrapper in wrappers:
-                # Add the wrapper function definition to the file
-                rewriter.add_rewrite(
-                    filepath_str,
-                    combined_wrapper["decl_post_offset"],
-                    0,
-                    "\n" + combined_wrapper["wrapper_defn"] + "\n",
-                )
-
-                # For each occurrence of an unmodified function name,
-                # in a position where we need to pass a wrapper instead,
-                # modify the occurrence to refer to the wrapper.
-                for occ in combined_wrapper["occ_offsets"]:
-                    name_end = occ + len(combined_wrapper["name"])
-                    rewriter.add_rewrite(filepath_str, name_end, 0, combined_wrapper["suffix"])
-
-        # For each non-main context function, add 'struct XjGlobals *xjg' as first parameter.
-        print("phase1, adding rewrites for nonmain_context_function_cursors")
-        for func_cursors in nonmain_context_function_cursors.values():
-            for func_info in func_cursors:
-                # Find the position after the opening parenthesis
-                content = rewriter.get_content(func_info.file)
-
-                # Find the opening parenthesis of the argument list
-                paren_pos = find_fn_opening_paren(func_info.cursor, content)
-                if paren_pos == -1:
-                    continue
-
-                # Check if there are existing parameters
-                closing_paren_pos = content.find(b")", paren_pos)
-                if closing_paren_pos == -1:
-                    continue
-
-                # Check if there are parameters already
-                param_section = content[paren_pos + 1 : closing_paren_pos].strip()
-
-                overwrite_len = 0
-                if param_section == b"" or param_section == b"void":
-                    # No parameters, just add our parameter
-                    insert_offset = paren_pos + 1
-                    insert_text = "struct XjGlobals *xjg"
-                    overwrite_len = len(b"void") if param_section == b"void" else 0
-                else:
-                    # Has parameters, add as first parameter with comma
-                    insert_offset = paren_pos + 1
-                    insert_text = "struct XjGlobals *xjg, "
-
-                rewriter.add_rewrite(func_info.file, insert_offset, overwrite_len, insert_text)
-
-        # Step 6: Modify call sites to pass placeholder-for-xjg. Direct source calls
-        # come from the Clang AST so that calls optimized out of linked LLVM are
-        # still rewritten. Keep the PANGS sites as well for resolved indirect calls.
-        print("phase1, adding rewrites for placeholder-for-xjg")
-        rewritten_call_offsets: set[tuple[str, int]] = set()
-
-        def add_context_call_rewrite(i_file_path: str, cursor: Cursor) -> bool:
-            content = rewriter.get_content(i_file_path)
-            callee_expr = next(cursor.get_children(), None)
-            if callee_expr:
-                # Ensure we skip past the callee when we look for the opening
-                # parenthesis.
-                call_start_offset = callee_expr.extent.end.offset
-            else:
-                call_start_offset = cursor.extent.start.offset
-
-            paren_pos = content.find(b"(", call_start_offset)
-            if paren_pos == -1:
-                return False
-
-            closing_paren_pos = content.find(b")", paren_pos)
-            if closing_paren_pos == -1:
-                return False
-
-            args_section = content[paren_pos + 1 : closing_paren_pos].strip()
-            insert_offset = paren_pos + 1
-            rewrite_key = (i_file_path, insert_offset)
-            if rewrite_key not in rewritten_call_offsets:
-                insert_text = XJG_PLACEHOLDER + (", " if args_section else "")
-                rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
-                rewritten_call_offsets.add(rewrite_key)
-            return True
-
-        for source_call in source_context_calls:
-            if not add_context_call_rewrite(source_call.i_file_path, source_call.cursor):
-                location = source_call.cursor.location
-                raise ValueError(
-                    "Could not rewrite source call from "
-                    f"{source_call.caller_func} to {source_call.callee_func} at "
-                    f"{source_call.i_file_path}:{location.line}:{location.column}"
-                )
-
-        for call_info in call_sites_from_plan:
-            caller_func = call_info.caller_func
-            i_file_path = call_info.i_file_path
-            line = call_info.line
-            col = call_info.col
-
-            # Working with .i files (in particular, ones without line markers)
-            # allows us to reliably edit call sites. Otherwise, we'd have to contend
-            # with call sites that are synthesized by the preprocessor in horrific ways.
-            assert i_file_path.endswith(".nolines.i"), (
-                f"Expected .nolines.i file, got {i_file_path}\n{compdb=}"
-            )
-            assert i_file_path in tus
-
-            # Find the call expression at the given location
-            # We need to use libclang to find the exact offset
-            found_call = False
-            for cursor in call_expr_cursors_by_loc.get((line, col, i_file_path), []):
-                direct_callee = direct_call_callee_name(cursor)
-                if direct_callee is not None and direct_callee not in call_info.callee_funcs:
-                    # Nested calls can share a source location. The manifest's exact callee
-                    # set lets us skip a different direct call at that location.
-                    continue
-
-                if add_context_call_rewrite(i_file_path, cursor):
-                    found_call = True
-                    break
-
-            if not found_call:
-                raise ValueError(
-                    f"  WARNING: Could not find call from {caller_func} at {i_file_path}:{line}:{col}"
-                )
-
-        print("phase1, finding main()")
-        if True:
-            # Find the file containing main() and its main function cursor
-            main_file = None
-            for abs_path, tu in tus.items():
-                for cursor in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
-                    if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "main":
-                        main_file = abs_path
-                        break
-                if main_file:
-                    break
-
-        if True:
-            # Add forward declaration to every translation unit, just in case
-            for file_path_str in tus.keys():
-                fwd_decl_text = "struct XjGlobals;\n"
-                rewriter.add_rewrite(file_path_str, 0, 0, fwd_decl_text)
-
-        # Replicate edits to type definitions across translation units
-        equiv_classes = c_refact_type_mod_replicator.collect_type_definitions(
-            list(tus.values()),
-            fpd_output["var_decl_fn_ptr_arg_lparen_locs"],
-        )
-        pprint.pprint(
-            equiv_classes,
-            indent=2,
-            stream=open(current_codebase / "xj-type_equiv_classes.txt", "w", encoding="utf-8"),
-        )
-        print("phase1, replicating type modifications across TUs")
-        ext_rewrites = c_refact_type_mod_replicator.replicate_type_modifications(
-            rewriter.get_rewrites(), equiv_classes
-        )
-        rewriter.replace_rewrites(ext_rewrites)
-
-        print("phase1, appplying rewrites")
-        results.applied_rewrites = rewriter.get_rewrites(reverse=False)
-    return results
-
-
-class SingleUnmodFnOccWrapper(TypedDict):
-    name: str
-    suffix: str
-    occ_offset: int
-    decl_post_offset: int
-    wrapper_defn: str
-
-
-class CombinedUnmodFnOccWrapper(TypedDict):
-    name: str
-    suffix: str
-    occ_offsets: list[int]
-    decl_post_offset: int
-    wrapper_defn: str
-
-
-def combine_unmod_fn_occ_wrappers(
-    raws: list[SingleUnmodFnOccWrapper],
-) -> list[CombinedUnmodFnOccWrapper]:
-    combined_by_decl: dict[int, CombinedUnmodFnOccWrapper] = {}
-
-    for raw in raws:
-        decl_post_offset = raw["decl_post_offset"]
-        if decl_post_offset not in combined_by_decl:
-            combined_by_decl[decl_post_offset] = {
-                "name": raw["name"],
-                "suffix": raw["suffix"],
-                "occ_offsets": [raw["occ_offset"]],
-                "decl_post_offset": decl_post_offset,
-                "wrapper_defn": raw["wrapper_defn"],
-            }
-        else:
-            combined_by_decl[decl_post_offset]["occ_offsets"].append(raw["occ_offset"])
-
-    return list(combined_by_decl.values())
-
-
-type ModifiedFnPtrTypeLoc = tuple[int, int]  # start offsets for fn ty param parens
-
-
-class ModifiedFnPtrTypedefUse(TypedDict):
-    written_typedef_name: str
-    use_offset: int
-    clone_source_typedef_name: str
-
-
-class FnPtrTypedefDecl(TypedDict):
-    name: str
-    def_start_offset: int
-    decl_post_offset: int
-    name_offset: int
-    lparen_offset: int
-    rparen_offset: int
-
-
-class BaseXjFindPtrDeclsOutput(TypedDict):
-    modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
-    modified_fn_ptr_typedef_uses: dict[str, list[ModifiedFnPtrTypedefUse]]
-    fn_ptr_typedef_decls: dict[str, list[FnPtrTypedefDecl]]
-    higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
-    var_decl_fn_ptr_arg_lparen_locs: dict[str, dict[str, int]]
-    globals_without_initializers: list[str]
-
-
-class RawXjFindPtrDeclsOutput(BaseXjFindPtrDeclsOutput):
-    unmod_fn_occ_wrappers: dict[str, list[SingleUnmodFnOccWrapper]]
-
-
-class XjFindPtrDeclsOutput(BaseXjFindPtrDeclsOutput):
-    unmod_fn_occ_wrappers: dict[str, list[CombinedUnmodFnOccWrapper]]
-
-
-def run_xj_prepare_findfnptrdecls(
-    current_codebase: Path,
-    nonmain_context_functions: set[str],
-    all_function_names: set[str],
-) -> XjFindPtrDeclsOutput:
-    builddir = hermetic.xj_prepare_findfnptrdecls_build_dir(repo_root.localdir())
-    assert builddir.exists(), (
-        f"Build directory {builddir} does not exist, should have been built already"
-    )
-
-    mod_fn_names_path = current_codebase / "nonmain_context_functions.txt"
-    with open(mod_fn_names_path, "w", encoding="utf-8") as f:
-        for fn in sorted(nonmain_context_functions):
-            f.write(fn + "\n")
-
-    unmod_fn_names_path = current_codebase / "unmod_fn_names.txt"
-    with open(unmod_fn_names_path, "w", encoding="utf-8") as f:
-        for fn in sorted(all_function_names - nonmain_context_functions):
-            f.write(fn + "\n")
-    # Keep in sync with `xj-prepare-findfnptrdecls/CMakeLists.txt`
-    binary_path = builddir / "xj-find-fn-ptr-decls"
-    xj_find_start = time.time()
-    cp = hermetic.run(
-        [
-            binary_path.as_posix(),
-            "--extra-arg=-Wno-zero-length-array",
-            "--extra-arg=-Wno-implicit-int-conversion",
-            "--extra-arg=-Wno-unused-function",
-            "--executor=all-TUs",
-            "--execute-concurrency=1",  # avoid race conditions, etc.
-            "--modified_fns_file",
-            mod_fn_names_path.as_posix(),
-            "--unmodified_fns_file",
-            unmod_fn_names_path.as_posix(),
-            (current_codebase / "compile_commands.json").as_posix(),
-        ],
-        cwd=current_codebase,
-        check=True,
-        capture_output=True,
-    )
-    xj_find_elapsed = time.time() - xj_find_start
-    print(f"xj-find-fn-ptr-decls completed in {xj_find_elapsed:.1f} seconds")
-
-    print("xj-find-fn-ptr-decls stderr:")
-    print("==========================")
-    print(cp.stderr.decode("utf-8"))
-    print("==========================")
-
-    print("xj-find-fn-ptr-decls stdout:")
-    print("==========================")
-    print(cp.stdout.decode("utf-8"))
-    print("==========================")
-    try:
-
-        def process(k: str, v):
-            if k == "unmod_fn_occ_wrappers":
-                return {f: combine_unmod_fn_occ_wrappers(occs) for f, occs in v.items()}
-            else:
-                return v
-
-        raw: RawXjFindPtrDeclsOutput = json.loads(cp.stdout.decode("utf-8"))
-        processed: XjFindPtrDeclsOutput = {k: process(k, v) for (k, v) in raw.items()}  # type: ignore
-    except:
-        print("Failed to parse xj-find-fn-ptr-decls output as JSON:")
-        print(cp.stdout.decode("utf-8"))
-        raise
-
-    return processed
 
 
 class XjLocateJoinedDeclsLoc(TypedDict):
@@ -1649,121 +949,6 @@ def run_xj_locate_joined_decls(
     return raw
 
 
-def translate_offset_thru_rewrites(
-    original_offset: int, rewrites: list[tuple[int, int, str]]
-) -> int:
-    new_offset = original_offset
-    for rw_start, rw_len, rw_text in rewrites:
-        if rw_start >= original_offset:
-            break
-        if rw_start + rw_len <= original_offset:
-            new_offset += len(rw_text) - rw_len
-        elif rw_start <= original_offset:
-            # Overlap case
-            raise ValueError("Cannot translate offset that overlaps with a rewrite")
-    return new_offset
-
-
-def speculatively_fix_higher_order_fn_ptr_types(
-    compdb: compilation_database.CompileCommands,
-    phase1results: LocalizeMutableGlobalsPhase1Results,
-):
-    """
-    At the end of phase 1, we have inserted placeholders at call sites and
-    have modified some but possibly not all function pointer types. Rather
-    than implement ad-hoc type inference to identify the function pointer
-    types needing modification, we'll use Clang as an oracle. In particular,
-    we'll (1) collect diagnostics; (2) assuming we see some "too many arguments"
-    errors, from having inserted placeholders without updating the corresponding
-    function pointer type, we'll add additional parameters to some pre-identified
-    function pointer types that might need them; (3) check again.
-    If step 3 still has errors we'll roll back to step 1 and print a warning.
-    If step 3 has no errors, we proceed directly to phase 2.
-    """
-    with batching_rewriter.BatchingRewriter() as rewriter:
-        index = create_xj_clang_index()
-
-        def count_possibly_fixable_errors(index: Index) -> tuple[int, int]:
-            tus = parse_project(index, compdb)
-            tu_possibly_fixable_errors = 0
-            total_errors = 0
-            for tu in tus.values():
-                for x in tu.diagnostics:
-                    if x.severity >= Diagnostic.Error:
-                        total_errors += 1
-                        print(f"Diagnostic {x.location}: {x.spelling} [{x.severity}]")
-
-                    if x.spelling.startswith("too many arguments to function call"):
-                        tu_possibly_fixable_errors += 1
-                    elif x.option == "-Wincompatible-function-pointer-types":
-                        tu_possibly_fixable_errors += 1
-
-            return tu_possibly_fixable_errors, total_errors
-
-        tu_possibly_fixable_errors, total_errors = count_possibly_fixable_errors(index)
-        if total_errors > tu_possibly_fixable_errors:
-            # raise ValueError(
-            print(
-                "Detected errors that are not possibly fixable; "
-                + "aborting localization of mutable globals."
-            )
-        if tu_possibly_fixable_errors > 0:
-            print(f"Detected {tu_possibly_fixable_errors} possibly fixable errors;")
-            for (
-                filepath_str,
-                ranges,
-            ) in phase1results.higher_order_potentially_modified_fn_ptr_type_locs.items():
-                content = rewriter.get_content(filepath_str)
-
-                for old_start_offset, old_end_offset in ranges:
-                    rewrites = phase1results.applied_rewrites.get(filepath_str, [])
-                    start_offset = translate_offset_thru_rewrites(old_start_offset, rewrites)
-                    end_offset = translate_offset_thru_rewrites(old_end_offset, rewrites)
-
-                    print(
-                        "~~~~~~~~~~~~~~~~ translating offsets:",
-                        old_start_offset,
-                        old_end_offset,
-                        "to",
-                        start_offset,
-                        end_offset,
-                    )
-
-                    original_text = content[start_offset:end_offset].decode("utf-8")
-                    between_parens = original_text[1:].strip()
-                    add_trailing_comma = False
-                    if between_parens == "void" or not between_parens:
-                        target_offset = end_offset  # replace void (and whitespace)
-                    else:
-                        add_trailing_comma = True
-                        target_offset = start_offset + 1
-
-                    after_opening_paren = start_offset + 1
-                    rewriter.add_rewrite(
-                        filepath_str,
-                        after_opening_paren,
-                        target_offset - after_opening_paren,
-                        f"struct XjGlobals *{', ' if add_trailing_comma else ''}",
-                    )
-
-            snapshot = rewriter.capture_snapshot()
-            rewriter.apply_rewrites()
-            rewriter.replace_rewrites({})  # clear rewrites
-
-            errors_after, total_errors_after = count_possibly_fixable_errors(index)
-            if total_errors_after > 0:
-                print(
-                    "After adding additional function pointer parameters, "
-                    + f"{errors_after} possibly fixable errors remain (of {total_errors_after} total); "
-                    + "rolling back these changes."
-                )
-                rewriter.restore_snapshot(snapshot)
-            else:
-                print(
-                    "After adding additional function pointer parameters, " + "all errors resolved."
-                )
-
-
 def cursor_extent_contains(outer: Cursor, inner: Cursor) -> bool:
     outer_file = outer.location.file
     inner_file = inner.location.file
@@ -1801,7 +986,6 @@ def type_names_declared_before_offset(tu: TranslationUnit, offset: int) -> set[s
 def localize_mutable_globals(
     manifest_path: Path,
     compdb: compilation_database.CompileCommands,
-    prev: Path,
     current_codebase: Path,
 ):
     """Materialize on a private copy, publishing only after both C validators pass."""
@@ -1815,12 +999,11 @@ def localize_mutable_globals(
     ) as temp:
         attempt_manifest = Path(temp) / "manifest.json"
         attempt_manifest.write_text(json.dumps(manifest), encoding="utf-8")
-        selected = manifest["context_rewrite"]["selected"]
         staged = Path(temp) / "stage"
         shutil.copytree(current_codebase, staged, symlinks=True)
         staged_compdb = pangs_source.relocate_compdb(compdb, current_codebase, staged)
         try:
-            _localize_mutable_globals_in_place(attempt_manifest, staged_compdb, prev, staged)
+            _localize_mutable_globals_in_place(attempt_manifest, staged_compdb, staged)
             pangs_source.validate_c(staged_compdb)
             pangs_source.validate_cross_tu(
                 manifest, Path(manifest["run"]["analysis"]["repo_root"]), staged
@@ -1858,7 +1041,6 @@ def localize_mutable_globals(
 def _localize_mutable_globals_in_place(
     manifest_path: Path,
     compdb: compilation_database.CompileCommands,
-    prev: Path,
     current_codebase: Path,
 ):
     manifest: dict = json.load(manifest_path.open("r"))
@@ -1899,19 +1081,15 @@ def _localize_mutable_globals_in_place(
 
     nonmain_context_functions: set[str] = set(selected["functions"])
     nonmain_context_functions.discard("main")  # Don't modify main
+    localized_global_names = {demangle_meg(f["llvm_name"]) for f in selected["fields"]}
+    globals_without_initializers = set(context_rewrite["source"]["globals_without_initializers"])
 
-    print("calling localize_mutable_globals_phase1()...")
+    print("Applying PANGS source edits...")
     time_start = time.time()
-    phase1results = localize_mutable_globals_phase1(
-        compdb, manifest, current_codebase, prev, nonmain_context_functions
-    )
+    pangs_source.apply_source_edits(manifest, current_codebase)
     time_elapsed = time.time() - time_start
-    print(f"... localize_mutable_globals_phase1() done, elapsed: {time_elapsed:.1f}")
-
-    if "source" not in context_rewrite:
-        speculatively_fix_higher_order_fn_ptr_types(compdb, phase1results)
-    else:
-        pangs_source.validate_c(compdb)
+    print(f"... PANGS source edits applied, elapsed: {time_elapsed:.1f}")
+    pangs_source.validate_c(compdb)
 
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
@@ -1920,14 +1098,14 @@ def _localize_mutable_globals_in_place(
         list(tus.values()), elide_functions=True
     )
     localized_globals_and_statics = [
-        c for c in globals_and_statics if c.spelling in phase1results.localized_global_names
+        c for c in globals_and_statics if c.spelling in localized_global_names
     ]
 
     if not localized_globals_and_statics:
-        if phase1results.localized_global_names:
+        if localized_global_names:
             raise ValueError(
                 "PANGS selected globals absent from the source tree: "
-                + ", ".join(sorted(phase1results.localized_global_names))
+                + ", ".join(sorted(localized_global_names))
             )
         print("No globals selected for localization; skipping further localization steps.")
         return
@@ -1938,26 +1116,25 @@ def _localize_mutable_globals_in_place(
         "Expected all localized global names to be unique, "
         + f"but got duplicates within: {localized_global_cursors_by_name.keys()}"
     )
-    missing_globals = phase1results.localized_global_names - localized_global_cursors_by_name.keys()
+    missing_globals = localized_global_names - localized_global_cursors_by_name.keys()
     if missing_globals:
         raise ValueError(
             "PANGS selected globals absent from the source tree: "
             + ", ".join(sorted(missing_globals))
         )
 
-    if "source" in context_rewrite:
-        groups: dict[tuple[str, int], set[str]] = {}
-        for cursor in globals_and_statics:
-            groups.setdefault((cursor.location.file.name, cursor.extent.start.offset), set()).add(
-                cursor.spelling
+    groups: dict[tuple[str, int], set[str]] = {}
+    for cursor in globals_and_statics:
+        groups.setdefault((cursor.location.file.name, cursor.extent.start.offset), set()).add(
+            cursor.spelling
+        )
+    for names in groups.values():
+        affected = names & localized_global_names
+        if len(names) > 1 and affected:
+            raise pangs_source.ContractViolation(
+                "PANGS selected an unsupported joined global declaration: "
+                + ", ".join(sorted(affected))
             )
-        for names in groups.values():
-            affected = names & phase1results.localized_global_names
-            if len(names) > 1 and affected:
-                raise pangs_source.ContractViolation(
-                    "PANGS selected an unsupported joined global declaration: "
-                    + ", ".join(sorted(affected))
-                )
 
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
@@ -2137,7 +1314,7 @@ def _localize_mutable_globals_in_place(
     print("STEPS 5 & 6: Modifying function signatures and call sites")
     print("=" * 80)
 
-    print(f"\nContext functions to modify: {phase1results.nonmain_context_functions}")
+    print(f"\nContext functions to modify: {nonmain_context_functions}")
 
     with batching_rewriter.BatchingRewriter() as rewriter:
         global_definition_rewrites: list[tuple[str, int, int, str]] = []
@@ -2176,7 +1353,7 @@ def _localize_mutable_globals_in_place(
             for child in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
                 if child.kind == CursorKind.FUNCTION_DECL:
                     if child.is_definition():
-                        q = c_refact_type_mod_replicator.quss(child, None)
+                        q = cindex_helpers.quss(child, None)
                         current_fn_start = (child.extent.start.offset, q)
 
                 if (
@@ -2325,7 +1502,7 @@ def _localize_mutable_globals_in_place(
             for child in var_cursor.walk_preorder():
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling not in phase1results.localized_global_names
+                    and child.spelling not in localized_global_names
                 ):
                     dependencies.add(child.spelling)
                     print(f"    {var_cursor.spelling} references {child.spelling}")
@@ -2344,7 +1521,7 @@ def _localize_mutable_globals_in_place(
                 globals_to_copy_to_main.add(dep)
                 collect_transitive_deps(dep, visited)
 
-        for global_name in phase1results.localized_global_names:
+        for global_name in localized_global_names:
             collect_transitive_deps(global_name, set())
 
         print(f"\n  Globals to copy into main before xjgv: {globals_to_copy_to_main}")
@@ -2445,7 +1622,7 @@ def _localize_mutable_globals_in_place(
                                         )
                                         print()
 
-                                if global_name in phase1results.globals_without_initializers:
+                                if global_name in globals_without_initializers:
                                     initializer = "{0}"
                                     try:
                                         if var_cursor.type.get_canonical().spelling.startswith(
@@ -2490,7 +1667,7 @@ def _localize_mutable_globals_in_place(
         # Step 9: Add includes and type definitions to files that use mutable globals
         print("\n  --- Step 9: Adding includes and type definitions ---")
 
-        # Phase 1 only inserted forward declarations, we'll also add the header as needed.
+        # The planned edits inserted forward declarations; add the header where needed.
         # (not much point in replacing the forward declarations).
         for tu_path, (offset, q) in lowest_mutable_accessing_fn_starts.items():
             tu = tus[tu_path]
@@ -2606,9 +1783,7 @@ def _localize_mutable_globals_in_place(
             with open(tu_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
 
-    update_vars_of_type_guidance_for_xjg(current_codebase, phase1results, tus)
-
-    print(f"{phase1results.all_function_names=}")
+    update_vars_of_type_guidance_for_xjg(current_codebase, nonmain_context_functions, tus)
 
     print("=" * 80)
 
@@ -2617,14 +1792,14 @@ def _localize_mutable_globals_in_place(
 # Functions which are used in higher-order ways must remain as raw pointers.
 def update_vars_of_type_guidance_for_xjg(
     current_codebase: Path,
-    phase1results: LocalizeMutableGlobalsPhase1Results,
+    nonmain_context_functions: set[str],
     tus: dict[str, TranslationUnit],
 ):
     higher_order_context_functions = set()
     for _tu_path, tu in tus.items():
         assert tu.cursor is not None, f"Translation unit {tu.spelling} has no cursor!"
         for v, ancestors in yield_matching_cursors(tu.cursor, [CursorKind.DECL_REF_EXPR]):
-            if v.spelling in phase1results.nonmain_context_functions:
+            if v.spelling in nonmain_context_functions:
                 # Found a use of a context function; was it in a call position?
                 parent = v
                 while ancestors:
@@ -2646,77 +1821,10 @@ def update_vars_of_type_guidance_for_xjg(
                         # passed as an argument
                         higher_order_context_functions.add(v.spelling)
     guidance: dict = json.load(open(current_codebase / XJ_GUIDANCE_FILENAME, "r", encoding="utf-8"))
-    can_take_mut_xjg = phase1results.nonmain_context_functions - higher_order_context_functions
+    can_take_mut_xjg = nonmain_context_functions - higher_order_context_functions
     mut_specs = guidance.get("vars_of_type", {}).get("&mut XjGlobals", [])
     for context_fn_name in can_take_mut_xjg:
         mut_specs.append(f"{context_fn_name}:xjg")
     guidance.setdefault("vars_of_type", {})["&mut XjGlobals"] = mut_specs
     with open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8") as fh:
         json.dump(guidance, fh, indent=2)
-
-
-def extract_function_info(
-    tus, nonmain_context_functions
-) -> tuple[
-    set[tenj_types.CIdentifier], dict[tenj_types.CIdentifier, list[ContextFunctionCursorInfo]]
-]:
-    all_function_names = set()
-
-    # Collect all declarations (both definitions and forward declarations)
-    nonmain_context_function_cursors: dict[
-        tenj_types.CIdentifier, list[ContextFunctionCursorInfo]
-    ] = {}
-
-    for abs_path, tu in tus.items():
-        for cursor in tu.cursor.walk_preorder():
-            if cursor.kind == CursorKind.FUNCTION_DECL:
-                func_name = cursor.spelling
-                all_function_names.add(func_name)
-                if func_name in nonmain_context_functions:
-                    if func_name not in nonmain_context_function_cursors:
-                        nonmain_context_function_cursors[func_name] = []
-                    nonmain_context_function_cursors[func_name].append(
-                        ContextFunctionCursorInfo(
-                            cursor=cursor,
-                            file=abs_path,
-                            is_definition=cursor.is_definition(),
-                        )
-                    )
-
-    return all_function_names, nonmain_context_function_cursors
-
-
-def get_call_sites_from_plan(
-    prev: Path,
-    current_codebase: Path,
-    selected: dict,
-) -> list[ContextCallSiteInfo]:
-    call_sites: list[ContextCallSiteInfo] = []
-    for callsite in selected["rewrite_callsites"]:
-        site = callsite.get("site")
-        if site is None or site.get("col") is None:
-            raise ValueError(f"PANGS selected unlocatable rewrite callsite {callsite['key']!r}")
-        old_path = Path(site["file"])
-        try:
-            relative_path = old_path.relative_to(prev)
-        except ValueError as exc:
-            raise ValueError(
-                f"PANGS callsite path {old_path!s} is outside analyzed tree {prev}"
-            ) from exc
-        current_path = current_codebase / relative_path
-        call_sites.append(
-            ContextCallSiteInfo(
-                caller_func=callsite["caller"],
-                callee_funcs=callsite["callees"],
-                i_file_path=current_path.as_posix(),
-                line=site["line"],
-                col=site["col"],
-            )
-        )
-    return call_sites
-
-
-def find_fn_opening_paren(fn_cursor: Cursor, content: bytes) -> int:
-    """Like .find(), returns -1 if not found."""
-    fn_name_start = fn_cursor.location.offset
-    return content.find(b"(", fn_name_start)

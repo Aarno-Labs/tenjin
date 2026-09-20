@@ -12,7 +12,7 @@ prompt inspection of the changes. If the diff (via `git` or `jj`) has
 the expected changes, it should be be kept, and subsequent runs of the
 snapshotted test will use the new snapshot.
 - The `translation_metadata.json` file within an output resultsdir may have stdout/stderr captured from subcommands executed by Tenjin.
-- When making changes to clang tools like `xj-prepare-findfntprdecls`,
+- When making changes to clang tools like `xj-prepare-locatejoineddecls`,
   `xj-prepare-pointertransform`, etc, you can build them by running
   `10j build-star` and run them from the built executables in
-  `_local/_build_findfnptrdecls`, etc.
+  `_local/_build_locatejoineddecls`, etc.

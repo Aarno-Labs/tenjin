@@ -117,13 +117,13 @@ def test_failed_materialization_leaves_original_tree_untouched(tmp_path, monkeyp
     manifest_path.write_text(json.dumps(contract(root, source)))
     compdb = compilation_database.synthetic_compile_commands_for_c_file(source, root)
 
-    def fail(_manifest, _compdb, _prev, staged):
+    def fail(_manifest, _compdb, staged):
         (staged / "test.i").write_text("broken")
         raise ValueError("intentional materializer failure")
 
     monkeypatch.setattr(c_refact, "_localize_mutable_globals_in_place", fail)
     with pytest.raises(ValueError, match="intentional"):
-        c_refact.localize_mutable_globals(manifest_path, compdb, root, root)
+        c_refact.localize_mutable_globals(manifest_path, compdb, root)
     assert source.read_text() == code
     assert list(tmp_path.iterdir()) == [root]
 
@@ -167,11 +167,25 @@ def source_pangs():
 
 
 def analyze(source_pangs, root, code, *, localize_only=True):
+    compdb, manifest = analyze_sources(
+        source_pangs, root, {"test.nolines.i": code}, localize_only=localize_only
+    )
+    return root / "test.nolines.i", compdb, manifest
+
+
+def analyze_sources(source_pangs, root, sources, *, localize_only=True, leave_globals=()):
+    """Analyze the same preprocessed C files that the materializer will rewrite."""
     root.mkdir()
-    source = root / "test.nolines.i"
-    source.write_text(code)
+    commands = []
+    for name, code in sources.items():
+        source = root / name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(code)
+        commands.extend(
+            compilation_database.synthetic_compile_commands_for_c_file(source, root).commands
+        )
     (root / "xj-guidance.json").write_text("{}")
-    compdb = compilation_database.synthetic_compile_commands_for_c_file(source, root)
+    compdb = compilation_database.CompileCommands(commands)
     compdb.to_json_file(root / "compile_commands.json")
     bc = root / "linked_module.bc"
     database = root / "effective.json"
@@ -179,7 +193,10 @@ def analyze(source_pangs, root, code, *, localize_only=True):
         compdb, bc, use_llvm14=True, source_compdb_path=database
     )
     overrides = root / "overrides.toml"
-    overrides.write_text('[cascade]\norder = ["localize"]\n' if localize_only else "")
+    overrides_text = '[cascade]\norder = ["localize"]\n' if localize_only else ""
+    for key in leave_globals:
+        overrides_text += f'\n[globals.{json.dumps(key)}]\ndisposition = "unhandled"\n'
+    overrides.write_text(overrides_text)
     hermetic.run(
         [
             source_pangs,
@@ -202,7 +219,7 @@ def analyze(source_pangs, root, code, *, localize_only=True):
         capture_output=True,
         env_ext={"XJ_USE_LLVM14": "1"},
     )
-    return source, compdb, root / "pangs-disposition" / "pangs-manifest.json"
+    return compdb, root / "pangs-disposition" / "pangs-manifest.json"
 
 
 def test_source_plan_materializes_indirect_mixed_targets_and_preserves_behavior(
@@ -228,7 +245,7 @@ def test_source_plan_materializes_indirect_mixed_targets_and_preserves_behavior(
     executable = tmp_path / "before"
     hermetic.run(["clang", "-x", "c", source, "-o", executable], check=True, capture_output=True)
     before = [hermetic.run([executable, *args], check=False).returncode for args in ([], ["arg"])]
-    c_refact.localize_mutable_globals(manifest_path, compdb, root, root)
+    c_refact.localize_mutable_globals(manifest_path, compdb, root)
     rewritten = source.read_text()
     assert "Callback__pangs_context" in rewritten
     assert "dead(struct XjGlobals *xjg" in rewritten
@@ -242,6 +259,316 @@ def test_source_plan_materializes_indirect_mixed_targets_and_preserves_behavior(
     materialized = json.loads(manifest_path.read_text())
     assert materialized["materialization"]["c_validation"] == ["clang-14", "clang-21"]
     assert materialized["context_rewrite"]["fields"] == manifest["context_rewrite"]["fields"]
+
+
+def materialize_sources(source_pangs, tmp_path, sources, *, leave_globals=()):
+    """Check a real localization plan against C execution and Rust compilation."""
+    root = tmp_path / "project"
+    compdb, path = analyze_sources(source_pangs, root, sources, leave_globals=leave_globals)
+    manifest = json.loads(path.read_text())
+    global_ = next(g for g in manifest["globals"] if g["meta"]["llvm_name"] == "g")
+    assert global_["disposition"]["chosen"] == "localize", global_
+
+    def run_c(name):
+        executable = tmp_path / name
+        hermetic.run(
+            ["clang", "-x", "c", *compdb.get_source_files(), "-o", executable],
+            check=True,
+            capture_output=True,
+        )
+        return [hermetic.run([executable, *args], check=False).returncode for args in ([], ["arg"])]
+
+    before = run_c("before")
+    c_refact.localize_mutable_globals(path, compdb, root)
+    rewritten = {name: (root / name).read_text() for name in sources}
+    assert all(c_refact.XJG_PLACEHOLDER not in text for text in rewritten.values())
+    assert all("_xjw" not in text for text in rewritten.values())
+    assert run_c("after") == before
+    assert json.loads(path.read_text())["globals"] == manifest["globals"]
+    rust = tmp_path / "rust"
+    hermetic.run(
+        [
+            repo_root.find_repo_root_dir_Path()
+            / "c2rust"
+            / "target"
+            / os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
+            / "c2rust",
+            "transpile",
+            root / "compile_commands.json",
+            "-o",
+            rust,
+            "--emit-build-files",
+            "--disable-refactoring",
+            "--guidance",
+            root / "xj-guidance.json",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert any("XjGlobals" in source.read_text() for source in rust.rglob("*.rs"))
+    hermetic.run(
+        ["cargo", "check", "--manifest-path", rust / "Cargo.toml"],
+        cwd=rust,
+        check=True,
+        capture_output=True,
+    )
+    return manifest, rewritten
+
+
+def test_callback_global_declaration_and_definition_change_together(tmp_path, source_pangs):
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "a.nolines.i": "extern int (*dispatch)(int);\nint main(void){return dispatch(7);}\n",
+            "b.nolines.i": "int g;\nint foo(int x){return ++g+x;}\nint (*dispatch)(int)=foo;\n",
+        },
+        leave_globals=("b.nolines.i::dispatch",),
+    )
+    for text in rewritten.values():
+        assert "(*dispatch)(struct XjGlobals *, int)" in text
+
+
+def test_same_named_local_callbacks_remain_independent_across_files(tmp_path, source_pangs):
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "a.nolines.i": "static int g;\nint needs_globals(int x){return ++g+x;}\n"
+            "int use_needs_globals(int x){int (*fp)(int)=needs_globals;return fp(x);}\n"
+            "extern int use_stays_plain(int);\n"
+            "int main(void){return use_needs_globals(3)+use_stays_plain(2);}\n",
+            "b.nolines.i": "int stays_plain(int x){return x-1;}\n"
+            "int use_stays_plain(int x){int (*fp)(int)=stays_plain;return fp(x);}\n",
+        },
+    )
+    assert "(*fp)(struct XjGlobals *, int)" in rewritten["a.nolines.i"]
+    assert "(*fp)(int)=stays_plain" in rewritten["b.nolines.i"]
+    assert "stays_plain" not in manifest["context_rewrite"]["selected"]["functions"]
+
+
+def test_callback_typedef_field_changes_in_every_file(tmp_path, source_pangs):
+    declarations = "typedef int (*callback_t)(int);\nstruct Holder {callback_t cb;};\n"
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "a.nolines.i": declarations + "int g;\nint foo(int x){return ++g+x;}\n"
+            "struct Holder holder={foo};\n",
+            "b.nolines.i": declarations + "extern struct Holder holder;\n"
+            "int main(void){return holder.cb(7);}\n",
+        },
+        leave_globals=("a.nolines.i::holder",),
+    )
+    for text in rewritten.values():
+        assert "typedef int (*callback_t)(int);" in text
+        assert "typedef int (*callback_t__pangs_context)(struct XjGlobals *, int);" in text
+        assert "struct Holder {callback_t__pangs_context cb;};" in text
+
+
+@pytest.mark.parametrize("flow", ["parameter", "parameter-to-field", "field-to-argument"])
+def test_callback_typedef_flow_updates_redeclarations(tmp_path, source_pangs, flow):
+    if flow == "parameter":
+        body = "return cb(x);"
+        use = "return apply(foo,1)+apply(bar,2);"
+    elif flow == "parameter-to-field":
+        body = "struct Holder holder;holder.cb=cb;return holder.cb(x);"
+        use = "return apply(foo,1)+apply(bar,2);"
+    else:
+        body = "return cb(x);"
+        use = "struct Holder holder={bar};return apply(foo,1)+apply(holder.cb,2);"
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g;\n"
+            "typedef int (*callback_t)(int);\nstruct Holder {callback_t cb;};\n"
+            "int apply(callback_t cb,int x);\n"
+            "int foo(int x){return ++g+x;}\nint bar(int x){return x+2;}\n"
+            f"int apply(callback_t cb,int x){{{body}}}\n"
+            f"int main(void){{{use}}}\n",
+        },
+    )
+    text = rewritten["test.nolines.i"]
+    assert text.count("apply(struct XjGlobals *xjg, callback_t__pangs_context cb,int x)") == 2
+    assert "typedef int (*callback_t)(int);" in text
+    if flow != "parameter":
+        assert "struct Holder {callback_t__pangs_context cb;};" in text
+
+
+@pytest.mark.parametrize("address", ["", "&"], ids=["implicit-address", "explicit-address"])
+def test_mixed_callbacks_update_all_function_redeclarations_without_wrappers(
+    tmp_path, source_pangs, address
+):
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g;\nint bar(int x);\n"
+            "int foo(int x){return ++g+x;}\n"
+            "int apply(int (*cb)(int),int x){return cb(x);}\n"
+            f"int before(void){{return apply({address}foo,1)+apply({address}bar,2);}}\n"
+            "int bar(int x){return x+2;}\n"
+            f"int after(void){{return apply({address}bar,3);}}\n"
+            "int main(void){return before()+after();}\n",
+        },
+    )
+    assert {"foo", "bar", "apply", "before", "after"} <= set(
+        manifest["context_rewrite"]["selected"]["functions"]
+    )
+    text = rewritten["test.nolines.i"]
+    assert text.count("bar(struct XjGlobals *xjg, int x)") == 2
+    assert "(*cb)(struct XjGlobals *, int)" in text
+
+
+@pytest.mark.parametrize("storage", ["variable", "aggregate"])
+def test_callback_addresses_in_initializers_and_assignments(tmp_path, source_pangs, storage):
+    if storage == "variable":
+        declarations = "int (*fp)(int)=&foo;\nvoid switch_callback(void){fp=&bar;}\n"
+        body = "int first=fp(1);switch_callback();return first+fp(2);"
+        expected_type = "(*fp)(struct XjGlobals *, int)"
+        leave_globals = ("test.nolines.i::fp",)
+    else:
+        declarations = "struct Holder {int (*cb)(int);};\n"
+        declarations += "struct Holder mod={&foo};\nstruct Holder unmod={&bar};\n"
+        body = "return mod.cb(1)+unmod.cb(2);"
+        expected_type = "(*cb)(struct XjGlobals *, int)"
+        leave_globals = ("test.nolines.i::mod", "test.nolines.i::unmod")
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g;\nint foo(int x){return ++g+x;}\n"
+            "int bar(int x){return x+2;}\n" + declarations + f"int main(void){{{body}}}\n",
+        },
+        leave_globals=leave_globals,
+    )
+    assert expected_type in rewritten["test.nolines.i"]
+    assert "bar(struct XjGlobals *xjg, int x)" in rewritten["test.nolines.i"]
+
+
+@pytest.mark.parametrize(
+    "sources,error",
+    [
+        pytest.param(
+            {
+                "a.nolines.i": "extern int (*dispatch)(int);\n"
+                "int main(void){return dispatch(7);}\n",
+                "b.nolines.i": "int g;\nint foo(int x){return ++g+x;}\nint (*dispatch)(int)=foo;\n",
+            },
+            "use of undeclared identifier 'foo'",
+            id="initializer-function-declared-in-another-file",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=pangs_source.ContractViolation,
+                reason="Moving dispatch's initializer to main requires a declaration of foo",
+            ),
+        ),
+        pytest.param(
+            {
+                "test.nolines.i": "static int g;\nint foo(int x){return ++g+x;}\n"
+                "struct Holder {int (*cb)(int);};\nstruct Holder holder={foo};\n"
+                "int main(void){return holder.cb(7);}\n",
+            },
+            "field has incomplete type 'struct Holder'",
+            id="context-field-type-declared-after-first-accessor",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=pangs_source.ContractViolation,
+                reason="Generated context header precedes the complete Holder definition",
+            ),
+        ),
+    ],
+)
+def test_localizing_callback_container_storage(tmp_path, source_pangs, sources, error):
+    try:
+        materialize_sources(source_pangs, tmp_path, sources)
+    except pangs_source.ContractViolation as exc:
+        assert error in str(exc)
+        raise
+
+
+def test_context_caller_does_not_change_unrelated_direct_or_indirect_callees(
+    tmp_path, source_pangs
+):
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g;\nint target(int x){return x+1;}\n"
+            "int tissue(int (*f)(int),int x){++g;return x?f(x):target(x);}\n"
+            "int caller(void){return tissue(&target,((target)(1)));}\n"
+            "int main(void){return caller();}\n",
+        },
+    )
+    assert "target" not in manifest["context_rewrite"]["selected"]["functions"]
+    text = rewritten["test.nolines.i"]
+    assert "tissue(struct XjGlobals *xjg, int (*f)(int),int x)" in text
+    assert "tissue(xjg, &target,((target)(1)))" in text
+    assert "return x?f(x):target(x);" in text
+
+
+@pytest.mark.parametrize("leaf", ["return ++g+x;", "return g+x;"], ids=["writer", "reader"])
+def test_source_only_call_chain_and_global_users_are_planned(tmp_path, source_pangs, leaf):
+    manifest, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "demo/test.nolines.i": "static int g;\n"
+            f"static int dead_leaf(int x){{{leaf}}}\n"
+            "static int dead_middle(int x){return dead_leaf(x);}\n"
+            "static int dead_outer(int x){return dead_middle(x);}\n"
+            'int main(void){if(sizeof("DEAD_C")==1u)return dead_outer(1);return ++g;}\n',
+        },
+    )
+    assert {"dead_leaf", "dead_middle", "dead_outer"} <= set(
+        manifest["context_rewrite"]["selected"]["functions"]
+    )
+    text = rewritten["demo/test.nolines.i"]
+    for name in ("dead_leaf", "dead_middle", "dead_outer"):
+        assert f"{name}(struct XjGlobals *xjg, int x)" in text
+    assert '#include "../xj_globals.h"' in text
+    assert "int main(void)" in text
+
+
+@pytest.mark.parametrize(
+    "extra,body,blocker",
+    [
+        (
+            "typedef int (*callback_t)(int);\nint bar(int x){return x+2;}\n"
+            "int apply(callback_t cb){return cb(1);}\n",
+            "return apply(foo)+apply((callback_t)bar);",
+            "source-callable-cast",
+        ),
+        (
+            "int (*choose(void))(int){return foo;}\n",
+            "return choose()(1);",
+            "source-callable-return-type",
+        ),
+        (
+            "extern int apply(int (*cb)(int));\n",
+            "return apply(foo);",
+            "source-external-callback:apply",
+        ),
+    ],
+    ids=["explicit-cast", "returned-callback", "external-callback"],
+)
+def test_unsupported_callback_forms_are_rejected_before_materialization(
+    tmp_path, source_pangs, extra, body, blocker
+):
+    root = tmp_path / "project"
+    code = "static int g;\nint foo(int x){return ++g+x;}\n" + extra
+    code += f"int main(void){{{body}}}\n"
+    source, compdb, path = analyze(source_pangs, root, code)
+    manifest = json.loads(path.read_text())
+    global_ = next(g for g in manifest["globals"] if g["meta"]["llvm_name"] == "g")
+    assert global_["disposition"]["chosen"] == "unhandled", global_
+    field = next(f for f in manifest["context_rewrite"]["fields"] if f["llvm_name"] == "g")
+    assert blocker in {b["kind"] for b in field["blockers"]}, field
+    assert not manifest["context_rewrite"]["selected"]["fields"]
+    c_refact.localize_mutable_globals(path, compdb, root)
+    assert source.read_text() == code
+    assert json.loads(path.read_text()) == manifest
 
 
 def test_source_retention_matches_c2rust_declaration_pruning(tmp_path, source_pangs):
@@ -316,7 +643,7 @@ int main(void){struct Retained r={0};
     )
     manifest = json.loads(path.read_text())
     assert manifest["context_rewrite"]["selected"]["fields"], manifest
-    c_refact.localize_mutable_globals(path, compdb, root, root)
+    c_refact.localize_mutable_globals(path, compdb, root)
     assert "discarded" not in source.read_text()
     assert "unused_slot" not in source.read_text()
     assert "DiscardedType" not in source.read_text()
@@ -333,14 +660,14 @@ def test_contract_failure_never_retries_or_changes_disposition(tmp_path, source_
     original_manifest = path.read_bytes()
     attempts = []
 
-    def materialize(manifest, database, prev, staged):
+    def materialize(manifest, database, staged):
         attempts.append((staged / source.name).read_text())
         (staged / source.name).write_text("damaged first attempt")
         raise ValueError("injected unsupported representation")
 
     monkeypatch.setattr(c_refact, "_localize_mutable_globals_in_place", materialize)
     with pytest.raises(pangs_source.ContractViolation, match="contract violated"):
-        c_refact.localize_mutable_globals(path, compdb, root, root)
+        c_refact.localize_mutable_globals(path, compdb, root)
     assert attempts == [code]
     assert source.read_text() == code
     assert path.read_bytes() == original_manifest
@@ -434,7 +761,7 @@ def test_initial_disposition_and_actual_rust_materialization(
         assert g["disposition"]["chosen"] == strategy, g
     guidance = root / "xj-guidance.json"
     translation_preparation.add_immutable_dispositions_to_guidance(path, guidance)
-    c_refact.localize_mutable_globals(path, compdb, root, root)
+    c_refact.localize_mutable_globals(path, compdb, root)
     materialized = json.loads(path.read_text())
     assert materialized["globals"] == initial["globals"]
     assert not materialized.get("materialization", {}).get("demotions")

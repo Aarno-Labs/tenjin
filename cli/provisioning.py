@@ -1350,11 +1350,6 @@ def provision_10j_llvm_with(version: str, keyname: str):
         # Tenjin's c2rust binary will be rebuilt on demand.
         hermetic.run_cargo_in(["clean"], repo_root.find_repo_root_dir_Path() / "c2rust")
 
-        # So will xj-prepare-find-fn-ptr-decls, so we can just delete its build dir.
-        dirty = hermetic.xj_prepare_findfnptrdecls_build_dir(HAVE.localdir)
-        if dirty.is_dir():
-            shutil.rmtree(dirty, ignore_errors=False)
-
     create_goblint_gcc_wrapper()
     update_10j_llvm_have(keyname, version, llvm_version, xj_llvm_root)
 

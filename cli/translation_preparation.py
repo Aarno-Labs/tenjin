@@ -23,7 +23,6 @@ import c_refact
 import c_refact_decl_splitter
 import c_refact_knr
 import c_refact_tag_hoister
-import c_refact_type_mod_replicator
 from c_refact_identify_mains import translation_unit_has_main
 import cindex_helpers
 import hermetic
@@ -565,7 +564,7 @@ def copy_preparation_stage(src: Path, dst: Path, *, remove_stale_compdb: bool):
         (dst / "compile_commands.json").unlink(missing_ok=True)
 
 
-type QUSS = c_refact_type_mod_replicator.QuasiUniformSymbolSpecifier
+type QUSS = cindex_helpers.QuasiUniformSymbolSpecifier
 type QUSS_is_defn = bool
 type QUSS_and_defn = tuple[QUSS, QUSS_is_defn]
 
@@ -668,7 +667,7 @@ def collect_decls_by_rel_tu(
                 and cursor.location.file
                 and path_of_interest(cursor.location.file.name)
             ):
-                q = c_refact_type_mod_replicator.quss(cursor, None)
+                q = cindex_helpers.quss(cursor, None)
                 # print("Recording declaration:", cursor.spelling)
                 # print("   Kind:", cursor.kind)
                 # print("   QUSS:", q)
@@ -1250,7 +1249,7 @@ def run_preparation_passes(
             # Case A
             compdb = store.build_info.compdb_for_target_within(all_targets[0].key, current_codebase)
 
-            c_refact.localize_mutable_globals(disposition_manifest, compdb, prev, current_codebase)
+            c_refact.localize_mutable_globals(disposition_manifest, compdb, current_codebase)
         else:
             # Case B
             print(
@@ -1710,7 +1709,7 @@ def run_preparation_passes(
                 c1 = all_children_sorted_by_location[idx]
                 c2 = all_children_sorted_by_location[idx + 1]
                 if c2.extent.start.offset < c1.extent.end.offset:
-                    q2 = c_refact_type_mod_replicator.quss(c2, None)
+                    q2 = cindex_helpers.quss(c2, None)
                     nested_children.add(q2)
             return nested_children
 
@@ -1774,7 +1773,7 @@ def run_preparation_passes(
                         # Skip forward declarations
                         continue
 
-                    q = c_refact_type_mod_replicator.quss(cursor, None)
+                    q = cindex_helpers.quss(cursor, None)
                     if q in nested_children:
                         continue
 

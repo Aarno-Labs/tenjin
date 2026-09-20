@@ -877,18 +877,10 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     reason="dbcc does not yet translate end-to-end; the C sources handed to c2rust "
     "fail to parse, so no final/ crate is produced. Refolding itself is not at "
     "fault (the c_16 output was verified token-faithful to the modified program); "
-    "both error classes originate elsewhere: (1) every TU except getopt/util calls "
+    "every TU except getopt/util calls "
     "assert(<pointer>); with assert a blocked macro during translation, the calls "
     "bind to the autoincluded 'void assert(int);' marker decl and Clang rejects "
-    "the pointer-to-int conversions as errors. (2) The _xjw unmodified-function "
-    "wrappers from xj-prepare-findfnptrdecls are inserted (at c_13, pre-refold) "
-    "between a forward declaration and its ';' in mpc.c (the insertion-point "
-    "lookup sees hasBody() true via a later redecl, looks for a '}' after the "
-    "prototype, and falls back to just after the ')'), yielding invalid C plus "
-    "knock-on conflicting-type and incompatible-function-pointer errors "
-    "(mpc_fold_t vs xjg-threaded mpc_fold_t_xjtp, etc.); the invalid Clang AST "
-    "makes xj-c2rust panic (exit 101, conversion.rs 'Type conversion not "
-    "implemented for TagTypeUnknown').",
+    "the pointer-to-int conversions as errors.",
 )
 def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir

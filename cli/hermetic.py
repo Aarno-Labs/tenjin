@@ -89,10 +89,6 @@ def xj_pangs_exe(localdir: Path) -> Path:
     return xj_pangs(localdir) / "bin" / "pangs"
 
 
-def xj_prepare_findfnptrdecls_build_dir(localdir: Path) -> Path:
-    return localdir / "_build_findfnptrdecls"
-
-
 def xj_prepare_locatejoineddecls_build_dir(localdir: Path) -> Path:
     return localdir / "_build_locatejoineddecls"
 

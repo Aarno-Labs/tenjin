@@ -14,6 +14,24 @@ import repo_root
 import hermetic
 
 
+type QuasiUniformSymbolSpecifier = str
+
+
+def quss(cursor: Cursor, ancestor: Cursor | None) -> QuasiUniformSymbolSpecifier:
+    """Build a declaration key for matching named symbols during refolding."""
+    parts = []
+    if ancestor and ancestor.kind == CursorKind.TYPEDEF_DECL:
+        parts.append("typedef")
+    if cursor.is_anonymous():
+        parts.append("anon")
+    if cursor.kind == CursorKind.STRUCT_DECL:
+        parts.append("struct")
+    elif cursor.kind == CursorKind.UNION_DECL:
+        parts.append("union")
+    parts.append(cursor.spelling)
+    return "+".join(parts)
+
+
 def create_xj_clang_index() -> cindex.Index:
     """Create a clang Index configured to use the hermetic xj-llvm installation."""
 

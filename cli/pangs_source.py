@@ -118,11 +118,8 @@ def validate_plan(manifest: dict, root: Path) -> dict:
     return source
 
 
-def apply_signature_edits(manifest: dict, root: Path) -> dict[str, list[tuple[int, int, str]]]:
-    """Apply planned edits to pass the globals context and remove discarded C code.
-
-    Return the edits by file so later rewrites can adjust source offsets.
-    """
+def apply_source_edits(manifest: dict, root: Path) -> None:
+    """Apply planned edits to pass the globals context and remove discarded C code."""
     selected = manifest["context_rewrite"]["selected"]
     with batching_rewriter.BatchingRewriter() as rewriter:
         for edit in selected["source_edits"]:
@@ -134,7 +131,6 @@ def apply_signature_edits(manifest: dict, root: Path) -> dict[str, list[tuple[in
             rewriter.add_rewrite(
                 str(snapshot_path(root, entry["path"])), 0, 0, "struct XjGlobals;\n"
             )
-        return rewriter.get_rewrites(reverse=False)
 
 
 def validation_commands(
