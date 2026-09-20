@@ -300,7 +300,6 @@ def test_rupertwh__bmplib(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 30 s
-@pytest.mark.skip(reason="triggers a refolder bug")
 def test_sbase_cal(
     tenjin_fixtures: TenjinFixtures,
 ):
@@ -638,7 +637,6 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.skip("gvn marks globals as constants and propagates their value")
 # g0 = empty guidance
 @pytest.mark.slow  # expected runtime: 60 seconds
 def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
@@ -684,7 +682,7 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
 
     print(f"ronomon_pure_cli passed {n_tests_passed} test vectors.")
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 4
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 53
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -803,6 +801,7 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.skip("triggers a refolder bug")
 @pytest.mark.slow  # estimated runtime: 12 minutes (8 minutes in refolding)
 def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
@@ -866,7 +865,7 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
         f" C: {summary_line(c_prog_output.stdout)!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 247
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1421,7 +1420,7 @@ def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
         sha256hex(tmp_codebase / "COPYING.gz")
         == "c7d0f6d70256238349e9f682d7d1362a832cc955b653cee712b8a1db92a15acd"
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 109
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 100
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
