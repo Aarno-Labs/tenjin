@@ -1012,6 +1012,21 @@ def test_contract_failure_never_retries_or_changes_disposition(tmp_path, source_
             {"g": "immutable"},
         ),
         (
+            "static const float stb__midpoints6[64]={0.007843f,0.023529f,1.0f};"
+            "float refine_block(unsigned q){return stb__midpoints6[q&63];}",
+            {"stb__midpoints6": "immutable"},
+        ),
+        (
+            "int read_weight(unsigned q){static const int weights[4]={3,0,2,1};"
+            "return weights[q&3];}",
+            {"read_weight.weights": "immutable"},
+        ),
+        (
+            "static const int values[2]={1,2}; const int *const g=values;"
+            "int read_value(unsigned q){return g[q&1];}",
+            {"g": "unhandled"},
+        ),
+        (
             "static int g=7,h=8; int main(void){if(0)g=9;return g+h;}",
             {"g": "unhandled", "h": "immutable"},
         ),
@@ -1041,6 +1056,9 @@ def test_contract_failure_never_retries_or_changes_disposition(tmp_path, source_
         "palettes",
         "retained-write",
         "address-only",
+        "constant-float-array",
+        "constant-function-static",
+        "constant-pointer-is-not-sync",
         "joined-declaration",
         "section-initializer",
         "function-pointer-is-sync",
