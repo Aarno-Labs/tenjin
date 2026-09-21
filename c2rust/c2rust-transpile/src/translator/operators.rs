@@ -116,6 +116,8 @@ impl Translation<'_> {
 
                 let (lhs_guidance, rhs_guidance) = self.context_guidance_of_binary_op(
                     op,
+                    lhs,
+                    rhs,
                     &lhs_resolved_ty.kind,
                     &rhs_resolved_ty.kind,
                     ctx_guided_type,
@@ -618,6 +620,10 @@ impl Translation<'_> {
         let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
 
         if let &CTypeKind::Pointer(pointee) = lhs_type {
+            println!(
+                "addition ctx: {:?}",
+                ctx_guided_type.as_ref().map(|it| &it.parsed)
+            );
             Ok(self.convert_pointer_offset(
                 c_lhs,
                 lhs,

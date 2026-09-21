@@ -311,82 +311,44 @@ pub unsafe fn receive_slice(mut rsu8: &[u8]) {
     let mut v = rsu8[0 as usize] as ::core::ffi::c_char;
 }
 #[no_mangle]
-pub unsafe fn pass_slice_offset(mut idx: ::core::ffi::c_int) {
-    let mut arr: [::core::ffi::c_uchar; 72] = [
-        0 as ::core::ffi::c_uchar,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    ];
+pub unsafe fn receive_elem(mut ru8: &u8) {
+    let mut v = *ru8;
+}
+#[no_mangle]
+pub unsafe fn pass_slice_offset_unguided_arr(mut idx: ::core::ffi::c_int) {
+    let mut arr: [::core::ffi::c_uchar; 8] = [0 as ::core::ffi::c_uchar, 0, 0, 0, 0, 0, 0, 0];
     receive_slice(&(&mut arr)[(idx + 2 as ::core::ffi::c_int) as usize..]);
+    receive_elem(&(&mut arr)[(idx + 2 as ::core::ffi::c_int) as usize]);
+}
+#[no_mangle]
+pub unsafe fn pass_slice_ptr_arith_unguided_arr(mut idx: ::core::ffi::c_int) {
+    let mut arr: [::core::ffi::c_uchar; 8] = [0 as ::core::ffi::c_uchar, 0, 0, 0, 0, 0, 0, 0];
+    receive_slice(&(&mut arr)[idx as usize..]);
+    receive_elem(&(&mut arr)[idx as usize]);
+}
+#[no_mangle]
+pub unsafe fn pass_slice_whole_unguided_arr() {
+    let mut arr: [::core::ffi::c_uchar; 8] = [0 as ::core::ffi::c_uchar, 0, 0, 0, 0, 0, 0, 0];
+    receive_slice(&arr);
+    receive_elem(&arr[0]);
+}
+#[no_mangle]
+pub unsafe fn pass_slice_offset_guided_arr(mut idx: ::core::ffi::c_int) {
+    let mut arru8_8: [u8; 8] = [0 as ::core::ffi::c_uchar, 0, 0, 0, 0, 0, 0, 0];
+    receive_slice(&arru8_8[(idx + 2 as ::core::ffi::c_int) as usize..]);
+    receive_elem(&arru8_8[(idx + 2 as ::core::ffi::c_int) as usize]);
+}
+#[no_mangle]
+pub unsafe fn pass_slice_ptr_arith_guided_arr(mut idx: ::core::ffi::c_int) {
+    let mut arru8_8: [u8; 8] = [0 as ::core::ffi::c_uchar, 0, 0, 0, 0, 0, 0, 0];
+    receive_slice(&arru8_8[idx as usize..]);
+    receive_elem(&arru8_8[idx as usize]);
+}
+#[no_mangle]
+pub unsafe fn pass_slice_whole_guided_arr() {
+    let mut arru8_8: [u8; 8] = [0 as ::core::ffi::c_uchar, 0, 0, 0, 0, 0, 0, 0];
+    receive_slice(&arru8_8);
+    receive_elem(&arru8_8[0]);
 }
 unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
     if ptr.is_null() {

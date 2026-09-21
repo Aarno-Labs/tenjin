@@ -644,11 +644,11 @@ impl<'c> Translation<'c> {
                     .map(|t| t.is_slice_or_array() || t.is_slice_or_array_ref())
                     .unwrap_or(false)
                     || self.can_subscript(ptr_id)
-                    || self.is_array(ptr_id)
+                    || (self.is_array(ptr_id)
                         && ctx_guided_type
                             .as_ref()
                             .map(|t| t.is_borrow())
-                            .unwrap_or(false)
+                            .unwrap_or(false))
             })
         {
             let subscript = cast_int(offset, "usize", false);
@@ -670,12 +670,12 @@ impl<'c> Translation<'c> {
         ptr: Box<Expr>,
         subscript: Box<Expr>,
         deref: bool,
-        ctx_guided_type: &Option<tenjin::GuidedType>,
+        ptr_ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> WithStmts<Box<Expr>> {
         let overall = if deref {
             // ptr[idx]
             mk().index_expr(ptr, subscript)
-        } else if ctx_guided_type
+        } else if ptr_ctx_guided_type
             .as_ref()
             .map(|t| !t.is_slice_or_array_ref() && !t.is_slice_or_array())
             .unwrap_or(false)

@@ -605,12 +605,10 @@ pub fn expr_bytemuck_cast_reference(t: &Translation, expr: &Expr, ty: &Type) -> 
                 } else {
                     "cast_slice"
                 }
+            } else if mutbl {
+                "cast_mut"
             } else {
-                if mutbl {
-                    "cast_mut"
-                } else {
-                    "cast_ref"
-                }
+                "cast_ref"
             };
             t.use_crate(ExternCrate::Bytemuck);
             mk().call_expr(
@@ -3078,11 +3076,11 @@ impl Translation<'_> {
     /// Ex. if we have
     ///   let x = p + i
     /// where
-    ///   x has guided type &[u8]
+    ///   x has guided type &T
     ///   p has a pointer type
     ///   i has an integral type
     /// then
-    ///   the guided type for p should also be &[u8]
+    ///   the guided type for p should be &[T]
     ///   we have no guidance for i
     ///
     /// `lhs_type` (resp `rhs_type`) is the type of the lhs (rhs) operand
@@ -3090,6 +3088,8 @@ impl Translation<'_> {
     pub fn context_guidance_of_binary_op(
         &self,
         op: CBinOp,
+        lhs: CExprId,
+        rhs: CExprId,
         lhs_type: &CTypeKind,
         rhs_type: &CTypeKind,
         ctx_guided_type: &Option<GuidedType>,
@@ -3102,6 +3102,19 @@ impl Translation<'_> {
             return (
                 lhs_type.is_pointer().then(|| t.clone()),
                 rhs_type.is_pointer().then(|| t.clone()),
+            );
+        }
+
+        if t.is_borrow() && op.is_pointer_arithmetic() {
+            return (
+                self.is_array(lhs).then(|| {
+                    let base = t.parsed.clone();
+                    GuidedType::from_type(syn::parse_quote! { &[#base] })
+                }),
+                self.is_array(rhs).then(|| {
+                    let base = t.parsed.clone();
+                    GuidedType::from_type(syn::parse_quote! { &[#base] })
+                }),
             );
         }
 
