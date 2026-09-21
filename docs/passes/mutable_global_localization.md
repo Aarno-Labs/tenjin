@@ -48,6 +48,17 @@ Mutable global variables are unsafe in Rust.
   selected globals' original definitions are overwritten with whitespace. Newlines and byte
   widths are preserved so later source locations remain stable.
 
+## Cross-translation-unit edits
+
+PANGS plans compatible changes to corresponding declarations using each
+declaration's own syntax locations; Tenjin does not copy edits between type
+definitions. Correspondence is not simply matching names or text, and different
+TUs can contribute requirements that must be combined. PANGS's
+`SOURCE_PLANNING.md`, under "Corresponding declarations across translation
+units", explains these obligations and the planner's scope. Reconstructing
+shared headers is a separate responsibility described in
+[Refolding and Revert Restoration](refold_and_revert.md#correspondence-and-shared-header-reconstruction).
+
 ## Other Notes
 
 - Loosely based upon [Source-to-Source Refactoring and Elimination of Global Variables in C Programs](https://doi.org/10.4236/jsea.2013.65033).
