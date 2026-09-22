@@ -232,13 +232,15 @@ fn connected_translation_units_choose_the_same_stat_representation() {
 #[test]
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
 fn guided_stat_parameters_preserve_owned_and_borrowed_member_access() {
-    for (ty, argument) in [
-        ("libc::stat", "s"),
-        ("&libc::stat", "&s"),
-        ("&mut libc::stat", "&mut s"),
+    // As xj-prepare-guidance materializes `vars_of_type: {ty: "inspect:s"}`.
+    for (typedef, ty, argument) in [
+        ("xj_ty_stat", "libc::stat", "s"),
+        ("xj_ty_ref_stat", "&libc::stat", "&s"),
+        ("xj_ty_ref_mut_stat", "&mut libc::stat", "&mut s"),
     ] {
         let dir = tempfile::tempdir().unwrap();
-        let rust = translate(dir.path(), &[("guided.c", "#include <sys/stat.h>\nlong inspect(struct stat *s) { return s->st_size + s->st_mtim.tv_sec; }")], serde_json::json!({"vars_of_type": {ty: "inspect:s"}})).remove(0);
+        let c = format!("#include <sys/stat.h>\ntypedef struct stat *{typedef};\nlong inspect({typedef} s) {{ return s->st_size + s->st_mtim.tv_sec; }}");
+        let rust = translate(dir.path(), &[("guided.c", &c)], serde_json::json!({"marker_typedefs": {typedef: ty}})).remove(0);
         assert!(!rust.contains("pub struct stat"), "{rust}");
         compile_and_run(dir.path(), &format!("{rust}\nfn main() {{ let mut s: libc::stat = unsafe {{ core::mem::zeroed() }}; s.st_size = 4; s.st_mtime = 5; unsafe {{ assert_eq!(inspect({argument}), 9); }} }}"));
     }
@@ -268,24 +270,11 @@ fn unsupported_c_targets_and_old_timestamp_layout_fall_back() {
 
 #[test]
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
-fn same_name_typedef_uses_the_replacement_and_explicit_field_guidance_falls_back() {
+fn same_name_typedef_uses_the_replacement() {
     let dir = tempfile::tempdir().unwrap();
     let rust = translate(dir.path(), &[("alias.c", "#include <fcntl.h>\ntypedef struct stat stat;\nlong inspect(stat *s) { return s->st_size; }")], serde_json::json!({})).remove(0);
     assert!(rust.contains("::libc::stat"), "{rust}");
     compile_and_run(dir.path(), &format!("{rust}\nfn main() {{ let mut s: libc::stat = unsafe {{ core::mem::zeroed() }}; s.st_size = 9; unsafe {{ assert_eq!(inspect(&mut s), 9); }} }}"));
-
-    let dir = tempfile::tempdir().unwrap();
-    let rust = translate(
-        dir.path(),
-        &[(
-            "fields.c",
-            "#include <sys/stat.h>\nlong inspect(struct stat *s) { return s->st_size; }",
-        )],
-        serde_json::json!({"vars_of_type": {"i64": "stat:st_size"}}),
-    )
-    .remove(0);
-    assert!(rust.contains("pub struct stat"), "{rust}");
-    assert!(!rust.contains("::libc::stat"), "{rust}");
 }
 
 #[test]

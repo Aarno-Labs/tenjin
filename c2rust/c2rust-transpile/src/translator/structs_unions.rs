@@ -103,6 +103,7 @@ impl<'a> Translation<'a> {
             derives.push(mk().meta_path("Copy"));
             derives.push(mk().meta_path("Clone"));
         };
+        self.drop_guided_derives(fields, &mut derives);
         let has_bitfields =
             fields
                 .iter()
@@ -644,7 +645,7 @@ impl<'a> Translation<'a> {
                     fields.push(field);
                 }
                 Both(field_id, (field_name, ty, bitfield_width, use_inner_type)) => {
-                    let mut expr = self.convert_expr(ctx.used(), *field_id, Some(ty))?;
+                    let mut expr = self.convert_init(ctx.used(), *field_id, Some(ty))?;
 
                     if use_inner_type {
                         // See comment above
@@ -987,22 +988,7 @@ impl<'a> Translation<'a> {
                 let mut ty = if is_direct_va_list {
                     mk_va_list_ty(self.tcfg.edition, Some("a"))
                 } else {
-                    let record_name = self
-                        .type_converter
-                        .borrow()
-                        .resolve_decl_name(record_id)
-                        .unwrap();
-                    let guided_type = self.parsed_guidance.borrow_mut().query_field_type(
-                        self,
-                        &record_name,
-                        *field_id,
-                        &field_name,
-                    );
-                    if let Some(guided_type) = guided_type {
-                        Box::new(guided_type.parsed)
-                    } else {
-                        self.convert_type(ctype)?
-                    }
+                    self.convert_type(ctype)?
                 };
                 // A va_list can also occur below the field's outermost type,
                 // as in `va_list *`. Such a field still makes the record own
@@ -1236,11 +1222,8 @@ impl<'a> Translation<'a> {
                 (expr, kind, String::new())
             };
         if !libc_field.is_empty() {
-            let skip_ptr_deref = self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, base)
-                .is_some_and(|guided| !guided.pretty.starts_with('*'));
+            // XREF:struct_guided_ptr_with_guided_members
+            let skip_ptr_deref = self.is_guided_object(base);
             let val = self.convert_expr(ctx, base, None)?;
             let val = val.map(|v| {
                 let base = if matches!(base_kind, MemberKind::Arrow) && !skip_ptr_deref {
@@ -1251,28 +1234,10 @@ impl<'a> Translation<'a> {
                 mk().field_expr(base, libc_field)
             });
             return if lrvalue.is_rvalue() {
-                self.make_cast(ctx, qual_ty, override_ty.unwrap_or(qual_ty), val, &None)
+                self.make_cast(ctx, qual_ty, override_ty.unwrap_or(qual_ty), val)
             } else {
                 Ok(val)
             };
-        }
-
-        // The guided type here is the type of the struct/union whose member
-        // is being accessed, not the type of the field.
-        let guided_type = self
-            .parsed_guidance
-            .borrow_mut()
-            .query_expr_type(self, expr);
-        let mut skip_ptr_deref = false;
-        if let Some(guided_type) = guided_type {
-            if !guided_type.pretty.starts_with("*") {
-                // Member lookup with guidance that isn't a pointer;
-                // assuming this means we want direct lookup, without pointer deref.
-                // XREF:struct_guided_ptr_with_guided_members
-                skip_ptr_deref = true;
-                // Without this, we'd generate e.g. `(*s).field` instead of `s.field`
-                // which is what we want when the guidance says it's not a pointer.
-            }
         }
 
         let mut val = match kind {
@@ -1284,13 +1249,12 @@ impl<'a> Translation<'a> {
                     // Special-case the `(&x)->field` pattern
                     // Convert it directly into `x.field`
                     self.convert_expr(ctx, subexpr_id, None)?
+                } else if self.is_guided_object(expr) {
+                    // XREF:struct_guided_ptr_with_guided_members
+                    self.convert_expr(ctx, expr, None)?
                 } else {
                     let val = self.convert_expr(ctx, expr, None)?;
-                    if skip_ptr_deref {
-                        val
-                    } else {
-                        val.map(|v| mk().unary_expr(UnOp::Deref(Default::default()), v))
-                    }
+                    val.map(|v| mk().unary_expr(UnOp::Deref(Default::default()), v))
                 }
             }
         };
@@ -1332,7 +1296,7 @@ impl<'a> Translation<'a> {
         };
 
         if lrvalue.is_rvalue() {
-            val = self.make_cast(ctx, qual_ty, override_ty.unwrap_or(qual_ty), val, &None)?;
+            val = self.make_cast(ctx, qual_ty, override_ty.unwrap_or(qual_ty), val)?;
         }
 
         Ok(val)

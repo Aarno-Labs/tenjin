@@ -36,16 +36,21 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
         })
     } else if c_path.ends_with("tenjin_guided_array.c") {
         serde_json::json!({
-            "vars_of_type": {
-                "[&'static [u8]; 2]": "GUIDED_STRINGS"
+            "marker_typedefs": {
+                "xj_ty_ref_slice_u8": "&'static [u8]",
+                "xj_ty_array_2_ref_slice_u8": "[&'static [u8]; 2]"
+            },
+            "markers": {
+                "xj_index_ref_slice_u8": {"family": "index"},
+                "xj_slice_all_ptr_const_char": {"family": "slice_all"}
             }
         })
     } else if c_path.ends_with("tenjin_semantic_immutability.c") {
         serde_json::json!({
-            "vars_of_type": {
-                "&'static [u8]": ["guided_pointer", "AllGuided:guided"]
+            "marker_typedefs": {
+                "xj_ty_ref_slice_u8": "&'static [u8]"
             },
-            "vars_mut": {
+            "vars_mut_resolved": {
                 "forced_mut_scalar": true,
                 "forced_immutable_raw_pointer": false
             },
@@ -68,7 +73,7 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
         })
     } else if c_path.ends_with("tenjin_semantic_immutable_addresses.c") {
         serde_json::json!({
-            "vars_mut": {
+            "vars_mut_resolved": {
                 "forced_mut_array": true
             },
             "semantically_immutable_globals": [
@@ -85,10 +90,28 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
             // immutability guidance so the runtime initializer can assign it.
             "semantically_immutable_globals": ["global_static_const_member"]
         })
+    } else if c_path.ends_with("tenjin_guided_statics.c") {
+        serde_json::json!({
+            "marker_typedefs": {
+                "xj_ty_String": "String",
+                "xj_ty_Vec_u8": "Vec<u8>",
+                "xj_ty_Vec_u8_1": "Vec<u8>",
+                "xj_ty_ref_str": "&str"
+            },
+            "markers": {
+                "xj_char_at_String": {"family": "char_at"},
+                "xj_char_at_ref_str": {"family": "char_at"},
+                "xj_is_null_String": {"family": "is_null"}
+            }
+        })
     } else if c_path.ends_with("tenjin_slices.c") {
         serde_json::json!({
-            "vars_of_type" : {
-                "&[u8]" : ["inc:x", "get:x"]
+            "marker_typedefs": {
+                "xj_ty_ref_slice_u8": "&[u8]"
+            },
+            "markers": {
+                "xj_index_ref_slice_u8": {"family": "index"},
+                "xj_slice_from_ref_slice_u8": {"family": "slice_from"}
             }
         })
     } else {
@@ -679,8 +702,9 @@ fn test_tenjin_guided_array() {
 
 #[test]
 fn test_tenjin_semantic_immutability() {
-    // Struct initializer conversion does not yet consume field type guidance,
-    // so the guided record initializers have a pre-existing type mismatch.
+    // Explicit `vars_mut` guidance wins over PANGS, so
+    // `forced_immutable_raw_pointer` is a non-`mut` static holding a raw
+    // pointer, which is not `Sync`.
     transpile("tenjin_semantic_immutability.c")
         .expect_compile_error(true)
         .run();
@@ -689,6 +713,15 @@ fn test_tenjin_semantic_immutability() {
 #[test]
 fn test_tenjin_semantic_immutable_addresses() {
     transpile("tenjin_semantic_immutable_addresses.c").run();
+}
+
+#[test]
+fn test_tenjin_guided_statics() {
+    // Owned guided statics are `static mut` and read through references,
+    // which edition 2024 denies (`static_mut_refs`); Tenjin emits 2021.
+    transpile("tenjin_guided_statics.c")
+        .expect_compile_error_edition_2024(true)
+        .run();
 }
 
 #[test]
