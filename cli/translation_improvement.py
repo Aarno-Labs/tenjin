@@ -75,6 +75,24 @@ def run_ast_grep_rewrite(dir: Path, pattern: str, rewrite: str) -> CompletedProc
     return cp
 
 
+PRINT_MACRO_REWRITES = (
+    ("println!($$$ARGS)", "xj_astgrep_println($$$ARGS)"),
+    ("print!($$$ARGS)", "xj_astgrep_print($$$ARGS)"),
+    ("eprintln!($$$ARGS)", "xj_astgrep_eprintln($$$ARGS)"),
+    ("eprint!($$$ARGS)", "xj_astgrep_eprint($$$ARGS)"),
+)
+
+
+def rewrite_print_macros_as_calls(dir: Path) -> None:
+    for pattern, rewrite in PRINT_MACRO_REWRITES:
+        run_ast_grep_rewrite(dir, pattern, rewrite)
+
+
+def restore_print_macros(dir: Path) -> None:
+    for macro, call in PRINT_MACRO_REWRITES:
+        run_ast_grep_rewrite(dir, call, macro)
+
+
 def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
     # Macro arguments are in general token trees, not expressions,
     # and ast-grep rightly treats them as such. But there are important
@@ -83,25 +101,29 @@ def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProce
     #
     # This produces, as an ephemeral intermediate state, code that does not
     # type check, but ast-grep can still match on it.
-    run_ast_grep_rewrite(dir, "println!($$$ARGS)", "xj_astgrep_println($$$ARGS)")
-    run_ast_grep_rewrite(dir, "print!($$$ARGS)", "xj_astgrep_print($$$ARGS)")
-    run_ast_grep_rewrite(dir, "eprintln!($$$ARGS)", "xj_astgrep_eprintln($$$ARGS)")
-    run_ast_grep_rewrite(dir, "eprint!($$$ARGS)", "xj_astgrep_eprint($$$ARGS)")
+    try:
+        rewrite_print_macros_as_calls(dir)
 
-    # Direct indexing of arrays takes an unnecessary detour through unsafe pointers
-    run_ast_grep_rewrite(
-        dir,
-        "(*$BASE.as_mut_ptr().offset($IDX as isize))",
-        "($BASE[$IDX as usize])",
-    )
+        # Direct indexing of arrays takes an unnecessary detour through unsafe pointers
+        run_ast_grep_rewrite(
+            dir,
+            "(*$BASE.as_mut_ptr().offset($IDX as isize))",
+            "($BASE[$IDX as usize])",
+        )
 
-    synsub_cp = run_built_workspace_binary(
-        root,
-        "xj-improve-synsub",
-        "xj-improve-synsub",
-        args,
-        dir,
-    )
+        synsub_cp = run_built_workspace_binary(
+            root,
+            "xj-improve-synsub",
+            "xj-improve-synsub",
+            args,
+            dir,
+        )
+    except BaseException:
+        restore_print_macros(dir)
+        raise
+
+    if synsub_cp.returncode != 0:
+        restore_print_macros(dir)
 
     return synsub_cp
 
@@ -110,18 +132,16 @@ def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> Comple
     # rust-analyzer's surface syntax treats macro args as opaque token
     # trees, so we wait until after this pass to restore the original println! syntax.
 
-    lift_cp = run_built_workspace_binary(
-        root,
-        "xj-improve-lift-call-args",
-        "xj-improve-lift-call-args",
-        args,
-        dir,
-    )
-
-    run_ast_grep_rewrite(dir, "xj_astgrep_println($$$ARGS)", "println!($$$ARGS)")
-    run_ast_grep_rewrite(dir, "xj_astgrep_print($$$ARGS)", "print!($$$ARGS)")
-    run_ast_grep_rewrite(dir, "xj_astgrep_eprintln($$$ARGS)", "eprintln!($$$ARGS)")
-    run_ast_grep_rewrite(dir, "xj_astgrep_eprint($$$ARGS)", "eprint!($$$ARGS)")
+    try:
+        lift_cp = run_built_workspace_binary(
+            root,
+            "xj-improve-lift-call-args",
+            "xj-improve-lift-call-args",
+            args,
+            dir,
+        )
+    finally:
+        restore_print_macros(dir)
 
     return lift_cp
 
