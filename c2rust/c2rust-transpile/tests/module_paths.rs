@@ -102,6 +102,38 @@ fn sibling_file_and_directory_modules_do_not_collide() {
 
     let status = Command::new("cargo")
         .arg("build")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env("CARGO_TARGET_DIR", td.path().join("target"))
+        .current_dir(&output_dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "generated crate should build");
+}
+
+#[test]
+fn module_names_do_not_start_with_digits() {
+    let td = TempDir::new().unwrap();
+    let src = td.path().join("2example.c");
+    fs::write(&src, "int answer(void) { return 42; }\n").unwrap();
+    let output_dir = td.path().join("translated");
+
+    let (_compile_commands_dir, compile_commands_path) =
+        c2rust_transpile::create_temp_compile_commands(&[src]);
+
+    let mut tcfg = config(output_dir.clone());
+    tcfg.binaries.clear();
+    c2rust_transpile::transpile(tcfg, &compile_commands_path, &["-w"]);
+
+    let lib_rs = fs::read_to_string(output_dir.join("lib.rs")).unwrap();
+    assert!(
+        lib_rs.contains("pub mod _2example;"),
+        "generated module name should be a valid Rust identifier:\n{lib_rs}"
+    );
+    assert!(output_dir.join("src/_2example.rs").is_file());
+
+    let status = Command::new("cargo")
+        .arg("build")
+        .env_remove("RUSTUP_TOOLCHAIN")
         .env("CARGO_TARGET_DIR", td.path().join("target"))
         .current_dir(&output_dir)
         .status()

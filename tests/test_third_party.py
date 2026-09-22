@@ -868,7 +868,7 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.skip("triggers an ast-grep bug")
+@pytest.mark.skip("C2Rust emits VaListImpl without its required lifetime")
 @pytest.mark.slow  # expected runtime: ~30 minutes
 def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
