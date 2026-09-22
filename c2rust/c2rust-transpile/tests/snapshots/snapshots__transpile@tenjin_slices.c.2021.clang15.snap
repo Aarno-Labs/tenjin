@@ -13,7 +13,7 @@ expression: cat tests/snapshots/tenjin_slices.2021.clang15.rs
 )]
 #[no_mangle]
 pub unsafe extern "C" fn inc(mut x: &[u8]) {
-    x = &x[1..];
+    x = &x[1 as usize..];
 }
 #[no_mangle]
 pub unsafe extern "C" fn get(mut x: &[u8], mut i: ::core::ffi::c_int) -> ::core::ffi::c_uchar {

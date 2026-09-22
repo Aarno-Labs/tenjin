@@ -122,16 +122,10 @@ impl<'c> Translation<'c> {
             let mut args: Vec<FnArg> = vec![];
 
             // handle regular (non-variadic) arguments
-            for &(decl_id, ref var, typ) in arguments.iter() {
-                // XREF:fn_parameter_guided
-                let guided_type = self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, decl_id);
+            for &(decl_id, ref var, typ) in arguments {
+                let ConvertedFunctionParam { ty, mutbl } = self.convert_function_param(ctx, typ)?;
                 // XREF:guided_mutbl_fn_param
-                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
-                let ConvertedFunctionParam { ty, mutbl } =
-                    self.convert_function_param(ctx, typ, &guided_type, guided_mutbl)?;
+                let mutbl = self.guided_mutability(decl_id, Some(name)).unwrap_or(mutbl);
 
                 let pat = if var.is_empty() {
                     mk().wild_pat()
@@ -176,7 +170,22 @@ impl<'c> Translation<'c> {
                 None
             };
 
-            let ret = self.convert_function_return_type(name, return_type)?;
+            // handle return type
+            let ret = match return_type {
+                Some(return_type) => self.convert_type(return_type.ctype)?,
+                None => mk().never_ty(),
+            };
+            let is_void_ret = return_type
+                .map(|qty| self.ast_context[qty.ctype].kind == CTypeKind::Void)
+                .unwrap_or(false);
+
+            // If a return type is void, we should instead omit the unit type return,
+            // -> (), to be more idiomatic
+            let ret = if is_void_ret {
+                ReturnType::Default
+            } else {
+                ReturnType::Type(Default::default(), ret)
+            };
 
             let decl = mk().fn_decl(new_name, args, variadic, ret);
 
@@ -403,8 +412,6 @@ impl<'c> Translation<'c> {
         &self,
         ctx: ExprContext,
         typ: CQualTypeId,
-        guided_type: &Option<GuidedType>,
-        guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<ConvertedFunctionParam> {
         if self.ast_context.is_va_list(typ.ctype) {
             let mutbl = typ.mutability();
@@ -412,26 +419,31 @@ impl<'c> Translation<'c> {
             return Ok(ConvertedFunctionParam { mutbl, ty });
         }
 
-        self.convert_variable(ctx, None, typ, guided_type, guided_mutbl)
+        self.convert_variable(ctx, None, typ)
             .map(|ConvertedVariable { ty, mutbl, .. }| ConvertedFunctionParam { ty, mutbl })
     }
 
     pub fn convert_function_call(
         &self,
         mut ctx: ExprContext,
-        func_id: CExprId,
+        func: CExprId,
         args: &[CExprId],
         call_expr_ty: CQualTypeId,
         override_ty: Option<CQualTypeId>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        if let Some((family, callee)) = self.marker_callee(func) {
+            let val = self.convert_marker_call(ctx, family, callee, args)?;
+            return self.make_cast(ctx, call_expr_ty, override_ty.unwrap_or(call_expr_ty), val);
+        }
+
         let fn_ty = self
             .ast_context
             .get_pointee_qual_type(
                 self.ast_context
-                    .index_unwrap_parens(func_id)
+                    .index_unwrap_parens(func)
                     .kind
                     .get_type()
-                    .ok_or_else(|| format_err!("Invalid callee expression {:?}", func_id))?,
+                    .ok_or_else(|| format_err!("Invalid callee expression {:?}", func))?,
             )
             .map(|ty| &self.ast_context.resolve_type(ty.ctype).kind);
         let is_variadic = match fn_ty {
@@ -440,14 +452,14 @@ impl<'c> Translation<'c> {
         };
 
         let mut arg_tys = if let Some(CDeclKind::Function { parameters, .. }) =
-            self.ast_context.fn_declref_decl(func_id)
+            self.ast_context.fn_declref_decl(func)
         {
             self.ast_context.tys_of_params(parameters)
         } else {
             None
         };
 
-        let func = match self.ast_context.index_unwrap_parens(func_id).kind {
+        let func = match self.ast_context.index_unwrap_parens(func).kind {
             // Direct function call
             CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _)
             // Only a direct function call with pointer decay if the
@@ -464,7 +476,7 @@ impl<'c> Translation<'c> {
 
             // Function pointer call
             _ => {
-                let callee = self.convert_expr(ctx.used(), func_id, None)?;
+                let callee = self.convert_expr(ctx.used(), func, None)?;
                 let make_fn_ty = |ret_ty: Box<Type>| {
                     let ret_ty = match *ret_ty {
                         Type::Tuple(TypeTuple { elems: ref v, .. }) if v.is_empty() => ReturnType::Default,
@@ -508,9 +520,6 @@ impl<'c> Translation<'c> {
             }
         };
 
-        let arg_guidances: Option<Vec<Option<tenjin::GuidedType>>> =
-            self.get_callee_function_arg_guidances(func_id);
-
         let call = func.and_then_try(|func| {
             // We want to decay refs only when function is variadic
             ctx.decay_ref = DecayRef::from(is_variadic);
@@ -523,7 +532,6 @@ impl<'c> Translation<'c> {
                 arg_tys.as_deref(),
                 override_ty,
                 is_variadic,
-                arg_guidances,
             )
         })?;
 
@@ -544,7 +552,6 @@ impl<'c> Translation<'c> {
         exprs: &[CExprId],
         arg_tys: Option<&[CQualTypeId]>,
         is_variadic: bool,
-        arg_guidances: Option<Vec<Option<tenjin::GuidedType>>>,
     ) -> TranslationResult<WithStmts<Vec<Box<Expr>>>> {
         let arg_tys = if let Some(arg_tys) = arg_tys {
             if !is_variadic {
@@ -556,22 +563,10 @@ impl<'c> Translation<'c> {
             &[]
         };
 
-        let guidance_for = |n: usize| match &arg_guidances {
-            None => None,
-            Some(guidances) => guidances.get(n).unwrap_or(&None).clone(),
-        };
-
         exprs
             .iter()
             .enumerate()
-            .map(|(n, arg)| {
-                let guided_type = guidance_for(n);
-                let res_ws_expr =
-                    self.convert_call_arg(ctx, *arg, arg_tys.get(n).copied(), &guided_type);
-                res_ws_expr.map(|ws_expr| {
-                    ws_expr.map(|expr| self.coerce_borrow_guided(expr, *arg, &guided_type))
-                })
-            })
+            .map(|(n, arg)| self.convert_call_arg(ctx, *arg, arg_tys.get(n).copied()))
             .collect()
     }
 
@@ -581,7 +576,6 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         expr_id: CExprId,
         override_ty: Option<CQualTypeId>,
-        guided_ty: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let mut val;
 
@@ -596,9 +590,7 @@ impl<'c> Translation<'c> {
             val = self.convert_expr(ctx, expr_id, None)?;
             val = val.map(|val| mk_va_list_copy(self.tcfg.edition, val));
         } else {
-            val = self
-                .convert_expr_guided(ctx, expr_id, override_ty, guided_ty)?
-                .map(|e| self.try_guided_type_repair(e, guided_ty));
+            val = self.convert_expr(ctx, expr_id, override_ty)?;
         }
 
         Ok(val)

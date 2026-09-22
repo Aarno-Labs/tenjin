@@ -36,16 +36,17 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
         })
     } else if c_path.ends_with("tenjin_guided_array.c") {
         serde_json::json!({
-            "vars_of_type": {
-                "[&'static [u8]; 2]": "GUIDED_STRINGS"
+            "marker_typedefs": {
+                "xj_ty_0": "&'static [u8]",
+                "xj_ty_1": "[&'static [u8]; 2]"
             }
         })
     } else if c_path.ends_with("tenjin_semantic_immutability.c") {
         serde_json::json!({
-            "vars_of_type": {
-                "&'static [u8]": ["guided_pointer", "AllGuided:guided"]
+            "marker_typedefs": {
+                "xj_ty_0": "&'static [u8]"
             },
-            "vars_mut": {
+            "vars_mut_resolved": {
                 "forced_mut_scalar": true,
                 "forced_immutable_raw_pointer": false
             },
@@ -68,7 +69,7 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
         })
     } else if c_path.ends_with("tenjin_semantic_immutable_addresses.c") {
         serde_json::json!({
-            "vars_mut": {
+            "vars_mut_resolved": {
                 "forced_mut_array": true
             },
             "semantically_immutable_globals": [
@@ -87,8 +88,8 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
         })
     } else if c_path.ends_with("tenjin_slices.c") {
         serde_json::json!({
-            "vars_of_type" : {
-                "&[u8]" : ["inc:x", "get:x"]
+            "marker_typedefs": {
+                "xj_ty_0": "&[u8]"
             }
         })
     } else {
@@ -674,8 +675,9 @@ fn test_tenjin_guided_array() {
 
 #[test]
 fn test_tenjin_semantic_immutability() {
-    // Struct initializer conversion does not yet consume field type guidance,
-    // so the guided record initializers have a pre-existing type mismatch.
+    // Explicit `vars_mut` guidance wins over PANGS, so
+    // `forced_immutable_raw_pointer` is a non-`mut` static holding a raw
+    // pointer, which is not `Sync`.
     transpile("tenjin_semantic_immutability.c")
         .expect_compile_error(true)
         .run();

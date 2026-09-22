@@ -16,7 +16,7 @@ use ::std::process::ExitCode;
 pub static mut GUIDED_STRINGS: [&'static [u8]; 2] = [b"zero\0", b"one\0"];
 #[no_mangle]
 pub unsafe extern "C" fn first_guided_string() -> *const ::core::ffi::c_char {
-    return GUIDED_STRINGS[0usize].as_ptr() as *const ::core::ffi::c_char;
+    return (&GUIDED_STRINGS[0usize]).as_ptr() as *const ::core::ffi::c_char;
 }
 unsafe fn main_0() -> ::core::ffi::c_int {
     return (GUIDED_STRINGS[0usize][0 as usize] as ::core::ffi::c_int != 'z' as ::core::ffi::c_int

@@ -1,6 +1,8 @@
 use super::*;
 use quote::ToTokens; // for to_token_stream()
 use serde_derive::Deserialize;
+use serde_json::Map;
+use std::collections::HashSet;
 use std::str::FromStr;
 use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
 
@@ -9,9 +11,6 @@ pub struct GuidedType {
     pub pretty: String,
     pub parsed: Type,
 }
-
-// This must be kept in sync with translation_preparation.py
-const TENJIN_UNIQUE_SUFFIX: &str = "_xjtr";
 
 impl FromStr for GuidedType {
     type Err = syn::parse::Error;
@@ -51,28 +50,6 @@ impl GuidedType {
 
     pub fn is_shared_borrow(&self) -> bool {
         self.is_borrow() && !self.is_exclusive_borrow()
-    }
-
-    pub fn is_slice_ref(&self) -> bool {
-        match self.parsed {
-            Type::Reference(ref tref) => matches!(*tref.elem, Type::Slice(_)),
-            _ => false,
-        }
-    }
-
-    pub fn is_array_ref(&self) -> bool {
-        match self.parsed {
-            Type::Reference(ref tref) => matches!(*tref.elem, Type::Array(_)),
-            _ => false,
-        }
-    }
-
-    pub fn is_slice_or_array_ref(&self) -> bool {
-        self.is_slice_ref() || self.is_array_ref()
-    }
-
-    pub fn is_slice_or_array(&self) -> bool {
-        matches!(self.parsed, Type::Slice(..) | Type::Array(_))
     }
 }
 
@@ -475,21 +452,6 @@ pub fn type_of_array_ref(ty: &Type) -> Option<&Type> {
     }
 }
 
-pub fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
-    match t {
-        Type::Path(p) => path_get_1_segment(&p.path)
-            .and_then(|s| segment_get_1_bracket_argument(s))
-            .and_then(|args| match args {
-                GenericArgument::Type(t) => Some(t),
-                _ => None,
-            }),
-        Type::Reference(reference) => type_try_arraylike_element(&reference.elem),
-        Type::Slice(slice) => Some(&slice.elem),
-        Type::Array(arr) => Some(&arr.elem),
-        _ => None,
-    }
-}
-
 pub fn type_strip_refs(t: &Type) -> &Type {
     match t {
         Type::Reference(refty) => type_strip_refs(&refty.elem),
@@ -532,15 +494,6 @@ pub fn expr_is_stderr(expr: &Expr) -> bool {
 
 pub fn expr_is_stdin(expr: &Expr) -> bool {
     tenjin::expr_is_ident(expr, "stdin") || tenjin::expr_is_ident(expr, "__stdinp")
-}
-
-pub fn expr_is_lit_char(expr: &Expr) -> bool {
-    if let Expr::Lit(ref lit) = *expr {
-        if let syn::Lit::Char(_) = lit.lit {
-            return true;
-        }
-    }
-    false
 }
 
 pub fn expr_is_lit_str_or_bytes(mut expr: &Expr) -> bool {
@@ -670,37 +623,6 @@ pub fn expr_is_call_of_ctime_with_raw_addr(expr: &Expr) -> Option<Box<Expr>> {
         }
     }
     None
-}
-
-fn to_char_lossy(expr: Box<Expr>) -> Box<Expr> {
-    // Converts an expression of integral type to char, using lossy conversion.
-    // This is appropriate for calls to tolower() and similar functions,
-    // which in C accept an int argument that must either be EOF or
-    // representable as an unsigned char.
-    let u8_ty = mk().path_ty(vec!["u8"]);
-    let char_ty = mk().path_ty(vec!["char"]);
-    mk().cast_expr(mk().cast_expr(expr, u8_ty), char_ty)
-}
-
-pub fn cast_expr_guided(
-    e: Box<Expr>,
-    t: Box<Type>,
-    guided_type: &Option<tenjin::GuidedType>,
-) -> Box<Expr> {
-    if let Some(guided_type) = guided_type {
-        if type_is_char(&guided_type.parsed) {
-            // If we want a char and have a character literal, we don't need a cast.
-            if tenjin::expr_is_lit_char(&e) {
-                return e;
-            }
-            // Otherwise, we need to get a char either via 'as u8 as char'
-            // or via 'char::from_u32(...).unwrap()'. For now, we'll limit ourselves
-            // to doing the former.
-            return to_char_lossy(e);
-        }
-        return mk().cast_expr(e, Box::new(guided_type.parsed.clone()));
-    }
-    mk().cast_expr(e, t)
 }
 
 /// This is called from a context that looks like *((T*) ...)
@@ -982,35 +904,180 @@ enum SizeofArgSituation {
     Unrecognized,
 }
 
-pub fn is_derived_name(s: &str, possible_instance: &str) -> bool {
-    s == possible_instance || s == trim_unique_suffix(possible_instance)
+fn parse_ffi_in_conversion(v: &serde_json::Value) -> Option<FFIInConversion> {
+    serde_json::from_value(v.clone()).unwrap_or(None)
 }
 
-pub fn trim_unique_suffix(s: &str) -> &str {
-    s.split(TENJIN_UNIQUE_SUFFIX)
-        .next()
-        .unwrap_or_else(|| panic!("Empty name after trimming tenjin suffix: {}", s))
+fn parse_ffi_out_conversion(v: &serde_json::Value) -> Option<FFIOutConversion> {
+    serde_json::from_value(v.clone()).unwrap_or(None)
 }
 
-pub fn builtin_decl_type(translation: &Translation, id: CDeclId) -> Option<GuidedType> {
-    translation
-        .ast_context
-        .get_decl(&id)
-        .and_then(|d| match &d.kind {
-            CDeclKind::Variable { ident, .. } => match ident.as_str() {
-                "_xj_local_errno" => {
-                    Some(GuidedType::from_str("i32").expect("failed to parse 'i32'!?"))
-                }
+pub struct ParsedGuidance {
+    pub _raw: serde_json::Value,
+    /// Rust types of the marker typedefs xj-prepare-guidance declared.
+    pub marker_typedefs: HashMap<String, tenjin::GuidedType>,
+    /// `vars_mut` resolved to declarations, keyed `fn:var` for locals and
+    /// parameters and `var` at file scope.
+    pub vars_mut_resolved: HashMap<String, Mutability>,
+    pub using_crates: HashSet<String>,
+    pub pod_types: HashSet<String>,
+    pub no_math_errno: bool,
+    pub public_api: Option<HashSet<String>>,
+    /// Globals PANGS proved are never written after initialization, keyed
+    /// as `vars_mut_resolved` is.
+    pub semantically_immutable_globals: HashSet<String>,
+    pub ffi_conversions: HashMap<String, FFIConversion>,
+    /// Convert marker typedefs as the C types behind them, for code that must
+    /// keep the C ABI.
+    pub c_abi_markers: Cell<bool>,
+}
 
-                "_xj_errno" => {
-                    Some(GuidedType::from_str("&mut i32").expect("failed to parse '&mut i32'!?"))
-                }
+impl ParsedGuidance {
+    pub fn new(raw: serde_json::Value) -> Self {
+        ParsedGuidance {
+            marker_typedefs: parse_marker_typedefs(&raw),
+            vars_mut_resolved: parse_vars_mut_resolved(&raw),
+            using_crates: crate::guidance_use_crates(&raw),
+            pod_types: parse_string_set(&raw, "pod_types").unwrap_or_default(),
+            no_math_errno: raw
+                .get("no_math_errno")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            public_api: parse_string_set(&raw, "public_api"),
+            semantically_immutable_globals: parse_string_set(
+                &raw,
+                "semantically_immutable_globals",
+            )
+            .unwrap_or_default(),
+            ffi_conversions: parse_ffi_conversions(&raw),
+            c_abi_markers: Cell::new(false),
+            _raw: raw,
+        }
+    }
 
-                _ => None,
-            },
+    pub fn query_ffi_in_conversion(&self, fn_name: &str, arg_name: &str) -> FFIInConversion {
+        self.ffi_conversions
+            .get(fn_name)
+            .and_then(|it| it.ins.get(arg_name))
+            .unwrap_or(&FFIInConversion::Id)
+            .clone()
+    }
 
-            _ => None,
+    pub fn query_ffi_out_conversion(&self, fn_name: &str) -> FFIOutConversion {
+        self.ffi_conversions
+            .get(fn_name)
+            .and_then(|it| it.out.as_ref())
+            .unwrap_or(&FFIOutConversion::Id)
+            .clone()
+    }
+
+    /// Mutability guidance for variable `name`, declared in function `parent`
+    /// or at file scope.
+    pub fn query_var_mut(&self, parent: Option<&str>, name: &str) -> Option<Mutability> {
+        self.vars_mut_resolved
+            .get(&guidance_key(parent, name))
+            .copied()
+    }
+
+    /// Whether PANGS proved variable `name`, declared in function `parent` or
+    /// at file scope, immutable.
+    pub fn is_semantically_immutable(&self, parent: Option<&str>, name: &str) -> bool {
+        self.semantically_immutable_globals
+            .contains(&guidance_key(parent, name))
+    }
+}
+
+/// How guidance names a variable: `fn:var` in a function, `var` at file scope.
+fn guidance_key(parent: Option<&str>, name: &str) -> String {
+    match parent {
+        Some(parent) => format!("{parent}:{name}"),
+        None => name.to_string(),
+    }
+}
+
+fn parse_marker_typedefs(raw: &serde_json::Value) -> HashMap<String, tenjin::GuidedType> {
+    let mut typedefs = HashMap::new();
+    let Some(entries) = raw.get("marker_typedefs").and_then(|v| v.as_object()) else {
+        return typedefs;
+    };
+    for (name, ty) in entries {
+        match ty.as_str().map(str::parse::<tenjin::GuidedType>) {
+            Some(Ok(g)) => {
+                typedefs.insert(name.clone(), g);
+            }
+            _ => log::error!("Tenjin marker typedef {name} has invalid type {ty}"),
+        }
+    }
+    typedefs
+}
+
+fn parse_vars_mut_resolved(raw: &serde_json::Value) -> HashMap<String, Mutability> {
+    let Some(entries) = raw.get("vars_mut_resolved").and_then(|v| v.as_object()) else {
+        return HashMap::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(key, is_mut)| {
+            let mutbl = if is_mut.as_bool()? {
+                Mutability::Mutable
+            } else {
+                Mutability::Immutable
+            };
+            Some((key.clone(), mutbl))
         })
+        .collect()
+}
+
+fn parse_string_set(raw: &serde_json::Value, key: &str) -> Option<HashSet<String>> {
+    let values = raw.get(key)?.as_array()?;
+    Some(
+        values
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+    )
+}
+
+fn parse_ffi_conversions(raw: &serde_json::Value) -> HashMap<String, FFIConversion> {
+    let mut ffi_conversions = HashMap::new();
+    let Some(strategies) = raw.get("ffi").and_then(|it| it.as_object()) else {
+        return ffi_conversions;
+    };
+    for (func, conv) in strategies {
+        let mut ffi_in_conversions = HashMap::new();
+        let mut ffi_out_conversion = None;
+        for (arg, strategy) in conv.as_object().unwrap_or(&Map::new()) {
+            if arg == "$return" {
+                ffi_out_conversion = parse_ffi_out_conversion(strategy);
+                if ffi_out_conversion.is_none() {
+                    log::error!(
+                        "Tenjin `ffi` guidance for return value of {} is invalid: {}",
+                        func,
+                        strategy
+                    );
+                }
+            } else if let Some(strategy) = parse_ffi_in_conversion(strategy) {
+                ffi_in_conversions.insert(arg.clone(), strategy);
+            } else {
+                log::error!(
+                    "Tenjin `ffi` guidance for function {} argument {} is invalid: {}",
+                    func,
+                    arg,
+                    strategy
+                );
+            }
+        }
+        if !ffi_in_conversions.is_empty() || ffi_out_conversion.is_some() {
+            ffi_conversions.insert(
+                func.clone(),
+                FFIConversion {
+                    ins: ffi_in_conversions,
+                    out: ffi_out_conversion,
+                },
+            );
+        }
+    }
+    ffi_conversions
 }
 
 impl Translation<'_> {
@@ -1058,7 +1125,7 @@ impl Translation<'_> {
     }
 
     fn c_type_pointee(&self, typ: CTypeId) -> Option<CTypeId> {
-        if let CTypeKind::Pointer(pointee) = self.ast_context[typ].kind {
+        if let CTypeKind::Pointer(pointee) = self.ast_context.resolve_type(typ).kind {
             Some(pointee.ctype)
         } else {
             None
@@ -1114,6 +1181,12 @@ impl Translation<'_> {
         SizeofArgSituation::Unrecognized
     }
 
+    /// A `Vec<u8>` (or a reference to one) behind any identity marker.
+    fn is_guided_byte_vec(&self, carg: CExprId) -> bool {
+        self.xj_type_of_expr(self.strip_identity_markers(carg))
+            .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
+    }
+
     #[allow(clippy::vec_box)]
     fn call_form_cases(
         &self,
@@ -1138,17 +1211,13 @@ impl Translation<'_> {
             && ctx.is_unused()
             && args.len() >= 3
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[2]))
-            && self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, cargs[0])
-                .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
+            && self.is_guided_byte_vec(cargs[0])
         {
             // XREF:sprint_into_mutref_vec_u8
             return RecognizedCallForm::PrintfS {
                 fmt_string_idx: 2,
                 opt_size: Some(expr_in_usize(args[1].clone())),
-                dest: Box::new(tenjin::expr_strip_casts(&args[0]).clone()),
+                dest: self.strip_identity_markers(cargs[0]),
             };
         }
 
@@ -1156,17 +1225,13 @@ impl Translation<'_> {
             && ctx.is_unused()
             && args.len() >= 2
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
-            && self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, cargs[0])
-                .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
+            && self.is_guided_byte_vec(cargs[0])
         {
             // XREF:sprint_into_mutref_vec_u8
             return RecognizedCallForm::PrintfS {
                 fmt_string_idx: 1,
                 opt_size: None,
-                dest: Box::new(tenjin::expr_strip_casts(&args[0]).clone()),
+                dest: self.strip_identity_markers(cargs[0]),
             };
         }
 
@@ -1218,7 +1283,6 @@ impl Translation<'_> {
                 call_expr_ty,
                 override_ty.unwrap_or(call_expr_ty),
                 WithStmts::new_val(call_expr),
-                &None,
             )
         };
         match self.call_form_cases(&func, &args, cargs, ctx) {
@@ -1293,6 +1357,7 @@ impl Translation<'_> {
                     None,
                     fmt_string_span,
                 ));
+                let dest = self.convert_expr(ctx.used(), dest, None)?.to_expr();
                 let size_expr = if let Some(size_expr) = opt_size {
                     mk().call_expr(mk().path_expr(vec!["Some"]), vec![size_expr])
                 } else {
@@ -1330,6 +1395,9 @@ impl Translation<'_> {
         func: &Box<Expr>,
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        // Recognizers inspect the values the program passes, not the markers
+        // that fit them to C parameter types.
+        let cargs = &self.strip_identity_markers_all(cargs);
         if let Some(path) = tenjin::expr_get_path(func) {
             match () {
                 _ if tenjin::is_path_exactly_1(path, "exit") => {
@@ -1849,28 +1917,24 @@ impl Translation<'_> {
                 return Ok(None);
             }
 
-            if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
-                if self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, var_cdecl_id)
-                    .is_some_and(|g| type_is_string(&g.parsed))
-                {
-                    let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
-                        self,
-                        "%s".to_string(),
-                        "print",
-                        "println",
-                        &[expr.to_expr()],
-                        &[cargs[0]],
-                        None,
-                        None,
-                        self.ast_context
-                            .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
-                    ));
-                    return Ok(Some(WithStmts::new_val(print_call)));
-                }
+            if self
+                .xj_type_of_expr(cargs[0])
+                .is_some_and(|g| type_is_string(&g.parsed))
+            {
+                let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
+                    self,
+                    "%s".to_string(),
+                    "print",
+                    "println",
+                    &[expr.to_expr()],
+                    &[cargs[0]],
+                    None,
+                    None,
+                    self.ast_context
+                        .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
+                ));
+                return Ok(Some(WithStmts::new_val(print_call)));
             }
         }
 
@@ -1957,19 +2021,15 @@ impl Translation<'_> {
             //    when FOO is a simple variable with type String
             // should be translated to
             // FOO.len() as size_t
-            if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
-                // XREF:guided_c_strlen
-                if self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, var_cdecl_id)
-                    .is_some_and(|g| type_is_string(&g.parsed))
-                {
-                    let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
-                    let len_call_as_size_t = mk().cast_expr(len_call, mk().path_ty(vec!["size_t"]));
-                    return Ok(Some(WithStmts::new_val(len_call_as_size_t)));
-                }
+            // XREF:guided_c_strlen
+            if self
+                .xj_type_of_expr(cargs[0])
+                .is_some_and(|g| type_is_string(&g.parsed))
+            {
+                let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
+                let len_call_as_size_t = mk().cast_expr(len_call, mk().path_ty(vec!["size_t"]));
+                return Ok(Some(WithStmts::new_val(len_call_as_size_t)));
             }
         }
 
@@ -1989,38 +2049,29 @@ impl Translation<'_> {
             //    and BAR is a simple variable with type String
             // should be translated to
             // strcspn_str(&FOO, &BAR)
-            if let (Some(var_cdecl_id_foo), Some(var_cdecl_id_bar)) = (
-                self.c_expr_get_var_decl_id(cargs[0]),
-                self.c_expr_get_var_decl_id(cargs[1]),
-            ) {
-                // XREF:guided_strcspn
-                if self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, var_cdecl_id_foo)
+            // XREF:guided_strcspn
+            if self
+                .xj_type_of_expr(cargs[0])
+                .is_some_and(|g| type_is_string(&g.parsed))
+                && self
+                    .xj_type_of_expr(cargs[1])
                     .is_some_and(|g| type_is_string(&g.parsed))
-                    && self
-                        .parsed_guidance
-                        .borrow_mut()
-                        .query_decl_type(self, var_cdecl_id_bar)
-                        .is_some_and(|g| type_is_string(&g.parsed))
-                {
-                    self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once("fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
-                );
-            });
+            {
+                self.with_cur_file_item_store(|item_store| {
+                item_store.add_item_str_once("fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
+            );
+        });
 
-                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    let expr_bar = self.convert_expr(ctx.used(), cargs[1], None)?;
-                    let strcspn_call = mk().call_expr(
-                        mk().path_expr(vec!["strcspn_str"]),
-                        vec![
-                            mk().borrow_expr(expr_foo.to_expr()),
-                            mk().borrow_expr(expr_bar.to_expr()),
-                        ],
-                    );
-                    return Ok(Some(WithStmts::new_val(strcspn_call)));
-                }
+                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let expr_bar = self.convert_expr(ctx.used(), cargs[1], None)?;
+                let strcspn_call = mk().call_expr(
+                    mk().path_expr(vec!["strcspn_str"]),
+                    vec![
+                        mk().borrow_expr(expr_foo.to_expr()),
+                        mk().borrow_expr(expr_bar.to_expr()),
+                    ],
+                );
+                return Ok(Some(WithStmts::new_val(strcspn_call)));
             }
         }
 
@@ -2036,29 +2087,24 @@ impl Translation<'_> {
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if cargs.len() == 1 {
-            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
-                // XREF:guided_isalnum
-                if self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, var_cdecl_id_foo)
-                    .is_some_and(|g| type_is_char(&g.parsed))
-                {
-                    let rust_helper_name = format!("{}_char_i", c_fn_name);
-                    self.with_cur_file_item_store(|item_store| {
-                        item_store.add_item_str_once(&format!(
-                            "fn {}(xjc: char) -> core::ffi::c_int {{ ({}) as core::ffi::c_int }}",
-                            rust_helper_name, rust_char_impl
-                        ));
-                    });
+            // XREF:guided_isalnum
+            if self
+                .xj_type_of_expr(cargs[0])
+                .is_some_and(|g| type_is_char(&g.parsed))
+            {
+                let rust_helper_name = format!("{}_char_i", c_fn_name);
+                self.with_cur_file_item_store(|item_store| {
+                    item_store.add_item_str_once(&format!(
+                        "fn {}(xjc: char) -> core::ffi::c_int {{ ({}) as core::ffi::c_int }}",
+                        rust_helper_name, rust_char_impl
+                    ));
+                });
 
-                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    let bare_foo: Box<Expr> =
-                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
-                    let call =
-                        mk().call_expr(mk().path_expr(vec![&rust_helper_name]), vec![bare_foo]);
-                    return Ok(Some(WithStmts::new_val(call)));
-                }
+                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let bare_foo: Box<Expr> =
+                    Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
+                let call = mk().call_expr(mk().path_expr(vec![&rust_helper_name]), vec![bare_foo]);
+                return Ok(Some(WithStmts::new_val(call)));
             }
 
             // Fallthrough: no guidance, or expr was not a simple variable.
@@ -2120,31 +2166,27 @@ impl Translation<'_> {
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "tolower") && cargs.len() == 1 {
-            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
-                // XREF:guided_tolower
-                if self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, var_cdecl_id_foo)
-                    .is_some_and(|g| type_is_char(&g.parsed))
-                {
-                    self.with_cur_file_item_store(|item_store| {
-                    // For now we return an integer code rather than a bool,
-                    // to better match the C function signature.
-                    item_store.add_item_str_once(
-                        "fn tolower_char_i(xjc: char) -> core::ffi::c_int { xjc.to_ascii_lowercase() as core::ffi::c_int }",
-                    );
-                });
+            // XREF:guided_tolower
+            if self
+                .xj_type_of_expr(cargs[0])
+                .is_some_and(|g| type_is_char(&g.parsed))
+            {
+                self.with_cur_file_item_store(|item_store| {
+                // For now we return an integer code rather than a bool,
+                // to better match the C function signature.
+                item_store.add_item_str_once(
+                    "fn tolower_char_i(xjc: char) -> core::ffi::c_int { xjc.to_ascii_lowercase() as core::ffi::c_int }",
+                );
+            });
 
-                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    // Stripping casts is correct because we know the underlying type is char,
-                    // which matches the argument of the function we're redirecting to.
-                    let bare_foo: Box<Expr> =
-                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
-                    let tolower_call =
-                        mk().call_expr(mk().path_expr(vec!["tolower_char_i"]), vec![bare_foo]);
-                    return Ok(Some(WithStmts::new_val(tolower_call)));
-                }
+                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                // Stripping casts is correct because we know the underlying type is char,
+                // which matches the argument of the function we're redirecting to.
+                let bare_foo: Box<Expr> =
+                    Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
+                let tolower_call =
+                    mk().call_expr(mk().path_expr(vec!["tolower_char_i"]), vec![bare_foo]);
+                return Ok(Some(WithStmts::new_val(tolower_call)));
             }
             // Fallthrough: no guidance, or expr was not a simple variable.
 
@@ -2171,30 +2213,26 @@ impl Translation<'_> {
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "toupper") && cargs.len() == 1 {
-            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
-                if self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, var_cdecl_id_foo)
-                    .is_some_and(|g| type_is_char(&g.parsed))
-                {
-                    self.with_cur_file_item_store(|item_store| {
-                    // For now we return an integer code rather than a bool,
-                    // to better match the C function signature.
-                    item_store.add_item_str_once(
-                        "fn toupper_char_i(xjc: char) -> core::ffi::c_int { xjc.to_ascii_uppercase() as core::ffi::c_int }",
-                    );
-                });
+            if self
+                .xj_type_of_expr(cargs[0])
+                .is_some_and(|g| type_is_char(&g.parsed))
+            {
+                self.with_cur_file_item_store(|item_store| {
+                // For now we return an integer code rather than a bool,
+                // to better match the C function signature.
+                item_store.add_item_str_once(
+                    "fn toupper_char_i(xjc: char) -> core::ffi::c_int { xjc.to_ascii_uppercase() as core::ffi::c_int }",
+                );
+            });
 
-                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    // Stripping casts is correct because we know the underlying type is char,
-                    // which matches the argument of the function we're redirecting to.
-                    let bare_foo: Box<Expr> =
-                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
-                    let toupper_call =
-                        mk().call_expr(mk().path_expr(vec!["toupper_char_i"]), vec![bare_foo]);
-                    return Ok(Some(WithStmts::new_val(toupper_call)));
-                }
+                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                // Stripping casts is correct because we know the underlying type is char,
+                // which matches the argument of the function we're redirecting to.
+                let bare_foo: Box<Expr> =
+                    Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
+                let toupper_call =
+                    mk().call_expr(mk().path_expr(vec!["toupper_char_i"]), vec![bare_foo]);
+                return Ok(Some(WithStmts::new_val(toupper_call)));
             }
             // Fallthrough: no guidance, or expr was not a simple variable.
 
@@ -2221,28 +2259,24 @@ impl Translation<'_> {
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "toascii") && cargs.len() == 1 {
-            if let Some(var_cdecl_id_foo) = self.c_expr_get_var_decl_id(cargs[0]) {
-                if self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, var_cdecl_id_foo)
-                    .is_some_and(|g| type_is_char(&g.parsed))
-                {
-                    self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once(
-                        "fn toascii_char_i(xjc: char) -> core::ffi::c_int { char::from_u32((xjc as u32) & 0x7f).unwrap() as core::ffi::c_int }",
-                    );
-                });
+            if self
+                .xj_type_of_expr(cargs[0])
+                .is_some_and(|g| type_is_char(&g.parsed))
+            {
+                self.with_cur_file_item_store(|item_store| {
+                item_store.add_item_str_once(
+                    "fn toascii_char_i(xjc: char) -> core::ffi::c_int { char::from_u32((xjc as u32) & 0x7f).unwrap() as core::ffi::c_int }",
+                );
+            });
 
-                    let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    // Stripping casts is correct because we know the underlying type is char,
-                    // which matches the argument of the function we're redirecting to.
-                    let bare_foo: Box<Expr> =
-                        Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
-                    let toascii_call =
-                        mk().call_expr(mk().path_expr(vec!["toascii_char_i"]), vec![bare_foo]);
-                    return Ok(Some(WithStmts::new_val(toascii_call)));
-                }
+                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                // Stripping casts is correct because we know the underlying type is char,
+                // which matches the argument of the function we're redirecting to.
+                let bare_foo: Box<Expr> =
+                    Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
+                let toascii_call =
+                    mk().call_expr(mk().path_expr(vec!["toascii_char_i"]), vec![bare_foo]);
+                return Ok(Some(WithStmts::new_val(toascii_call)));
             }
             // Fallthrough: no guidance, or expr was not a simple variable.
 
@@ -2363,12 +2397,12 @@ impl Translation<'_> {
         let lhs = if lhs_rank == common_rank {
             self.convert_expr(ctx.used(), cargs[0], None)?
         } else {
-            self.convert_expr_with_cast(ctx.used(), common_type, cargs[0], &None)?
+            self.convert_expr_with_cast(ctx.used(), common_type, cargs[0])?
         };
         let rhs = if rhs_rank == common_rank {
             self.convert_expr(ctx.used(), cargs[1], None)?
         } else {
-            self.convert_expr_with_cast(ctx.used(), common_type, cargs[1], &None)?
+            self.convert_expr_with_cast(ctx.used(), common_type, cargs[1])?
         };
 
         let lhs_name = self
@@ -2489,42 +2523,38 @@ impl Translation<'_> {
             }
 
             // XREF:TENJIN-GUIDANCE-STRAWMAN
-            if let Some(var_cdecl_id) = self.c_expr_get_var_decl_id(cargs[0]) {
-                if self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, var_cdecl_id)
-                    .is_some_and(|g| type_is_string(&g.parsed))
-                {
-                    self.with_cur_file_item_store(|item_store| {
-                        item_store.add_use(true, vec!["std".into(), "io".into()], "Read");
-                        item_store.add_use(true, vec!["std".into(), "io".into()], "BufRead");
-                        item_store.add_item_str_once(
-                            "fn fgets_stdin_bool(buf: &mut String, limit: u64) -> bool {
-                            let handle = ::std::io::stdin().lock();
-                            let res = handle.take(limit - 1).read_line(buf);
-                            res.is_ok() && res.unwrap() > 0
-                        }",
-                        );
-                    });
-
-                    let buf = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    let lim = self.convert_expr(ctx.used(), cargs[1], None)?;
-                    let fgets_stdin_bool_call = mk().call_expr(
-                        mk().path_expr(vec!["fgets_stdin_bool"]),
-                        vec![
-                            mk().mutbl().borrow_expr(buf.to_expr()),
-                            tenjin::expr_in_u64(lim.to_expr()),
-                        ],
+            if self
+                .xj_type_of_expr(cargs[0])
+                .is_some_and(|g| type_is_string(&g.parsed))
+            {
+                self.with_cur_file_item_store(|item_store| {
+                    item_store.add_use(true, vec!["std".into(), "io".into()], "Read");
+                    item_store.add_use(true, vec!["std".into(), "io".into()], "BufRead");
+                    item_store.add_item_str_once(
+                        "fn fgets_stdin_bool(buf: &mut String, limit: u64) -> bool {
+                        let handle = ::std::io::stdin().lock();
+                        let res = handle.take(limit - 1).read_line(buf);
+                        res.is_ok() && res.unwrap() > 0
+                    }",
                     );
+                });
 
-                    self.type_overrides.borrow_mut().insert(
-                        call_type_id,
-                        GuidedType::from_str("bool").expect("failed to parse 'bool'!?"),
-                    );
+                let buf = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let lim = self.convert_expr(ctx.used(), cargs[1], None)?;
+                let fgets_stdin_bool_call = mk().call_expr(
+                    mk().path_expr(vec!["fgets_stdin_bool"]),
+                    vec![
+                        mk().mutbl().borrow_expr(buf.to_expr()),
+                        tenjin::expr_in_u64(lim.to_expr()),
+                    ],
+                );
 
-                    return Ok(Some(WithStmts::new_val(fgets_stdin_bool_call)));
-                }
+                self.type_overrides.borrow_mut().insert(
+                    call_type_id,
+                    GuidedType::from_str("bool").expect("failed to parse 'bool'!?"),
+                );
+
+                return Ok(Some(WithStmts::new_val(fgets_stdin_bool_call)));
             }
         }
         Ok(None)
@@ -2552,10 +2582,7 @@ impl Translation<'_> {
             let arg0_sans_casts = self.c_strip_implicit_casts(cargs[0]);
 
             // XREF:guided_vec_memset_zero_mulsizeof
-            let mb_dst_guided_type = self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, arg0_sans_casts);
+            let mb_dst_guided_type = self.xj_type_of_expr(arg0_sans_casts);
             if let Some(dst_guided_type) = mb_dst_guided_type {
                 if !type_is_vec(dst_guided_type.strip_refs()) {
                     return Ok(None);
@@ -2812,233 +2839,76 @@ impl Translation<'_> {
         Ok(None)
     }
 
-    pub fn coerce_borrow_guided(
-        &self,
-        expr: Box<Expr>,
-        cexpr: CExprId,
-        guided_type: &Option<tenjin::GuidedType>,
-    ) -> Box<Expr> {
-        if let Some(target_guided_type) = guided_type {
-            // XREF:guided_arg_coerce_borrow
-            if let Some(ref expr_guided_type) = self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, cexpr)
-            {
-                if target_guided_type.is_shared_borrow() && !expr_guided_type.is_borrow() {
-                    return mk().borrow_expr(expr);
-                }
-
-                if target_guided_type.is_exclusive_borrow() && !expr_guided_type.is_borrow() {
-                    return mk().mutbl().borrow_expr(expr);
-                }
-            } else if tenjin::expr_is_borrow(&expr) {
-                // Expr is already a borrow, but we have guidance that the target is a borrow,
-                // so we assume it's the right kind of borrow and do nothing.
-            } else if let syn::Expr::RawAddr(syn::ExprRawAddr {
-                attrs: _,
-                and_token: _,
-                raw: _,
-                mutability: _,
-                expr: inner,
-            }) = *expr
-            {
-                // Expr is a raw borrow, but we have guidance that the target is a (non-raw) borrow,
-                // so we coerce the raw pointer to a non-raw borrow.
-                let borrow_expr = if target_guided_type.is_shared_borrow() {
-                    mk().borrow_expr(inner)
-                } else {
-                    mk().mutbl().borrow_expr(inner)
-                };
-                return borrow_expr;
-            } else {
-                // Have target guided type, but no expr guided type.
-                // If target is a borrow, we assume expr was a pointer.
-                if target_guided_type.is_shared_borrow()
-                    && !tenjin::type_is_str_ref(&target_guided_type.parsed)
-                {
-                    // XREF:unguided_arg_coerce_asref
-                    // Coerce to `.as_ref().unwrap()`
-                    let opt = mk().method_call_expr(expr, "as_ref", Vec::<Box<Expr>>::new());
-                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
-                } else if target_guided_type.is_exclusive_borrow() {
-                    // Coerce to `.as_mut().unwrap()`
-                    let opt = mk().method_call_expr(expr, "as_mut", Vec::<Box<Expr>>::new());
-                    return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
-                }
-            }
+    /// Convert a C string literal to a Rust expression of type `String`
+    pub fn convert_literal_to_rust_string(&self, val: &[u8], width: u8) -> Box<Expr> {
+        if val.is_empty() {
+            // XREF:guided_string_empty
+            return mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]);
         }
-        expr
-    }
-
-    pub fn get_callee_function_arg_guidances(
-        &self,
-        func_id: CExprId,
-    ) -> Option<Vec<Option<tenjin::GuidedType>>> {
-        match self.ast_context.index_unwrap_parens(func_id).kind {
-            CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _) => {
-                match self.ast_context.index_unwrap_parens(fexp).kind {
-                    CExprKind::DeclRef(_qtyid, fndeclid, _lrvalue) => {
-                        match &self.ast_context[fndeclid].kind {
-                            CDeclKind::Function { parameters, .. } => Some(
-                                parameters
-                                    .iter()
-                                    .map(|param| {
-                                        self.parsed_guidance
-                                            .borrow_mut()
-                                            .query_decl_type(self, *param)
-                                    })
-                                    .collect(),
-                            ),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
+        if let Some(s) = self.convert_literal_to_rust_str(val, width) {
+            mk().call_expr(mk().path_expr(vec!["String", "from"]), vec![s])
+        } else {
+            log::warn!("TENJIN failed to losslessly convert C string literal to Rust str");
+            mk().call_expr(
+                mk().path_expr(vec!["String", "new"]),
+                vec![mk().lit_expr(String::from_utf8_lossy(val).as_ref())],
+            )
         }
     }
 
-    /// Attempt to compute the post-translation type of `expr`, taking into
-    /// account guidance
-    pub fn try_compute_guided_type(&self, expr: CExprId) -> Option<Type> {
-        match self
-            .ast_context
-            .index_unwrap_parens(self.c_strip_noop_casts(expr))
+    /// Convert a C string literal to a Rust expression of type `&str`
+    pub fn convert_literal_to_rust_str(&self, val: &[u8], _width: u8) -> Option<Box<Expr>> {
+        if let Ok(s) = std::str::from_utf8(val) {
+            return Some(mk().lit_expr(s));
+        }
+        None
+    }
+
+    /// A pointer offset as `isize`: cast with `as`, which later passes drop
+    /// where it is trivial, rather than written as a suffixed literal. An
+    /// enum is a newtype, so it takes C's conversion to get its integer out.
+    pub fn convert_expr_as_offset(
+        &self,
+        ctx: ExprContext,
+        target: CQualTypeId,
+        expr: CExprId,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let is_enum = self.ast_context[expr]
             .kind
-        {
-            CExprKind::DeclRef(_, decl_id, _) => {
-                self.ast_context
-                    .get_decl(&decl_id)
-                    .and_then(|decl| match decl.kind {
-                        CDeclKind::Variable { .. } => self
-                            .parsed_guidance
-                            .borrow_mut()
-                            .query_decl_type(self, decl_id)
-                            .map(|gt| gt.parsed),
-                        _ => None,
-                    })
-            }
-
-            CExprKind::ArraySubscript(_, subexpr, _index, _lrvalue) => self
-                .try_compute_guided_type(subexpr)
-                .as_ref()
-                .and_then(|ty| type_try_arraylike_element(ty))
-                .cloned(),
-
-            _ => None,
+            .get_qual_type()
+            .is_some_and(|t| {
+                matches!(
+                    self.ast_context.resolve_type(t.ctype).kind,
+                    CTypeKind::Enum(_)
+                )
+            });
+        if is_enum {
+            return self.convert_expr_with_cast(ctx, target, expr);
         }
+        Ok(self
+            .convert_expr(ctx, expr, None)?
+            .map(|offset| cast_int(offset, "isize", false)))
     }
 
-    /// return `true` if guidance indicates the type of `c_ptr` is subscriptable
-    pub fn can_subscript(&self, c_ptr: CExprId) -> bool {
-        self.try_compute_guided_type(c_ptr)
-            .as_ref()
-            .and_then(|ty| type_try_arraylike_element(ty))
-            .is_some()
-    }
-
-    pub fn wrapped_with_array_decay(&self, mut cexpr: CExprId) -> bool {
-        while let Some(parent_id) = self.parent_expr_map.get(&cexpr) {
-            match self.ast_context[*parent_id].kind {
-                CExprKind::ImplicitCast(_, _, CastKind::ArrayToPointerDecay, _, _)
-                | CExprKind::ExplicitCast(_, _, CastKind::ArrayToPointerDecay, _, _) => {
-                    return true
-                }
-                CExprKind::ImplicitCast(_, _, _, _, _)
-                | CExprKind::Paren(_, _)
-                | CExprKind::ExplicitCast(_, _, _, _, _) => {
-                    cexpr = *parent_id;
-                }
-                _ => return false,
-            }
-        }
-        false
-    }
-
-    /// Return `true` if `cexpr` (modulo enclosing casts/parens) is the base
-    /// operand of an array-subscript expression (`base[index]`), as opposed to
-    /// the index operand or some other position. Used to suppress the
-    /// slice-to-pointer (`as_ptr()`) decay on a guided-slice variable when it is
-    /// about to be subscripted: the subscript lowering indexes the slice
-    /// directly (`s[i]`) rather than the decayed pointer (`s.as_ptr()[i]`, which
-    /// does not compile).
-    pub fn wrapped_with_subscript_base(&self, mut cexpr: CExprId) -> bool {
-        while let Some(parent_id) = self.parent_expr_map.get(&cexpr) {
-            match self.ast_context[*parent_id].kind {
-                CExprKind::ArraySubscript(_, base, _index, _) => {
-                    return base == cexpr;
-                }
-                CExprKind::ImplicitCast(_, _, _, _, _)
-                | CExprKind::Paren(_, _)
-                | CExprKind::ExplicitCast(_, _, _, _, _) => {
-                    cexpr = *parent_id;
-                }
-                _ => return false,
-            }
-        }
-        false
-    }
-
-    /// Assuming we have (e1 `op` e2) whose result type
-    /// has the guided type G, try to deduce the guided type
-    /// context for e1 and e2
-    ///
-    /// Ex. if we have
-    ///   let x = p + i
-    /// where
-    ///   x has guided type &[u8]
-    ///   p has a pointer type
-    ///   i has an integral type
-    /// then
-    ///   the guided type for p should also be &[u8]
-    ///   we have no guidance for i
-    ///
-    /// `lhs_type` (resp `rhs_type`) is the type of the lhs (rhs) operand
-    /// returns the (lhs, rhs) guidance for the lhs and rhs expressions
-    pub fn context_guidance_of_binary_op(
+    /// A C function's return type as a Rust one; `void` is omitted.
+    fn convert_return_type(
         &self,
-        op: CBinOp,
-        lhs_type: &CTypeKind,
-        rhs_type: &CTypeKind,
-        ctx_guided_type: &Option<GuidedType>,
-    ) -> (Option<GuidedType>, Option<GuidedType>) {
-        let Some(t) = ctx_guided_type else {
-            return (None, None);
+        return_type: Option<CQualTypeId>,
+    ) -> TranslationResult<ReturnType> {
+        let ret = match return_type {
+            Some(return_type) => self.convert_type(return_type.ctype)?,
+            None => mk().never_ty(),
         };
+        let is_void_ret = return_type
+            .map(|qty| self.ast_context[qty.ctype].kind == CTypeKind::Void)
+            .unwrap_or(false);
 
-        if t.is_slice_or_array_ref() && op.is_pointer_arithmetic() {
-            return (
-                lhs_type.is_pointer().then(|| t.clone()),
-                rhs_type.is_pointer().then(|| t.clone()),
-            );
-        }
-
-        (None, None)
-    }
-
-    pub fn try_guided_type_repair(&self, e: Box<Expr>, g: &Option<GuidedType>) -> Box<Expr> {
-        let Some(context_guided_type) = g else {
-            return e;
-        };
-        match &*e {
-            Expr::Reference(r) => {
-                if context_guided_type.is_exclusive_borrow() && r.mutability.is_none() {
-                    Box::new(Expr::Reference(syn::ExprReference {
-                        mutability: Some(Default::default()),
-                        ..r.clone()
-                    }))
-                } else if context_guided_type.is_shared_borrow() && r.mutability.is_some() {
-                    Box::new(Expr::Reference(syn::ExprReference {
-                        mutability: None,
-                        ..r.clone()
-                    }))
-                } else {
-                    e
-                }
-            }
-            _ => e,
+        // If a return type is void, we should instead omit the unit type return,
+        // -> (), to be more idiomatic
+        if is_void_ret {
+            Ok(ReturnType::Default)
+        } else {
+            Ok(ReturnType::Type(Default::default(), ret))
         }
     }
 
@@ -3056,7 +2926,7 @@ impl Translation<'_> {
         let mut ffi_wrapper_call_args: Vec<WithStmts<Box<Expr>>> = vec![];
 
         for &(_, ref var, typ) in arguments.iter() {
-            let original_type = self.convert_type(typ.ctype)?;
+            let original_type = self.without_markers(|| self.convert_type(typ.ctype))?;
             let strategy = self
                 .parsed_guidance
                 .borrow()
@@ -3074,7 +2944,7 @@ impl Translation<'_> {
                 mk().path_expr(vec![&ffi_wrapper_arg_name]),
             ));
         }
-        let ffi_wrapper_ret = self.convert_return_type(return_type)?;
+        let ffi_wrapper_ret = self.without_markers(|| self.convert_return_type(return_type))?;
 
         let wrapper_decl = mk().fn_decl(new_name, ffi_wrapper_args, None, ffi_wrapper_ret);
         let wrappers: WithStmts<Vec<Box<Expr>>> = WithStmts::from_iter(ffi_wrapper_call_args);

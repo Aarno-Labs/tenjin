@@ -33,7 +33,11 @@ import pangs_source
 import targets_from_intercept
 from targets import BuildInfo, TargetType
 from caching_file_contents import CachingFileContents
-from constants import XJ_GUIDANCE_FILENAME, PTR_INDEX_METADATA_FILENAME
+from constants import (
+    XJ_GUIDANCE_FILENAME,
+    XJ_GUIDANCE_HEADER_FILENAME,
+    PTR_INDEX_METADATA_FILENAME,
+)
 from tenj_types import FileContentsStr, FilePathStr, RelativeFilePathStr
 import tenj_types
 from translation_types import TranslationFlags
@@ -2366,6 +2370,80 @@ def run_preparation_passes(
         print(cp.stderr.decode("utf-8"))
         return cp
 
+    def guidance_has_work(guidance_path: Path, source_files: list[str]) -> bool:
+        """Type guidance, mutability guidance, or errno-localization variables,
+        which carry built-in guidance."""
+        guidance = json.loads(guidance_path.read_text(encoding="utf-8"))
+        if any(guidance.get(key) for key in ("vars_of_type", "fn_return_type", "vars_mut")):
+            return True
+
+        def mentions_errno_locals(path: str) -> bool:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+            return "_xj_errno" in text or "_xj_local_errno" in text
+
+        return any(mentions_errno_locals(f) for f in source_files)
+
+    def prep_guidance_markers(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        """Apply type guidance in the C: marker typedefs and marker functions."""
+        builddir = hermetic.xj_prepare_guidance_build_dir(repo_root.localdir())
+        assert builddir.exists(), (
+            f"Build directory {builddir} does not exist, should have been built already"
+        )
+
+        # Keep in sync with `xj-prepare-guidance/CMakeLists.txt`.
+        binary_path = builddir / "xj-prepare-guidance"
+
+        compdb_path = current_codebase / "compile_commands.json"
+        store.build_info.compdb_for_all_targets_within(current_codebase).to_json_file(compdb_path)
+        with open(compdb_path, encoding="utf-8") as f:
+            compdb_entries = json.load(f)
+        source_files = [entry["file"] for entry in compdb_entries]
+        guidance_path = current_codebase / XJ_GUIDANCE_FILENAME
+        if not source_files or not guidance_has_work(guidance_path, source_files):
+            return None
+
+        xj_clang_resource_dir = (
+            hermetic.run(["clang", "-print-resource-dir"], capture_output=True, check=True)
+            .stdout.decode()
+            .strip()
+        )
+        xj_start = time.time()
+        cp = run_modifying_subprocess_or_restore_prev(
+            prev,
+            current_codebase,
+            "xj-prepare-guidance",
+            lambda: hermetic.run(
+                [
+                    binary_path.as_posix(),
+                    "--inplace",
+                    "-p",
+                    current_codebase.as_posix(),
+                    f"--guidance={guidance_path.as_posix()}",
+                    f"--header-out={current_codebase.as_posix()}",
+                    "--extra-arg=-Wno-zero-length-array",
+                    "--extra-arg=-Wno-implicit-int-conversion",
+                    "--extra-arg=-Wno-unused-function",
+                    f"--extra-arg=-resource-dir={xj_clang_resource_dir}",
+                    *source_files,
+                ],
+                cwd=current_codebase,
+                check=True,
+                capture_output=True,
+            ),
+        )
+        xj_elapsed = time.time() - xj_start
+        if cp.returncode == 0:
+            print(f"xj-prepare-guidance completed in {xj_elapsed:.1f} seconds")
+            if (current_codebase / XJ_GUIDANCE_HEADER_FILENAME).exists():
+                store.build_info.add_forced_include(XJ_GUIDANCE_HEADER_FILENAME)
+        else:
+            print(
+                f"xj-prepare-guidance failed in {xj_elapsed:.1f} seconds; restored previous contents"
+            )
+        print("xj-prepare-guidance stderr:")
+        print(cp.stderr.decode("utf-8"))
+        return cp
+
     def prep_pointertransform(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         """Pointer arithmetic reduction + RustSlice signature reshaping."""
         ptr_builddir = hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
@@ -2530,9 +2608,10 @@ def run_preparation_passes(
             ("localize_mutable_globals", prep_localize_mutable_globals),
         ])
 
-    preparation_passes.append(
+    preparation_passes.extend([
         ("prep_un_uniquify_static_inline_fns", prep_un_uniquify_static_inline_fns),
-    )
+        ("guidance_markers", prep_guidance_markers),
+    ])
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") != "0":
         preparation_passes.extend([

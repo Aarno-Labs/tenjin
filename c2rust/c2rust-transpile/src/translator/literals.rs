@@ -74,20 +74,12 @@ impl Translation<'_> {
         ctx: ExprContext,
         ty: CQualTypeId,
         lit: &CLiteral,
-        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         match *lit {
-            CLiteral::Integer(val, _)
-                if guided_type
-                    .as_ref()
-                    .is_some_and(|g| tenjin::type_is_char(&g.parsed)) =>
-            {
-                // XREF:guided_int_as_char
-                self.convert_literal(ctx, ty, &CLiteral::Character(val), guided_type)
-            }
             CLiteral::Integer(val, base) => Ok(WithStmts::new_val(
                 self.mk_int_lit(ctx, ty, val, base, false)?,
             )),
+
             CLiteral::Character(val) => {
                 let val = val as u32;
                 let mut expr = match char::from_u32(val).filter(|_| {
@@ -109,18 +101,7 @@ impl Translation<'_> {
                     }
                 };
 
-                if matches!(
-                    *expr,
-                    Expr::Lit(syn::ExprLit {
-                        lit: Lit::Char(_),
-                        ..
-                    })
-                ) && guided_type
-                    .as_ref()
-                    .is_some_and(|g| tenjin::type_is_char(&g.parsed))
-                {
-                    // skip cast
-                } else if !ctx.is_pattern {
+                if !ctx.is_pattern {
                     let type_rs = self.convert_type(ty.ctype)?;
                     expr = mk().cast_expr(expr, type_rs);
                 }
@@ -164,110 +145,45 @@ impl Translation<'_> {
                         "CLiteral::String is not supported in patterns",
                     ));
                 }
-                self.convert_string_literal(ctx, ty, bytes, element_size, guided_type)
-            }
-        }
-    }
 
-    /// Converts a string literal with guidance
-    pub fn convert_string_literal_guided(
-        &self,
-        bytes: &[u8],
-        element_size: u8,
-        g: &Option<GuidedType>,
-    ) -> Option<Box<Expr>> {
-        if let Some(g) = g.as_ref() {
-            if tenjin::type_is_string(&g.parsed) {
-                // XREF:guided_string_sans_cast
-                return Some(self.convert_literal_to_rust_string(bytes, element_size));
-            }
+                let bytes_padded = self.string_literal_bytes(ty.ctype, bytes, element_size);
+                let len = bytes_padded.len();
+                let val = mk().lit_expr(bytes_padded);
 
-            if tenjin::type_is_str_ref(&g.parsed) {
-                if let Some(s) = self.convert_literal_to_rust_str(bytes, element_size) {
-                    // XREF:guided_str_ref_sans_cast
-                    return Some(s);
+                if ctx.needs_address && element_size == 1 {
+                    // Unlike in C, Rust string literals are already references by default.
+                    // So if the address needs to be taken, just make a bare literal and let
+                    // `convert_address_of_common` cast it to the appropriate type.
+                    // Strings with element_size > 1 cannot be cast from a byte literal for
+                    // alignment reasons, and need a transmute.
+                    Ok(WithStmts::new_val(val))
+                } else {
+                    // std::mem::transmute::<[u8; size], ctype>(*b"xxxx")
+                    let array_ty = mk().array_ty(mk().ident_ty("u8"), mk().lit_expr(len as u128));
+                    let val = transmute_expr(
+                        array_ty,
+                        self.convert_type(ty.ctype)?,
+                        mk().unary_expr(UnOp::Deref(Default::default()), val),
+                    );
+
+                    // A transmute creates a temporary, which cannot have its address taken without
+                    // creating dangling pointers. Wrap it inside an inline `const` block, so that
+                    // it will be const-promoted to 'static.
+                    if ctx.needs_address {
+                        self.use_feature("inline_const");
+                        // An inline `const` block is its own safety context and does not inherit
+                        // the surrounding `unsafe`, so the transmute needs an explicit `unsafe`
+                        // block inside the const block rather than relying on `set_unsafe`.
+                        let unsafe_transmute = mk().unsafe_block_expr(vec![mk().expr_stmt(val)]);
+                        let stmts = vec![mk().expr_stmt(unsafe_transmute)];
+                        let val = mk().const_block_expr(mk().const_block(stmts));
+                        Ok(WithStmts::new_val(val))
+                    } else {
+                        Ok(WithStmts::new_val(val).set_unsafe())
+                    }
                 }
             }
         }
-
-        None
-    }
-
-    /// Convert a C string literal to a Rust expression via casting a byte array
-    pub fn convert_string_literal(
-        &self,
-        ctx: ExprContext,
-        ty: CQualTypeId,
-        bytes: &[u8],
-        element_size: u8,
-        guided_type: &Option<tenjin::GuidedType>,
-    ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        if let Some(e) = self.convert_string_literal_guided(bytes, element_size, guided_type) {
-            return Ok(WithStmts::new_val(e));
-        }
-
-        let bytes_padded = self.string_literal_bytes(ty.ctype, bytes, element_size);
-
-        if ctx.needs_address && element_size == 1 {
-            // Unlike in C, Rust string literals are already references by default.
-            // So if the address needs to be taken, just make a bare literal and let
-            // `convert_address_of_common` cast it to the appropriate type.
-            // Strings with element_size > 1 cannot be cast from a byte literal for
-            // alignment reasons, and need a transmute.
-            Ok(WithStmts::new_val(mk().lit_expr(bytes_padded)))
-        } else {
-            // std::mem::transmute::<[u8; size], ctype>(*b"xxxx")
-            let array_ty = mk().array_ty(
-                mk().ident_ty("u8"),
-                mk().lit_expr(bytes_padded.len() as u128),
-            );
-            let val = transmute_expr(
-                array_ty,
-                self.convert_type(ty.ctype)?,
-                mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(bytes_padded)),
-            );
-
-            // A transmute creates a temporary, which cannot have its address taken without
-            // creating dangling pointers. Wrap it inside an inline `const` block, so that
-            // it will be const-promoted to 'static.
-            if ctx.needs_address {
-                self.use_feature("inline_const");
-                // An inline `const` block is its own safety context and does not inherit
-                // the surrounding `unsafe`, so the transmute needs an explicit `unsafe`
-                // block inside the const block rather than relying on `set_unsafe`.
-                let unsafe_transmute = mk().unsafe_block_expr(vec![mk().expr_stmt(val)]);
-                let stmts = vec![mk().expr_stmt(unsafe_transmute)];
-                let val = mk().const_block_expr(mk().const_block(stmts));
-                Ok(WithStmts::new_val(val))
-            } else {
-                Ok(WithStmts::new_val(val).set_unsafe())
-            }
-        }
-    }
-
-    /// Convert a C string literal to a Rust expression of type `String`
-    pub fn convert_literal_to_rust_string(&self, val: &[u8], width: u8) -> Box<Expr> {
-        if val.is_empty() {
-            // XREF:guided_string_empty
-            return mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]);
-        }
-        if let Some(s) = self.convert_literal_to_rust_str(val, width) {
-            mk().call_expr(mk().path_expr(vec!["String", "from"]), vec![s])
-        } else {
-            log::warn!("TENJIN failed to losslessly convert C string literal to Rust str");
-            mk().call_expr(
-                mk().path_expr(vec!["String", "new"]),
-                vec![mk().lit_expr(String::from_utf8_lossy(val).as_ref())],
-            )
-        }
-    }
-
-    /// Convert a C string literal to a Rust expression of type `&str`
-    pub fn convert_literal_to_rust_str(&self, val: &[u8], _width: u8) -> Option<Box<Expr>> {
-        if let Ok(s) = std::str::from_utf8(val) {
-            return Some(mk().lit_expr(s));
-        }
-        None
     }
 
     /// Returns the bytes of a string literal, including any additional zero bytes to pad the
@@ -340,27 +256,16 @@ impl Translation<'_> {
         result_type_id: CQualTypeId,
         ids: &[CExprId],
         opt_union_field_id: Option<CFieldId>,
-        guided_type: &Option<GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let result_type_id = expected_type_id.unwrap_or(result_type_id);
 
         match self.ast_context.resolve_type(result_type_id.ctype).kind {
             CTypeKind::ConstantArray(element_type_id, n) => {
-                let guided_element_type = guided_type
-                    .as_ref()
-                    .and_then(|guided| tenjin::type_try_arraylike_element(&guided.parsed))
-                    .cloned()
-                    .map(GuidedType::from_type);
-
                 // Convert all of the provided initializer values
 
                 let to_array_element = |id: CExprId| -> TranslationResult<_> {
-                    let val = self.convert_expr_guided(
-                        ctx.used(),
-                        id,
-                        Some(CQualTypeId::new(element_type_id)),
-                        &guided_element_type,
-                    )?;
+                    let val =
+                        self.convert_init(ctx.used(), id, Some(CQualTypeId::new(element_type_id)))?;
                     val.try_map(|x| {
                         // Array literals require all of their elements to be
                         // the correct type; they will not use implicit casts to
@@ -418,11 +323,7 @@ impl Translation<'_> {
                         // This was likely a C array of the form `int x[16] = {}`.
                         // We'll emit that as [0; 16].
                         let len = mk().lit_expr(mk().int_unsuffixed_lit(n as u128));
-                        let zeroed = self.implicit_default_expr_guided(
-                            &guided_element_type,
-                            ctx,
-                            element_type_id,
-                        )?;
+                        let zeroed = self.implicit_default_expr(ctx, element_type_id)?;
                         Ok(zeroed.map(|default_value| mk().repeat_expr(default_value, len)))
                     }
                     &[single] if is_string_literal(single) => {
@@ -431,7 +332,7 @@ impl Translation<'_> {
                         // * `ptr_extra_braces`
                         // * `array_of_ptrs`
                         // * `array_of_arrays`
-                        self.convert_expr_guided(ctx.used(), single, expected_type_id, guided_type)
+                        self.convert_expr(ctx.used(), single, expected_type_id)
                     }
                     &[single] if is_zero_literal(single) && n > 1 => {
                         // This was likely a C array of the form `int x[16] = { 0 }`.
@@ -448,11 +349,7 @@ impl Translation<'_> {
                             .chain(
                                 // Pad out the array literal with default values to the desired size
                                 std::iter::repeat_n(
-                                    self.implicit_default_expr_guided(
-                                        &guided_element_type,
-                                        ctx,
-                                        element_type_id,
-                                    ),
+                                    self.implicit_default_expr(ctx, element_type_id),
                                     n - ids.len(),
                                 ),
                             )
@@ -476,9 +373,9 @@ impl Translation<'_> {
             }
             ref kind if kind.is_scalar() => {
                 if let Some(&first) = ids.first() {
-                    self.convert_expr_guided(ctx.used(), first, expected_type_id, guided_type)
+                    self.convert_expr(ctx.used(), first, expected_type_id)
                 } else {
-                    self.implicit_default_expr_guided(guided_type, ctx.used(), result_type_id.ctype)
+                    self.implicit_default_expr(ctx.used(), result_type_id.ctype)
                 }
             }
             ref t => Err(format_err!("Init list not implemented for {:?}", t).into()),

@@ -7,7 +7,7 @@
     unused_assignments,
     unused_mut
 )]
-#![feature(extern_types, raw_ref_op)]
+#![feature(extern_types)]
 use ::std::process::ExitCode;
 #[allow(unused_imports)]
 use ::assign as _;
@@ -97,7 +97,7 @@ unsafe fn main_0(
 ) -> ::core::ffi::c_int {
     let mut _xj_local_errno: i32 = 0;
     foo();
-    _xj_local_errno = 0 as ::core::ffi::c_int;
+    _xj_local_errno = 0 as i32;
     if _xj_local_errno == EINVAL {
         println!("Error: [{:>}]", {
             xj_str_from_ptr(_xj_wrap_strerror(&mut _xj_local_errno, _xj_local_errno)

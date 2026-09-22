@@ -13,7 +13,6 @@ impl Translation<'_> {
         rhs: CExprId,
         compute_lhs_type_id: Option<CQualTypeId>,
         compute_res_type_id: Option<CQualTypeId>,
-        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let expr_type_id = expected_type_id.unwrap_or(result_type_id);
 
@@ -114,19 +113,10 @@ impl Translation<'_> {
                     }
                 }
 
-                let (lhs_guidance, rhs_guidance) = self.context_guidance_of_binary_op(
-                    op,
-                    &lhs_resolved_ty.kind,
-                    &rhs_resolved_ty.kind,
-                    ctx_guided_type,
-                );
-
                 if ctx.is_unused() {
                     Ok(self
-                        .convert_expr_guided(ctx, lhs, Some(lhs_type_id), &lhs_guidance)?
-                        .and_then_try(|_| {
-                            self.convert_expr_guided(ctx, rhs, Some(rhs_type_id), &rhs_guidance)
-                        })?
+                        .convert_expr(ctx, lhs, Some(lhs_type_id))?
+                        .and_then_try(|_| self.convert_expr(ctx, rhs, Some(rhs_type_id)))?
                         .map(|_| self.panic_or_err("Binary expression is not supposed to be used")))
                 } else {
                     let rhs_ctx = ctx;
@@ -148,46 +138,32 @@ impl Translation<'_> {
                         let is_null = op == CBinOp::EqualEqual;
 
                         if self.ast_context.is_null_expr(lhs) {
-                            let val = self.convert_expr_guided(
-                                rhs_ctx,
-                                rhs,
-                                Some(rhs_type_id),
-                                &rhs_guidance,
-                            )?;
+                            let val = self.convert_expr(rhs_ctx, rhs, Some(rhs_type_id))?;
                             let val = val.try_map(|rhs_rs| {
                                 self.convert_pointer_is_null(
                                     ctx,
                                     rhs_type_id.ctype,
                                     rhs_rs,
                                     is_null,
-                                    &None,
                                 )
                             })?;
                             return Ok(val.map(bool_to_int));
                         } else if self.ast_context.is_null_expr(rhs) {
-                            let val = self.convert_expr_guided(
-                                ctx,
-                                lhs,
-                                Some(lhs_type_id),
-                                &lhs_guidance,
-                            )?;
+                            let val = self.convert_expr(ctx, lhs, Some(lhs_type_id))?;
                             let val = val.try_map(|lhs_rs| {
                                 self.convert_pointer_is_null(
                                     ctx,
                                     lhs_type_id.ctype,
                                     lhs_rs,
                                     is_null,
-                                    &None,
                                 )
                             })?;
                             return Ok(val.map(bool_to_int));
                         }
                     }
 
-                    let lhs_val =
-                        self.convert_expr_guided(ctx, lhs, Some(lhs_type_id), &lhs_guidance)?;
-                    let rhs_val =
-                        self.convert_expr_guided(rhs_ctx, rhs, Some(rhs_type_id), &rhs_guidance)?;
+                    let lhs_val = self.convert_expr(ctx, lhs, Some(lhs_type_id))?;
+                    let rhs_val = self.convert_expr(rhs_ctx, rhs, Some(rhs_type_id))?;
 
                     lhs_val.zip(rhs_val).and_then_try(|(lhs_val, rhs_val)| {
                         let lhs_rhs_ids = (Some(lhs), Some(rhs));
@@ -200,7 +176,6 @@ impl Translation<'_> {
                             lhs_val,
                             rhs_val,
                             lhs_rhs_ids,
-                            ctx_guided_type,
                         )
                     })
                 }
@@ -239,15 +214,13 @@ impl Translation<'_> {
             .get_qual_type()
             .ok_or_else(|| format_err!("bad assignment rhs type"))?;
 
-        let lhs_guidance = self.parsed_guidance.borrow_mut().query_expr_type(self, lhs);
         let lhs_kind = &self.ast_context.index_unwrap_parens(lhs).kind;
         let lhs_type_id = lhs_kind
             .get_qual_type()
             .ok_or_else(|| format_err!("bad initial lhs type"))?;
 
         // First, translate the rhs. Then, if it must match the lhs but doesn't, add a cast.
-        let mut rhs_translation =
-            self.convert_expr_guided(ctx.used(), rhs, Some(rhs_type_id), &lhs_guidance)?;
+        let mut rhs_translation = self.convert_expr(ctx.used(), rhs, Some(rhs_type_id))?;
         let lhs_rhs_types_must_match = {
             let lhs_resolved_ty = &self.ast_context.resolve_type(lhs_type_id.ctype);
             let rhs_resolved_ty = &self.ast_context.resolve_type(rhs_type_id.ctype);
@@ -418,7 +391,6 @@ impl Translation<'_> {
                     lhs_type_id,
                     compute_lhs_type_id,
                     WithStmts::new_val(read.clone()),
-                    &None,
                 )?;
 
                 let val = lhs.and_then_try(|lhs| {
@@ -431,11 +403,10 @@ impl Translation<'_> {
                         lhs,
                         rhs,
                         (Some(lhs_id), rhs_id),
-                        &None,
                     )
                 })?;
 
-                let val = self.make_cast(ctx, compute_res_type_id, lhs_type_id, val, &None)?;
+                let val = self.make_cast(ctx, compute_res_type_id, lhs_type_id, val)?;
 
                 if is_volatile {
                     val.try_map(|val| self.volatile_write(write, lhs_type_id, val))?
@@ -462,7 +433,6 @@ impl Translation<'_> {
                 result_type_id,
                 expected_type_id.unwrap_or(result_type_id),
                 WithStmts::new_val(read),
-                &None,
             )?
         } else {
             WithStmts::new_val(self.panic_or_err("assignment result is not supposed to be used"))
@@ -516,7 +486,6 @@ impl Translation<'_> {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
         lhs_rhs_ids: (Option<CExprId>, Option<CExprId>),
-        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let is_unsigned_integral_type = self
             .ast_context
@@ -525,26 +494,9 @@ impl Translation<'_> {
             .is_unsigned_integral_type();
 
         Ok(WithStmts::new_val(match op {
-            CBinOp::Add => {
-                return self.convert_addition(
-                    lhs_type,
-                    rhs_type,
-                    lhs,
-                    rhs,
-                    lhs_rhs_ids,
-                    ctx_guided_type,
-                )
-            }
+            CBinOp::Add => return self.convert_addition(lhs_type, rhs_type, lhs, rhs),
             CBinOp::Subtract => {
-                return self.convert_subtraction(
-                    ctx,
-                    expr_type_id,
-                    lhs_type,
-                    rhs_type,
-                    lhs,
-                    rhs,
-                    lhs_rhs_ids,
-                )
+                return self.convert_subtraction(ctx, expr_type_id, lhs_type, rhs_type, lhs, rhs)
             }
 
             op if op.is_arithmetic() && is_unsigned_integral_type => {
@@ -562,22 +514,14 @@ impl Translation<'_> {
                 };
                 let expr = match lhs_rhs_ids {
                     (Some(lhs_expr_id), _) if self.ast_context.is_null_expr(lhs_expr_id) => {
-                        // TENJIN:TODO: guidance
-                        self.convert_pointer_is_null(ctx, rhs_type.ctype, rhs, is_null, &None)?
+                        self.convert_pointer_is_null(ctx, rhs_type.ctype, rhs, is_null)?
                     }
                     (_, Some(rhs_expr_id)) if self.ast_context.is_null_expr(rhs_expr_id) => {
-                        // TENJIN:TODO: guidance
-                        self.convert_pointer_is_null(ctx, lhs_type.ctype, lhs, is_null, &None)?
+                        self.convert_pointer_is_null(ctx, lhs_type.ctype, lhs, is_null)?
                     }
                     (Some(lhs_expr_id), Some(rhs_expr_id)) => {
-                        let lhs_guided_type = self
-                            .parsed_guidance
-                            .borrow_mut()
-                            .query_expr_type(self, lhs_expr_id);
-                        let rhs_guided_type = self
-                            .parsed_guidance
-                            .borrow_mut()
-                            .query_expr_type(self, rhs_expr_id);
+                        let lhs_guided_type = self.xj_type_of_expr(lhs_expr_id);
+                        let rhs_guided_type = self.xj_type_of_expr(rhs_expr_id);
                         if lhs_guided_type.is_some_and(|g| tenjin::type_is_mut_ref(&g.parsed))
                             || rhs_guided_type.is_some_and(|g| tenjin::type_is_mut_ref(&g.parsed))
                         {
@@ -609,34 +553,14 @@ impl Translation<'_> {
         rhs_type_id: CQualTypeId,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
-        lhs_rhs_ids: (Option<CExprId>, Option<CExprId>),
-        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let c_lhs = lhs_rhs_ids.0;
-
         let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
         let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
 
         if let &CTypeKind::Pointer(pointee) = lhs_type {
-            Ok(self.convert_pointer_offset(
-                c_lhs,
-                lhs,
-                rhs,
-                pointee.ctype,
-                false,
-                false,
-                ctx_guided_type,
-            ))
+            Ok(self.convert_pointer_offset(lhs, rhs, pointee.ctype, false, false))
         } else if let &CTypeKind::Pointer(pointee) = rhs_type {
-            Ok(self.convert_pointer_offset(
-                c_lhs,
-                rhs,
-                lhs,
-                pointee.ctype,
-                false,
-                false,
-                ctx_guided_type,
-            ))
+            Ok(self.convert_pointer_offset(rhs, lhs, pointee.ctype, false, false))
         } else if lhs_type.is_unsigned_integral_type() {
             Ok(WithStmts::new_val(mk().method_call_expr(
                 lhs,
@@ -660,25 +584,16 @@ impl Translation<'_> {
         rhs_type_id: CQualTypeId,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
-        lhs_rhs_ids: (Option<CExprId>, Option<CExprId>),
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let c_lhs = lhs_rhs_ids.0;
-
         let lhs_type = &self.ast_context.resolve_type(lhs_type_id.ctype).kind;
         let rhs_type = &self.ast_context.resolve_type(rhs_type_id.ctype).kind;
 
         if let &CTypeKind::Pointer(pointee) = rhs_type {
             let val = self.make_pointer_difference(lhs, rhs, pointee.ctype);
             let source_type_id = self.ast_context.type_for_kind(&CTypeKind::PtrDiff);
-            self.make_cast(
-                ctx,
-                CQualTypeId::new(source_type_id),
-                expr_type_id,
-                val,
-                &None,
-            )
+            self.make_cast(ctx, CQualTypeId::new(source_type_id), expr_type_id, val)
         } else if let &CTypeKind::Pointer(pointee) = lhs_type {
-            Ok(self.convert_pointer_offset(c_lhs, lhs, rhs, pointee.ctype, true, false, &None))
+            Ok(self.convert_pointer_offset(lhs, rhs, pointee.ctype, true, false))
         } else if lhs_type.is_unsigned_integral_type() {
             Ok(WithStmts::new_val(mk().method_call_expr(
                 lhs,
@@ -701,11 +616,10 @@ impl Translation<'_> {
         result_type_id: CQualTypeId,
         op: CUnOp,
         arg: CExprId,
-        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let expr_type_id = expected_type_id.unwrap_or(result_type_id);
         let mut unary = match op {
-            CUnOp::AddressOf => self.convert_address_of(ctx, expr_type_id, arg, ctx_guided_type),
+            CUnOp::AddressOf => self.convert_address_of(ctx, expr_type_id, arg),
 
             CUnOp::PreIncrement
             | CUnOp::PreDecrement

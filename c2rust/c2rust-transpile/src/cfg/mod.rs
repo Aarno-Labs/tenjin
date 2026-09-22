@@ -558,7 +558,6 @@ impl Cfg<Label, StmtOrDecl> {
         translator: &Translation,
         ctx: ExprContext,
         stmt_ids: &[CStmtId],
-        name: &str,
         ret: ImplicitReturnType,
         ret_ty: Option<CQualTypeId>,
     ) -> TranslationResult<(Self, DeclStmtStore)> {
@@ -575,7 +574,7 @@ impl Cfg<Label, StmtOrDecl> {
             c_label_to_goto.entry(target).or_default().insert(x);
         }
 
-        let mut cfg_builder = CfgBuilder::new(c_label_to_goto, name);
+        let mut cfg_builder = CfgBuilder::new(c_label_to_goto);
         let entry = cfg_builder.entry.clone();
         cfg_builder.per_stmt_stack.push(PerStmt::new(
             stmt_ids.first().cloned(),
@@ -615,14 +614,8 @@ impl Cfg<Label, StmtOrDecl> {
                         wip.body.push(StmtOrDecl::Stmt(mk().semi_stmt(ret_expr)));
                     }
                     ImplicitReturnType::StmtExpr(ctx, expr_id, brk_label) => {
-                        let ret_ty_guidance = translator
-                            .parsed_guidance
-                            .borrow_mut()
-                            .query_fn_return_type(translator.function_context.borrow().get_name());
-
-                        // XREF:snapshot_guided_ret_ostr
                         let (stmts, val) = translator
-                            .convert_expr_guided(ctx, expr_id, None, &ret_ty_guidance)?
+                            .convert_expr(ctx, expr_id, None)?
                             .discard_unsafe();
 
                         wip.body.extend(stmts.into_iter().map(StmtOrDecl::Stmt));
@@ -798,7 +791,6 @@ impl<Lbl: Clone + Ord + Hash + Debug, Stmt> Cfg<Lbl, Stmt> {
 struct CfgBuilder {
     /// Identifies the 'BasicBlock' to start with in the graph
     entry: Label,
-    fn_name: String,
 
     per_stmt_stack: Vec<PerStmt>,
 
@@ -1351,12 +1343,11 @@ impl CfgBuilder {
     }
 
     /// Create a new `CfgBuilder` with a single entry label.
-    fn new(c_label_to_goto: IndexMap<CLabelId, IndexSet<CStmtId>>, fn_name: &str) -> CfgBuilder {
+    fn new(c_label_to_goto: IndexMap<CLabelId, IndexSet<CStmtId>>) -> CfgBuilder {
         let entry = Label::Synthetic(0);
 
         CfgBuilder {
             entry,
-            fn_name: fn_name.to_string(),
 
             per_stmt_stack: vec![],
 
@@ -1469,14 +1460,7 @@ impl CfgBuilder {
             }
 
             CStmtKind::Return(expr) => {
-                let val = match expr.map(|i| {
-                    let ret_ty_guidance = translator
-                        .parsed_guidance
-                        .borrow_mut()
-                        .query_fn_return_type(self.fn_name.as_str());
-                    // XREF:snapshot_guided_ret_ostr
-                    translator.convert_expr_guided(ctx.used(), i, ret_ty, &ret_ty_guidance)
-                }) {
+                let val = match expr.map(|i| translator.convert_expr(ctx.used(), i, ret_ty)) {
                     Some(r) => Some(r?),
                     None => None,
                 };

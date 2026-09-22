@@ -2,6 +2,7 @@ use crate::c_ast::CDeclId;
 use crate::c_ast::*;
 use crate::diagnostics::TranslationResult;
 use crate::renamer::*;
+use crate::translator::markers::convert_marker_typedef;
 use crate::translator::tenjin::guide_type_name_path;
 use crate::translator::variadic::mk_va_list_ty;
 use crate::TranspilerConfig;
@@ -282,6 +283,9 @@ impl TypeConverter {
             }
 
             CTypeKind::Typedef(decl_id) => {
+                if let Some(ty) = convert_marker_typedef(self, ctxt, decl_id, pg) {
+                    return ty;
+                }
                 let new_name = self.resolve_decl_name(decl_id).unwrap();
                 Ok(mk().path_ty(vec![new_name]))
             }

@@ -91,17 +91,9 @@ impl Translation<'_> {
             .get_qual_type()
             .ok_or_else(|| format_err!("bad reference type"))?;
 
-        let is_pure = self.ast_context.is_expr_pure(reference);
+        let is_pure = self.is_pure_with_markers(reference);
         let read = |write| self.read(reference_ty, write);
-        // Pass in the expression's guided type here as the context - we really just want
-        // an expression corresponding to whatever the guided type is
-        // (this avoids the temptation to coerce to some other type)
-        let ctx_guided_type = self
-            .parsed_guidance
-            .borrow_mut()
-            .query_expr_type(self, reference);
-        let reference =
-            self.convert_expr_guided(ctx.used(), reference, Some(reference_ty), &ctx_guided_type)?;
+        let reference = self.convert_expr(ctx.used(), reference, Some(reference_ty))?;
         reference.and_then_try(|reference| {
             if is_lvalue(&reference) && (is_pure || !uses_read) {
                 let rvalue = uses_read.then(|| read(reference.clone())).transpose()?;

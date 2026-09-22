@@ -111,8 +111,8 @@ pub unsafe fn guided_array_vec() {
 }
 #[no_mangle]
 pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
-    let rsu8: &[u8] = ::core::mem::transmute::<[u8; 1], [::core::ffi::c_uchar; 1]>(*b"\0");
-    strlen(&raw const rsu8 as *const ::core::ffi::c_uchar as *const ::core::ffi::c_char);
+    let rsu8: &[u8] = b"\0";
+    strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
 }
 #[no_mangle]
 pub unsafe fn guided_immutable_u8_pointer() {
@@ -139,7 +139,7 @@ pub unsafe fn guided_ret_ostr() -> String {
 }
 #[no_mangle]
 pub unsafe fn guided_condition_string_null_check_neq(mut ostr: String) -> ::core::ffi::c_int {
-    return if true {
+    return if !ostr.is_empty() {
         2 as ::core::ffi::c_int
     } else {
         5 as ::core::ffi::c_int
@@ -304,7 +304,7 @@ pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
 }
 #[no_mangle]
 pub unsafe fn peek_slice(mut rsu8: &[u8]) {
-    let mut v = *rsu8.as_ptr();
+    let mut v = rsu8[0 as usize];
 }
 #[no_mangle]
 pub unsafe fn receive_slice(mut rsu8: &[u8]) {
@@ -386,7 +386,7 @@ pub unsafe fn pass_slice_offset(mut idx: ::core::ffi::c_int) {
         0,
         0,
     ];
-    receive_slice(&(&mut arr)[(idx + 2 as ::core::ffi::c_int) as usize..]);
+    receive_slice(&arr[(idx + 2 as ::core::ffi::c_int) as usize..]);
 }
 unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
     if ptr.is_null() {

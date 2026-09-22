@@ -15,9 +15,7 @@ use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 use log::{error, trace, warn};
 use proc_macro2::{Punct, Spacing::*, Span, TokenStream, TokenTree};
-use quote::TokenStreamExt;
 use serde_derive::Serialize;
-use serde_json::Map;
 use syn::spanned::Spanned as _;
 use syn::{
     AttrStyle, BareVariadic, BinOp, Block, Expr, ExprBinary, ExprBlock, ExprBreak, ExprCast,
@@ -34,7 +32,6 @@ use crate::rust_ast::item_store::ItemStore;
 use crate::rust_ast::set_span::SetSpan;
 use crate::rust_ast::{pos_to_span, SpanExt};
 use crate::translator::named_references::NamedReference;
-use crate::translator::tenjin::{FFIConversion, FFIInConversion, FFIOutConversion, GuidedType};
 use crate::translator::variadic::{mk_va_list_copy, mk_va_list_ty};
 use c2rust_ast_builder::{mk, properties::*, Builder};
 use c2rust_ast_printer::pprust;
@@ -57,14 +54,14 @@ mod enums;
 mod functions;
 mod literals;
 mod macros;
+pub mod markers;
 mod named_references;
 mod operators;
-pub mod parent_expr;
-pub mod parent_fn;
 mod pointers;
 mod simd;
 mod structs_unions;
 pub mod tenjin;
+pub use tenjin::ParsedGuidance;
 pub(crate) mod variadic;
 
 pub use crate::diagnostics::{TranslationError, TranslationErrorKind};
@@ -290,398 +287,6 @@ struct MacroExpansion {
     ty: CTypeId,
 }
 
-#[derive(Debug)]
-pub struct TenjinDeclSpecifier {
-    pub filespec: String,
-    pub fnname: String,
-    pub varname: String,
-    // XREF:TENJIN-DECL-SPEC-LINENUMBER
-    pub linenumber: u32,
-}
-
-/// Example of a Tenjin declaration specifier:
-///  fnname:varname#linenumber@pathsuffix
-/// The `:varname`, `#linenumber`, and `@pathsuffix` parts are optional.
-/// If omitted, they match all variables, lines, and files, respectively.
-/// A pathsuffix can match one or more files in a directory tree.
-fn parse_tenjin_decl_specifier(s: &str) -> Option<TenjinDeclSpecifier> {
-    if s.is_empty() {
-        return None;
-    }
-
-    let num_colons = s.chars().filter(|c| *c == ':').count();
-    let num_hashes = s.chars().filter(|c| *c == '#').count();
-    let num_atsigns = s.chars().filter(|c| *c == '@').count();
-    if num_colons > 1 || num_hashes > 1 || num_atsigns > 1 {
-        return None; // Invalid format, duplicate tags
-    }
-
-    let fnname: String;
-    let mut varname = String::new();
-    let mut linenumber = 0u32;
-    let mut filespec = String::new();
-
-    let mut s = s;
-
-    if num_atsigns > 0 {
-        let parts = s.split('@').collect::<Vec<&str>>();
-        assert!(parts.len() == 2);
-        filespec = parts[0].to_string();
-        s = parts[1];
-    }
-
-    if num_hashes > 0 {
-        let parts = s.split('#').collect::<Vec<&str>>();
-        assert!(parts.len() == 2);
-        linenumber = parts[1].parse::<u32>().unwrap_or(0);
-        s = parts[0];
-    }
-
-    if num_colons > 0 {
-        let parts = s.split(':').collect::<Vec<&str>>();
-        assert!(parts.len() == 2);
-        fnname = parts[0].to_string();
-        varname = parts[1].to_string();
-    } else {
-        fnname = s.to_string();
-    }
-
-    assert!(!fnname.is_empty());
-
-    Some(TenjinDeclSpecifier {
-        filespec,
-        fnname,
-        varname,
-        linenumber,
-    })
-}
-
-fn parse_ffi_in_conversion(v: &serde_json::Value) -> Option<FFIInConversion> {
-    serde_json::from_value(v.clone()).unwrap_or(None)
-}
-
-fn parse_ffi_out_conversion(v: &serde_json::Value) -> Option<FFIOutConversion> {
-    serde_json::from_value(v.clone()).unwrap_or(None)
-}
-
-pub struct ParsedGuidance {
-    pub _raw: serde_json::Value,
-    pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
-    pub type_of_decl: HashMap<CDeclId, tenjin::GuidedType>,
-    pub mut_of_decl: Vec<(TenjinDeclSpecifier, Mutability)>,
-    pub semantically_immutable_globals: Vec<TenjinDeclSpecifier>,
-    pub fn_return_types: HashMap<String, syn::Type>,
-    decls_without_type_guidance: HashSet<CDeclId>,
-    pub using_crates: HashSet<String>,
-    pub pod_types: HashSet<String>,
-    pub no_math_errno: bool,
-    pub public_api: Option<HashSet<String>>,
-    pub ffi_conversions: HashMap<String, FFIConversion>,
-}
-
-impl ParsedGuidance {
-    pub fn new(raw: serde_json::Value) -> Self {
-        let mut declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>> = HashMap::new();
-
-        // These map will be filled in lazily.
-        let type_of_decl: HashMap<CDeclId, tenjin::GuidedType> = HashMap::new();
-        let mut mut_of_decl: Vec<(TenjinDeclSpecifier, Mutability)> = Vec::new();
-        let mut semantically_immutable_globals = Vec::new();
-
-        if let Some(decls) = raw.get("vars_of_type") {
-            if let Some(decls) = decls.as_object() {
-                for (unparsed_ty, decls) in decls {
-                    let decls_arr = if decls.is_string() {
-                        &serde_json::json!([decls])
-                    } else {
-                        decls
-                    };
-                    let mut parsed_declspecs = Vec::new();
-                    for decl in decls_arr.as_array().unwrap_or(&vec![]) {
-                        if let Some(declspec_str) = decl.as_str() {
-                            if let Some(decl_specifier) = parse_tenjin_decl_specifier(declspec_str)
-                            {
-                                parsed_declspecs.push(decl_specifier);
-                            }
-                        }
-                    }
-                    let ty = syn::parse_str::<syn::Type>(unparsed_ty)
-                        .unwrap_or_else(|_| panic!("Failed to parse type: {unparsed_ty}"));
-                    declspecs_of_type
-                        .entry(ty)
-                        .or_default()
-                        .extend(parsed_declspecs);
-                }
-            }
-        }
-
-        if let Some(decls) = raw.get("vars_mut") {
-            if let Some(decls) = decls.as_object() {
-                fn mutability_from_bool(is_mut: bool) -> Mutability {
-                    if is_mut {
-                        Mutability::Mutable
-                    } else {
-                        Mutability::Immutable
-                    }
-                }
-                for (declspec, is_mut_value) in decls {
-                    if !is_mut_value.is_boolean() {
-                        log::error!(
-                            "Tenjin `vars_mut` guidance for variable {} is not a boolean",
-                            declspec
-                        );
-                    }
-                    match parse_tenjin_decl_specifier(declspec) {
-                        Some(decl_specifier) => {
-                            mut_of_decl.push((
-                                decl_specifier,
-                                mutability_from_bool(is_mut_value.as_bool().unwrap_or(false)),
-                            ));
-                        }
-                        None => {
-                            log::error!(
-                                "Tenjin `vars_mut` guidance for variable {} has invalid specifier",
-                                declspec
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(decls) = raw.get("semantically_immutable_globals") {
-            if let Some(decls) = decls.as_array() {
-                for decl in decls {
-                    match decl.as_str().and_then(parse_tenjin_decl_specifier) {
-                        Some(decl_specifier) => {
-                            semantically_immutable_globals.push(decl_specifier);
-                        }
-                        None => {
-                            log::error!(
-                                "Tenjin `semantically_immutable_globals` entry is not a valid variable specifier: {}",
-                                decl
-                            );
-                        }
-                    }
-                }
-            } else {
-                log::error!("Tenjin `semantically_immutable_globals` guidance is not an array");
-            }
-        }
-
-        let mut fn_return_types: HashMap<String, syn::Type> = HashMap::new();
-
-        if let Some(decls) = raw.get("fn_return_type") {
-            if let Some(decls) = decls.as_object() {
-                for (fn_name, type_name_value) in decls {
-                    if let Some(type_name) = type_name_value.as_str() {
-                        if let Ok(ty) = syn::parse_str::<syn::Type>(type_name) {
-                            fn_return_types.insert(fn_name.clone(), ty);
-                        } else {
-                            log::error!(
-                                "Tenjin `fn_return_type` guidance for function {} has invalid type {}",
-                                fn_name,
-                                type_name
-                            );
-                        }
-                    } else {
-                        log::error!(
-                            "Tenjin `fn_return_type` guidance for function {} is not a string",
-                            fn_name
-                        );
-                    }
-                }
-            }
-        }
-
-        let mut public_api = None;
-        if let Some(fns) = raw.get("public_api") {
-            let mut api_fns = HashSet::new();
-            if let Some(fns) = fns.as_array() {
-                for fnname in fns {
-                    if let Some(fnname_str) = fnname.as_str() {
-                        api_fns.insert(fnname_str.to_string());
-                    }
-                }
-            }
-            public_api = Some(api_fns);
-        }
-
-        //dbg!(&fn_return_types);
-        //dbg!(&declspecs_of_type);
-        //dbg!(&mut_of_decl);
-
-        let using_crates = crate::guidance_use_crates(&raw);
-
-        let mut pod_types = HashSet::new();
-        if let Some(crates) = raw.get("pod_types") {
-            if let Some(crates) = crates.as_array() {
-                for krate in crates {
-                    if let Some(krate_str) = krate.as_str() {
-                        pod_types.insert(krate_str.to_string());
-                    }
-                }
-            }
-        }
-
-        let no_math_errno: bool = raw
-            .get("no_math_errno")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let mut ffi_conversions = HashMap::new();
-        if let Some(strategies) = raw.get("ffi").and_then(|it| it.as_object()) {
-            for (func, conv) in strategies {
-                let mut ffi_in_conversions = HashMap::new();
-                let mut ffi_out_conversion = None;
-                for (arg, strategy) in conv.as_object().unwrap_or(&Map::new()) {
-                    if arg == "$return" {
-                        ffi_out_conversion = parse_ffi_out_conversion(strategy);
-                        if ffi_out_conversion.is_none() {
-                            log::error!(
-                                "Tenjin `ffi` guidance for return value of {} is invalid: {}",
-                                func,
-                                strategy
-                            );
-                        }
-                    } else if let Some(strategy) = parse_ffi_in_conversion(strategy) {
-                        ffi_in_conversions.insert(arg.clone(), strategy);
-                    } else {
-                        log::error!(
-                            "Tenjin `ffi` guidance for function {} argument {} is invalid: {}",
-                            func,
-                            arg,
-                            strategy
-                        );
-                    }
-                }
-                if !ffi_in_conversions.is_empty() || ffi_out_conversion.is_some() {
-                    ffi_conversions.insert(
-                        func.clone(),
-                        FFIConversion {
-                            ins: ffi_in_conversions,
-                            out: ffi_out_conversion,
-                        },
-                    );
-                }
-            }
-        }
-
-        ParsedGuidance {
-            _raw: raw,
-            declspecs_of_type,
-            type_of_decl,
-            mut_of_decl,
-            semantically_immutable_globals,
-            fn_return_types,
-            decls_without_type_guidance: HashSet::new(),
-            using_crates,
-            pod_types,
-            no_math_errno,
-            public_api,
-            ffi_conversions,
-        }
-    }
-
-    pub fn query_ffi_in_conversion(&self, fn_name: &str, arg_name: &str) -> FFIInConversion {
-        self.ffi_conversions
-            .get(fn_name)
-            .and_then(|it| it.ins.get(arg_name))
-            .unwrap_or(&FFIInConversion::Id)
-            .clone()
-    }
-
-    pub fn query_ffi_out_conversion(&self, fn_name: &str) -> FFIOutConversion {
-        self.ffi_conversions
-            .get(fn_name)
-            .and_then(|it| it.out.as_ref())
-            .unwrap_or(&FFIOutConversion::Id)
-            .clone()
-    }
-
-    pub fn query_decl_type(&mut self, t: &Translation, id: CDeclId) -> Option<tenjin::GuidedType> {
-        if let Some(ty) = tenjin::builtin_decl_type(t, id) {
-            return Some(ty);
-        }
-        if self.decls_without_type_guidance.contains(&id) {
-            return None;
-        }
-        if let Some(ty) = self.type_of_decl.get(&id) {
-            return Some(ty.clone());
-        }
-        if let Some(decl) = self
-            .declspecs_of_type
-            .iter()
-            .find(|(_, declspecs)| declspecs.iter().any(|d| t.matches_decl(d, id, None, None)))
-        {
-            let ty = tenjin::GuidedType::from_type(decl.0.clone());
-            self.type_of_decl.insert(id, ty.clone());
-            Some(ty)
-        } else {
-            self.decls_without_type_guidance.insert(id);
-            None
-        }
-    }
-
-    pub fn query_expr_type(&mut self, t: &Translation, id: CExprId) -> Option<tenjin::GuidedType> {
-        if let Some(decl_id) = t.c_expr_get_var_decl_id(id) {
-            return self.query_decl_type(t, decl_id);
-        }
-        None
-    }
-
-    pub fn query_field_type(
-        &mut self,
-        t: &Translation,
-        record_name: &str,
-        field_id: CFieldId,
-        field_name: &str,
-    ) -> Option<tenjin::GuidedType> {
-        // Unlike `query_decl_type`, this method is invoked when the field name is available,
-        // so it's passed as as &str instead of a CDeclId.
-        // We don't currently cache query results for fields because we expect them
-        // to only be queried once.
-        if let Some(decl) = self.declspecs_of_type.iter().find(|(_, declspecs)| {
-            declspecs
-                .iter()
-                .any(|d| t.matches_decl(d, field_id, Some(record_name), Some(field_name)))
-        }) {
-            let ty = tenjin::GuidedType::from_type(decl.0.clone());
-            Some(ty)
-        } else {
-            None
-        }
-    }
-
-    pub fn query_fn_return_type(&self, name: &str) -> Option<tenjin::GuidedType> {
-        let find_guided = self
-            .fn_return_types
-            .get(name)
-            .or_else(|| self.fn_return_types.get(tenjin::trim_unique_suffix(name)));
-        if let Some(guided_type) = find_guided {
-            return Some(tenjin::GuidedType::from_type(guided_type.clone()));
-        }
-        None
-    }
-
-    pub fn query_decl_mut(&self, t: &Translation, id: CDeclId) -> Option<Mutability> {
-        if let Some((_decl_specifier, is_mut)) = self
-            .mut_of_decl
-            .iter()
-            .find(|(d, _)| t.matches_decl(d, id, None, None))
-        {
-            return Some(*is_mut);
-        }
-        None
-    }
-
-    pub fn query_decl_semantically_immutable(&self, t: &Translation, id: CDeclId) -> bool {
-        self.semantically_immutable_globals
-            .iter()
-            .any(|d| t.matches_decl(d, id, None, None))
-    }
-}
-
 type ZeroInits = IndexMap<CDeclId, (WithStmts<Box<Expr>>, IndexSet<Import>)>;
 
 #[allow(clippy::vec_box)]
@@ -701,12 +306,10 @@ pub struct Translation<'c> {
     extern_crates: RefCell<CrateSet>,
 
     // Translation state and utilities
-    parent_fn_map: HashMap<CDeclId, CDeclId>,
-    parent_expr_map: HashMap<CExprId, CExprId>,
     pub(crate) type_converter: RefCell<TypeConverter>,
     renamer: Rc<RefCell<Renamer<CDeclId>>>,
     zero_inits: RefCell<ZeroInits>,
-    pub(crate) function_context: RefCell<FuncContext>,
+    function_context: RefCell<FuncContext>,
     potential_flexible_array_members: RefCell<IndexSet<CDeclId>>,
     macro_expansions: RefCell<IndexMap<CDeclId, Option<MacroExpansion>>>,
     /// Sets of imports deferred while translating nested expressions for caching. Imports are
@@ -1280,10 +883,8 @@ pub fn translate(
     tcfg: &TranspilerConfig,
     main_file: &Path,
     preprocessed_definitions: &IndexMap<CDeclId, String>,
-    parent_fn_map: HashMap<CDeclId, CDeclId>,
-    parent_expr_map: HashMap<CExprId, CExprId>,
 ) -> (String, Option<DeclMap>, PragmaVec, CrateSet) {
-    let mut t = Translation::new(ast_context, tcfg, main_file, parent_fn_map, parent_expr_map);
+    let mut t = Translation::new(ast_context, tcfg, main_file);
     let ctx = ExprContext {
         used: true,
         is_const: false,
@@ -2086,7 +1687,8 @@ enum RecognizedCallForm {
     PrintfS {
         fmt_string_idx: usize,
         opt_size: Option<Box<Expr>>,
-        dest: Box<Expr>,
+        /// The destination buffer, without any marker fitting it to `char *`.
+        dest: CExprId,
     },
     RetargetedCallee(Box<Expr>),
     OtherCall,
@@ -2357,7 +1959,7 @@ mod refactor_format {
                         }
                     }
 
-                    if let Some(g) = x.parsed_guidance.borrow_mut().query_expr_type(x, cexpr) {
+                    if let Some(g) = x.xj_type_of_expr(cexpr) {
                         if tenjin::type_is_string(&g.parsed) || tenjin::type_is_str_ref(&g.parsed) {
                             // For a variable that's already type String, we can leave it as is.
                             // XREF:guided_cast_str_of_owned_string
@@ -2842,8 +2444,6 @@ impl<'c> Translation<'c> {
         mut ast_context: TypedAstContext,
         tcfg: &'c TranspilerConfig,
         main_file: &Path,
-        parent_fn_map: HashMap<CDeclId, CDeclId>,
-        parent_expr_map: HashMap<CExprId, CExprId>,
     ) -> Self {
         let comment_context = CommentContext::new(&mut ast_context);
         let renamer = Rc::new(RefCell::new(Renamer::keywords_and_prelude()));
@@ -2879,8 +2479,6 @@ impl<'c> Translation<'c> {
             main_file,
             extern_crates: RefCell::new(IndexSet::new()),
             cur_file: Default::default(),
-            parent_fn_map,
-            parent_expr_map,
         }
     }
 
@@ -3256,123 +2854,6 @@ impl<'c> Translation<'c> {
         (fn_item, static_item)
     }
 
-    fn matches_decl(
-        &self,
-        spec: &TenjinDeclSpecifier,
-        id: CDeclId,
-        fn_name_override: Option<&str>,
-        var_name_override: Option<&str>,
-    ) -> bool {
-        log::trace!("TENJIN matches_decl: {:?} ({:?})", spec, id);
-        match self.ast_context.get_decl(&id) {
-            Some(decl) => {
-                // XREF:TENJIN-DECL-SPEC-LINENUMBER
-                if spec.linenumber > 0
-                    && decl.begin_loc().map(|loc| loc.line) != Some(spec.linenumber as u64)
-                {
-                    log::warn!(
-                        "TENJIN matches_decl: Decl {:?} does not match specified linenumber {}",
-                        id,
-                        spec.linenumber
-                    );
-                    return false;
-                }
-
-                // An empty filespec matches all files, and if we don't have a srcloc
-                // we should conservatively assume it matches.
-                if (!spec.filespec.is_empty())
-                    && self
-                        .ast_context
-                        .file_id(decl)
-                        .and_then(|fileid| self.ast_context.get_file_path(fileid))
-                        .map(|path| {
-                            path.to_string_lossy()
-                                .to_string()
-                                .ends_with(spec.filespec.as_str())
-                        })
-                        == Some(false)
-                {
-                    log::warn!(
-                        "TENJIN matches_decl: Decl {:?} does not match specified filespec {}",
-                        id,
-                        spec.filespec
-                    );
-                    return false;
-                }
-
-                let parent_fn_name = self.parent_fn_map.get(&id).and_then(|parent_fn| {
-                    self.ast_context
-                        .get_decl(parent_fn)
-                        .and_then(|fn_decl| fn_decl.kind.get_name().map(|s| s.as_str()))
-                });
-
-                let is_global_variable = |decl: &CDecl| -> bool {
-                    match &decl.kind {
-                        CDeclKind::Variable {
-                            has_global_storage,
-                            has_static_duration,
-                            ..
-                        } => {
-                            let local_static = *has_static_duration && parent_fn_name.is_some();
-                            *has_global_storage && !local_static
-                        }
-                        _ => false,
-                    }
-                };
-
-                if (!spec.fnname.is_empty()) && spec.fnname != "*" {
-                    let opt_parent_fn_name = fn_name_override.or(parent_fn_name);
-                    match opt_parent_fn_name {
-                        Some(parent_fn_name) => {
-                            if !tenjin::is_derived_name(&spec.fnname, parent_fn_name) {
-                                return false;
-                            }
-                        }
-                        None => {
-                            if !is_global_variable(decl) {
-                                // Global variables are the only thing that can match without a parent function
-                                return false;
-                            }
-                        }
-                    }
-                }
-
-                match &decl.kind {
-                    CDeclKind::Function { name, .. } => {
-                        tenjin::is_derived_name(&spec.varname, name)
-                    }
-                    CDeclKind::Field { .. } => {
-                        spec.varname == "*"
-                            || spec.varname
-                                == var_name_override.expect("matches_decl() needs a field name")
-                    }
-                    CDeclKind::Variable { ident, .. } => {
-                        if is_global_variable(decl) {
-                            // XREF:guided_static_globals
-                            // For globals, match the spec fnname instead of the varname
-                            tenjin::is_derived_name(&spec.fnname, ident)
-                        } else {
-                            // Match variable declarations against the declspecs
-                            spec.varname == "*" || tenjin::is_derived_name(&spec.varname, ident)
-                        }
-                    }
-                    _ => {
-                        log::warn!(
-                            "TENJIN matches_decl: Unsupported decl kind {:?} for decl {:?}",
-                            decl.kind,
-                            id
-                        );
-                        false
-                    }
-                }
-            }
-            None => {
-                log::warn!("TENJIN matches_decl: Missing decl {:?}", id);
-                false
-            }
-        }
-    }
-
     /// Return whether the Rust translation of `ctype` will contain a raw
     /// pointer which has not been replaced by type guidance.
     fn type_contains_unguided_raw_pointer(&self, ctype: CTypeId) -> bool {
@@ -3411,18 +2892,10 @@ impl<'c> Translation<'c> {
             return Some(Mutability::Mutable);
         }
 
-        let guided_type = self
-            .parsed_guidance
-            .borrow_mut()
-            .query_decl_type(self, decl_id);
         // XREF:static_var_nonmutbl
-        let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
-        let is_semantically_immutable = self
-            .parsed_guidance
-            .borrow()
-            .query_decl_semantically_immutable(self, decl_id);
-        let semantic_immutability_is_rust_safe = is_semantically_immutable
-            && (guided_type.is_some() || !self.type_contains_unguided_raw_pointer(typ.ctype));
+        let guided_mutbl = self.variable_mutability(decl_id);
+        let semantic_immutability_is_rust_safe = self.semantically_immutable(decl_id)
+            && !self.type_contains_unguided_raw_pointer(typ.ctype);
         // Rust atomic wrappers provide mutation through shared references, so
         // atomic statics themselves do not need `static mut`.
         let is_atomic = matches!(
@@ -3447,6 +2920,12 @@ impl<'c> Translation<'c> {
         visited_records: &mut HashSet<CRecordId>,
     ) -> bool {
         use CTypeKind::*;
+
+        // Guidance replaces the C type, raw pointers included; a pointer to a
+        // guided value is still a raw pointer.
+        if let Some(guided) = self.xj_type_of_ctype(ctype) {
+            return matches!(guided.parsed, Type::Ptr(_));
+        }
 
         match self.ast_context.resolve_type(ctype).kind.clone() {
             // Function pointers translate to `Option<extern "C" fn(...)>`,
@@ -3475,31 +2954,13 @@ impl<'c> Translation<'c> {
                 let Some(fields) = fields else {
                     return false;
                 };
-                let record_name = self
-                    .type_converter
-                    .borrow()
-                    .resolve_decl_name(record_id)
-                    .expect("Expected record name");
 
                 fields.into_iter().any(|field_id| {
                     let field_type = match self.ast_context.index(field_id).kind {
                         CDeclKind::Field { typ, .. } => typ.ctype,
                         _ => unreachable!("record contains a non-field declaration"),
                     };
-                    let field_name = self
-                        .type_converter
-                        .borrow()
-                        .resolve_field_name(Some(record_id), field_id)
-                        .expect("Expected field name");
-                    let field_is_guided = self
-                        .parsed_guidance
-                        .borrow_mut()
-                        .query_field_type(self, &record_name, field_id, &field_name)
-                        .is_some();
-
-                    !field_is_guided
-                        && self
-                            .type_contains_unguided_raw_pointer_inner(field_type, visited_records)
+                    self.type_contains_unguided_raw_pointer_inner(field_type, visited_records)
                 })
             }
 
@@ -3604,6 +3065,9 @@ impl<'c> Translation<'c> {
             // EnumConstant is translated as part of Enum.
             EnumConstant { .. } => Ok(ConvertedDecl::NoItem),
 
+            // Guidance markers are translated where they are used.
+            _ if self.is_marker_decl(decl_id) => Ok(ConvertedDecl::NoItem),
+
             // We can allow non top level function declarations (i.e. extern
             // declarations) without any problem. Clang doesn't support nested
             // functions, so we will never see nested function definitions.
@@ -3679,20 +3143,10 @@ impl<'c> Translation<'c> {
                     .borrow()
                     .get(&decl_id)
                     .expect("Variables should already be renamed");
-                let guided_type = self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, decl_id);
+                let ConvertedVariable { ty, mutbl, init: _ } =
+                    self.convert_variable(ctx.static_().const_(), None, typ)?;
                 // XREF:extern_var_nonmutbl
-                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
-                let ConvertedVariable { ty, mutbl, init: _ } = self.convert_variable(
-                    ctx.static_().const_(),
-                    None,
-                    typ,
-                    &guided_type,
-                    guided_mutbl,
-                )?;
-
+                let mutbl = self.variable_mutability(decl_id).unwrap_or(mutbl);
                 let mut extern_item = mk_linkage(true, &new_name, ident, self.tcfg.edition)
                     .span(span)
                     .set_mutbl(mutbl);
@@ -3736,11 +3190,6 @@ impl<'c> Translation<'c> {
                     .borrow()
                     .get(&decl_id)
                     .expect("Variables should already be renamed");
-                let guided_type = self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_decl_type(self, decl_id);
-                let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
                 let rust_mutbl = self
                     .static_decl_rust_mutability(decl_id)
                     .expect("static-duration variable should have Rust static mutability");
@@ -3790,7 +3239,7 @@ impl<'c> Translation<'c> {
                     // outside of the static initializer, in a non-const context.
                     let ctx = ctx.not_const();
                     let ConvertedVariable { ty, mutbl: _, init } =
-                        self.convert_variable(ctx, initializer, typ, &guided_type, guided_mutbl)?;
+                        self.convert_variable(ctx, initializer, typ)?;
 
                     let mut init = init?.to_expr();
 
@@ -3823,8 +3272,6 @@ impl<'c> Translation<'c> {
                         new_name,
                         initializer,
                         typ,
-                        &guided_type,
-                        guided_mutbl,
                     )?;
                     Ok(ConvertedDecl::Items(items))
                 }
@@ -3961,42 +3408,6 @@ impl<'c> Translation<'c> {
         Ok(stmts)
     }
 
-    fn convert_return_type(
-        &self,
-        return_type: Option<CQualTypeId>,
-    ) -> TranslationResult<ReturnType> {
-        let ret = match return_type {
-            Some(return_type) => self.convert_type(return_type.ctype)?,
-            None => mk().never_ty(),
-        };
-        let is_void_ret = return_type
-            .map(|qty| self.ast_context[qty.ctype].kind == CTypeKind::Void)
-            .unwrap_or(false);
-
-        // If a return type is void, we should instead omit the unit type return,
-        // -> (), to be more idiomatic
-        if is_void_ret {
-            Ok(ReturnType::Default)
-        } else {
-            Ok(ReturnType::Type(Default::default(), ret))
-        }
-    }
-
-    fn convert_function_return_type(
-        &self,
-        name: &str,
-        return_type: Option<CQualTypeId>,
-    ) -> TranslationResult<ReturnType> {
-        if let Some(guided_type) = self.parsed_guidance.borrow().query_fn_return_type(name) {
-            // XREF:guided_ret_type
-            return Ok(ReturnType::Type(
-                Default::default(),
-                Box::new(guided_type.parsed),
-            ));
-        }
-        self.convert_return_type(return_type)
-    }
-
     fn convert_block_with_scope(
         &self,
         ctx: ExprContext,
@@ -4007,7 +3418,7 @@ impl<'c> Translation<'c> {
     ) -> TranslationResult<Vec<Stmt>> {
         // Function body scope
         self.with_scope(|| {
-            let (graph, store) = cfg::Cfg::from_stmts(self, ctx, body_ids, name, ret, ret_ty)?;
+            let (graph, store) = cfg::Cfg::from_stmts(self, ctx, body_ids, ret, ret_ty)?;
             self.convert_cfg(name, graph, store, IndexSet::new())
         })
     }
@@ -4035,10 +3446,7 @@ impl<'c> Translation<'c> {
                     .kind
                     .get_type()
                     .ok_or_else(|| format_err!("bad pointer type for condition"))?;
-                let mb_guided_type = self.parsed_guidance.borrow_mut().query_expr_type(self, ptr);
-                val.try_map(|val| {
-                    self.convert_pointer_is_null(ctx, ptr_type, val, is_null, &mb_guided_type)
-                })
+                val.try_map(|val| self.convert_pointer_is_null(ctx, ptr_type, val, is_null))
             };
 
         match self.ast_context.index_unwrap_parens(cond_id).kind {
@@ -4054,7 +3462,6 @@ impl<'c> Translation<'c> {
                 null_pointer_case(ptr, target)
             }
 
-            // XREF:guided_condition_string_null_check_neq
             CExprKind::Binary(_, CBinOp::NotEqual, null_expr, ptr, _, _)
                 if self.ast_context.is_null_expr(null_expr) =>
             {
@@ -4185,11 +3592,9 @@ impl<'c> Translation<'c> {
         name: &str,
         initializer: Option<CExprId>,
         typ: CQualTypeId,
-        guided_type: &Option<tenjin::GuidedType>,
-        guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<Vec<Box<Item>>> {
         let ConvertedVariable { ty, mutbl: _, init } =
-            self.convert_variable(ctx.const_(), initializer, typ, guided_type, guided_mutbl)?;
+            self.convert_variable(ctx.const_(), initializer, typ)?;
         let mut init = init?;
         let mut items = init
             .stmts_to_items()
@@ -4207,11 +3612,6 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         decl_id: CDeclId,
     ) -> TranslationResult<cfg::DeclStmtInfo> {
-        let guided_type = self
-            .parsed_guidance
-            .borrow_mut()
-            .query_decl_type(self, decl_id);
-        let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
         if let CDeclKind::Variable {
             ref ident,
             has_static_duration: true,
@@ -4239,7 +3639,7 @@ impl<'c> Translation<'c> {
                         )
                     })?;
                 let ConvertedVariable { ty, mutbl: _, init } =
-                    self.convert_variable(ctx, initializer, typ, &guided_type, guided_mutbl)?;
+                    self.convert_variable(ctx, initializer, typ)?;
                 let default_init = self.implicit_default_expr(ctx, typ.ctype)?.to_expr();
                 let comment = String::from("// Initialized in c2rust_run_static_initializers");
                 let span = self
@@ -4279,8 +3679,6 @@ impl<'c> Translation<'c> {
                     &ident2,
                     initializer,
                     typ,
-                    &None,
-                    None,
                 )?;
 
                 let mut item_stores = self.items.borrow_mut();
@@ -4348,9 +3746,10 @@ impl<'c> Translation<'c> {
 
                 let mut stmts = self.compute_variable_array_sizes(ctx, typ.ctype)?;
 
-                // XREF:guided_local_nonmut
                 let ConvertedVariable { ty, mutbl, init } =
-                    self.convert_variable(ctx, initializer, typ, &guided_type, guided_mutbl)?;
+                    self.convert_variable(ctx, initializer, typ)?;
+                // XREF:guided_local_nonmut
+                let mutbl = self.local_mutability(decl_id).unwrap_or(mutbl);
                 let mut init = init?;
 
                 log::trace!(
@@ -4447,10 +3846,9 @@ impl<'c> Translation<'c> {
 
                     let pat = mk().set_mutbl(mutbl).ident_pat(rust_name.clone());
 
-                    let type_annotation = if let Some(g) = guided_type {
-                        Some(Box::new(g.parsed))
-                    } else if self.tcfg.reduce_type_annotations
+                    let type_annotation = if self.tcfg.reduce_type_annotations
                         && !self.should_assign_type_annotation(typ.ctype, initializer)
+                        && self.xj_type_of_ctype(typ.ctype).is_none()
                     {
                         None
                     } else {
@@ -4614,30 +4012,16 @@ impl<'c> Translation<'c> {
         }
     }
 
-    /// Type guidance helps convert the initializer expression.
     fn convert_variable(
         &self,
         ctx: ExprContext,
         initializer: Option<CExprId>,
         typ: CQualTypeId,
-        guided_type: &Option<tenjin::GuidedType>,
-        guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
-            Some(x) => self.convert_expr_guided(ctx.used(), x, Some(typ), guided_type),
-            None => self.implicit_default_expr_guided(guided_type, ctx, typ.ctype),
+            Some(x) => self.convert_init(ctx.used(), x, Some(typ)),
+            None => self.implicit_default_expr(ctx, typ.ctype),
         };
-
-        let mutbl = guided_mutbl.unwrap_or_else(|| typ.mutability());
-
-        if let Some(guided_type) = guided_type {
-            // If we have a type override, we use it instead of the converted type
-            return Ok(ConvertedVariable {
-                ty: Box::new(guided_type.parsed.clone()),
-                mutbl,
-                init,
-            });
-        }
 
         // Variable declarations for variable-length arrays use the type of a pointer to the
         // underlying array element
@@ -4652,6 +4036,8 @@ impl<'c> Translation<'c> {
         } else {
             self.convert_type(typ.ctype)?
         };
+
+        let mutbl = typ.mutability();
 
         Ok(ConvertedVariable { ty, mutbl, init })
     }
@@ -4846,7 +4232,6 @@ impl<'c> Translation<'c> {
             result_type_id,
             expected_type_id.unwrap_or(result_type_id),
             result,
-            &None,
         )
     }
 
@@ -4920,7 +4305,6 @@ impl<'c> Translation<'c> {
             result_type_id,
             expected_type_id.unwrap_or(result_type_id),
             WithStmts::new_val(call),
-            &None,
         )
     }
 
@@ -4960,19 +4344,6 @@ impl<'c> Translation<'c> {
             }
         }
         current
-    }
-
-    fn c_expr_get_var_decl_id(&self, expr: CExprId) -> Option<CDeclId> {
-        if let CExprKind::DeclRef(_, decl_id, _) =
-            self.ast_context[self.c_strip_noop_casts(expr)].kind
-        {
-            if let Some(decl) = self.ast_context.get_decl(&decl_id) {
-                if let CDeclKind::Variable { .. } = decl.kind {
-                    return Some(decl_id);
-                }
-            }
-        }
-        None
     }
 
     fn c_expr_is_var_ident(&self, expr: CExprId, name: &str) -> bool {
@@ -5032,16 +4403,6 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         expr_id: CExprId,
         override_ty: Option<CQualTypeId>,
-    ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        self.convert_expr_guided(ctx, expr_id, override_ty, &None)
-    }
-
-    pub fn convert_expr_guided(
-        &self,
-        ctx: ExprContext,
-        expr_id: CExprId,
-        override_ty: Option<CQualTypeId>,
-        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let Located {
             loc: src_loc,
@@ -5184,15 +4545,7 @@ impl<'c> Translation<'c> {
             }
 
             DeclRef(result_type_id, decl_id, lrvalue) => self
-                .convert_decl_ref(
-                    ctx,
-                    expr_id,
-                    override_ty,
-                    result_type_id,
-                    decl_id,
-                    lrvalue,
-                    ctx_guided_type,
-                )
+                .convert_decl_ref(ctx, override_ty, result_type_id, decl_id, lrvalue)
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             OffsetOf(ty, ref kind) => match kind {
@@ -5263,9 +4616,7 @@ impl<'c> Translation<'c> {
                 }
             },
 
-            Literal(ty, ref kind) => {
-                self.convert_literal(ctx, override_ty.unwrap_or(ty), kind, ctx_guided_type)
-            }
+            Literal(ty, ref kind) => self.convert_literal(ctx, override_ty.unwrap_or(ty), kind),
 
             ImplicitCast(ty, expr, kind, opt_field_id, _)
             | ExplicitCast(ty, expr, kind, opt_field_id, _) => self.convert_cast(
@@ -5275,19 +4626,11 @@ impl<'c> Translation<'c> {
                 expr,
                 kind,
                 opt_field_id,
-                ctx_guided_type,
                 matches!(expr_kind, CExprKind::ExplicitCast(..)),
             ),
 
             Unary(result_type_id, op, arg, _lrvalue) => {
-                let val = self.convert_unary_operator(
-                    ctx,
-                    override_ty,
-                    result_type_id,
-                    op,
-                    arg,
-                    ctx_guided_type,
-                )?;
+                let val = self.convert_unary_operator(ctx, override_ty, result_type_id, op, arg)?;
 
                 // if the context wants a different type, add a cast
                 if let Some(expected_ty) = override_ty {
@@ -5385,25 +4728,15 @@ impl<'c> Translation<'c> {
                     rhs,
                     opt_lhs_type_id,
                     opt_res_type_id,
-                    ctx_guided_type,
                 )
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
             ArraySubscript(_, lhs, rhs, lrvalue) => self
-                .convert_array_subscript(
-                    ctx,
-                    override_ty,
-                    Some(expr_id),
-                    lhs,
-                    rhs,
-                    lrvalue,
-                    true,
-                    ctx_guided_type,
-                )
+                .convert_array_subscript(ctx, override_ty, lhs, rhs, lrvalue, true)
                 .map_err(|e| e.add_loc(self.ast_context.display_loc(src_loc))),
 
-            Call(call_expr_ty, func_id, ref args) => {
-                self.convert_function_call(ctx, func_id, args, call_expr_ty, override_ty)
+            Call(call_expr_ty, func, ref args) => {
+                self.convert_function_call(ctx, func, args, call_expr_ty, override_ty)
             }
 
             Member(qual_ty, expr, decl, kind, lrvalue) => {
@@ -5419,51 +4752,12 @@ impl<'c> Translation<'c> {
             }
 
             InitList(ty, ref ids, opt_union_field_id, _) => {
-                let arr = self.convert_init_list(
-                    ctx,
-                    override_ty,
-                    ty,
-                    ids,
-                    opt_union_field_id,
-                    ctx_guided_type,
-                );
-                if ctx_guided_type
-                    .as_ref()
-                    .is_some_and(|gt| tenjin::type_is_vec(gt.strip_refs()))
-                {
-                    arr.map(|arr| {
-                        arr.map(|arr| match *arr {
-                            Expr::Array(syn::ExprArray { elems, .. }) => {
-                                // This is almost an exact copy of tenjin::mac_call_exprs_tt(),
-                                // but that takes a Vec<Box<Expr>> rather than raw Punctuated.
-                                let mut ts: TokenStream = TokenStream::new();
-                                for e in elems.into_iter() {
-                                    use syn::__private::ToTokens;
-                                    e.to_tokens(&mut ts);
-                                    ts.append(TokenTree::Punct(Punct::new(
-                                        ',',
-                                        proc_macro2::Spacing::Alone,
-                                    )));
-                                }
-                                mk().mac_expr(mk().mac(
-                                    mk().path("vec"),
-                                    ts,
-                                    MacroDelimiter::Bracket(Default::default()),
-                                ))
-                            }
-                            _ => arr,
-                        })
-                    })
-                } else {
-                    arr
-                }
+                self.convert_init_list(ctx, override_ty, ty, ids, opt_union_field_id)
             }
 
-            ImplicitValueInit(ty) => self.implicit_default_expr_guided(
-                ctx_guided_type,
-                ctx,
-                override_ty.unwrap_or(ty).ctype,
-            ),
+            ImplicitValueInit(ty) => {
+                self.implicit_default_expr(ctx, override_ty.unwrap_or(ty).ctype)
+            }
 
             Predefined(_, val_id) => self.convert_expr(ctx, val_id, override_ty),
 
@@ -5513,7 +4807,7 @@ impl<'c> Translation<'c> {
                 // cast when it is used as the RHS of a `uint64_t` remainder.
                 let val =
                     self.convert_atomic(ctx, name, ptr, order, val1, order_fail, val2, weak)?;
-                self.make_cast(ctx, typ, override_ty.unwrap_or(typ), val, ctx_guided_type)
+                self.make_cast(ctx, typ, override_ty.unwrap_or(typ), val)
             }
         }
     }
@@ -5528,19 +4822,12 @@ impl<'c> Translation<'c> {
         carg_tys: Option<&[CQualTypeId]>,
         override_ty: Option<CQualTypeId>,
         is_variadic: bool,
-        arg_guidances: Option<Vec<Option<tenjin::GuidedType>>>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // First do selective call conversion, which may not need to convert all subexpressions.
         match self.call_form_cases_preconversion(call_expr_ty.ctype, ctx, &func, cargs)? {
             Some(converted) => Ok(converted),
             None => {
-                let args = self.convert_call_args(
-                    ctx.used(),
-                    cargs,
-                    carg_tys,
-                    is_variadic,
-                    arg_guidances,
-                )?;
+                let args = self.convert_call_args(ctx.used(), cargs, carg_tys, is_variadic)?;
                 args.and_then_try(|args| {
                     self.convert_call_with_args(ctx, call_expr_ty, override_ty, func, args, cargs)
                 })
@@ -5554,7 +4841,6 @@ impl<'c> Translation<'c> {
         ctx: ExprContext,
         target_type_id: CQualTypeId,
         expr_id: CExprId,
-        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let source_type_id = self.ast_context[expr_id].kind.get_qual_type().unwrap();
 
@@ -5570,16 +4856,7 @@ impl<'c> Translation<'c> {
             CastKind::BitCast
         });
 
-        self.convert_cast(
-            ctx,
-            None,
-            target_type_id,
-            expr_id,
-            kind,
-            None,
-            ctx_guided_type,
-            false,
-        )
+        self.convert_cast(ctx, None, target_type_id, expr_id, kind, None, false)
     }
 
     pub(crate) fn convert_expr_with_optional_cast(
@@ -5589,7 +4866,7 @@ impl<'c> Translation<'c> {
         expr_id: CExprId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         if let Some(target_type_id) = target_type_id {
-            self.convert_expr_with_cast(ctx, target_type_id, expr_id, &None)
+            self.convert_expr_with_cast(ctx, target_type_id, expr_id)
         } else {
             self.convert_expr(ctx, expr_id, None)
         }
@@ -5598,12 +4875,10 @@ impl<'c> Translation<'c> {
     fn convert_decl_ref(
         &self,
         ctx: ExprContext,
-        expr_id: CExprId,
         expected_type_id: Option<CQualTypeId>,
         result_type_id: CQualTypeId,
         decl_id: CDeclId,
         lrvalue: LRValue,
-        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let decl = &self
             .ast_context
@@ -5731,36 +5006,6 @@ impl<'c> Translation<'c> {
         {
             // XREF:array_decay
             val = mk().method_call_expr(val, "as_mut_ptr", vec![]);
-        } else if let Some(var_guided_type) = self
-            .parsed_guidance
-            .borrow_mut()
-            .query_decl_type(self, decl_id)
-        {
-            let context_is_slice_or_array = ctx_guided_type
-                .as_ref()
-                .map(|t| t.is_slice_or_array_ref())
-                .unwrap_or(false);
-
-            // If the context expects a slice/array ref, do not coerce
-            if var_guided_type.is_slice_or_array_ref()
-                && !context_is_slice_or_array
-                && !self.wrapped_with_array_decay(expr_id)
-                && !self.wrapped_with_subscript_base(expr_id)
-            {
-                let method = if var_guided_type.is_exclusive_borrow() {
-                    "as_mut_ptr"
-                } else {
-                    "as_ptr"
-                };
-                // Apply compatible coercions for behavioral equivalence,
-                // unless we'd end up adding a redundant/conflicting cast.
-                // XREF:array_decay
-                val = mk().method_call_expr(val, method, vec![]);
-            }
-            // For types which do not have known compatible coercions, we leave the
-            // variable reference as-is, and rely on the Rust compiler to notify the
-            // user of any cases in which subsequent rewrites were unable to produce
-            // a type-correct program.
         }
 
         let mut val = WithStmts::new_val(val).merge_unsafe(set_unsafe);
@@ -5771,7 +5016,6 @@ impl<'c> Translation<'c> {
                 result_type_id,
                 expected_type_id.unwrap_or(result_type_id),
                 val,
-                ctx_guided_type,
             )?;
         }
 
@@ -5917,7 +5161,6 @@ impl<'c> Translation<'c> {
         expr: CExprId,
         kind: CastKind,
         opt_field_id: Option<CDeclId>,
-        ctx_guided_type: &Option<tenjin::GuidedType>,
         is_explicit: bool,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let source_ty = if let Some(func_decl) = self
@@ -5951,7 +5194,7 @@ impl<'c> Translation<'c> {
                     // this constitutes a volatile read. A volatile read is a side effect, so it
                     // needs to be included even if the expression is unused.
                     let val = self
-                        .convert_expr_guided(ctx.used(), expr, None, ctx_guided_type)?
+                        .convert_expr(ctx.used(), expr, None)?
                         .try_map(|val| self.volatile_read(val, source_ty))?;
                     self.convert_side_effects_expr(
                         ctx,
@@ -5959,17 +5202,11 @@ impl<'c> Translation<'c> {
                         "LValueToRValue value is not supposed to be used",
                     )
                 } else {
-                    self.convert_expr_guided(ctx, expr, None, ctx_guided_type)?
+                    self.convert_expr(ctx, expr, None)?
                 };
 
                 // if the context wants a different type, add a cast
-                return self.make_cast(
-                    ctx,
-                    source_ty.not_volatile(),
-                    target_ty,
-                    val,
-                    ctx_guided_type,
-                );
+                return self.make_cast(ctx, source_ty.not_volatile(), target_ty, val);
             }
 
             CastKind::IntegralToBoolean
@@ -5987,10 +5224,9 @@ impl<'c> Translation<'c> {
         // we would rather the expression is translated according to the type we're
         // expecting, and then we can skip the cast entirely.
         if self.can_propagate_cast(ctx, expr, target_ty, is_explicit) {
-            return self.convert_expr_guided(ctx, expr, Some(target_ty), ctx_guided_type);
+            return self.convert_expr(ctx, expr, Some(target_ty));
         }
 
-        // TODO(tenjin): these decays probably need to be elided when given guidance
         match kind {
             // A reference must be decayed if a bitcast is required. Const casts in
             // LLVM 8 are now NoOp casts, so we need to include it as well.
@@ -6005,7 +5241,7 @@ impl<'c> Translation<'c> {
             _ => {}
         }
 
-        let mut val = self.convert_expr_guided(ctx, expr, None, ctx_guided_type)?;
+        let mut val = self.convert_expr(ctx, expr, None)?;
 
         if is_explicit {
             let stmts = self.compute_variable_array_sizes(ctx, ty.ctype)?;
@@ -6026,7 +5262,6 @@ impl<'c> Translation<'c> {
             Some(expr),
             Some(kind),
             opt_field_id,
-            ctx_guided_type,
         )
     }
 
@@ -6124,18 +5359,8 @@ impl<'c> Translation<'c> {
         source_type_id: CQualTypeId,
         target_type_id: CQualTypeId,
         val: WithStmts<Box<Expr>>,
-        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        self.make_cast_full(
-            ctx,
-            source_type_id,
-            target_type_id,
-            val,
-            None,
-            None,
-            None,
-            guided_type,
-        )
+        self.make_cast_full(ctx, source_type_id, target_type_id, val, None, None, None)
     }
 
     pub fn make_cast_full(
@@ -6147,35 +5372,12 @@ impl<'c> Translation<'c> {
         expr: Option<CExprId>,
         kind: Option<CastKind>,
         opt_field_id: Option<CFieldId>,
-        guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let source_ty_kind = &self.ast_context.resolve_type(source_cty.ctype).kind;
         let target_ty_kind = &self.ast_context.resolve_type(target_cty.ctype).kind;
 
-        if guided_type
-            .as_ref()
-            .is_some_and(|guided| guided.is_slice_or_array_ref())
-            && matches!(source_ty_kind, CTypeKind::Pointer(_))
-            && matches!(target_ty_kind, CTypeKind::Pointer(_))
-        {
-            // The guided reference replaces the entire C pointer representation.
-            // Do not reintroduce a raw-pointer cast solely because the C pointee
-            // types differ.
-            return Ok(val);
-        }
-
         if source_ty_kind == target_ty_kind {
-            if let Some(guided_type) = guided_type {
-                let target_ty = self.convert_type(target_cty.ctype)?;
-                if guided_type.parsed == *target_ty {
-                    // Guided type matches target type, so we can skip the cast
-                    return Ok(val);
-                }
-                // Guided type does not match target type, so we need to cast to the guided type,
-                // which we handle below in the fallthrough path.
-            } else {
-                return Ok(val);
-            }
+            return Ok(val);
         }
         let kind = kind.unwrap_or_else(|| {
             CastKind::from_types(source_ty_kind, target_ty_kind).unwrap_or_else(|| {
@@ -6210,7 +5412,7 @@ impl<'c> Translation<'c> {
 
         match kind {
             CastKind::BitCast | CastKind::NoOp => {
-                self.convert_pointer_to_pointer_cast(source_cty, target_cty, val, expr, None)
+                self.convert_pointer_to_pointer_cast(source_cty, target_cty, val)
             }
 
             CastKind::IntegralToPointer => {
@@ -6270,7 +5472,7 @@ impl<'c> Translation<'c> {
                         self.convert_cast_from_enum(ctx, enum_id, target_cty, val)
                     })
                 } else {
-                    Ok(val.map(|val| tenjin::cast_expr_guided(val, target_ty, guided_type)))
+                    Ok(val.map(|val| mk().cast_expr(val, target_ty)))
                 }
             }
 
@@ -6284,25 +5486,12 @@ impl<'c> Translation<'c> {
                 Ok(val.map(|x| mk().call_expr(mk().ident_expr("Some"), vec![x])))
             }
 
-            CastKind::ArrayToPointerDecay => self.convert_array_to_pointer_decay(
-                ctx,
-                source_cty,
-                target_cty,
-                val,
-                expr,
-                guided_type,
-            ),
+            CastKind::ArrayToPointerDecay => {
+                self.convert_array_to_pointer_decay(ctx, source_cty, target_cty, val, expr)
+            }
 
             CastKind::NullToPointer => {
                 assert!(val.stmts().is_empty());
-                if let Some(guided_type) = guided_type {
-                    if guided_type.pretty == "String" {
-                        // XREF:guided_string_zero_empty
-                        return Ok(WithStmts::new_val(
-                            mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]),
-                        ));
-                    }
-                }
                 Ok(WithStmts::new_val(self.null_ptr(target_cty.ctype)?))
             }
 
@@ -6376,42 +5565,14 @@ impl<'c> Translation<'c> {
         }))
     }
 
-    pub fn implicit_default_expr_guided(
-        &self,
-        guided_type: &Option<tenjin::GuidedType>,
-        ctx: ExprContext,
-        ty_id: CTypeId,
-    ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        // XREF:TENJIN-GUIDANCE-STRAWMAN
-        if let Some(guided_type) = guided_type {
-            if guided_type.pretty == "String" {
-                // If the type is a String, we can just return an empty string
-                return Ok(WithStmts::new_val(
-                    mk().call_expr(mk().path_expr(vec!["String", "new"]), vec![]),
-                ));
-            }
-        }
-
-        let implicit_default = self.implicit_default_expr(ctx, ty_id)?;
-
-        if let Some(guided_type) = guided_type {
-            if tenjin::type_is_vec(guided_type.strip_refs()) {
-                // If the type is a Vec, we'll convert it from the default expr,
-                // which might be a sized array.
-                return Ok(implicit_default.map(|implicit_default| {
-                    mk().method_call_expr(implicit_default, "to_vec", vec![])
-                }));
-            }
-        }
-
-        Ok(implicit_default)
-    }
-
     pub fn implicit_default_expr(
         &self,
         ctx: ExprContext,
         ty_id: CTypeId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        if let Some(val) = self.guided_implicit_default(ctx, ty_id)? {
+            return Ok(val);
+        }
         if self.ast_context.is_va_list(ty_id) {
             // generate MaybeUninit::uninit().assume_init()
             let path = vec!["core", "mem", "MaybeUninit", "uninit"];
@@ -6642,7 +5803,7 @@ impl<'c> Translation<'c> {
         let ty = &self.ast_context.resolve_type(ty_id).kind;
 
         Ok(if ty.is_pointer() {
-            self.convert_pointer_is_null(ctx, ty_id, val, !target, &None)?
+            self.convert_pointer_is_null(ctx, ty_id, val, !target)?
         } else if ty.is_bool() {
             if target {
                 val
@@ -6895,6 +6056,9 @@ impl<'c> Translation<'c> {
             | TypeOf(ctype)
             | Auto(ctype)
             | Complex(ctype) => imports.extend(self.imports_for_type(*ctype)),
+            Typedef(decl_id) if self.is_marker_decl(*decl_id) => {
+                imports.extend(self.marker_typedef_imports(*decl_id))
+            }
             Enum(decl_id) | Typedef(decl_id) | Union(decl_id) | Struct(decl_id) => {
                 let mut decl_id = *decl_id;
                 // if the `decl` has been "squashed", get the corresponding `decl_id`

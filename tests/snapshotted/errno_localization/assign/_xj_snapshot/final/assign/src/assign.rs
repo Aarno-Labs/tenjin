@@ -7,7 +7,7 @@
     unused_assignments,
     unused_mut
 )]
-#![feature(extern_types, raw_ref_op)]
+#![feature(extern_types)]
 #[allow(unused_imports)]
 use ::assign as _;
 use ::std::process::ExitCode;
@@ -102,8 +102,8 @@ unsafe fn main_0(
         println!("Error: [{:>}]", {
             xj_str_from_ptr(
                 ({
-                    let __lift_2_3579_0 = _xj_local_errno;
-                    _xj_wrap_strerror(&mut _xj_local_errno, __lift_2_3579_0)
+                    let __lift_2_3552_0 = _xj_local_errno;
+                    _xj_wrap_strerror(&mut _xj_local_errno, __lift_2_3552_0)
                 }) as *const core::ffi::c_char,
             )
         },);

@@ -5,7 +5,7 @@ use failure::{err_msg, format_err};
 use syn::{BinOp, Expr, Type, UnOp};
 
 use crate::c_ast::CUnOp;
-use crate::translator::tenjin::{self, GuidedType};
+use crate::translator::tenjin;
 use crate::{
     diagnostics::{TranslationError, TranslationErrorKind, TranslationResult},
     format_translation_err,
@@ -61,7 +61,6 @@ impl<'c> Translation<'c> {
         mut ctx: ExprContext,
         cqual_type: CQualTypeId,
         arg: CExprId,
-        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let arg_kind = &self.ast_context.index_unwrap_parens(arg).kind;
 
@@ -75,12 +74,10 @@ impl<'c> Translation<'c> {
                 return self.convert_array_subscript(
                     ctx.used().needs_address(),
                     Some(cqual_type),
-                    Some(arg),
                     lhs,
                     rhs,
                     LRValue::RValue, // if we bypass the deref, we stay an RValue
                     false,           // don't deref, keep as pointer
-                    ctx_guided_type,
                 );
             }
             // An AddrOf DeclRef/Member is safe to not decay
@@ -101,7 +98,7 @@ impl<'c> Translation<'c> {
             .get_qual_type()
             .ok_or_else(|| format_err!("bad source type"))?;
 
-        self.convert_address_of_common(ctx, Some(arg), arg_cty, cqual_type, val, false, &None)
+        self.convert_address_of_common(ctx, Some(arg), arg_cty, cqual_type, val, false)
     }
 
     pub fn convert_array_to_pointer_decay(
@@ -111,7 +108,6 @@ impl<'c> Translation<'c> {
         target_cty: CQualTypeId,
         val: WithStmts<Box<Expr>>,
         expr: Option<CExprId>,
-        guided_type: &Option<GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // Because va_list is sometimes defined as a single-element
         // array in order for it to allocate memory as a local variable
@@ -129,7 +125,7 @@ impl<'c> Translation<'c> {
             return Ok(val);
         }
 
-        self.convert_address_of_common(ctx, expr, source_cty, target_cty, val, true, guided_type)
+        self.convert_address_of_common(ctx, expr, source_cty, target_cty, val, true)
     }
 
     fn convert_address_of_common(
@@ -140,7 +136,6 @@ impl<'c> Translation<'c> {
         pointer_cty: CQualTypeId,
         mut val: WithStmts<Box<Expr>>,
         is_array_decay: bool,
-        guided_type: &Option<GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let arg_expr_kind = arg.map(|arg| {
             let arg = self.ast_context.unwrap_predefined_ident(arg);
@@ -169,71 +164,14 @@ impl<'c> Translation<'c> {
             target_mutbl
         };
 
-        if let Some(CExprKind::DeclRef(_cqti, decl_id, _lrval)) = arg_expr_kind {
-            let expr_guidance = self
-                .parsed_guidance
-                .borrow_mut()
-                .query_decl_type(self, *decl_id);
-
-            if let Some(eg) = expr_guidance {
-                if tenjin::type_is_string(&eg.parsed)
-                    || tenjin::type_is_vec(eg.strip_refs())
-                    || tenjin::type_is_str_ref(&eg.parsed)
-                {
-                    // XREF:guided_array_decay
-                    return Ok(val);
-                }
-
-                if let Some(cg) = guided_type {
-                    if cg.is_slice_ref() && tenjin::type_try_arraylike_element(&eg.parsed).is_some()
-                    {
-                        // If the destination is guided to a slice type and the source is
-                        // array-like with the same element type, then we can skip the decay.
-                        //
-                        // If the element types are different but compatible via bytemucking,
-                        // we can insert an appropriate cast. (TODO)
-                        //
-                        // If the element types are different and not compatible, we should let
-                        // the Rust compiler catch the mismatch.
-                        return Ok(val);
-                    }
-                }
-                // If the value is a slice but the context still wants a pointer,
-                // we'll fall through to the normal decay logic.
-            } else if is_array_decay {
-                if let Some(cg) = guided_type {
-                    if cg.is_slice_ref() {
-                        // No explicit guidance on the source, but the source is an array and
-                        // the destination is guided to a slice, which requires either:
-                        //  * a (non-raw) borrow, or
-                        //  * .as_mut() / .as_ref()
-                        return Ok(val.map(|val| mk().set_mutbl(mutbl).borrow_expr(val)));
-                    }
-                }
-            }
-        }
-
         // Narrow string literals are translated directly as `[u8; N]` literals when their address
         // is taken, without the transmute. String/byte literals are already references in Rust.
         if let (
-            Some(&CExprKind::Literal(literal_cty, CLiteral::String(ref bytes, element_size @ 1))),
+            Some(&CExprKind::Literal(literal_cty, CLiteral::String(_, element_size @ 1))),
             false,
         ) = (arg_expr_kind, arg_is_macro)
         {
-            // XREF:guided_string_implicit_cast
-            if let Some(e) = self.convert_string_literal_guided(bytes, element_size, guided_type) {
-                return Ok(WithStmts::new_val(e));
-            }
-
             if is_array_decay {
-                if guided_type
-                    .as_ref()
-                    .is_some_and(|guided| guided.is_shared_borrow() && guided.is_slice_ref())
-                {
-                    // A byte string literal already has a shared reference-to-array type,
-                    // which Rust can coerce directly to the guided shared slice type.
-                    return Ok(val);
-                }
                 val = val.map(|val| mk().method_call_expr(val, "as_ptr", vec![]));
             } else {
                 let size = self.ast_context.array_len(literal_cty.ctype) * element_size as usize;
@@ -310,6 +248,10 @@ impl<'c> Translation<'c> {
         cqual_type: CQualTypeId,
         arg: CExprId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        if let Some((base, index)) = self.index_marker_operands(arg) {
+            return self.convert_index_deref(ctx, base, index);
+        }
+
         let arg_expr_kind = &self.ast_context.index_unwrap_parens(arg).kind;
 
         if let &CExprKind::Unary(_, CUnOp::AddressOf, arg, _) = arg_expr_kind {
@@ -378,12 +320,10 @@ impl<'c> Translation<'c> {
         &self,
         ctx: ExprContext,
         expected_type_id: Option<CQualTypeId>,
-        subscript_expr_id: Option<CExprId>,
         lhs: CExprId,
         rhs: CExprId,
         lrvalue: LRValue,
         deref: bool,
-        ctx_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let (pointer_id, offset_id) = if self.ast_context.expr_is_indexable(lhs) {
             (lhs, rhs)
@@ -445,28 +385,14 @@ impl<'c> Translation<'c> {
                 .get_type()
                 .ok_or_else(|| format_err!("bad arr type"))?;
             let array_type_kind = &self.ast_context.resolve_type(array_type_id).kind;
-            let (array_element_type_id, var_elt_type_id) = match *array_type_kind {
-                CTypeKind::ConstantArray(elt, _) => (elt, None),
-                CTypeKind::IncompleteArray(elt) => (elt, None),
-                CTypeKind::VariableArray(elt, _) => (elt, Some(elt)),
+            let var_elt_type_id = match *array_type_kind {
+                CTypeKind::ConstantArray(..) => None,
+                CTypeKind::IncompleteArray(..) => None,
+                CTypeKind::VariableArray(elt, _) => Some(elt),
                 ref other => panic!("Unexpected array type {:?}", other),
             };
 
-            let array_guided_type = self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, array_id);
-            let guided_element_type = array_guided_type
-                .as_ref()
-                .and_then(|guided| tenjin::type_try_arraylike_element(&guided.parsed))
-                .cloned()
-                .map(GuidedType::from_type);
-            let array_rs = self.convert_expr_guided(
-                ctx.used().not_needs_address(),
-                array_id,
-                None,
-                &array_guided_type,
-            )?;
+            let array_rs = self.convert_expr(ctx.used().not_needs_address(), array_id, None)?;
 
             // Don't dereference the offset if we're still within the variable portion
             let val = if let Some(elt_type_id) = var_elt_type_id {
@@ -475,7 +401,6 @@ impl<'c> Translation<'c> {
                     ctx.used().not_needs_address(),
                     CQualTypeId::new(target_type_id),
                     offset_id,
-                    &None,
                 )?;
                 array_rs.zip(offset_rs).and_then(|(array_rs, offset_rs)| {
                     self.make_pointer_offset(array_rs, offset_rs, elt_type_id, false, deref)
@@ -486,48 +411,11 @@ impl<'c> Translation<'c> {
                     ctx.used().not_needs_address(),
                     CQualTypeId::new(target_type_id),
                     offset_id,
-                    &None,
                 )?;
                 array_rs
                     .zip(offset_rs)
                     .map(|(array_rs, offset_rs)| mk().index_expr(array_rs, offset_rs))
             };
-
-            let context_is_slice_or_array = ctx_guided_type
-                .as_ref()
-                .is_some_and(|guided| guided.is_slice_or_array_ref());
-            let element_is_c_pointer = matches!(
-                self.ast_context.resolve_type(array_element_type_id).kind,
-                CTypeKind::Pointer(_)
-            );
-            let subscript_is_base =
-                subscript_expr_id.is_some_and(|expr_id| self.wrapped_with_subscript_base(expr_id));
-            if !ctx.needs_address
-                && element_is_c_pointer
-                && !context_is_slice_or_array
-                && !subscript_is_base
-            {
-                if let Some(guided_element_type) = guided_element_type {
-                    if guided_element_type.is_slice_or_array_ref() {
-                        let method = if guided_element_type.is_exclusive_borrow() {
-                            "as_mut_ptr"
-                        } else {
-                            "as_ptr"
-                        };
-                        let target_type = self.convert_type(
-                            expected_type_id
-                                .unwrap_or(CQualTypeId::new(array_element_type_id))
-                                .ctype,
-                        )?;
-                        return Ok(val.map(|val| {
-                            mk().cast_expr(
-                                mk().method_call_expr(val, method, vec![]),
-                                target_type.clone(),
-                            )
-                        }));
-                    }
-                }
-            }
 
             Ok(val)
         } else {
@@ -543,76 +431,26 @@ impl<'c> Translation<'c> {
                 }
             };
 
-            // If the pointer is guided to something indexable, convert it without decaying
-            // to a raw pointer so `convert_pointer_offset` can index the slice
-            // directly. Otherwise it must be ref-decayed for `.offset()`.
-            let can_subscript = self.can_subscript(pointer_id) || {
-                ctx_guided_type
-                    .as_ref()
-                    .map(|t| t.is_slice_or_array() || t.is_slice_or_array_ref())
-                    .unwrap_or(false)
-            };
-            let pointer_ctx = if can_subscript {
-                ctx.used()
-            } else {
-                ctx.used().not_needs_address().decay_ref()
-            };
+            // LHS must be ref decayed for the offset method call's self param
             let pointer_rs =
-                self.convert_expr_guided(pointer_ctx, pointer_id, None, ctx_guided_type)?;
-            let offset_cty = self.ast_context[offset_id]
-                .kind
-                .get_qual_type()
-                .ok_or_else(|| format_err!("offset_id bad type"))?;
-            let offset_is_enum = matches!(
-                self.ast_context.resolve_type(offset_cty.ctype).kind,
-                CTypeKind::Enum(_)
-            );
-            let offset_rs = if offset_is_enum {
-                // Enums are represented as newtypes, so preserve their C type long enough for
-                // `convert_cast_from_enum` to extract the inner integer before casting it.
-                let offset_type = if can_subscript {
-                    CTypeKind::Size
-                } else {
-                    CTypeKind::SSize
-                };
-                let offset_type_id = self.ast_context.type_for_kind(&offset_type);
-                self.convert_expr_with_cast(
-                    ctx.used().not_needs_address(),
-                    CQualTypeId::new(offset_type_id),
-                    offset_id,
-                    &None,
-                )?
-            } else {
-                // `convert_pointer_offset` performs the final usize/isize conversion.
-                self.convert_expr(ctx.used().not_needs_address(), offset_id, None)?
-            };
+                self.convert_expr(ctx.used().not_needs_address().decay_ref(), pointer_id, None)?;
+            let target_type_id = self.ast_context.type_for_kind(&CTypeKind::SSize);
+            let offset_rs = self.convert_expr_as_offset(
+                ctx.used().not_needs_address(),
+                CQualTypeId::new(target_type_id),
+                offset_id,
+            )?;
 
             let mut val = pointer_rs
                 .zip(offset_rs)
                 .and_then(|(pointer_rs, offset_rs)| {
-                    if offset_is_enum {
-                        if can_subscript {
-                            self.make_pointer_subscript(pointer_rs, offset_rs, deref)
-                        } else {
-                            self.make_pointer_offset(
-                                pointer_rs,
-                                offset_rs,
-                                pointee_type_id.ctype,
-                                false,
-                                deref,
-                            )
-                        }
-                    } else {
-                        self.convert_pointer_offset(
-                            Some(pointer_id),
-                            pointer_rs,
-                            offset_rs,
-                            pointee_type_id.ctype,
-                            false,
-                            deref,
-                            ctx_guided_type,
-                        )
-                    }
+                    self.make_pointer_offset(
+                        pointer_rs,
+                        offset_rs,
+                        pointee_type_id.ctype,
+                        false,
+                        deref,
+                    )
                 });
 
             if lrvalue.is_rvalue() {
@@ -629,7 +467,6 @@ impl<'c> Translation<'c> {
                     source_type_id,
                     expected_type_id.unwrap_or(source_type_id),
                     val,
-                    &None,
                 )?;
             }
 
@@ -640,27 +477,12 @@ impl<'c> Translation<'c> {
     /// Pointer offset that casts its argument to isize
     pub fn convert_pointer_offset(
         &self,
-        c_ptr: Option<CExprId>,
         ptr: Box<Expr>,
         offset: Box<Expr>,
         pointee_cty: CTypeId,
         neg: bool,
         deref: bool,
-        ctx_guided_type: &Option<tenjin::GuidedType>, // The guided type context of the pointer operand
     ) -> WithStmts<Box<Expr>> {
-        if !neg
-            && c_ptr.is_some_and(|ptr_id| {
-                ctx_guided_type
-                    .as_ref()
-                    .map(|t| t.is_slice_or_array() || t.is_slice_or_array_ref())
-                    .unwrap_or(false)
-                    || self.can_subscript(ptr_id)
-            })
-        {
-            let subscript = cast_int(offset, "usize", false);
-            return self.make_pointer_subscript(ptr, subscript, deref);
-        }
-
         self.make_pointer_offset(
             ptr,
             cast_int(offset, "isize", false),
@@ -668,25 +490,6 @@ impl<'c> Translation<'c> {
             neg,
             deref,
         )
-    }
-
-    /// Creates a slice indexing expression. Assumes that `subscript` is of type `usize`.
-    fn make_pointer_subscript(
-        &self,
-        ptr: Box<Expr>,
-        subscript: Box<Expr>,
-        deref: bool,
-    ) -> WithStmts<Box<Expr>> {
-        let overall = if deref {
-            // ptr[idx]
-            mk().index_expr(ptr, subscript)
-        } else {
-            // XREF:guided_subscript_noderef
-            // &ptr[idx..]
-            mk().borrow_expr(mk().index_expr(ptr, mk().range_expr(Some(subscript), None)))
-        };
-
-        WithStmts::new_val(overall)
     }
 
     /// Creates a pointer offset expression. Assumes that `offset_rs` is of type `isize`.
@@ -783,8 +586,6 @@ impl<'c> Translation<'c> {
         source_cty: CQualTypeId,
         target_cty: CQualTypeId,
         val: WithStmts<Box<Expr>>,
-        c_expr: Option<CExprId>,
-        guided_type: Option<tenjin::GuidedType>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         if self.ast_context.is_function_pointer(target_cty.ctype)
             || self.ast_context.is_function_pointer(source_cty.ctype)
@@ -811,87 +612,6 @@ impl<'c> Translation<'c> {
                 WithStmts::new_val(transmute_expr(source_ty, target_ty, val)).set_unsafe()
             }))
         } else {
-            // Normal case
-
-            // TENJIN-TODO: use type inference to decide whether we should be
-            // omitting the cast, or using some other form of coercion.
-            //if !is_explicit && guided_type.is_some() {
-            //    return Ok(val);
-            //}
-            let source_ty_kind = &self.ast_context.resolve_type(source_cty.ctype).kind;
-            let target_ty_kind = &self.ast_context.resolve_type(target_cty.ctype).kind;
-            let guided_type: Option<tenjin::GuidedType> = match (guided_type, c_expr) {
-                (Some(gt), _) => Some(gt.clone()),
-                (None, Some(expr)) => self
-                    .parsed_guidance
-                    .borrow_mut()
-                    .query_expr_type(self, expr),
-                _ => {
-                    log::warn!(
-                        "No guided type and no C exprid for cast from {:?} to {:?}",
-                        source_ty_kind,
-                        target_ty_kind
-                    );
-                    None
-                }
-            };
-            if let Some(guided_type) = guided_type {
-                if let CTypeKind::Pointer(pcq) = source_ty_kind {
-                    if let CTypeKind::Struct(s) = self.ast_context.resolve_type(pcq.ctype).kind {
-                        // Casting from a pointer-to-struct
-
-                        // Can we use bytemuck to do the cast safely?
-                        let name = self.type_converter.borrow().resolve_decl_name(s).unwrap();
-                        if self.parsed_guidance.borrow().pod_types.contains(&name) {
-                            match &guided_type.parsed {
-                                Type::Reference(tref) => {
-                                    if tenjin::type_is_vec(&tref.elem) {
-                                        // emit bytemuck::cast_slice_mut(&mut x)
-                                        return Ok(val.map(|x| {
-                                            mk().call_expr(
-                                                mk().path_expr(vec!["bytemuck", "cast_slice_mut"]),
-                                                vec![mk()
-                                                    .set_mutbl(Mutability::Mutable)
-                                                    .borrow_expr(x)],
-                                            )
-                                        }));
-                                    }
-                                    // emit bytemuck::cast_mut(&mut x)
-                                    return Ok(val.map(|x| {
-                                        mk().call_expr(
-                                            mk().path_expr(vec!["bytemuck", "cast_mut"]),
-                                            vec![mk()
-                                                .set_mutbl(Mutability::Mutable)
-                                                .borrow_expr(x)],
-                                        )
-                                    }));
-                                }
-                                _ => {
-                                    log::error!(
-                                        "Unhandled type guidance for cast: {:?}",
-                                        guided_type
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        // Casting from a pointer type, not a pointer-to-struct
-                    }
-                    // Casting from a pointer type.
-                    // If our guidance is that we actually have a Vec, we need
-                    // to insert an as_mut_ptr() call here.
-                    if tenjin::type_is_vec(&guided_type.parsed) {
-                        let target_ty = self.convert_type(target_cty.ctype)?;
-                        return Ok(val.map(|x| {
-                            let x_as_ptr =
-                                mk().method_call_expr(x, "as_mut_ptr", Vec::<Box<Expr>>::new());
-
-                            mk().cast_expr(x_as_ptr, target_ty)
-                        }));
-                    }
-                }
-            }
-
             let target_ty = self.convert_type(target_cty.ctype)?;
             Ok(val.map(|val| mk().cast_expr(val, target_ty)))
         }
@@ -1045,16 +765,7 @@ impl<'c> Translation<'c> {
         ptr_type: CTypeId,
         val: Box<Expr>,
         is_null: bool,
-        mb_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<Box<Expr>> {
-        if let Some(guided_type) = mb_guided_type {
-            if guided_type.pretty == "String" {
-                // strings are never null
-                // XREF:guided_condition_string_null_check_neq
-                return Ok(mk().lit_expr(mk().bool_lit(!is_null)));
-            }
-        }
-
         Ok(if self.ast_context.is_function_pointer(ptr_type) {
             let method = if is_null { "is_none" } else { "is_some" };
             mk().method_call_expr(val, method, vec![])
@@ -1066,7 +777,6 @@ impl<'c> Translation<'c> {
                     "cannot check nullity of pointer in `const` context",
                 ));
             }
-            // TENJIN:TODO: guided references return false
             let val = mk().method_call_expr(val, "is_null", vec![]);
             if !is_null {
                 mk().unary_expr(UnOp::Not(Default::default()), val)

@@ -27,7 +27,7 @@ unsafe fn main_0(
     mut argv: *mut *mut ::core::ffi::c_char,
 ) -> ::core::ffi::c_int {
     let mut _xj_local_errno: i32 = 0;
-    _xj_local_errno = 0 as ::core::ffi::c_int;
+    _xj_local_errno = 0 as i32;
     let mut t: time_t = 0;
     _xj_wrap_time(&mut _xj_local_errno, &raw mut t);
     if _xj_local_errno == 0 as ::core::ffi::c_int {

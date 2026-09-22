@@ -167,6 +167,14 @@ correct program. Note that one may rationally want to produce an incorrect
 translation, if the cost of fixing the unhandled cases from "incorrect" guidance
 is lower than the cost of otherwise obtaining an acceptably correct translation.
 
+Type guidance is applied to the C before translation by
+[guidance instrumentation](passes/guidance_instrumentation.md). Incompatible
+occurrences it cannot convert are emitted as
+`xj_unhandled_coercion(value, "<from> -> <to>")`, which keeps the value's type,
+and guidance the program cannot honour (for example, a guided slice that is
+still incremented) is listed under `guidance_diagnostics` in the prepared
+codebase's `xj-guidance.json`.
+
 ### FFI Guidance
 FFI guidance is at an early stage: at the moment, the following Rust types are not handled as targets (not exhaustive!):
 - Owned types (`Box`, `Vec`, `String`)
@@ -197,6 +205,7 @@ Some notable passes:
 
 - [convert union bitcasts](passes/convert_union_bitcasts.md)
 - [errno localization](passes/errno_localization.md)
+- [guidance instrumentation](passes/guidance_instrumentation.md)
 - [K&R syntax elimination](passes/knr_elimination.md)
 - [mutable global localization](passes/mutable_global_localization.md)
 - [pointer arithmetic reduction & slice reshaping](passes/pointer_arithmetic_reduction.md)

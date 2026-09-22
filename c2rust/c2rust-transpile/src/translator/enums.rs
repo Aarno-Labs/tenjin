@@ -121,7 +121,7 @@ impl<'c> Translation<'c> {
 
         // Cast from the enum's integral type to the expected integral type.
         let source_cty = self.enum_integral_type(enum_id);
-        self.make_cast(ctx, source_cty, target_cty, WithStmts::new_val(val), &None)
+        self.make_cast(ctx, source_cty, target_cty, WithStmts::new_val(val))
     }
 
     /// Gets the inner integral value of an enum value.
@@ -159,7 +159,7 @@ impl<'c> Translation<'c> {
 
         let enum_integral_type = self.enum_integral_type(enum_id);
         let mut val = WithStmts::new_val(val);
-        val = self.make_cast(ctx, source_cty, enum_integral_type, val, &None)?;
+        val = self.make_cast(ctx, source_cty, enum_integral_type, val)?;
         val = val.map(|val| self.enum_constructor_expr(enum_id, val, false));
 
         Ok(val)

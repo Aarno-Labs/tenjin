@@ -91,6 +91,13 @@ class BuildInfo:
         self._intercepted_commands: list[targets_from_intercept.InterceptedCommand] = []
         self._implicit_target: BuildTarget | None = None
         self._use_preprocessed_files: bool = False
+        # Headers, relative to the codebase root, passed with `-include` to
+        # every compile. They live in the codebase so each stage has a copy.
+        self._forced_includes: list[str] = []
+
+    def add_forced_include(self, rel_path: str) -> None:
+        if rel_path not in self._forced_includes:
+            self._forced_includes.append(rel_path)
 
     def __repr__(self) -> str:
         return (
@@ -419,14 +426,18 @@ class BuildInfo:
             f"duplicate workspace members: {[c.output for c in exe_commands]}"
         )
         cc_cmds = [
-            _CompileCommand_from_intercepted_command(
+            self._with_forced_includes(
+                _CompileCommand_from_intercepted_command(
+                    c,
+                    current_codebase,
+                    self._use_preprocessed_files,
+                    link_cmd_handling,
+                    extra_compile_or_link_flags,
+                    exe_target_outputs,
+                    all_target_keys,
+                ),
                 c,
                 current_codebase,
-                self._use_preprocessed_files,
-                link_cmd_handling,
-                extra_compile_or_link_flags,
-                exe_target_outputs,
-                all_target_keys,
             )
             for c in commands
             if c.compile_only
@@ -435,6 +446,19 @@ class BuildInfo:
         ]
 
         return compilation_database.CompileCommands(cc_cmds)
+
+    def _with_forced_includes(
+        self,
+        cc: compilation_database.CompileCommand,
+        icmd: targets_from_intercept.InterceptedCommand,
+        current_codebase: Path,
+    ) -> compilation_database.CompileCommand:
+        if not self._forced_includes or not (icmd.compile_only or icmd.c_inputs):
+            return cc
+        extra = []
+        for rel_path in self._forced_includes:
+            extra += ["-include", (current_codebase / rel_path).as_posix()]
+        return cc.with_command_parts(cc.get_command_parts() + extra)
 
     def compdb_for_profiled_build(
         self, current_codebase: Path

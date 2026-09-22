@@ -6,7 +6,6 @@
 #![allow(unused_assignments)]
 #![allow(unused_mut)]
 #![feature(extern_types)]
-#![feature(raw_ref_op)]
 
 pub mod src {
     pub mod bar;
