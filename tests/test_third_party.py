@@ -402,7 +402,6 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
 
 
 @pytest.mark.slow  # expected runtime: 100 seconds
-@pytest.mark.skip(reason="triggers a refolder bug")
 def test_Old_Man_Programmer__tree_2_3_2(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -687,7 +686,7 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow
+@pytest.mark.slow  # expected runtime: 500 s
 def test_uxnmin(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
 
@@ -801,7 +800,6 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.skip("triggers a refolder bug")
 @pytest.mark.slow  # estimated runtime: 12 minutes (8 minutes in refolding)
 def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
@@ -865,21 +863,13 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
         f" C: {summary_line(c_prog_output.stdout)!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 247
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 246
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
+@pytest.mark.skip("triggers an ast-grep bug")
 @pytest.mark.slow  # expected runtime: ~30 minutes
-@pytest.mark.skip(
-    reason="dbcc does not yet translate end-to-end; the C sources handed to c2rust "
-    "fail to parse, so no final/ crate is produced. Refolding itself is not at "
-    "fault (the c_16 output was verified token-faithful to the modified program); "
-    "every TU except getopt/util calls "
-    "assert(<pointer>); with assert a blocked macro during translation, the calls "
-    "bind to the autoincluded 'void assert(int);' marker decl and Clang rejects "
-    "the pointer-to-int conversions as errors.",
-)
 def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -1263,8 +1253,8 @@ def test_itsjustme27__dns_tool_exe(tenjin_fixtures: TenjinFixtures):
     assert get_final_unsafe_fns_count(tmp_resultsdir) == 7
 
 
+@pytest.mark.skip("triggers a refolder bug")
 @pytest.mark.slow  # expected runtime: 15 minutes
-@pytest.mark.skip(reason="triggers a refolder bug")
 def test_lemon_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
