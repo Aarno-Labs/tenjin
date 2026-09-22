@@ -250,10 +250,21 @@ class ConsolidationRevert:
     pre_rewrite_i_length: int
 
 
+@dataclass(frozen=True)
+class RelocatedIncludeBlock:
+    """An XjGlobals include block moved from a preprocessed TU into a header.
+
+    If refolding cannot recover that header include, the block must be restored
+    alongside the expanded definition identified by `target_quss`.
+    """
+
+    target_quss: str
+    contents: str
+
+
 @dataclass
 class ConsolidationRevertContext:
-    """All consolidation reverts for one TU's `.i` file, plus the full list of
-    rewrites the consolidation BatchingRewriter applied to that file.
+    """Refold fallbacks for one TU, plus its consolidation rewrite locations.
 
     `all_i_rewrites` is `(pre_start, pre_length, post_length)` per rewrite
     that affects this `.i` file (reverts plus any other consolidation-pass
@@ -261,9 +272,14 @@ class ConsolidationRevertContext:
     enough to translate every revert's pre-rewrite location to its
     post-rewrite byte range in the final `.i`, which is the anchor used to
     look up the corresponding `.c` range via the edit-map.
+
+    `relocated_include_blocks` records XjGlobals support text moved from the
+    TU into a header. When a reverted definition remains expanded after
+    refolding, its support block must remain expanded with it.
     """
 
     reverts: list[ConsolidationRevert]
+    relocated_include_blocks: list[RelocatedIncludeBlock]
     all_i_rewrites: list[tuple[int, int, int]]
 
 
@@ -472,8 +488,12 @@ def restore_dropped_consolidation_reverts(
 
     c_content = c_path.read_text(encoding="utf-8")
     edit_map = _load_edit_map(edit_map_path)
+    include_blocks_by_target: dict[str, list[str]] = {}
+    for block in ctx.relocated_include_blocks:
+        include_blocks_by_target.setdefault(block.target_quss, []).append(block.contents)
 
     restored = 0
+    restored_include_blocks = 0
     skipped_ambiguous = 0
     skipped_already_folded = 0
     pending_rewrites: list[tuple[int, int, str, str]] = []
@@ -528,10 +548,16 @@ def restore_dropped_consolidation_reverts(
                 skipped_ambiguous += 1
             continue
 
+        replacement = revert.modified_version
+        if revert.is_defn and revert.quss in include_blocks_by_target:
+            blocks = include_blocks_by_target.pop(revert.quss)
+            replacement = "".join(blocks) + replacement
+            restored_include_blocks += len(blocks)
+
         pending_rewrites.append((
             match_idx,
             match_idx + len(chosen_candidate),
-            revert.modified_version,
+            replacement,
             revert.quss,
         ))
 
@@ -544,6 +570,7 @@ def restore_dropped_consolidation_reverts(
     if restored or skipped_ambiguous:
         print(
             f"refold restore for {c_path.name}: restored={restored} "
+            f"restored_include_blocks={restored_include_blocks} "
             f"skipped_ambiguous={skipped_ambiguous} "
             f"already_folded_or_absent={skipped_already_folded} "
             f"(total reverts={len(ctx.reverts)})"

@@ -74,6 +74,57 @@ def build_info_for_single_source(codebase: Path, source: Path) -> targets.BuildI
     return build_info
 
 
+def test_refold_restore_carries_relocated_xjglobals_block_with_definition(tmp_path):
+    original = "int read_code(int error) { return PURE_E_CODES[error]; }"
+    modified = (
+        "int read_code(struct XjGlobals *xjg, int error) { return xjg->PURE_E_CODES[error]; }"
+    )
+    include_block = (
+        "\n// Type definitions needed for XjGlobals\n"
+        '#include "xj_globals.h"\n'
+        "/* @read_code end include block for XjGlobals */\n"
+    )
+    c_path = tmp_path / "sample.c"
+    c_path.write_text(original + "\n", encoding="utf-8")
+    edit_map_path = tmp_path / "sample.editmap.json"
+    edit_map_path.write_text(
+        json.dumps({
+            "edits": [
+                {
+                    "modified_pp_byte_range": {"begin": 0, "end": len(original)},
+                    "refolded_output_byte_range": {"begin": 0, "end": len(original)},
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+    ctx = c_refact.ConsolidationRevertContext(
+        reverts=[
+            c_refact.ConsolidationRevert(
+                modified_version=modified,
+                expanded_header_version=original,
+                original_header_version=original,
+                header_rel_path="api.h",
+                quss="read_code",
+                is_defn=True,
+                pre_rewrite_i_start=0,
+                pre_rewrite_i_length=len(original),
+            )
+        ],
+        relocated_include_blocks=[
+            c_refact.RelocatedIncludeBlock(
+                target_quss="read_code",
+                contents=include_block,
+            )
+        ],
+        all_i_rewrites=[(0, len(original), len(original))],
+    )
+
+    c_refact.restore_dropped_consolidation_reverts(c_path, edit_map_path, ctx)
+
+    assert c_path.read_text(encoding="utf-8") == include_block + modified + "\n"
+
+
 def test_localize_mutable_globals_empty_selection_is_a_noop(tmp_codebase):
     tmp_codebase.mkdir()
     manifest_path = tmp_codebase / "pangs-manifest.json"

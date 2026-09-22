@@ -1823,6 +1823,9 @@ def run_preparation_passes(
         consolidation_reverts_collected: dict[
             RelativeFilePathStr, list[c_refact.ConsolidationRevert]
         ] = {}
+        relocated_include_blocks_collected: dict[
+            RelativeFilePathStr, list[c_refact.RelocatedIncludeBlock]
+        ] = {}
         # Map TU absolute paths to their relative paths so we can key by the
         # relative path when snapshotting rewrites after the block exits.
         rel_tu_path_by_abs: dict[str, RelativeFilePathStr] = {
@@ -1996,6 +1999,15 @@ def run_preparation_passes(
                             end_include_block - start_include_block,
                             "",
                         )
+                        rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
+                        relocated_include_blocks_collected.setdefault(rel_tu_path, []).append(
+                            c_refact.RelocatedIncludeBlock(
+                                target_quss=target_q,
+                                contents=tu_file_contents[
+                                    start_include_block:end_include_block
+                                ].decode("utf-8"),
+                            )
+                        )
                         # Add the include block to the header
                         q_start_offset, _q_end_offset, _q_contents, _q_is_defn = details
                         rewriter.add_rewrite(
@@ -2018,7 +2030,10 @@ def run_preparation_passes(
         abs_by_rel: dict[RelativeFilePathStr, str] = {
             rel: abs_ for abs_, rel in rel_tu_path_by_abs.items()
         }
-        for rel_tu_path, reverts in consolidation_reverts_collected.items():
+        affected_rel_tus = (
+            consolidation_reverts_collected.keys() | relocated_include_blocks_collected.keys()
+        )
+        for rel_tu_path in affected_rel_tus:
             abs_tu_path = abs_by_rel.get(rel_tu_path)
             if abs_tu_path is None:
                 continue
@@ -2027,7 +2042,8 @@ def run_preparation_passes(
                 (start, length, len(replacement)) for (start, length, replacement) in applied_for_tu
             ]
             store.consolidation_data_by_rel_tu[rel_tu_path] = c_refact.ConsolidationRevertContext(
-                reverts=reverts,
+                reverts=consolidation_reverts_collected.get(rel_tu_path, []),
+                relocated_include_blocks=relocated_include_blocks_collected.get(rel_tu_path, []),
                 all_i_rewrites=all_i_rewrites,
             )
 
