@@ -330,6 +330,29 @@ def test_source_plan_materializes_indirect_mixed_targets_and_preserves_behavior(
     assert materialized["context_rewrite"]["fields"] == manifest["context_rewrite"]["fields"]
 
 
+def test_localization_preserves_tag_defined_with_selected_global(tmp_path, source_pangs):
+    root = tmp_path / "project"
+    code = (
+        "struct Node { int value; struct Node *next; } *nodes[2];\n"
+        "static int read_node(void){return nodes[0]->value;}\n"
+        "int main(void){struct Node node={7,0}; nodes[0]=&node; return read_node();}\n"
+    )
+    source, compdb, manifest_path = analyze(source_pangs, root, code)
+    manifest = json.loads(manifest_path.read_text())
+    field_names = {
+        field["llvm_name"] for field in manifest["context_rewrite"]["selected"]["fields"]
+    }
+    assert "nodes" in field_names, manifest
+
+    c_refact.localize_mutable_globals(manifest_path, compdb, root)
+
+    rewritten = source.read_text()
+    assert rewritten.count("struct Node { int value; struct Node *next; };") == 1
+    executable = tmp_path / "rewritten"
+    hermetic.run(["clang", "-x", "c", source, "-o", executable], check=True, capture_output=True)
+    assert hermetic.run([executable], check=False).returncode == 7
+
+
 def materialize_sources(source_pangs, tmp_path, sources, *, leave_globals=()):
     """Check a real localization plan against C execution and Rust compilation."""
     root = tmp_path / "project"

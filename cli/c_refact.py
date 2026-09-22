@@ -1795,9 +1795,15 @@ def _localize_mutable_globals_in_place(
 
             for type_name, decl_cursor in needed_struct_defs.items():
                 decl_cursor = local_type_definitions.get((decl_cursor.kind, type_name), decl_cursor)
+                definition_is_removed = any(
+                    start <= decl_cursor.extent.start.offset
+                    and decl_cursor.extent.end.offset <= end
+                    for start, end in global_definition_ranges.get(tu_path, [])
+                )
                 if (
                     decl_cursor.location.file.name != tu_path
                     or decl_cursor.extent.end.offset > offset
+                    or definition_is_removed
                 ):
                     types_to_emit_structs[type_name] = decl_cursor
                 #     print(f"    Will emit struct definition: {type_name}")
