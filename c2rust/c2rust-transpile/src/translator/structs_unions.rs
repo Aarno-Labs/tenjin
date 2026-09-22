@@ -12,7 +12,7 @@ use crate::c_ast::{
 };
 use crate::diagnostics::TranslationResult;
 use crate::renamer::Namespaces;
-use crate::translator::variadic::mk_va_list_ty;
+use crate::translator::variadic::{mk_va_list_ty, set_va_list_lifetime};
 use crate::translator::{ConvertedDecl, ExprContext, Translation, PADDING_SUFFIX};
 use crate::with_stmts::WithStmts;
 use crate::ExternCrate;
@@ -877,8 +877,8 @@ impl<'a> Translation<'a> {
                 let ctype = typ.ctype;
                 // TODO: clean up code and avoid code duplication
                 // TODO: handle or panic on structs with more than one va_list?
-                let is_va_list = self.ast_context.is_va_list(ctype);
-                let mut ty = if is_va_list {
+                let is_direct_va_list = self.ast_context.is_va_list(ctype);
+                let mut ty = if is_direct_va_list {
                     mk_va_list_ty(self.tcfg.edition, Some("a"))
                 } else {
                     let record_name = self
@@ -898,6 +898,10 @@ impl<'a> Translation<'a> {
                         self.convert_type(ctype)?
                     }
                 };
+                // A va_list can also occur below the field's outermost type,
+                // as in `va_list *`. Such a field still makes the record own
+                // the lifetime needed by Rust's VaList representation.
+                let is_va_list = set_va_list_lifetime(&mut ty, "a");
                 let bitfield_width = match bitfield_width {
                     // Bitfield widths of 0 should just be markers for clang,
                     // we shouldn't need to explicitly handle it ourselves

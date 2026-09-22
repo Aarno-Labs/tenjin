@@ -1,4 +1,5 @@
 use super::*;
+use syn::visit_mut::{self, VisitMut};
 
 #[derive(Copy, Clone, Debug)]
 pub enum VaPart {
@@ -40,6 +41,45 @@ pub fn mk_va_list_ty(edition: RustEdition, lifetime: Option<&str>) -> Box<Type> 
         mk().path_segment("ffi"),
         mk().path_segment_with_args(name, mk().angle_bracketed_args(lifetime_args)),
     ])
+}
+
+/// Give every translated `VaList` within `ty` the lifetime owned by its
+/// enclosing item. Returns whether a `VaList` was found.
+pub fn set_va_list_lifetime(ty: &mut Type, lifetime: &str) -> bool {
+    struct SetVaListLifetime<'a> {
+        lifetime: &'a str,
+        found: bool,
+    }
+
+    impl VisitMut for SetVaListLifetime<'_> {
+        fn visit_type_path_mut(&mut self, ty: &mut syn::TypePath) {
+            let segments = &mut ty.path.segments;
+            let is_va_list = ty.qself.is_none()
+                && segments.len() == 3
+                && segments[0].ident == "core"
+                && segments[1].ident == "ffi"
+                && matches!(
+                    segments[2].ident.to_string().as_str(),
+                    "VaList" | "VaListImpl"
+                );
+
+            if is_va_list {
+                self.found = true;
+                segments[2].arguments = syn::PathArguments::AngleBracketed(
+                    mk().angle_bracketed_args(vec![mk().lifetime(self.lifetime)]),
+                );
+            }
+
+            visit_mut::visit_type_path_mut(self, ty);
+        }
+    }
+
+    let mut visitor = SetVaListLifetime {
+        lifetime,
+        found: false,
+    };
+    visitor.visit_type_mut(ty);
+    visitor.found
 }
 
 pub fn mk_va_list_copy(edition: RustEdition, va_list: Box<Expr>) -> Box<Expr> {
