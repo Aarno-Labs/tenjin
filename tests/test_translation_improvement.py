@@ -3,6 +3,7 @@ from subprocess import CompletedProcess
 
 import pytest
 
+import ingest_tracking
 import translation_improvement
 
 
@@ -52,3 +53,27 @@ def test_exceptional_lift_restores_temporarily_rewritten_print_macros(
     assert rewrites == [
         (call, macro) for macro, call in translation_improvement.PRINT_MACRO_REWRITES
     ]
+
+
+def test_failed_improvement_stage_is_not_selected_as_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    initial = tmp_path / "00_out"
+    initial.mkdir()
+    (initial / "result.rs").write_text("last successful output\n", encoding="utf-8")
+
+    def fail_synsub(_root: Path, _args: list[str], output: Path) -> CompletedProcess:
+        (output / "result.rs").write_text("failed output\n", encoding="utf-8")
+        return CompletedProcess([], 1)
+
+    monkeypatch.setattr(translation_improvement, "run_improve_synsub", fail_synsub)
+
+    selected = translation_improvement.run_improvement_passes(
+        tmp_path,
+        initial,
+        tmp_path,
+        ingest_tracking.TimingRepo(None),
+    )
+
+    assert selected == initial
+    assert (tmp_path / "01_synsub" / "result.rs").read_text(encoding="utf-8") == ("failed output\n")

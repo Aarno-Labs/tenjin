@@ -681,8 +681,8 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
 
 
 def run_improvement_passes(
-    root: Path, output: Path, resultsdir: Path, cratename: str, tracker: ingest_tracking.TimingRepo
-):
+    root: Path, output: Path, resultsdir: Path, tracker: ingest_tracking.TimingRepo
+) -> Path:
     def run_cargo_fmt(_root: Path, dir: Path) -> CompletedProcess:
         cp1 = hermetic.run_cargo_in(
             ["fmt"],
@@ -813,3 +813,5 @@ def run_improvement_passes(
             print()
             print()
             prev = newdir
+
+    return prev
