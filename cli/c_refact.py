@@ -1054,6 +1054,56 @@ def order_context_type_declarations(declarations: list[Cursor]) -> list[Cursor]:
     return result
 
 
+def anonymous_tag_definition(type_obj) -> Cursor | None:
+    """Find an anonymous tag written directly as part of a declarator's type."""
+    while True:
+        if type_obj.kind in (
+            TypeKind.CONSTANTARRAY,
+            TypeKind.INCOMPLETEARRAY,
+            TypeKind.VARIABLEARRAY,
+        ):
+            type_obj = type_obj.get_array_element_type()
+        elif type_obj.kind == TypeKind.POINTER:
+            type_obj = type_obj.get_pointee()
+        elif type_obj.kind == TypeKind.ELABORATED:
+            declaration = type_obj.get_declaration()
+            if (
+                declaration.kind
+                in (
+                    CursorKind.STRUCT_DECL,
+                    CursorKind.UNION_DECL,
+                    CursorKind.ENUM_DECL,
+                )
+                and declaration.is_anonymous()
+            ):
+                return declaration.get_definition() or declaration
+            type_obj = type_obj.get_named_type()
+        elif type_obj.kind in (TypeKind.RECORD, TypeKind.ENUM):
+            declaration = type_obj.get_declaration()
+            if declaration.is_anonymous():
+                return declaration.get_definition() or declaration
+            return None
+        else:
+            return None
+
+
+def render_source_backed_declaration(cursor: Cursor, rewriter) -> str:
+    """Render a declaration, recovering an inline anonymous tag from its source."""
+    declaration = anonymous_tag_definition(cursor.type)
+    base_type_spelling = None
+    if declaration is not None:
+        source_path = declaration.location.file.name
+        content = rewriter.get_content(source_path)
+        base_type_spelling = content[
+            declaration.extent.start.offset : declaration.extent.end.offset
+        ].decode("utf-8")
+    return render_declaration_sans_qualifiers(
+        cursor.type,
+        cursor.spelling,
+        base_type_spelling=base_type_spelling,
+    )
+
+
 def localize_mutable_globals(
     manifest_path: Path,
     compdb: compilation_database.CompileCommands,
@@ -1215,6 +1265,7 @@ def _localize_mutable_globals_in_place(
     needed_struct_defs = {}
     needed_typedefs: dict[str, tuple[Cursor, str]] = {}
     forward_declarable_types: dict[str, str] = {}
+    visited_anonymous_type_defs: set[tuple[CursorKind, str, int, int]] = set()
 
     def collect_type_dependencies(type_obj_noncanonical, depth=0):
         """Recursively collect struct/union types needed to define this type."""
@@ -1301,7 +1352,11 @@ def _localize_mutable_globals_in_place(
 
             # Check if pointee is a struct/union
             decl = pointee_canonical.get_declaration()
-            if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
+            if (
+                decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]
+                and not decl.is_anonymous()
+                and decl.spelling
+            ):
                 forward_declarable_types[decl.spelling] = (
                     "union" if decl.kind == CursorKind.UNION_DECL else "struct"
                 )
@@ -1335,15 +1390,28 @@ def _localize_mutable_globals_in_place(
 
         if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL, CursorKind.ENUM_DECL]:
             type_name = decl.spelling
-            if type_name and type_name not in needed_struct_defs:
+            if decl.is_anonymous():
+                definition_key = (
+                    decl.kind,
+                    decl.location.file.name,
+                    decl.extent.start.offset,
+                    decl.extent.end.offset,
+                )
+                if definition_key in visited_anonymous_type_defs:
+                    return
+                visited_anonymous_type_defs.add(definition_key)
+            elif type_name and type_name not in needed_struct_defs:
                 # print(f"{indent}  -> Need full definition: {type_name}")
                 needed_struct_defs[type_name] = decl
+            else:
+                return
 
-                # Recursively process fields
-                for field in decl.get_children():
-                    if field.kind == CursorKind.FIELD_DECL:
-                        # print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
-                        collect_type_dependencies(field.type, depth + 2)
+            # Anonymous definitions are embedded in their XjGlobals field, but
+            # their member types still have to be available at the include site.
+            for field in decl.get_children():
+                if field.kind == CursorKind.FIELD_DECL:
+                    # print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
+                    collect_type_dependencies(field.type, depth + 2)
 
     for cursor in localized_globals_and_statics:
         # print(f"\nAnalyzing dependencies for {cursor.spelling}:")
@@ -1559,9 +1627,7 @@ def _localize_mutable_globals_in_place(
         for global_name in sorted(localized_global_cursors_by_name.keys()):
             var_cursor = localized_global_cursors_by_name[global_name]
             # Add the field (we'll handle initialization separately)
-            header_lines.append(
-                render_declaration_sans_qualifiers(var_cursor.type, var_cursor.spelling) + ";"
-            )
+            header_lines.append(render_source_backed_declaration(var_cursor, rewriter) + ";")
 
         header_lines.append("};")
         header_lines.append("")
@@ -1722,7 +1788,7 @@ def _localize_mutable_globals_in_place(
                                             break
 
                                     init_lines.append(
-                                        f"  static {render_declaration_sans_qualifiers(var_cursor.type, var_cursor.spelling)} = {initializer};"
+                                        f"  static {render_source_backed_declaration(var_cursor, rewriter)} = {initializer};"
                                     )
 
                                 init_lines.append("")

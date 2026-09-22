@@ -69,8 +69,10 @@ def yield_matching_cursors(
             worklist.append((child, (current, ancestors)))  # type: ignore
 
 
-def render_declaration_sans_qualifiers(type_obj, var_name) -> str:
-    """Render a variable declaration for the given type and name."""
+def render_declaration_sans_qualifiers(
+    type_obj, var_name, *, base_type_spelling: str | None = None
+) -> str:
+    """Render a declarator, optionally using source text for its base type."""
 
     def render_inner(ty, inner_text):
         """Recursively build the declaration string."""
@@ -113,7 +115,7 @@ def render_declaration_sans_qualifiers(type_obj, var_name) -> str:
 
         else:
             # Base case: simple type
-            return f"{ty.spelling} {inner_text}"
+            return f"{base_type_spelling or ty.spelling} {inner_text}"
 
     return render_inner(type_obj, var_name).strip()
 

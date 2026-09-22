@@ -9,6 +9,7 @@ import c_refact
 import c_refact_decl_splitter
 import c_refact_tag_hoister
 import compilation_database
+import pangs_source
 import targets
 from cindex_helpers import create_xj_clang_index
 
@@ -137,6 +138,55 @@ def test_localize_mutable_globals_empty_selection_is_a_noop(tmp_codebase):
             raise AssertionError("an empty selection must not enter the rewrite pipeline")
 
     c_refact.localize_mutable_globals(manifest_path, UnusedCompdb(), tmp_codebase)
+
+
+def test_context_fields_embed_anonymous_tag_definitions(tmp_codebase):
+    tmp_codebase.mkdir()
+    source = tmp_codebase / "sample.c"
+    source.write_text(
+        "static union { int i; long l; } scalar = {1};\n"
+        "static const struct { int i; int j; } table[] = {{2, 3}};\n"
+        "static struct { int i; } *pointer;\n"
+        "int main(void) { return scalar.i + table[0].j + (pointer == 0); }\n",
+        encoding="utf-8",
+    )
+    (tmp_codebase / "xj-guidance.json").write_text("{}", encoding="utf-8")
+    write_compile_commands_for_sources(tmp_codebase, [source])
+    compdb = compilation_database.CompileCommands.from_json_file(
+        tmp_codebase / "compile_commands.json"
+    )
+    fields = [{"llvm_name": name} for name in ("scalar", "table", "pointer")]
+    manifest_path = tmp_codebase / "pangs-manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "schema_version": 8,
+            "context_rewrite": {
+                "source": {
+                    "files": [{"path": source.name}],
+                    "globals_without_initializers": ["pointer"],
+                },
+                "selected": {
+                    "fields": fields,
+                    "functions": ["main"],
+                    "source_edits": [],
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    c_refact._localize_mutable_globals_in_place(manifest_path, compdb, tmp_codebase)
+
+    header = (tmp_codebase / "xj_globals.h").read_text(encoding="utf-8")
+    assert "union { int i; long l; } scalar;" in header
+    assert "struct { int i; int j; } table[1];" in header
+    assert "struct { int i; } *pointer;" in header
+    assert "unnamed at" not in header
+    rewritten = source.read_text(encoding="utf-8")
+    assert "\nunion { int i; long l; };" not in rewritten
+    assert "\nstruct { int i; int j; };" not in rewritten
+    assert "\nstruct { int i; };" not in rewritten
+    pangs_source.validate_c(compdb)
 
 
 def test_global_definition_blank_rewrite_preserves_width_and_lines():
