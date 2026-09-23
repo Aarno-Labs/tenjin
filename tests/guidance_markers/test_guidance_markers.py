@@ -233,6 +233,27 @@ int array(int i) { unsigned char a[4] = {0}; return *a + a[i]; }
     assert ("index", "&[u8]", "") in families
 
 
+def test_reads_of_guided_strings_use_char_at_markers(root, tmp_codebase):
+    result = instrument(
+        root,
+        tmp_codebase,
+        {
+            "a.c": """\
+int at(const char *s, int i) { return s[i] + *s + (*(s + i)); }
+void put(char *o) { o[0] = 'x'; }
+"""
+        },
+        {"vars_of_type": {"String": ["at:s", "put:o"]}},
+    )
+    text = result.sources["a.c"]
+
+    # Reads yield values; a write keeps its C form.
+    reads = "xj_char_at_String(s, i) + xj_char_at_String(s, 0) + (xj_char_at_String(s, i))"
+    assert f"return {reads};" in text
+    assert "o[0] = 'x';" in text
+    assert result.guidance["markers"]["xj_char_at_String"]["family"] == "char_at"
+
+
 def test_pointer_motion_and_bad_offsets_are_reported(root, tmp_codebase):
     result = instrument(
         root,

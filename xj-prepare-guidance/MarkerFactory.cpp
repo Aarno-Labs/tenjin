@@ -101,6 +101,27 @@ const MarkerKey *MarkerFactory::index(QualType BasePointer, XjType BaseX,
   return intern(std::move(M), Use);
 }
 
+// A value, not a place: a guided string is not a buffer an index marker
+// could name, and only its characters' values are read through it.
+const MarkerKey *MarkerFactory::charAt(QualType StringType, XjType X,
+                                       SourceLocation Use) {
+  QualType Elem = StringType->isPointerType()
+                      ? StringType->getPointeeType()
+                      : S.Ctx.getAsArrayType(StringType)->getElementType();
+  auto RetSp = spellReturn(Elem.getUnqualifiedType(), {});
+  auto ParamSp = spellValue(StringType, X, "b");
+  if (!RetSp || !ParamSp)
+    return nullptr;
+  MarkerKey M;
+  M.F = Family::CharAt;
+  M.Base = "xj_char_at_" + sideName(StringType, X);
+  M.Body = "b[i]";
+  M.Ret = std::move(*RetSp);
+  M.Param = std::move(*ParamSp);
+  M.FromRust = X.rustText();
+  return intern(std::move(M), Use);
+}
+
 const MarkerKey *MarkerFactory::coerce(QualType From, XjType FX, const Sink &K,
                                        SourceLocation Use) {
   auto RetSp = spellReturn(K.Type, K.X);

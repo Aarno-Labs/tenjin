@@ -90,7 +90,44 @@ bool Normalizer::isPointerBuffer(const Expr *E) const {
   return Types.isBuffer(E) && stripValueCasts(E)->getType()->isPointerType();
 }
 
-// `(*xj_index_<b>(Base, Index))` in place of `Node`; a null `Index` is 0.
+// Guided as `String` or `str`, behind references or not.
+bool Normalizer::isGuidedString(const Expr *E) const {
+  const RustType *T = Types.of(E).rust();
+  return T && (T->stripRefs().isString() || T->stripRefs().isStr());
+}
+
+// `E` is read: C converts it from the place it names to its value.
+bool Normalizer::isRead(const Expr *E) const {
+  while (true) {
+    auto Parents = S.Ctx.getParents(*E);
+    if (Parents.size() != 1)
+      return false;
+    if (const auto *PE = Parents[0].get<ParenExpr>()) {
+      E = PE;
+      continue;
+    }
+    const auto *ICE = Parents[0].get<ImplicitCastExpr>();
+    return ICE && ICE->getCastKind() == CK_LValueToRValue;
+  }
+}
+
+// `M(Base, Index)` in place of `Node`, dereferenced when `Deref`; a null
+// `Index` is 0.
+void Normalizer::addMarkerCall(const Expr *Node, const MarkerKey &M,
+                               const Expr *Base, const Expr *Index,
+                               bool Deref) {
+  const EditSet *Edits = &S.Edits;
+  const Registry *R = &S.Reg;
+  const MarkerKey *Key = &M;
+  S.Edits.addLayer(Node, [=](const std::string &) {
+    std::string I = Index ? Edits->render(Index) : "0";
+    std::string Call =
+        R->name(*Key) + "(" + Edits->render(Base) + ", " + I + ")";
+    return Deref ? "(*" + Call + ")" : Call;
+  });
+}
+
+// `(*xj_index_<b>(Base, Index))` in place of `Node`.
 void Normalizer::addIndexLayer(const Expr *Node, const Expr *Base,
                                const Expr *Index) {
   XjType BaseX = Types.of(Base);
@@ -102,12 +139,20 @@ void Normalizer::addIndexLayer(const Expr *Node, const Expr *Base,
            "no index marker can be written for this element type");
     return;
   }
-  const EditSet *Edits = &S.Edits;
-  const Registry *R = &S.Reg;
-  S.Edits.addLayer(Node, [=](const std::string &) {
-    std::string I = Index ? Edits->render(Index) : "0";
-    return "(*" + R->name(*M) + "(" + Edits->render(Base) + ", " + I + "))";
-  });
+  addMarkerCall(Node, *M, Base, Index, true);
+}
+
+// `xj_char_at_<s>(Base, Index)` in place of the read `Node`.
+void Normalizer::addCharAtLayer(const Expr *Node, const Expr *Base,
+                                const Expr *Index) {
+  const MarkerKey *M = Markers.charAt(stripValueCasts(Base)->getType(),
+                                      Types.of(Base), Node->getBeginLoc());
+  if (!M) {
+    report("not-normalized", Node, Base,
+           "no character marker can be written for this string");
+    return;
+  }
+  addMarkerCall(Node, *M, Base, Index, false);
 }
 
 // A shared slice moved forward by a statement of its own is resliced:
@@ -171,6 +216,10 @@ void Normalizer::visitDeref(const UnaryOperator *UO) {
   if (Sum && Sum->getOpcode() == BO_Add && Sum->getType()->isPointerType()) {
     const Expr *Base = splitOffset(Sum).first;
     const Expr *Index = splitOffset(Sum).second;
+    if (isGuidedString(Base) && isRead(UO)) {
+      addCharAtLayer(UO, Base, Index);
+      return;
+    }
     if (isPointerBuffer(Base)) {
       addIndexLayer(UO, Base, Index);
       return;
@@ -182,7 +231,9 @@ void Normalizer::visitDeref(const UnaryOperator *UO) {
       return;
     }
   }
-  if (isPointerBuffer(Operand))
+  if (isGuidedString(Operand) && isRead(UO))
+    addCharAtLayer(UO, Operand, nullptr);
+  else if (isPointerBuffer(Operand))
     addIndexLayer(UO, Operand, nullptr);
   else if (Types.isBuffer(Operand))
     S.Edits.addLayer(UO, [=](const std::string &) {
@@ -192,6 +243,10 @@ void Normalizer::visitDeref(const UnaryOperator *UO) {
 
 void Normalizer::visitSubscript(const ArraySubscriptExpr *ASE) {
   const Expr *Base = ASE->getBase();
+  if (isGuidedString(Base) && isRead(ASE)) {
+    addCharAtLayer(ASE, Base, ASE->getIdx());
+    return;
+  }
   if (isPointerBuffer(Base)) {
     addIndexLayer(ASE, Base, ASE->getIdx());
     return;

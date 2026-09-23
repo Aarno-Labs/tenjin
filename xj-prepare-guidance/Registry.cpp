@@ -32,6 +32,8 @@ StringRef familyName(Family F) {
     return "elem_ref";
   case Family::Index:
     return "index";
+  case Family::CharAt:
+    return "char_at";
   case Family::Coerce:
     return "coerce";
   case Family::IsNull:
@@ -156,8 +158,8 @@ std::string Registry::definition(const TypedefKey &K) const {
 }
 
 static StringRef extraParams(Family F) {
-  bool Indexed =
-      F == Family::SliceFrom || F == Family::ElemRef || F == Family::Index;
+  bool Indexed = F == Family::SliceFrom || F == Family::ElemRef ||
+                 F == Family::Index || F == Family::CharAt;
   return Indexed ? ", long i" : "";
 }
 

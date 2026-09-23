@@ -10,11 +10,15 @@
 //     &*p                          p
 //     p++, p += n, p a shared      p = xj_slice_from_<p>(p, n)
 //       slice, as a statement
+//     s[i], *(s + i), *s, read,    xj_char_at_<s>(s, i)
+//       s a string
 //
 // `xj_index_<p>` returns a raw pointer to the element, so its dereference is
 // still an lvalue, and the transpiler reads it as `p[i]` without asking what
 // `p` is. Guided arrays are indexed as written (`*a` becomes `a[0]`): C
-// subscripts of arrays already translate to Rust indexing.
+// subscripts of arrays already translate to Rust indexing. A `String` or
+// `str` is not indexable in Rust, so only reads of its characters are
+// rewritten, into a marker that yields the value; writes keep their C form.
 //
 // Other pointer motion on a guided pointer (`p--`, `p += n` on a `Vec`),
 // differences and orderings between guided pointers, and non-zero
@@ -53,8 +57,15 @@ private:
 
   bool isGuidedPointer(const clang::Expr *E) const;
   bool isPointerBuffer(const clang::Expr *E) const;
+  bool isGuidedString(const clang::Expr *E) const;
+  bool isRead(const clang::Expr *E) const;
+  void addMarkerCall(const clang::Expr *Node, const MarkerKey &M,
+                     const clang::Expr *Base, const clang::Expr *Index,
+                     bool Deref);
   void addIndexLayer(const clang::Expr *Node, const clang::Expr *Base,
                      const clang::Expr *Index);
+  void addCharAtLayer(const clang::Expr *Node, const clang::Expr *Base,
+                      const clang::Expr *Index);
   bool advanceSlice(const clang::Expr *Node, const clang::Expr *Operand,
                     const clang::Expr *Step);
   bool isStatement(const clang::Expr *E) const;

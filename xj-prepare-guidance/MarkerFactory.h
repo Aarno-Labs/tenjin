@@ -6,6 +6,7 @@
 //     xj_elem_ref_<to>(b, i)      element i of b
 //     xj_index_<b>(b, i)          a raw pointer to element i of b, written
 //                                 `(*xj_index_<b>(b, i))` for the element
+//     xj_char_at_<s>(s, i)        character i of the string s, read
 //     xj_coerce_<x>_to_<to>(x)    x, changing representation or C type
 //     xj_is_null_<p>(p)           p == 0
 //
@@ -38,6 +39,8 @@ public:
                          const Sink &K, clang::SourceLocation Use);
   const MarkerKey *index(clang::QualType BasePointer, XjType BaseX,
                          XjType ElemX, clang::SourceLocation Use);
+  const MarkerKey *charAt(clang::QualType StringType, XjType X,
+                          clang::SourceLocation Use);
   const MarkerKey *coerce(clang::QualType From, XjType FX, const Sink &K,
                           clang::SourceLocation Use);
   const MarkerKey *isNull(clang::QualType T, XjType X,

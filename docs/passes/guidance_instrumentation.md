@@ -25,7 +25,9 @@ pointer passes and static-inline un-uniquification, and before refolding.
    pointer to the element, so the result is still an lvalue. Guided arrays are
    subscripted as written (`*a` → `a[0]`). On single objects `p[0]` → `(*p)`;
    `&*p` → `p`. A shared slice moved forward by a statement of its own
-   (`p++`, `p += n`) is resliced: `p = xj_slice_from_<p>(p, n)`.
+   (`p++`, `p += n`) is resliced: `p = xj_slice_from_<p>(p, n)`. A `String`
+   or `str` cannot be indexed in Rust, so reads of its characters (`s[i]`,
+   `*s`, `*(s + i)`) become `xj_char_at_<s>(s, i)`; writes keep their C form.
 3. **Place markers.** A pointer-valued flow (call argument, `=`, local
    initializer, `return`, explicit pointer cast) whose base is an array or a
    guided buffer becomes one of `xj_slice_all_<to>(b)`,
@@ -149,8 +151,10 @@ On the Rust side, `TypeConverter` maps marker typedefs to their Rust types,
 marker typedef and function declarations produce no items, and calls to
 markers are translated by family, which the transpiler reads from the
 `markers` table in `xj-guidance.json`: `(*xj_index_<b>(b, i))` is
-`b[i as usize]`, and an identity `xj_coerce_<x>_to_<x>(e)` is `e` without the
-C conversions around it.
+`b[i as usize]`; `xj_char_at_<s>(s, i)` is
+`s.as_bytes().get(i).copied().unwrap_or(0)`, so reading at the length yields
+the terminator's 0 as in C; and an identity `xj_coerce_<x>_to_<x>(e)` is `e`
+without the C conversions around it.
 The transpiler treats marker calls as free of side effects, so `p[i] += 1`
 still names its place directly. Libc recognizers look through identity
 markers (`xj_coerce`, `xj_slice_all`) at the value the program passed.

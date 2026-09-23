@@ -52,7 +52,7 @@ struct TypedefKey {
   std::string ElementId;
 };
 
-enum class Family { SliceAll, SliceFrom, ElemRef, Index, Coerce, IsNull };
+enum class Family { SliceAll, SliceFrom, ElemRef, Index, CharAt, Coerce, IsNull };
 
 llvm::StringRef familyName(Family F);
 

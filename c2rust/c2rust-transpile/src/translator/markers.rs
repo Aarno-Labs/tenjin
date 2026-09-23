@@ -6,7 +6,8 @@
 //! marker functions: the name says what the flow does (`xj_slice_all`,
 //! `xj_slice_from`, `xj_elem_ref`, `xj_coerce`, `xj_is_null`), and the
 //! parameter and return types say between which types. Elements of guided
-//! buffers are read through `(*xj_index(b, i))`. This module reads both;
+//! buffers are read through `(*xj_index_<b>(b, i))`, characters of guided
+//! strings through `xj_char_at_<s>(s, i)`. This module reads both;
 //! nothing here matches declarations against specifiers.
 
 use super::*;
@@ -22,6 +23,7 @@ pub enum MarkerFamily {
     SliceFrom,
     ElemRef,
     Index,
+    CharAt,
     Coerce,
     IsNull,
 }
@@ -34,6 +36,7 @@ impl MarkerFamily {
             "slice_from" => Some(Self::SliceFrom),
             "elem_ref" => Some(Self::ElemRef),
             "index" => Some(Self::Index),
+            "char_at" => Some(Self::CharAt),
             "coerce" => Some(Self::Coerce),
             "is_null" => Some(Self::IsNull),
             _ => None,
@@ -436,6 +439,7 @@ impl Translation<'_> {
                 self.convert_place_marker(ctx, family, ret, cargs)
             }
             MarkerFamily::Index => self.convert_index_address(ctx, ret, cargs),
+            MarkerFamily::CharAt => self.convert_char_at(ctx, ret, cargs),
             MarkerFamily::Coerce => {
                 let from = self
                     .xj_type_of_expr(cargs[0])
@@ -613,6 +617,25 @@ impl Translation<'_> {
             Some(ty) => Ok(place.map(|p| mk().cast_expr(p, ty))),
             None => Ok(place),
         }
+    }
+
+    /// `xj_char_at_<s>(s, i)`: byte `i` of a guided string as a C character,
+    /// or 0 at and past its end, where C would read the terminator.
+    fn convert_char_at(
+        &self,
+        ctx: ExprContext,
+        ret: CQualTypeId,
+        cargs: &[CExprId],
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let ret_ty = self.convert_type(ret.ctype)?;
+        let string = self.convert_guided_value(ctx, cargs[0])?;
+        let index = self.convert_marker_index(ctx, cargs[1])?;
+        Ok(string.zip(index).map(|(s, i)| {
+            let bytes = method(Self::borrowed_base(s, false), "as_bytes");
+            let byte = method(mk().method_call_expr(bytes, "get", vec![i]), "copied");
+            let zero = mk().lit_expr(mk().int_unsuffixed_lit(0));
+            mk().cast_expr(mk().method_call_expr(byte, "unwrap_or", vec![zero]), ret_ty)
+        }))
     }
 
     /// The pointer type a raw place must be cast to, when the buffer's Rust
