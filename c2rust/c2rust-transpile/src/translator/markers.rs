@@ -1056,6 +1056,91 @@ impl Translation<'_> {
         Ok(Self::guided_empty(&guided).map(WithStmts::new_val))
     }
 
+    /// A static whose Rust value cannot be a constant, so it is assigned in
+    /// `c2rust_run_static_initializers`: it holds an owned guided value
+    /// (`String`, `Vec`, `Box`) that its initializer fills, or a `Vec` in
+    /// place of a C array, whose default has a length.
+    pub fn guided_static_is_uncompilable(&self, init: Option<CExprId>, typ: CQualTypeId) -> bool {
+        match init {
+            Some(init) if !self.ast_context.is_null_expr(init) => {
+                self.holds(typ.ctype, &|t| self.is_owned_guided(t))
+            }
+            _ => self.holds(typ.ctype, &|t| self.is_vec_in_place_of_array(t)),
+        }
+    }
+
+    /// What a static holds until `c2rust_run_static_initializers` assigns
+    /// it: C's default, except that a guided value is its empty form, which
+    /// is a constant.
+    pub fn static_default_expr(
+        &self,
+        ctx: ExprContext,
+        ty_id: CTypeId,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        match self
+            .xj_type_of_ctype(ty_id)
+            .and_then(|g| Self::guided_empty(&g))
+        {
+            Some(empty) => Ok(WithStmts::new_val(empty)),
+            None => self.implicit_default_expr(ctx, ty_id),
+        }
+    }
+
+    /// `pred` holds for `ty` or for an element or field it holds by value.
+    fn holds(&self, ty: CTypeId, pred: &dyn Fn(CTypeId) -> bool) -> bool {
+        if pred(ty) {
+            return true;
+        }
+        match self.ast_context.resolve_type(ty).kind {
+            CTypeKind::ConstantArray(elt, _) | CTypeKind::IncompleteArray(elt) => {
+                self.holds(elt, pred)
+            }
+            CTypeKind::Struct(record) | CTypeKind::Union(record) => self
+                .field_types(record)
+                .into_iter()
+                .any(|field| self.holds(field, pred)),
+            _ => false,
+        }
+    }
+
+    fn field_types(&self, record: CRecordId) -> Vec<CTypeId> {
+        let fields = match &self.ast_context[record].kind {
+            CDeclKind::Struct {
+                fields: Some(fields),
+                ..
+            }
+            | CDeclKind::Union {
+                fields: Some(fields),
+                ..
+            } => fields,
+            _ => return vec![],
+        };
+        fields
+            .iter()
+            .filter_map(|&f| match self.ast_context[f].kind {
+                CDeclKind::Field { typ, .. } => Some(typ.ctype),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn is_owned_guided(&self, ty: CTypeId) -> bool {
+        self.xj_type_of_ctype(ty).is_some_and(|g| {
+            tenjin::type_is_string(&g.parsed)
+                || tenjin::type_is_vec(&g.parsed)
+                || generic_arg_of(&g.parsed, "Box").is_some()
+        })
+    }
+
+    fn is_vec_in_place_of_array(&self, ty: CTypeId) -> bool {
+        matches!(
+            self.ast_context.resolve_type(ty).kind,
+            CTypeKind::ConstantArray(..)
+        ) && self
+            .xj_type_of_ctype(ty)
+            .is_some_and(|g| tenjin::type_is_vec(&g.parsed))
+    }
+
     /// `convert_expr` for an initializer, fitted to a guided variable's Rust
     /// type where the C pass could not wrap it: constant initializers, and
     /// arrays initialized from literals or brace lists.

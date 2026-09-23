@@ -90,6 +90,20 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
             // immutability guidance so the runtime initializer can assign it.
             "semantically_immutable_globals": ["global_static_const_member"]
         })
+    } else if c_path.ends_with("tenjin_guided_statics.c") {
+        serde_json::json!({
+            "marker_typedefs": {
+                "xj_ty_String": "String",
+                "xj_ty_Vec_u8": "Vec<u8>",
+                "xj_ty_Vec_u8_1": "Vec<u8>",
+                "xj_ty_ref_str": "&str"
+            },
+            "markers": {
+                "xj_char_at_String": {"family": "char_at"},
+                "xj_char_at_ref_str": {"family": "char_at"},
+                "xj_is_null_String": {"family": "is_null"}
+            }
+        })
     } else if c_path.ends_with("tenjin_slices.c") {
         serde_json::json!({
             "marker_typedefs": {
@@ -694,6 +708,15 @@ fn test_tenjin_semantic_immutability() {
 #[test]
 fn test_tenjin_semantic_immutable_addresses() {
     transpile("tenjin_semantic_immutable_addresses.c").run();
+}
+
+#[test]
+fn test_tenjin_guided_statics() {
+    // Owned guided statics are `static mut` and read through references,
+    // which edition 2024 denies (`static_mut_refs`); Tenjin emits 2021.
+    transpile("tenjin_guided_statics.c")
+        .expect_compile_error_edition_2024(true)
+        .run();
 }
 
 #[test]

@@ -145,7 +145,13 @@ carry it by clang's own typing.
 
 Nothing is wrapped in constant initializers, unevaluated operands, variadic
 arguments, or array initializers from brace lists and string literals; the
-transpiler applies the same coercion table there, from the declared type.
+transpiler applies the same coercion table there, from the declared type. A
+static whose Rust value cannot be a constant (an owned `String`, `Vec` or
+`Box` its initializer fills, or a `Vec` in place of a C array) holds the empty
+value (`String::new()`, `Vec::new()`) and is assigned in
+`c2rust_run_static_initializers`, as c2rust does for any static initializer
+Rust cannot evaluate at compile time; it is `static mut` even if `vars_mut`
+says otherwise.
 
 On the Rust side, `TypeConverter` maps marker typedefs to their Rust types,
 marker typedef and function declarations produce no items, and calls to

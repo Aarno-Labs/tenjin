@@ -2623,6 +2623,10 @@ impl<'c> Translation<'c> {
         use crate::c_ast::CUnOp::{AddressOf, Negate};
         use crate::c_ast::CastKind::{IntegralToPointer, PointerToIntegral};
 
+        if self.guided_static_is_uncompilable(expr_id, qtype) {
+            return true;
+        }
+
         let expr_id = match expr_id {
             Some(expr_id) => expr_id,
             None => return false,
@@ -2786,7 +2790,7 @@ impl<'c> Translation<'c> {
         typ: CQualTypeId,
         init: &mut Box<Expr>,
     ) -> TranslationResult<()> {
-        let mut default_init = self.implicit_default_expr(ctx, typ.ctype)?.to_expr();
+        let mut default_init = self.static_default_expr(ctx, typ.ctype)?.to_expr();
 
         std::mem::swap(init, &mut default_init);
 
@@ -3640,7 +3644,7 @@ impl<'c> Translation<'c> {
                     })?;
                 let ConvertedVariable { ty, mutbl: _, init } =
                     self.convert_variable(ctx, initializer, typ)?;
-                let default_init = self.implicit_default_expr(ctx, typ.ctype)?.to_expr();
+                let default_init = self.static_default_expr(ctx, typ.ctype)?.to_expr();
                 let comment = String::from("// Initialized in c2rust_run_static_initializers");
                 let span = self
                     .comment_store
