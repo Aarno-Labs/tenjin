@@ -317,7 +317,9 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                         if key[0] == path and key[1] <= int(byte_start) <= key[2]
                     ]
                     if containing:
-                        restore.add(min(containing, key=lambda key: key[2] - key[1]))
+                        restore.add(
+                            min(containing, key=lambda key: (key[2] - key[1], key[1], key[2]))
+                        )
 
             if not restore:
                 if not remaining:
