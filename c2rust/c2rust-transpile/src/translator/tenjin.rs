@@ -1,3 +1,4 @@
+use super::markers::MarkerFamily;
 use super::*;
 use quote::ToTokens; // for to_token_stream()
 use serde_derive::Deserialize;
@@ -916,6 +917,8 @@ pub struct ParsedGuidance {
     pub _raw: serde_json::Value,
     /// Rust types of the marker typedefs xj-prepare-guidance declared.
     pub marker_typedefs: HashMap<String, tenjin::GuidedType>,
+    /// Families of the marker functions xj-prepare-guidance declared.
+    pub markers: HashMap<String, MarkerFamily>,
     /// `vars_mut` resolved to declarations, keyed `fn:var` for locals and
     /// parameters and `var` at file scope.
     pub vars_mut_resolved: HashMap<String, Mutability>,
@@ -936,6 +939,7 @@ impl ParsedGuidance {
     pub fn new(raw: serde_json::Value) -> Self {
         ParsedGuidance {
             marker_typedefs: parse_marker_typedefs(&raw),
+            markers: parse_markers(&raw),
             vars_mut_resolved: parse_vars_mut_resolved(&raw),
             using_crates: crate::guidance_use_crates(&raw),
             pod_types: parse_string_set(&raw, "pod_types").unwrap_or_default(),
@@ -993,6 +997,23 @@ fn guidance_key(parent: Option<&str>, name: &str) -> String {
         Some(parent) => format!("{parent}:{name}"),
         None => name.to_string(),
     }
+}
+
+fn parse_markers(raw: &serde_json::Value) -> HashMap<String, MarkerFamily> {
+    let Some(entries) = raw.get("markers").and_then(|v| v.as_object()) else {
+        return HashMap::new();
+    };
+    let mut markers = HashMap::new();
+    for (name, marker) in entries {
+        let family = marker.get("family").and_then(|f| f.as_str());
+        match family.and_then(MarkerFamily::of_family) {
+            Some(family) => {
+                markers.insert(name.clone(), family);
+            }
+            None => log::error!("Tenjin marker {name} has invalid family {marker}"),
+        }
+    }
+    markers
 }
 
 fn parse_marker_typedefs(raw: &serde_json::Value) -> HashMap<String, tenjin::GuidedType> {

@@ -179,9 +179,10 @@ def test_nested_buffers_get_element_typedefs(root, tmp_codebase):
     assert result.header.index(f"*{inner};") < result.header.index(f"*{outer};")
     assert f"int at({outer} rows, int i, int j)" in result.sources["a.c"]
     assert re.search(
-        r"return \(\*xj_index_\d+\(\(\*xj_index_\d+\(rows, i\)\), j\)\);", result.sources["a.c"]
+        r"return \(\*xj_index_Vec_i32\(\(\*xj_index_Vec_Vec_i32\(rows, i\)\), j\)\);",
+        result.sources["a.c"],
     )
-    assert re.search(rf"static inline {inner} \*xj_index_\d+\({outer} b, long i\)", result.header)
+    assert f"static inline {inner} *xj_index_Vec_Vec_i32({outer} b, long i)" in result.header
 
 
 def test_arrays_sized_by_their_initializer_keep_the_completed_type(root, tmp_codebase):
@@ -220,13 +221,13 @@ int array(int i) { unsigned char a[4] = {0}; return *a + a[i]; }
         },
     )
     text = result.sources["a.c"]
-    index = r"\(\*xj_index_\d+\(p, (\w+)\)\)"
+    index = r"\(\*xj_index_ref_slice_u8\(p, (\w+)\)\)"
 
     assert re.search(rf"return {index};", text)
     assert re.search(rf"return {index} \+ {index} \+ {index};", text)
     assert "return sizeof *p + sizeof p[1];" in text
     assert "return (*q);" in text
-    assert re.search(r"return xj_coerce_\d+\(q\);", text)
+    assert "return xj_coerce_ref_i32_to_ptr_int(q);" in text
     assert "return a[0] + a[i];" in text
     families = {(m["family"], m["from"], m["to"]) for m in result.guidance["markers"].values()}
     assert ("index", "&[u8]", "") in families
@@ -259,7 +260,7 @@ void back(const unsigned char *p) { const unsigned char *b = p - 1; }
     assert "pointer-difference" in kinds
     assert "subscript-of-single-object" in kinds
     assert "backward-offset" in kinds
-    assert re.search(r"p = xj_slice_from_\d+\(p, 1\); p = xj_slice_from_\d+\(p, 2\);", text)
+    assert "p = xj_slice_from_ref_slice_u8(p, 1); p = xj_slice_from_ref_slice_u8(p, 2);" in text
     assert "p--;" in text
     assert "return r[1];" in text
 
@@ -305,19 +306,20 @@ def test_place_markers_follow_source_shape_and_sink_demand(root, tmp_codebase):
     text = result.sources["a.c"]
 
     def expect(sink: str, marker: str, *args: str) -> None:
-        call = rf"{sink}\({marker}_\d+\({re.escape(', '.join(args))}\)\);"
+        call = rf"{sink}\({marker}(?:_\d+)?\({re.escape(', '.join(args))}\)\);"
         assert re.search(call, text), f"missing {sink}({marker}({', '.join(args)}))"
 
     for base in ("arr", "garr", "gp", "st->buf"):
-        expect("takes_slice", "xj_slice_from", base, "i")
-        expect("takes_elem", "xj_elem_ref", base, "0")
-        expect("takes_elem", "xj_elem_ref", base, "i")
+        expect("takes_slice", "xj_slice_from_ref_slice_u8", base, "i")
+        expect("takes_elem", "xj_elem_ref_ref_u8", base, "0")
+        expect("takes_elem", "xj_elem_ref_ref_u8", base, "i")
     for base in ("arr", "garr", "st->buf"):
-        expect("takes_slice", "xj_slice_all", base)
+        expect("takes_slice", "xj_slice_all_ref_slice_u8", base)
+    raw = "ptr_const_unsigned_char"
     for base in ("garr", "gp", "st->buf"):
-        expect("takes_raw", "xj_slice_all", base)
-        expect("takes_raw", "xj_elem_ref", base, "i")
-        expect("takes_raw", "xj_slice_from", base, "i")
+        expect("takes_raw", f"xj_slice_all_{raw}", base)
+        expect("takes_raw", f"xj_elem_ref_{raw}", base, "i")
+        expect("takes_raw", f"xj_slice_from_{raw}", base, "i")
 
     # A guided slice into a slice sink is already the value; an unguided
     # array into a raw pointer is plain C decay.
@@ -338,7 +340,8 @@ void pass(const unsigned char *raw) { takes_slice(raw); }
         {"vars_of_type": {"&[u8]": "takes_slice:s"}},
     )
 
-    assert re.search(r"takes_slice\(xj_coerce_\d+\(raw\)\);", result.sources["a.c"])
+    coerce = "xj_coerce_ptr_const_unsigned_char_to_ref_slice_u8"
+    assert f"takes_slice({coerce}(raw));" in result.sources["a.c"]
     assert "unhandled-coercion" in result.diagnostic_kinds()
 
 
@@ -364,11 +367,11 @@ void view(const char *owned) { const char *borrowed = owned; }
     )
     text = result.sources["a.c"]
 
-    assert re.search(r'show\(xj_coerce_\d+\("hi"\)\);', text)
-    assert re.search(r"show\(xj_coerce_\d+\(0\)\);", text)
-    assert re.search(r"xj_ty_\d+ c = xj_coerce_\d+\(65\);", text)
-    assert re.search(r"return xj_coerce_\d+\(c\);", text)
-    assert re.search(r"xj_ty_\d+ borrowed = xj_coerce_\d+\(owned\);", text)
+    assert 'show(xj_coerce_ptr_const_char_to_String("hi"));' in text
+    assert "show(xj_coerce_ptr_const_char_to_String(0));" in text
+    assert "xj_ty_char c = xj_coerce_int_to_char(65);" in text
+    assert "return xj_coerce_char_to_int(c);" in text
+    assert "xj_ty_ref_str borrowed = xj_coerce_String_to_ref_str(owned);" in text
     pairs = {(m["from"], m["to"]) for m in result.guidance["markers"].values()}
     assert ("String", "&str") in pairs
     assert ("", "String") in pairs
@@ -401,12 +404,48 @@ void pass(unsigned char *p, const unsigned char *q) {
     )
     text = result.sources["a.c"]
 
-    assert re.search(r"takes\(xj_coerce_\d+\(p\)\);", text)
-    assert re.search(r"owns\(xj_coerce_\d+\(buf\)\);", text)
+    assert "takes(xj_coerce_ref_slice_u8_to_ref_slice_u8(p));" in text
+    assert "owns(xj_coerce_Vec_u8_to_Vec_u8(buf));" in text
     assert "same(q);" in text
     pairs = {(m["from"], m["to"]) for m in result.guidance["markers"].values()}
     assert ("&[u8]", "&[u8]") in pairs
     assert ("Vec<u8>", "Vec<u8>") in pairs
+
+
+def test_names_say_the_types_and_are_suffixed_only_on_clashes(root, tmp_codebase):
+    result = instrument(
+        root,
+        tmp_codebase,
+        {
+            "a.c": """\
+void greet(const char *name);
+void owns(unsigned char *v);
+void f(void) {
+    unsigned char buf[8] = {0};
+    greet("hi"); greet(0);
+    owns(buf);
+}
+"""
+        },
+        {"vars_of_type": {"String": "greet:name", "Vec<u8>": ["owns:v", "f:buf"]}},
+    )
+    text = result.sources["a.c"]
+
+    # Both greetings share one coercion; the pointer and the array guided as
+    # `Vec<u8>` need two typedefs, and only the second is suffixed.
+    assert 'greet(xj_coerce_ptr_const_char_to_String("hi"));' in text
+    assert "greet(xj_coerce_ptr_const_char_to_String(0));" in text
+    assert sorted(result.guidance["markers"]) == [
+        "xj_coerce_Vec_u8_to_Vec_u8",
+        "xj_coerce_ptr_const_char_to_String",
+    ]
+    assert result.guidance["marker_typedefs"] == {
+        "xj_ty_String": "String",
+        "xj_ty_Vec_u8": "Vec<u8>",
+        "xj_ty_Vec_u8_1": "Vec<u8>",
+    }
+    assert "void owns(xj_ty_Vec_u8 v);" in text
+    assert "xj_ty_Vec_u8_1 buf = {0};" in text
 
 
 def test_null_tests_of_guided_values_use_is_null_markers(root, tmp_codebase):
@@ -426,9 +465,9 @@ int test(const char *s) {
     )
     text = result.sources["a.c"]
 
-    assert re.search(r"if \(\(!xj_is_null_\d+\(s\)\)\) return 1;", text)
-    assert re.search(r"if \(xj_is_null_\d+\(s\)\) return 2;", text)
-    assert re.search(r"return xj_is_null_\d+\(s\) \? 3 : \(\(!xj_is_null_\d+\(s\)\)\);", text)
+    assert "if ((!xj_is_null_String(s))) return 1;" in text
+    assert "if (xj_is_null_String(s)) return 2;" in text
+    assert "return xj_is_null_String(s) ? 3 : ((!xj_is_null_String(s)));" in text
 
 
 def test_variadic_arguments_and_constant_initializers_are_not_wrapped(root, tmp_codebase):
@@ -447,7 +486,7 @@ void say(const char *s) { printf("%s\\n", s); }
     text = result.sources["a.c"]
 
     assert 'printf("%s\\n", s);' in text
-    assert re.search(r'static xj_ty_\d+ greeting = "hello";', text)
+    assert 'static xj_ty_String greeting = "hello";' in text
 
 
 def test_unmatched_specifiers_are_reported(root, tmp_codebase):
@@ -551,4 +590,4 @@ int sum(const int *p, int n) {
 
     kinds = [d["kind"] for d in guidance["guidance_diagnostics"]]
     assert "pointer-motion" not in kinds
-    assert re.search(r"\(\*xj_index_\d+\(p, \w+\)\)", text)
+    assert re.search(r"\(\*xj_index_ref_slice_i32\(p, \w+\)\)", text)

@@ -1,11 +1,16 @@
 // Run-wide registry of marker typedefs and marker functions.
 //
+// A key is one definition: flows and declarations that need the same one
+// share it. Its name says what it is, `xj_ty_ref_slice_u8` for a typedef
+// guided as `&[u8]`, `xj_coerce_String_to_ref_str` for a coercion; keys that
+// would read the same get `_1`, `_2`, ... in sorted key order.
+//
 // Names must agree across translation units, because refolding moves an
 // edit into a shared header only when every TU made the same edit. So names
 // are not handed out as keys are met: the first sweep interns every key,
-// `finalize` numbers them in sorted order, and the second sweep asks for the
-// names. Spellings may mention a typedef before it has a name; such
-// references are written as placeholders and resolved on output.
+// `finalize` names them, and the second sweep asks for the names. Spellings
+// may mention a typedef before it has a name; such references are written
+// as placeholders and resolved on output.
 
 #pragma once
 
@@ -62,6 +67,8 @@ struct MarkerKey {
   std::string Body;
   std::string FromRust;
   std::string ToRust;
+  // The name the marker gets unless another marker would read the same.
+  std::string Base;
 };
 
 class Registry {
@@ -94,9 +101,11 @@ private:
   std::map<std::string, TypedefKey> Typedefs;
   std::map<std::string, MarkerKey> Markers;
   std::map<std::string, std::string> Names;
+  std::set<std::string> Taken;
   bool Final = false;
 
-  void nameLate(const std::string &Id, llvm::StringRef Prefix);
+  void nameLate(const std::string &Id, const std::string &Base);
+  std::string freeName(const std::string &Base);
   void appendHeaderTypedef(const TypedefKey &K, std::set<std::string> &Done,
                            std::string &Out) const;
 };

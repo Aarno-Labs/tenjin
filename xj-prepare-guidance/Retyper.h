@@ -1,7 +1,7 @@
 // Retyping: every guided declaration is rewritten to use a marker typedef.
 //
-// `const char *ostr` guided as `String` becomes `xj_ty_0 ostr` with
-// `typedef const char *xj_ty_0;`. The C is unchanged (a typedef is an
+// `const char *ostr` guided as `String` becomes `xj_ty_String ostr` with
+// `typedef const char *xj_ty_String;`. The C is unchanged (a typedef is an
 // alias), but the typedef survives into the transpiler's view of every
 // expression that reads the declaration, so the transpiler no longer needs
 // to match specifiers itself. Parameters are retyped at the same position in

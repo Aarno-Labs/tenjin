@@ -37,14 +37,18 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
     } else if c_path.ends_with("tenjin_guided_array.c") {
         serde_json::json!({
             "marker_typedefs": {
-                "xj_ty_0": "&'static [u8]",
-                "xj_ty_1": "[&'static [u8]; 2]"
+                "xj_ty_ref_slice_u8": "&'static [u8]",
+                "xj_ty_array_2_ref_slice_u8": "[&'static [u8]; 2]"
+            },
+            "markers": {
+                "xj_index_ref_slice_u8": {"family": "index"},
+                "xj_slice_all_ptr_const_char": {"family": "slice_all"}
             }
         })
     } else if c_path.ends_with("tenjin_semantic_immutability.c") {
         serde_json::json!({
             "marker_typedefs": {
-                "xj_ty_0": "&'static [u8]"
+                "xj_ty_ref_slice_u8": "&'static [u8]"
             },
             "vars_mut_resolved": {
                 "forced_mut_scalar": true,
@@ -89,7 +93,11 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
     } else if c_path.ends_with("tenjin_slices.c") {
         serde_json::json!({
             "marker_typedefs": {
-                "xj_ty_0": "&[u8]"
+                "xj_ty_ref_slice_u8": "&[u8]"
+            },
+            "markers": {
+                "xj_index_ref_slice_u8": {"family": "index"},
+                "xj_slice_from_ref_slice_u8": {"family": "slice_from"}
             }
         })
     } else {

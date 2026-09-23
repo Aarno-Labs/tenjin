@@ -39,6 +39,17 @@ QualType MarkerFactory::rawPlaceType(QualType BasePointer,
   return S.Ctx.getPointerType(Pointee);
 }
 
+// One side of a flow in a marker name: its Rust type when guided, its C
+// type otherwise.
+std::string MarkerFactory::sideName(QualType T, XjType X) const {
+  if (!X)
+    return S.Speller.identifier(T);
+  std::string Out = X.Key->Rust.identifier();
+  for (unsigned I = 0; I < X.AddrOf; ++I)
+    Out = "ptr_" + Out;
+  return Out;
+}
+
 const MarkerKey *MarkerFactory::intern(MarkerKey K, SourceLocation Use) {
   K.Id = keyId(familyName(K.F), K.Ret.Text + "|" + K.Param.Text);
   const MarkerKey &M = S.Reg.intern(std::move(K));
@@ -56,6 +67,8 @@ const MarkerKey *MarkerFactory::place(Family F, QualType BasePointer,
     return nullptr;
   MarkerKey M;
   M.F = F;
+  M.Base = "xj_" + familyName(F).str() + "_" +
+           sideName(Ret, Guided ? K.X : XjType{});
   M.Body = "(" + RetSp->Text + ")" + (F == Family::SliceAll ? "b" : "(b + i)");
   M.Ret = std::move(*RetSp);
   M.Param = std::move(*ParamSp);
@@ -79,6 +92,7 @@ const MarkerKey *MarkerFactory::index(QualType BasePointer, XjType BaseX,
     return nullptr;
   MarkerKey M;
   M.F = Family::Index;
+  M.Base = "xj_index_" + sideName(BasePointer, BaseX);
   M.Body = "(" + RetSp->Text + ")(b + i)";
   M.Ret = std::move(*RetSp);
   M.Param = std::move(*ParamSp);
@@ -99,6 +113,7 @@ const MarkerKey *MarkerFactory::coerce(QualType From, XjType FX, const Sink &K,
     return nullptr;
   MarkerKey M;
   M.F = Family::Coerce;
+  M.Base = "xj_coerce_" + sideName(From, FX) + "_to_" + sideName(K.Type, K.X);
   M.Body = Same ? "x" : "(" + RetSp->Text + ")x";
   M.Ret = std::move(*RetSp);
   M.Param = std::move(*ParamSp);
@@ -114,6 +129,7 @@ const MarkerKey *MarkerFactory::isNull(QualType T, XjType X,
     return nullptr;
   MarkerKey M;
   M.F = Family::IsNull;
+  M.Base = "xj_is_null_" + sideName(T, X);
   M.Ret.Text = "_Bool";
   M.Param = std::move(*ParamSp);
   M.Body = "p == 0";

@@ -4,14 +4,14 @@
 // buffer or reference, so it is rewritten into the form whose Rust meaning is
 // direct, before any flow is considered:
 //
-//     *p, p a buffer               (*xj_index_k(p, 0))
-//     *(p + i), *(i + p), p[i]     (*xj_index_k(p, i))
+//     *p, p a buffer               (*xj_index_<p>(p, 0))
+//     *(p + i), *(i + p), p[i]     (*xj_index_<p>(p, i))
 //     p[0], p a single object      (*p)
 //     &*p                          p
-//     p++, p += n, p a shared      p = xj_slice_from_k(p, n)
+//     p++, p += n, p a shared      p = xj_slice_from_<p>(p, n)
 //       slice, as a statement
 //
-// `xj_index_k` returns a raw pointer to the element, so its dereference is
+// `xj_index_<p>` returns a raw pointer to the element, so its dereference is
 // still an lvalue, and the transpiler reads it as `p[i]` without asking what
 // `p` is. Guided arrays are indexed as written (`*a` becomes `a[0]`): C
 // subscripts of arrays already translate to Rust indexing.

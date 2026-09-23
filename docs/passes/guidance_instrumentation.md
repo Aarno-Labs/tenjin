@@ -14,31 +14,33 @@ program instead of matching declaration specifiers itself. It runs after the
 pointer passes and static-inline un-uniquification, and before refolding.
 
 1. **Retyping.** Every guided declaration is rewritten to use a marker
-   typedef: `const char *msg` guided as `String` becomes `xj_ty_3 msg` with
-   `typedef const char *xj_ty_3;`. Parameters are retyped at the same position
-   in every redeclaration, file-scope variables in every redeclaration.
-   `xj-guidance.json` gains `"marker_typedefs": {"xj_ty_3": "String"}`.
+   typedef: `const char *msg` guided as `String` becomes `xj_ty_String msg`
+   with `typedef const char *xj_ty_String;`. Parameters are retyped at the
+   same position in every redeclaration, file-scope variables in every
+   redeclaration. `xj-guidance.json` gains
+   `"marker_typedefs": {"xj_ty_String": "String"}`.
 2. **Operator normalization.** Pointer operators on guided operands become the
    form whose Rust meaning is direct. On a buffer held in a pointer, `*p`,
-   `*(p + i)` and `p[i]` become `(*xj_index_k(p, i))`; the marker returns a raw
+   `*(p + i)` and `p[i]` become `(*xj_index_<p>(p, i))`; the marker returns a raw
    pointer to the element, so the result is still an lvalue. Guided arrays are
    subscripted as written (`*a` → `a[0]`). On single objects `p[0]` → `(*p)`;
    `&*p` → `p`. A shared slice moved forward by a statement of its own
-   (`p++`, `p += n`) is resliced: `p = xj_slice_from_k(p, n)`.
+   (`p++`, `p += n`) is resliced: `p = xj_slice_from_<p>(p, n)`.
 3. **Place markers.** A pointer-valued flow (call argument, `=`, local
    initializer, `return`, explicit pointer cast) whose base is an array or a
-   guided buffer becomes one of `xj_slice_all_k(b)`, `xj_slice_from_k(b, i)`,
-   `xj_elem_ref_k(b, i)`, chosen from the source shape (`b`, `&b[i]`,
-   `b + i`) and the sink's demand (`&T`, `&[T]`, raw pointer).
+   guided buffer becomes one of `xj_slice_all_<to>(b)`,
+   `xj_slice_from_<to>(b, i)`, `xj_elem_ref_<to>(b, i)`, chosen from the
+   source shape (`b`, `&b[i]`, `b + i`) and the sink's demand (`&T`, `&[T]`,
+   raw pointer).
 4. **Coercion markers.** Any other flow whose source and sink carry different
-   guidance is wrapped in `xj_coerce_k(e)`; the marker's parameter and return
-   types carry the two typedefs. A guided pointer or array flowing into a
-   place with the same guidance but a differently written C type (`char *`
-   into `const char *`, an array into a pointer) is wrapped too, in an
-   identity coercion, so no C conversion is left to apply to the guided
-   value.
+   guidance is wrapped in `xj_coerce_<from>_to_<to>(e)`; the marker's
+   parameter and return types carry the two typedefs. A guided pointer or
+   array flowing into a place with the same guidance but a differently
+   written C type (`char *` into `const char *`, an array into a pointer) is
+   wrapped too, in an identity coercion, so no C conversion is left to apply
+   to the guided value.
 5. **Null tests.** `p == NULL`, `p != 0`, `!p` and `p` in a condition, for
-   guided `p`, become `xj_is_null_k(p)`.
+   guided `p`, become `xj_is_null_<p>(p)`.
 
 Markers are `static inline` functions computing what C would have (the value
 itself, `b + i`, `p == 0`), so the C still compiles and means the same thing.
@@ -78,13 +80,13 @@ void f(int i) {
 After instrumentation (`xj_guidance.h` holds the typedefs and markers):
 
 ```c
-unsigned char take(xj_ty_0 s);
-unsigned char peek(xj_ty_0 s) { return (*xj_index_0(s, 0)); }
-void greet(xj_ty_1 name);
+unsigned char take(xj_ty_ref_slice_u8 s);
+unsigned char peek(xj_ty_ref_slice_u8 s) { return (*xj_index_ref_slice_u8(s, 0)); }
+void greet(xj_ty_String name);
 void f(int i) {
     unsigned char buf[8] = {0};
-    take(xj_slice_from_0(buf, i));
-    greet(xj_coerce_0("world"));
+    take(xj_slice_from_ref_slice_u8(buf, i));
+    greet(xj_coerce_ptr_const_char_to_String("world"));
 }
 ```
 
@@ -104,10 +106,20 @@ pub unsafe extern "C" fn f(mut i: ::core::ffi::c_int) {
 ## How
 
 The tool parses every translation unit twice. The first sweep interns every
-typedef and marker key; the keys are then numbered in sorted order, so a
-declaration from a shared header gets the same typedef name in every TU and
-refolding can move the edit back into the header. The second sweep renders the
-edits against those names.
+typedef and marker key; the keys are then named, so a declaration from a
+shared header gets the same typedef name in every TU and refolding can move
+the edit back into the header. The second sweep renders the edits against
+those names.
+
+A key is one definition, shared by every declaration and flow that needs it.
+Its name says what it is: a typedef is `xj_ty_` and its Rust type
+(`xj_ty_ref_mut_slice_u8` for `&mut [u8]`, `xj_ty_Vec_c_int`,
+`xj_ty_array_4_u8`); a marker is its family and the types it connects, each
+the Rust type when guided and the C type otherwise
+(`xj_coerce_ptr_const_char_to_String`, `xj_index_ref_slice_u8`,
+`xj_slice_all_ptr_const_unsigned_char`). Keys that would read the same, such
+as `Vec<u8>` on both `unsigned char *` and `unsigned char[8]`, are told apart
+by `_1`, `_2`, ... in sorted key order; the first keeps the plain name.
 
 A declaration's guidance comes from matching `fn:var#line@file` specifiers
 (suffix-blind on `_xjtr`). When several match, the most specific wins: a named
@@ -135,8 +147,10 @@ transpiler applies the same coercion table there, from the declared type.
 
 On the Rust side, `TypeConverter` maps marker typedefs to their Rust types,
 marker typedef and function declarations produce no items, and calls to
-markers are translated by family: `(*xj_index_k(b, i))` is `b[i as usize]`,
-and an identity `xj_coerce_k(e)` is `e` without the C conversions around it.
+markers are translated by family, which the transpiler reads from the
+`markers` table in `xj-guidance.json`: `(*xj_index_<b>(b, i))` is
+`b[i as usize]`, and an identity `xj_coerce_<x>_to_<x>(e)` is `e` without the
+C conversions around it.
 The transpiler treats marker calls as free of side effects, so `p[i] += 1`
 still names its place directly. Libc recognizers look through identity
 markers (`xj_coerce`, `xj_slice_all`) at the value the program passed.

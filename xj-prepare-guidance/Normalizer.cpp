@@ -90,7 +90,7 @@ bool Normalizer::isPointerBuffer(const Expr *E) const {
   return Types.isBuffer(E) && stripValueCasts(E)->getType()->isPointerType();
 }
 
-// `(*xj_index_k(Base, Index))` in place of `Node`; a null `Index` is 0.
+// `(*xj_index_<b>(Base, Index))` in place of `Node`; a null `Index` is 0.
 void Normalizer::addIndexLayer(const Expr *Node, const Expr *Base,
                                const Expr *Index) {
   XjType BaseX = Types.of(Base);
@@ -111,7 +111,7 @@ void Normalizer::addIndexLayer(const Expr *Node, const Expr *Base,
 }
 
 // A shared slice moved forward by a statement of its own is resliced:
-// `p = xj_slice_from_k(p, n)`. A null `Step` is 1.
+// `p = xj_slice_from_<p>(p, n)`. A null `Step` is 1.
 bool Normalizer::advanceSlice(const Expr *Node, const Expr *Operand,
                               const Expr *Step) {
   XjType X = Types.of(Operand);

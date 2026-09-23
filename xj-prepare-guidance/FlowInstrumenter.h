@@ -16,7 +16,7 @@
 // unevaluated operands and variadic arguments are never wrapped.
 //
 // `p == NULL`, `p != 0`, `!p` and `p` in a condition, for guided `p`, become
-// `xj_is_null_k(p)`: clang converts the null constant to `p`'s type, and a
+// `xj_is_null_<p>(p)`: clang converts the null constant to `p`'s type, and a
 // coercion there would turn a null test into an empty-string test.
 
 #pragma once

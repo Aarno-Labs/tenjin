@@ -33,6 +33,10 @@ public:
 
   std::string print(clang::QualType T, llvm::StringRef Declarator) const;
 
+  // `T` as an identifier fragment, written the way the program wrote it:
+  // typedef and tag names are kept, `const char *` is `ptr_const_char`.
+  std::string identifier(clang::QualType T) const;
+
 private:
   clang::ASTContext &Ctx;
   clang::PrintingPolicy Policy;

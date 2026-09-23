@@ -1,6 +1,6 @@
 //! Guidance that xj-prepare-guidance applied in the C.
 //!
-//! Guided declarations have marker typedefs (`xj_ty_<n>`) for C types, so
+//! Guided declarations have marker typedefs (`xj_ty_<rust type>`) for C types, so
 //! the Rust type of anything that reads them is in the typedef sugar of its
 //! C type. Value flows that change representation or C type are calls to
 //! marker functions: the name says what the flow does (`xj_slice_all`,
@@ -27,12 +27,8 @@ pub enum MarkerFamily {
 }
 
 impl MarkerFamily {
-    /// The family of a marker function named `xj_<family>_<n>`.
-    pub fn of_name(name: &str) -> Option<Self> {
-        let (family, index) = name.strip_prefix("xj_")?.rsplit_once('_')?;
-        if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
+    /// The family named by a `markers` entry in `xj-guidance.json`.
+    pub fn of_family(family: &str) -> Option<Self> {
         match family {
             "slice_all" => Some(Self::SliceAll),
             "slice_from" => Some(Self::SliceFrom),
@@ -352,6 +348,11 @@ impl Translation<'_> {
         }
     }
 
+    /// The family of the marker function `name`, as the C pass declared it.
+    fn marker_family(&self, name: &str) -> Option<MarkerFamily> {
+        self.parsed_guidance.borrow().markers.get(name).copied()
+    }
+
     /// The marker function a call expression's callee names.
     pub fn marker_callee(&self, func: CExprId) -> Option<(MarkerFamily, CDeclId)> {
         let CExprKind::ImplicitCast(_, fexp, CastKind::FunctionToPointerDecay, _, _) =
@@ -363,7 +364,7 @@ impl Translation<'_> {
             return None;
         };
         match &self.ast_context[decl].kind {
-            CDeclKind::Function { name, .. } => Some((MarkerFamily::of_name(name)?, decl)),
+            CDeclKind::Function { name, .. } => Some((self.marker_family(name)?, decl)),
             _ => None,
         }
     }
@@ -373,7 +374,7 @@ impl Translation<'_> {
     pub fn is_marker_decl(&self, decl: CDeclId) -> bool {
         match &self.ast_context[decl].kind {
             CDeclKind::Typedef { .. } => self.marker_typedef(decl).is_some(),
-            CDeclKind::Function { name, .. } => MarkerFamily::of_name(name).is_some(),
+            CDeclKind::Function { name, .. } => self.marker_family(name).is_some(),
             _ => false,
         }
     }
@@ -521,7 +522,7 @@ impl Translation<'_> {
         self.convert_expr(ctx.used(), self.c_strip_noop_casts(expr), None)
     }
 
-    /// The base and index of a call `xj_index_k(b, i)`, through parentheses
+    /// The base and index of a call `xj_index_<b>(b, i)`, through parentheses
     /// and implicit casts.
     pub fn index_marker_operands(&self, expr: CExprId) -> Option<(CExprId, CExprId)> {
         let mut current = expr;
@@ -538,7 +539,7 @@ impl Translation<'_> {
     }
 
     /// `TypedAstContext::is_expr_pure`, except that a marker call is pure when
-    /// its arguments are, so `(*xj_index_k(p, i)) += 1` names its place
+    /// its arguments are, so `(*xj_index_<p>(p, i)) += 1` names its place
     /// directly. Covers the forms an lvalue is built from; anything else is
     /// left to `is_expr_pure`.
     pub fn is_pure_with_markers(&self, expr: CExprId) -> bool {
@@ -572,7 +573,7 @@ impl Translation<'_> {
         }
     }
 
-    /// `(*xj_index_k(b, i))`: element `i` of the buffer `b`.
+    /// `(*xj_index_<b>(b, i))`: element `i` of the buffer `b`.
     pub fn convert_index_deref(
         &self,
         ctx: ExprContext,
@@ -584,7 +585,7 @@ impl Translation<'_> {
         Ok(base.zip(index).map(|(b, i)| mk().index_expr(b, i)))
     }
 
-    /// `xj_index_k(b, i)` itself, as in `&b[i]`: a raw pointer to the
+    /// `xj_index_<b>(b, i)` itself, as in `&b[i]`: a raw pointer to the
     /// element, mutable unless the C pointee is const or `b` a shared borrow.
     fn convert_index_address(
         &self,

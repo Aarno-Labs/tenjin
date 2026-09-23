@@ -40,21 +40,21 @@ StringRef familyName(Family F) {
   return "unknown";
 }
 
-static std::string markerPrefix(Family F) {
-  return "xj_" + familyName(F).str() + "_";
+static std::string baseName(const TypedefKey &K) {
+  return "xj_ty_" + K.Rust.identifier();
 }
 
 const TypedefKey &Registry::intern(TypedefKey K) {
   auto [It, Inserted] = Typedefs.emplace(K.Id, std::move(K));
   if (Inserted && Final)
-    nameLate(It->first, "xj_ty_");
+    nameLate(It->first, baseName(It->second));
   return It->second;
 }
 
 const MarkerKey &Registry::intern(MarkerKey K) {
   auto [It, Inserted] = Markers.emplace(K.Id, std::move(K));
   if (Inserted && Final)
-    nameLate(It->first, markerPrefix(It->second.F));
+    nameLate(It->first, It->second.Base);
   return It->second;
 }
 
@@ -63,24 +63,38 @@ const TypedefKey *Registry::typedefById(StringRef Id) const {
   return It == Typedefs.end() ? nullptr : &It->second;
 }
 
+// Each base goes to the first key, in key order, that wants it; the others
+// get the first free suffix.
 void Registry::finalize() {
-  unsigned N = 0;
+  std::vector<std::pair<std::string, std::string>> Wanted;
   for (const auto &[Id, K] : Typedefs)
-    Names[Id] = "xj_ty_" + std::to_string(N++);
-  std::map<Family, unsigned> PerFamily;
+    Wanted.emplace_back(Id, baseName(K));
   for (const auto &[Id, K] : Markers)
-    Names[Id] = markerPrefix(K.F) + std::to_string(PerFamily[K.F]++);
+    Wanted.emplace_back(Id, K.Base);
+  std::vector<std::pair<std::string, std::string>> Clashing;
+  for (const auto &[Id, Base] : Wanted) {
+    if (Taken.insert(Base).second)
+      Names[Id] = Base;
+    else
+      Clashing.emplace_back(Id, Base);
+  }
+  for (const auto &[Id, Base] : Clashing)
+    Names[Id] = freeName(Base);
   Final = true;
 }
 
+std::string Registry::freeName(const std::string &Base) {
+  for (unsigned N = 1;; ++N) {
+    std::string Candidate = Base + "_" + std::to_string(N);
+    if (Taken.insert(Candidate).second)
+      return Candidate;
+  }
+}
+
 // A key the first sweep did not see means the two sweeps disagreed; the
-// name is still unique, only no longer in sorted order.
-void Registry::nameLate(const std::string &Id, StringRef Prefix) {
-  unsigned N = 0;
-  for (const auto &[_, Name] : Names)
-    if (StringRef(Name).starts_with(Prefix))
-      ++N;
-  Names[Id] = Prefix.str() + std::to_string(N);
+// name is still unique, only chosen out of order.
+void Registry::nameLate(const std::string &Id, const std::string &Base) {
+  Names[Id] = Taken.insert(Base).second ? Base : freeName(Base);
   llvm::errs() << "xj-prepare-guidance: warning: late key " << Names[Id]
                << "\n";
 }

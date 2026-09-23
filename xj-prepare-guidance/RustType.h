@@ -35,6 +35,12 @@ struct RustType {
   static RustType parse(llvm::StringRef Text);
 
   std::string str() const;
+  // The type as an identifier fragment, for naming what carries it:
+  // `&mut [u8]` is `ref_mut_slice_u8`, `Vec<::core::ffi::c_int>` is
+  // `Vec_c_int`, `[u8; 4]` is `array_4_u8`. Lifetimes and path prefixes are
+  // dropped; a length never ends the fragment, so it does not read as a
+  // suffix.
+  std::string identifier() const;
   llvm::StringRef lastSegment() const;
 
   bool isPath(llvm::StringRef Segment) const;
@@ -68,5 +74,9 @@ struct RustType {
   // and plain record names do not.
   bool isGuidedLike() const;
 };
+
+// `Text` with each run of characters that cannot appear in a C identifier
+// replaced by `_`, and without leading or trailing `_`.
+std::string identifierFragment(llvm::StringRef Text);
 
 } // namespace xj

@@ -39,6 +39,37 @@ std::optional<Spelling> TypeSpeller::spell(QualType T,
   return S;
 }
 
+std::string TypeSpeller::identifier(QualType T) const {
+  const Type *Ty = T.getTypePtr();
+  if (const auto *ET = dyn_cast<ElaboratedType>(Ty))
+    return identifier(ET->getNamedType());
+  if (const auto *PT = dyn_cast<ParenType>(Ty))
+    return identifier(PT->getInnerType());
+  if (const auto *AT = dyn_cast<AttributedType>(Ty))
+    return identifier(AT->getModifiedType());
+  if (const auto *TT = dyn_cast<TypedefType>(Ty))
+    return identifierFragment(TT->getDecl()->getName());
+  if (const auto *PT = dyn_cast<PointerType>(Ty)) {
+    QualType Pointee = PT->getPointeeType();
+    return (Pointee.isConstQualified() ? "ptr_const_" : "ptr_") +
+           identifier(Pointee);
+  }
+  if (const auto *CAT = dyn_cast<ConstantArrayType>(Ty))
+    return "array_" + std::to_string(CAT->getZExtSize()) + "_" +
+           identifier(CAT->getElementType());
+  if (const auto *AT = dyn_cast<ArrayType>(Ty))
+    return "array_" + identifier(AT->getElementType());
+  if (const auto *TT = dyn_cast<TagType>(Ty)) {
+    const TagDecl *D = TT->getDecl();
+    return D->getIdentifier() ? identifierFragment(D->getName()) : "anon";
+  }
+  if (isa<FunctionType>(Ty))
+    return "fn";
+  if (const auto *BT = dyn_cast<BuiltinType>(Ty))
+    return identifierFragment(BT->getName(Policy));
+  return identifierFragment(print(T.getUnqualifiedType(), ""));
+}
+
 bool TypeSpeller::headerSafe(QualType Canon) const {
   const Type *Ty = Canon.getTypePtr();
   if (isa<BuiltinType>(Ty))

@@ -283,6 +283,48 @@ std::string RustType::str() const {
   return Name;
 }
 
+std::string identifierFragment(StringRef Text) {
+  std::string Out;
+  for (char C : Text) {
+    if (llvm::isAlnum(C) || C == '_')
+      Out += C;
+    else if (!Out.empty() && Out.back() != '_')
+      Out += '_';
+  }
+  while (!Out.empty() && Out.back() == '_')
+    Out.pop_back();
+  size_t Start = Out.find_first_not_of('_');
+  return Start == std::string::npos ? "" : Out.substr(Start);
+}
+
+std::string RustType::identifier() const {
+  switch (K) {
+  case Kind::Path: {
+    std::string Out = identifierFragment(lastSegment());
+    for (const RustType &A : Args)
+      Out += "_" + A.identifier();
+    return Out;
+  }
+  case Kind::Ref:
+    return (Mut ? "ref_mut_" : "ref_") + Args[0].identifier();
+  case Kind::RawPtr:
+    return (Mut ? "ptr_mut_" : "ptr_const_") + Args[0].identifier();
+  case Kind::Slice:
+    return "slice_" + Args[0].identifier();
+  case Kind::Array:
+    return "array_" + identifierFragment(Len) + "_" + Args[0].identifier();
+  case Kind::Tuple: {
+    std::string Out = Args.empty() ? "unit" : "tuple";
+    for (const RustType &A : Args)
+      Out += "_" + A.identifier();
+    return Out;
+  }
+  case Kind::Opaque:
+    return identifierFragment(Name);
+  }
+  return identifierFragment(Name);
+}
+
 StringRef RustType::lastSegment() const {
   if (K != Kind::Path)
     return "";
