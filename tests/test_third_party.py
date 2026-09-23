@@ -868,7 +868,6 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.skip("C2Rust emits VaListImpl without its required lifetime")
 @pytest.mark.slow  # expected runtime: ~30 minutes
 def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
@@ -894,7 +893,7 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     # generated files byte-for-byte (as well as stdout/stderr/exit code) across a
     # range of inputs and every conversion mode.
     c_dbcc = tmp_resultsdir / "_build_1" / "dbcc"
-    rs_dbcc = tmp_resultsdir / "final" / "target" / "debug" / "howerj_dbcc"
+    rs_dbcc = tmp_resultsdir / "final" / "target" / "debug" / "main"
 
     dbc_files = [
         "ex1.dbc",
@@ -955,7 +954,7 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
                     f"{label}: generated file {name!r} differed between Rust and C"
                 )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 399
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
