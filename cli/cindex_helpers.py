@@ -14,6 +14,24 @@ import repo_root
 import hermetic
 
 
+type QuasiUniformSymbolSpecifier = str
+
+
+def quss(cursor: Cursor, ancestor: Cursor | None) -> QuasiUniformSymbolSpecifier:
+    """Build a declaration key for matching named symbols during refolding."""
+    parts = []
+    if ancestor and ancestor.kind == CursorKind.TYPEDEF_DECL:
+        parts.append("typedef")
+    if cursor.is_anonymous():
+        parts.append("anon")
+    if cursor.kind == CursorKind.STRUCT_DECL:
+        parts.append("struct")
+    elif cursor.kind == CursorKind.UNION_DECL:
+        parts.append("union")
+    parts.append(cursor.spelling)
+    return "+".join(parts)
+
+
 def create_xj_clang_index() -> cindex.Index:
     """Create a clang Index configured to use the hermetic xj-llvm installation."""
 
@@ -51,8 +69,10 @@ def yield_matching_cursors(
             worklist.append((child, (current, ancestors)))  # type: ignore
 
 
-def render_declaration_sans_qualifiers(type_obj, var_name) -> str:
-    """Render a variable declaration for the given type and name."""
+def render_declaration_sans_qualifiers(
+    type_obj, var_name, *, base_type_spelling: str | None = None
+) -> str:
+    """Render a declarator, optionally using source text for its base type."""
 
     def render_inner(ty, inner_text):
         """Recursively build the declaration string."""
@@ -95,7 +115,7 @@ def render_declaration_sans_qualifiers(type_obj, var_name) -> str:
 
         else:
             # Base case: simple type
-            return f"{ty.spelling} {inner_text}"
+            return f"{base_type_spelling or ty.spelling} {inner_text}"
 
     return render_inner(type_obj, var_name).strip()
 

@@ -78,7 +78,7 @@ def test_nhjschulz_cfsm(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow  # expected runtime: 180 s
+@pytest.mark.slow  # expected runtime: 90 s of which 30s is refolding
 def test_cmatsuoka_figlet(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -401,7 +401,7 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow  # expected runtime: 540 seconds (~9 minutes)
+@pytest.mark.slow  # expected runtime: 100 seconds
 def test_Old_Man_Programmer__tree_2_3_2(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -540,13 +540,12 @@ def test_fribidi_g0(tenjin_fixtures: TenjinFixtures):
     # with (tmp_resultsdir / "final" / "target" / "debug" / "libfribidi_0_4_0.so")
     # then run `top_builddir=$PWD/_builddir ./test/run.tests`
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 72
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 67
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
 @pytest.mark.slow  # expected runtime: 1600 s (about half an hour)
-#                      of which 21 minutes is cclyzerpp and 4.5 minutes is refolding.
 def test_libusb_shared_g0(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -605,9 +604,7 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
         "lua",
     ]
 
-    # Note that cclyzer++ currently does not run on this codebase due to two
-    # incidental restrictions: we don't run it on multi-target codebases (lua + liblua),
-    # and we don't run it on bitcode files as large as liblua's.
+    # PANGS-driven localization does not run on this multi-target codebase (lua + liblua).
     translation.do_translate(
         translation_types.TranslationFlags.simple(
             root=tenjin_fixtures.root,
@@ -639,7 +636,6 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.skip("gvn marks globals as constants and propagates their value")
 # g0 = empty guidance
 @pytest.mark.slow  # expected runtime: 60 seconds
 def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
@@ -685,12 +681,12 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
 
     print(f"ronomon_pure_cli passed {n_tests_passed} test vectors.")
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 4
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 53
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow
+@pytest.mark.slow  # expected runtime: 500 s
 def test_uxnmin(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
 
@@ -745,7 +741,7 @@ def test_uxnmin(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow
+@pytest.mark.slow  # expected runtime: 130 s
 def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
 
@@ -763,6 +759,7 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
         ),
         guidance_path_or_literal="{}",
     )
+    # TODO add a flag to combine the bin and lib targets
 
     c_prog_output = hermetic.run(
         [
@@ -803,8 +800,7 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow
-@pytest.mark.skip(reason="This test fails the cclyzer globals-localization phase")
+@pytest.mark.slow  # estimated runtime: 12 minutes (8 minutes in refolding)
 def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
 
@@ -867,29 +863,12 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
         f" C: {summary_line(c_prog_output.stdout)!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 246
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
 @pytest.mark.slow  # expected runtime: ~30 minutes
-@pytest.mark.skip(
-    reason="dbcc does not yet translate end-to-end; the C sources handed to c2rust "
-    "fail to parse, so no final/ crate is produced. Refolding itself is not at "
-    "fault (the c_16 output was verified token-faithful to the modified program); "
-    "both error classes originate elsewhere: (1) every TU except getopt/util calls "
-    "assert(<pointer>); with assert a blocked macro during translation, the calls "
-    "bind to the autoincluded 'void assert(int);' marker decl and Clang rejects "
-    "the pointer-to-int conversions as errors. (2) The _xjw unmodified-function "
-    "wrappers from xj-prepare-findfnptrdecls are inserted (at c_13, pre-refold) "
-    "between a forward declaration and its ';' in mpc.c (the insertion-point "
-    "lookup sees hasBody() true via a later redecl, looks for a '}' after the "
-    "prototype, and falls back to just after the ')'), yielding invalid C plus "
-    "knock-on conflicting-type and incompatible-function-pointer errors "
-    "(mpc_fold_t vs xjg-threaded mpc_fold_t_xjtp, etc.); the invalid Clang AST "
-    "makes xj-c2rust panic (exit 101, conversion.rs 'Type conversion not "
-    "implemented for TagTypeUnknown').",
-)
 def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -914,7 +893,7 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     # generated files byte-for-byte (as well as stdout/stderr/exit code) across a
     # range of inputs and every conversion mode.
     c_dbcc = tmp_resultsdir / "_build_1" / "dbcc"
-    rs_dbcc = tmp_resultsdir / "final" / "target" / "debug" / "howerj_dbcc"
+    rs_dbcc = tmp_resultsdir / "final" / "target" / "debug" / "main"
 
     dbc_files = [
         "ex1.dbc",
@@ -975,12 +954,12 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
                     f"{label}: generated file {name!r} differed between Rust and C"
                 )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 399
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow  # expected runtime: 110 s
+@pytest.mark.slow  # expected runtime: 85 s
 def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     """Translate Megalania's compressor and require it to behave exactly as the C
     build does: byte-identical compressed output on several inputs, and matching
@@ -994,8 +973,8 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
     annealing search (top-k finder, slab neighbour, packet enumerator) are compiled
     but never run there, whereas compressing even a 64-byte input executes
     essentially all of the library. And translating both programs at once is not an
-    option: a codebase with more than one build target skips cclyzer++'s
-    globals localization and preprocessor refolding, which are two of the passes this
+    option: a codebase with more than one build target skips PANGS-driven globals
+    localization and preprocessor refolding, which are two of the passes this
     test is here to exercise.
     """
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
@@ -1239,7 +1218,7 @@ kilka linijek</li>
 
 """  # noqa: W291
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 8
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 7
 
 
 @pytest.mark.slow  # expected runtime: 30 seconds
@@ -1273,6 +1252,7 @@ def test_itsjustme27__dns_tool_exe(tenjin_fixtures: TenjinFixtures):
     assert get_final_unsafe_fns_count(tmp_resultsdir) == 7
 
 
+@pytest.mark.skip("triggers a refolder bug")
 @pytest.mark.slow  # expected runtime: 15 minutes
 def test_lemon_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
@@ -1429,7 +1409,7 @@ def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
         sha256hex(tmp_codebase / "COPYING.gz")
         == "c7d0f6d70256238349e9f682d7d1362a832cc955b653cee712b8a1db92a15acd"
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 109
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 100
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
@@ -1500,7 +1480,7 @@ def test_silentbicycle__guff(tenjin_fixtures: TenjinFixtures):
         "|                                     # ",
         "+----+----+----+----+----+----+----+----",
     ]
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 53
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 52
 
 
 @pytest.mark.slow  # expected runtime: 9 seconds

@@ -5,7 +5,10 @@ use syn::{
     Expr, ExprCast, ExprLit, ExprPath, ExprUnary, LitByteStr, LitInt, Pat, Path, Stmt, Type,
 };
 
-use crate::{AtomicKind, Depth, Rewriter, SymbolTable, atomic_kind, atomic_kind_from_name};
+use crate::{
+    AtomicKind, Depth, Rewriter, SymbolTable, atomic_kind, atomic_kind_from_name,
+    c_atomic_rust_name,
+};
 
 fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
     if let Expr::Cast(_) = expr {
@@ -81,12 +84,8 @@ impl Rewriter {
         let Expr::Path(function) = &*call.func else {
             return None;
         };
-        let Expr::RawAddr(raw_addr) = expr_strip_parens(call.args.first()?) else {
-            return None;
-        };
-        if !matches!(raw_addr.mutability, syn::PointerMutability::Mut(_)) {
-            return None;
-        }
+        let pointer = atomic_pointer_operand(call.args.first()?)?;
+        let raw_addr = pointer.raw_addr;
         let receiver_ty = symbols.type_of_expr(&raw_addr.expr)?;
         let kind = atomic_kind(&receiver_ty)?;
         let (method, ordering, value_arity) = atomic_intrinsic_method(&function.path, kind)?;
@@ -103,9 +102,14 @@ impl Rewriter {
             .collect::<Vec<_>>();
         let method = syn::Ident::new(method, function.path.span());
         let ordering = syn::Ident::new(ordering, function.path.span());
-        let replacement: Expr = syn::parse_quote! {
+        let mut replacement: Expr = syn::parse_quote! {
             #receiver.#method(#(#values,)* ::core::sync::atomic::Ordering::#ordering)
         };
+        if method != "store"
+            && let Some(result_ty) = pointer.c_value_type
+        {
+            replacement = syn::parse_quote! { (#replacement) as #result_ty };
+        }
         Some((replacement, Depth::Unlimited))
     }
 
@@ -1236,10 +1240,58 @@ fn atomic_assignment_place(expr: &Expr) -> &Expr {
     if !matches!(unary.op, syn::UnOp::Deref(_)) {
         return expr;
     }
-    let Expr::RawAddr(raw_addr) = expr_strip_parens(&unary.expr) else {
+    let Some(raw_addr) = raw_addr_through_cast(&unary.expr) else {
         return expr;
     };
     &raw_addr.expr
+}
+
+/// Recognize a raw address directly or through the pointer cast emitted when
+/// an immutable Rust static has a mutable C pointer type.
+fn raw_addr_through_cast(expr: &Expr) -> Option<&syn::ExprRawAddr> {
+    atomic_pointer_operand(expr).map(|pointer| pointer.raw_addr)
+}
+
+struct AtomicPointerOperand<'a> {
+    raw_addr: &'a syn::ExprRawAddr,
+    c_value_type: Option<&'a Type>,
+}
+
+/// Recognize an atomic intrinsic pointer and retain the C pointee type from
+/// the explicit cast emitted by C2Rust.  Rust pointer-sized atomic methods
+/// return `usize`/`isize`, which are not necessarily the same Rust type as the
+/// C typedef used at the intrinsic call site.
+fn atomic_pointer_operand(expr: &Expr) -> Option<AtomicPointerOperand<'_>> {
+    match expr_strip_parens(expr) {
+        Expr::RawAddr(raw_addr) => Some(AtomicPointerOperand {
+            raw_addr,
+            c_value_type: None,
+        }),
+        Expr::Cast(cast) => match expr_strip_parens(&cast.expr) {
+            Expr::RawAddr(raw_addr) => {
+                let Type::Ptr(pointer) = &*cast.ty else {
+                    return None;
+                };
+                let c_value_type = match &*pointer.elem {
+                    Type::Path(path)
+                        if path.qself.is_none()
+                            && path.path.segments.len() == 1
+                            && c_atomic_rust_name(&path.path.segments[0].ident.to_string())
+                                .is_some() =>
+                    {
+                        Some(&*pointer.elem)
+                    }
+                    _ => None,
+                };
+                Some(AtomicPointerOperand {
+                    raw_addr,
+                    c_value_type,
+                })
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Return `(method, Ordering variant, non-receiver argument count)`.

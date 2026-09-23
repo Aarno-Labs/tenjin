@@ -24,9 +24,9 @@ definitions into ISO C prototype form:
 Unprototyped *function pointer* types (`int (*fp)();`, `typedef int F();`,
 no-prototype function types in casts and struct fields) are counted and
 reported, but not rewritten. Reconstructing their parameter lists needs
-assignment- and call-site flow analysis rather than a local syntactic fix; the
-same `FunctionNoProtoTypeLoc`s are already walked by
-[xj-prepare-findfnptrdecls](/xj-prepare-findfnptrdecls).
+assignment- and call-site flow analysis rather than a local syntactic fix.
+PANGS currently blocks global localization when it would require changing an
+unprototyped callback type; it does not reconstruct the missing prototype.
 
 ## Why
 

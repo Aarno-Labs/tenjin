@@ -48,6 +48,84 @@ fn atomic_local_initialization_and_intrinsics() {
 }
 
 #[test]
+fn atomic_operations_accept_const_raw_addresses_cast_to_mutable_pointers() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+    check(
+        &rw,
+        r#"static value: ::core::sync::atomic::AtomicI32 =
+            ::core::sync::atomic::AtomicI32::new(0);
+        fn demo() {
+            *(&raw const value as *mut ::core::sync::atomic::AtomicI32) = 5;
+            ::core::intrinsics::atomic_store_seqcst(
+                &raw const value as *mut ::core::sync::atomic::AtomicI32,
+                10,
+            );
+            let _ = ::core::intrinsics::atomic_load_acquire(
+                &raw const value as *mut ::core::sync::atomic::AtomicI32,
+            );
+        }"#,
+        expect![[r#"
+            static value: ::core::sync::atomic::AtomicI32 = ::core::sync::atomic::AtomicI32::new(0);
+            fn demo() {
+                value.store(5, ::core::sync::atomic::Ordering::SeqCst);
+                value.store(10, ::core::sync::atomic::Ordering::SeqCst);
+                let _ = value.load(::core::sync::atomic::Ordering::Acquire);
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn atomic_intrinsics_preserve_c_pointer_pointee_result_type() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+    check(
+        &rw,
+        r#"pub type __tenjin_atomic_usize_t = ::core::ffi::c_ulong;
+        static total: __tenjin_atomic_usize_t = 0;
+        fn demo(lines: *mut ::core::ffi::c_ulong) {
+            unsafe {
+                *lines = ::core::intrinsics::atomic_load_seqcst(
+                    &raw const total as *mut __tenjin_atomic_usize_t,
+                );
+                let _ = ::core::intrinsics::atomic_xadd_relaxed(
+                    &raw const total as *mut __tenjin_atomic_usize_t,
+                    1 as ::core::ffi::c_ulong,
+                );
+                ::core::intrinsics::atomic_store_release(
+                    &raw const total as *mut __tenjin_atomic_usize_t,
+                    2 as ::core::ffi::c_ulong,
+                );
+            }
+        }"#,
+        expect![[r#"
+            pub type __tenjin_atomic_usize_t = ::core::ffi::c_ulong;
+            static total: ::core::sync::atomic::AtomicUsize = ::core::sync::atomic::AtomicUsize::new(
+                (0) as usize,
+            );
+            fn demo(lines: *mut ::core::ffi::c_ulong) {
+                unsafe {
+                    *lines = (total.load(::core::sync::atomic::Ordering::SeqCst))
+                        as __tenjin_atomic_usize_t;
+                    let _ = (total
+                        .fetch_add(
+                            (1 as ::core::ffi::c_ulong) as usize,
+                            ::core::sync::atomic::Ordering::Relaxed,
+                        )) as __tenjin_atomic_usize_t;
+                    total
+                        .store(
+                            (2 as ::core::ffi::c_ulong) as usize,
+                            ::core::sync::atomic::Ordering::Release,
+                        );
+                }
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn atomic_struct_initialization_and_intrinsics() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);

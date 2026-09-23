@@ -40,6 +40,51 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "[&'static [u8]; 2]": "GUIDED_STRINGS"
             }
         })
+    } else if c_path.ends_with("tenjin_semantic_immutability.c") {
+        serde_json::json!({
+            "vars_of_type": {
+                "&'static [u8]": ["guided_pointer", "AllGuided:guided"]
+            },
+            "vars_mut": {
+                "forced_mut_scalar": true,
+                "forced_immutable_raw_pointer": false
+            },
+            "semantically_immutable_globals": [
+                "plain_scalar",
+                "forced_mut_scalar",
+                "raw_pointer",
+                "forced_immutable_raw_pointer",
+                "guided_pointer",
+                "plain_record",
+                "raw_record",
+                "raw_union",
+                "guided_record",
+                "nested_raw_record_array",
+                "nested_guided_record_array",
+                "raw_pointer_array",
+                "function_pointer",
+                "immutable_sizeof_subscript"
+            ]
+        })
+    } else if c_path.ends_with("tenjin_semantic_immutable_addresses.c") {
+        serde_json::json!({
+            "vars_mut": {
+                "forced_mut_array": true
+            },
+            "semantically_immutable_globals": [
+                "direct_array",
+                "record",
+                "record_array",
+                "forced_mut_array"
+            ]
+        })
+    } else if c_path.ends_with("snapshots/macros.c") {
+        serde_json::json!({
+            // This scalar's member-expression initializer is section-extracted.
+            // The generated static must remain mutable even under semantic-
+            // immutability guidance so the runtime initializer can assign it.
+            "semantically_immutable_globals": ["global_static_const_member"]
+        })
     } else if c_path.ends_with("tenjin_slices.c") {
         serde_json::json!({
             "vars_of_type" : {
@@ -625,6 +670,20 @@ fn test_sigign() {
 #[test]
 fn test_tenjin_guided_array() {
     transpile("tenjin_guided_array.c").run();
+}
+
+#[test]
+fn test_tenjin_semantic_immutability() {
+    // Struct initializer conversion does not yet consume field type guidance,
+    // so the guided record initializers have a pre-existing type mismatch.
+    transpile("tenjin_semantic_immutability.c")
+        .expect_compile_error(true)
+        .run();
+}
+
+#[test]
+fn test_tenjin_semantic_immutable_addresses() {
+    transpile("tenjin_semantic_immutable_addresses.c").run();
 }
 
 #[test]

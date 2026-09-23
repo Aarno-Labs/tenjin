@@ -1,5 +1,4 @@
 import json
-import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,11 +7,12 @@ import shutil
 from typing import TypedDict
 import pprint
 from os import environ
+import os
+import tempfile
 
 from clang.cindex import (  # type: ignore
     Index,
     CursorKind,
-    Diagnostic,
     LinkageKind,
     StorageClass,
     TranslationUnit,
@@ -25,15 +25,16 @@ import hermetic
 import repo_root
 import compilation_database
 import batching_rewriter
+import cindex_helpers
 from cindex_helpers import (
     create_xj_clang_index,
     render_declaration_sans_qualifiers,
     yield_matching_cursors,
 )
-import c_refact_type_mod_replicator
 from constants import XJ_GUIDANCE_FILENAME
 import targets
 import tenj_types
+import pangs_source
 
 
 def xj_comp_db_from_directory(dir: str) -> compilation_database.CompileCommands:
@@ -249,10 +250,21 @@ class ConsolidationRevert:
     pre_rewrite_i_length: int
 
 
+@dataclass(frozen=True)
+class RelocatedIncludeBlock:
+    """An XjGlobals include block moved from a preprocessed TU into a header.
+
+    If refolding cannot recover that header include, the block must be restored
+    alongside the expanded definition identified by `target_quss`.
+    """
+
+    target_quss: str
+    contents: str
+
+
 @dataclass
 class ConsolidationRevertContext:
-    """All consolidation reverts for one TU's `.i` file, plus the full list of
-    rewrites the consolidation BatchingRewriter applied to that file.
+    """Refold fallbacks for one TU, plus its consolidation rewrite locations.
 
     `all_i_rewrites` is `(pre_start, pre_length, post_length)` per rewrite
     that affects this `.i` file (reverts plus any other consolidation-pass
@@ -260,9 +272,14 @@ class ConsolidationRevertContext:
     enough to translate every revert's pre-rewrite location to its
     post-rewrite byte range in the final `.i`, which is the anchor used to
     look up the corresponding `.c` range via the edit-map.
+
+    `relocated_include_blocks` records XjGlobals support text moved from the
+    TU into a header. When a reverted definition remains expanded after
+    refolding, its support block must remain expanded with it.
     """
 
     reverts: list[ConsolidationRevert]
+    relocated_include_blocks: list[RelocatedIncludeBlock]
     all_i_rewrites: list[tuple[int, int, int]]
 
 
@@ -471,8 +488,12 @@ def restore_dropped_consolidation_reverts(
 
     c_content = c_path.read_text(encoding="utf-8")
     edit_map = _load_edit_map(edit_map_path)
+    include_blocks_by_target: dict[str, list[str]] = {}
+    for block in ctx.relocated_include_blocks:
+        include_blocks_by_target.setdefault(block.target_quss, []).append(block.contents)
 
     restored = 0
+    restored_include_blocks = 0
     skipped_ambiguous = 0
     skipped_already_folded = 0
     pending_rewrites: list[tuple[int, int, str, str]] = []
@@ -527,10 +548,16 @@ def restore_dropped_consolidation_reverts(
                 skipped_ambiguous += 1
             continue
 
+        replacement = revert.modified_version
+        if revert.is_defn and revert.quss in include_blocks_by_target:
+            blocks = include_blocks_by_target.pop(revert.quss)
+            replacement = "".join(blocks) + replacement
+            restored_include_blocks += len(blocks)
+
         pending_rewrites.append((
             match_idx,
             match_idx + len(chosen_candidate),
-            revert.modified_version,
+            replacement,
             revert.quss,
         ))
 
@@ -543,6 +570,7 @@ def restore_dropped_consolidation_reverts(
     if restored or skipped_ambiguous:
         print(
             f"refold restore for {c_path.name}: restored={restored} "
+            f"restored_include_blocks={restored_include_blocks} "
             f"skipped_ambiguous={skipped_ambiguous} "
             f"already_folded_or_absent={skipped_already_folded} "
             f"(total reverts={len(ctx.reverts)})"
@@ -563,24 +591,6 @@ class NamedDeclInfo:
     end_line: int
     end_col: int
     usr: tenj_types.ClangUSR
-
-
-@dataclass
-class TissueFunctionCursorInfo:
-    cursor: Cursor
-    file: tenj_types.FilePathStr
-    is_definition: bool
-
-
-@dataclass
-class TissueCallSiteInfo:
-    caller_func: tenj_types.CIdentifier
-    callee_funcs: list[
-        tenj_types.CIdentifier
-    ]  # currently unused, kept for possible future use/debugging
-    i_file_path: tenj_types.FilePathStr
-    line: int
-    col: int
 
 
 @dataclass(frozen=True)
@@ -769,604 +779,32 @@ def compute_globals_and_statics_for_translation_unit(
     return results
 
 
-def loc_key(c: Cursor) -> tuple[int, int, str]:
-    file_path = c.location.file.name if c.location.file else "<unknown>"
-    return (c.location.line, c.location.column, file_path)
+def global_definition_blank_rewrite(
+    content: bytes, start_offset: int, extent_end_offset: int
+) -> tuple[int, int, str]:
+    """Return a width- and line-preserving rewrite for one standalone definition."""
+    if content[extent_end_offset - 1 : extent_end_offset] == b";":
+        end_offset = extent_end_offset
+    else:
+        semicolon_offset = content.find(b";", extent_end_offset)
+        if semicolon_offset == -1:
+            raise ValueError("Could not find the semicolon terminating a localized global")
+        between = content[extent_end_offset:semicolon_offset]
+        if between.strip():
+            raise ValueError(
+                "Localized global is not a standalone declaration; "
+                "split joined declarations before localization"
+            )
+        end_offset = semicolon_offset + 1
 
-
-def collect_cursors_by_loc(
-    tus: dict[str, TranslationUnit],
-    cursor_kind_filter: list[CursorKind] = [],
-) -> dict[tuple[int, int, str], list[Cursor]]:
-    """Group cursors by the (line, col, file) they are located in."""
-    by_loc: dict[tuple[int, int, str], list[Cursor]] = {}
-    for tu in tus.values():
-        for c in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
-            # When looking for CALL_EXPR nodes in github.com/Old-Man-Programmer/tree
-            # the filter reduces time taken from 1.2s to 0.3s
-            if cursor_kind_filter and c.kind not in cursor_kind_filter:
-                continue
-            key = loc_key(c)
-            if key not in by_loc:
-                by_loc[key] = []
-            by_loc[key].append(c)
-    return by_loc
-
-
-def unwrap_call_callee_expr(c: Cursor) -> Cursor:
-    while c.kind in (CursorKind.UNEXPOSED_EXPR, CursorKind.PAREN_EXPR):
-        children = list(c.get_children())
-        if len(children) != 1:
-            break
-        c = children[0]
-    return c
-
-
-def direct_call_callee_name(call_expr: Cursor) -> tenj_types.CIdentifier | None:
-    if call_expr.kind != CursorKind.CALL_EXPR:
-        return None
-
-    callee_expr = next(call_expr.get_children(), None)
-    if callee_expr is None:
-        return None
-
-    callee_expr = unwrap_call_callee_expr(callee_expr)
-    referenced_decl = callee_expr.referenced
-    if referenced_decl is None or referenced_decl.kind != CursorKind.FUNCTION_DECL:
-        return None
-
-    if callee_expr.type.kind not in (TypeKind.FUNCTIONPROTO, TypeKind.FUNCTIONNOPROTO):
-        return None
-
-    return referenced_decl.spelling
-
-
-def duplicates_within(lst: list[str]) -> set[str]:
-    seen = set()
-    duplicates = set()
-    for item in lst:
-        if item in seen:
-            duplicates.add(item)
-        else:
-            seen.add(item)
-    return duplicates
+    original = content[start_offset:end_offset]
+    replacement = "".join(
+        "\n" if byte == ord("\n") else "\r" if byte == ord("\r") else " " for byte in original
+    )
+    return start_offset, end_offset - start_offset, replacement
 
 
 XJG_PLACEHOLDER = "((struct XjGlobals*)0)"
-
-
-@dataclass
-class LocalizeMutableGlobalsPhase1Results:
-    ineligible_for_lifting: set[str]
-    nonmain_tissue_functions: set[str]
-    all_function_names: set[str]
-    mutd_global_names: set[str]
-    escd_global_names: set[str]
-    globals_without_initializers: set[str]
-    higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[tuple[int, int]]]
-    applied_rewrites: dict[str, list[tuple[int, int, str]]]
-
-
-TYPEDEF_CLONE_SUFFIX = "_xjtp"
-
-
-def rewrite_fn_ptr_params_text(original_text: str, lparen_offset: int, rparen_offset: int) -> str:
-    between_parens = original_text[lparen_offset + 1 : rparen_offset].strip()
-    if between_parens == "void" or not between_parens:
-        target_offset = rparen_offset
-        replacement = "struct XjGlobals *"
-    else:
-        target_offset = lparen_offset + 1
-        replacement = "struct XjGlobals *, "
-
-    after_opening_paren = lparen_offset + 1
-    return original_text[:after_opening_paren] + replacement + original_text[target_offset:]
-
-
-def clone_fn_ptr_typedef_text(
-    original_text: str, typedef_decl: "FnPtrTypedefDecl", clone_name: str
-) -> str:
-    rel_start = typedef_decl["def_start_offset"]
-    rel_name = typedef_decl["name_offset"] - rel_start
-    rel_lparen = typedef_decl["lparen_offset"] - rel_start
-    rel_rparen = typedef_decl["rparen_offset"] - rel_start
-    original_name = typedef_decl["name"]
-
-    if original_text[rel_name : rel_name + len(original_name)] != original_name:
-        raise ValueError(
-            f"Unable to locate typedef name {original_name!r} inside typedef declaration text"
-        )
-
-    clone_text = (
-        original_text[:rel_name] + clone_name + original_text[rel_name + len(original_name) :]
-    )
-    rel_lparen += len(clone_name) - len(original_name)
-    rel_rparen += len(clone_name) - len(original_name)
-    return rewrite_fn_ptr_params_text(clone_text, rel_lparen, rel_rparen)
-
-
-def choose_typedef_clone_names(
-    source_typedef_names: set[str], contents_by_file: dict[str, bytes]
-) -> dict[str, str]:
-    all_text = "\n".join(content.decode("utf-8") for content in contents_by_file.values())
-    clone_names: dict[str, str] = {}
-    for typedef_name in sorted(source_typedef_names):
-        candidate = f"{typedef_name}{TYPEDEF_CLONE_SUFFIX}"
-        suffix_num = 0
-        while (
-            candidate in clone_names.values()
-            or re.search(rf"\b{re.escape(candidate)}\b", all_text) is not None
-        ):
-            suffix_num += 1
-            candidate = f"{typedef_name}{TYPEDEF_CLONE_SUFFIX}_{suffix_num}"
-        clone_names[typedef_name] = candidate
-    return clone_names
-
-
-def localize_mutable_globals_phase1(
-    compdb: compilation_database.CompileCommands,
-    j: dict,
-    current_codebase: Path,
-    prev: Path,
-    nonmain_tissue_functions: set[str],
-) -> LocalizeMutableGlobalsPhase1Results:
-    """
-    The first phase modifies function (pointer) types and
-    inserts placeholder parameters for XjGlobals.
-
-    Some function pointer types, when used in higher-order ways,
-    cannot yet be reliably modified during phase 1, and currently
-    must be handled by a separate cleanup pass
-    (`speculatively_fix_higher_order_fn_ptr_types`).
-
-    Phase 1 does not:
-        * Replace occurrences of mutable global variables
-            to use the corresponding lifted struct field.
-        * Define the XjGlobals struct in the main TU.
-        * Add necessary typedefs for XjGlobals fields.
-    """
-
-    phase1index = create_xj_clang_index()
-    tus = parse_project(phase1index, compdb)
-
-    all_function_names, nonmain_tissue_function_cursors = extract_function_info(
-        tus, nonmain_tissue_functions
-    )
-
-    fpd_output = run_xj_prepare_findfnptrdecls(
-        current_codebase, nonmain_tissue_functions, all_function_names
-    )
-
-    ineligible_for_lifting = set()
-    for refs in j.get("global_initializer_references", {}).values():
-        for r in refs:
-            if r.startswith(".str"):
-                continue
-            ineligible_for_lifting.add(demangle_meg(r))
-
-    print("ineligible_lifting:", list(ineligible_for_lifting))
-
-    # Entries in this list are either plain global names, or for function-scoped statics,
-    # they are in the format "function_name.var_name_xjtr_N"
-    mangled_mutated_globals = j.get("mutated_globals", [])
-    mangled_escaped_globals = j.get("escaped_globals", [])
-
-    mutd_global_names_list = [demangle_meg(name) for name in mangled_mutated_globals]
-    mutd_global_names = set(mutd_global_names_list)
-    if len(mutd_global_names) != len(mutd_global_names_list):
-        raise ValueError(
-            "Expected all mutated global names to be unique after demangling, "
-            + f"but saw duplicates of: {duplicates_within(mutd_global_names_list)}"
-        )
-    print("mutated_globals:", list(mutd_global_names))
-
-    escd_global_names_list = [demangle_meg(name) for name in mangled_escaped_globals]
-    escd_global_names = set(escd_global_names_list)
-    if len(escd_global_names) != len(escd_global_names_list):
-        raise ValueError(
-            "Expected all escaped global names to be unique after demangling, "
-            + f"but saw duplicates of: {duplicates_within(escd_global_names_list)}"
-        )
-    print("escaped_globals:", list(escd_global_names))
-
-    # globals_and_statics = compute_globals_and_statics_for_translation_units(
-    #     list(tus.values()), elide_functions=True
-    # )
-    # liftable_mutated_globals_and_statics = [
-    #     c
-    #     for c in globals_and_statics
-    #     if c.spelling in mutd_global_names and c.spelling not in ineligible_for_lifting
-    # ]
-
-    call_sites_from_json = get_call_sites_from_json(
-        prev, current_codebase, j, nonmain_tissue_functions, escd_global_names
-    )
-
-    results = LocalizeMutableGlobalsPhase1Results(
-        all_function_names=all_function_names,
-        nonmain_tissue_functions=nonmain_tissue_functions,
-        mutd_global_names=mutd_global_names,
-        escd_global_names=escd_global_names,
-        ineligible_for_lifting=ineligible_for_lifting,
-        higher_order_potentially_modified_fn_ptr_type_locs=fpd_output[
-            "higher_order_potentially_modified_fn_ptr_type_locs"
-        ],
-        globals_without_initializers=set(fpd_output["globals_without_initializers"]),
-        applied_rewrites={},
-    )
-
-    cbl_start = time.time()
-    call_expr_cursors_by_loc = collect_cursors_by_loc(tus, [CursorKind.CALL_EXPR])
-    cbl_elapsed = time.time() - cbl_start
-    print(f"  collect_cursors_by_loc took {cbl_elapsed:.3f} seconds")
-
-    with batching_rewriter.BatchingRewriter() as rewriter:
-        typedefs_to_clone = {
-            use["clone_source_typedef_name"]
-            for uses in fpd_output["modified_fn_ptr_typedef_uses"].values()
-            for use in uses
-        }
-        contents_by_file = {filepath: rewriter.get_content(filepath) for filepath in tus}
-        typedef_clone_names = choose_typedef_clone_names(typedefs_to_clone, contents_by_file)
-        typedef_decls_by_name: dict[str, list[tuple[str, FnPtrTypedefDecl]]] = {}
-        for filepath_str, typedef_decls in fpd_output["fn_ptr_typedef_decls"].items():
-            for typedef_decl in typedef_decls:
-                typedef_decls_by_name.setdefault(typedef_decl["name"], []).append((
-                    filepath_str,
-                    typedef_decl,
-                ))
-
-        print("phase1, cloning typedef-backed function pointer types")
-        for source_typedef_name, clone_name in typedef_clone_names.items():
-            for filepath_str, typedef_decl in typedef_decls_by_name.get(source_typedef_name, []):
-                original_text = contents_by_file[filepath_str][
-                    typedef_decl["def_start_offset"] : typedef_decl["decl_post_offset"]
-                ].decode("utf-8")
-                clone_text = clone_fn_ptr_typedef_text(original_text, typedef_decl, clone_name)
-                rewriter.add_rewrite(
-                    filepath_str,
-                    typedef_decl["decl_post_offset"],
-                    0,
-                    "\n" + clone_text,
-                )
-
-        print("phase1, renaming typedef-backed function pointer use sites")
-        for filepath_str, typedef_uses in fpd_output["modified_fn_ptr_typedef_uses"].items():
-            for typedef_use in typedef_uses:
-                rewriter.add_rewrite(
-                    filepath_str,
-                    typedef_use["use_offset"],
-                    len(typedef_use["written_typedef_name"]),
-                    typedef_clone_names[typedef_use["clone_source_typedef_name"]],
-                )
-
-        # In each translation unit,
-        #   for each identified function pointer type,
-        #       modify it to add 'struct XjGlobals *' as first parameter.
-        # This may require removing 'void' if it's the only parameter.
-        # In non-empty parameter lists, we must add a trailing comma.
-        print("phase1, adding rewrites for modified_fn_ptr_type_locs")
-        for filepath_str, ranges in fpd_output["modified_fn_ptr_type_locs"].items():
-            content = rewriter.get_content(filepath_str)
-
-            for start_offset, end_offset in ranges:
-                original_text = content[start_offset:end_offset].decode("utf-8")
-                between_parens = original_text[1:].strip()
-                add_trailing_comma = False
-                if between_parens == "void" or not between_parens:
-                    target_offset = end_offset  # replace void (and whitespace)
-                else:
-                    add_trailing_comma = True
-                    target_offset = start_offset + 1
-
-                after_opening_paren = start_offset + 1
-                rewriter.add_rewrite(
-                    filepath_str,
-                    after_opening_paren,
-                    target_offset - after_opening_paren,
-                    f"struct XjGlobals *{', ' if add_trailing_comma else ''}",
-                )
-
-        print("phase1, adding rewrites for unmod_fn_occ_wrappers")
-        for filepath_str, wrappers in fpd_output["unmod_fn_occ_wrappers"].items():
-            for combined_wrapper in wrappers:
-                # Add the wrapper function definition to the file
-                rewriter.add_rewrite(
-                    filepath_str,
-                    combined_wrapper["decl_post_offset"],
-                    0,
-                    "\n" + combined_wrapper["wrapper_defn"] + "\n",
-                )
-
-                # For each occurrence of an unmodified function name,
-                # in a position where we need to pass a wrapper instead,
-                # modify the occurrence to refer to the wrapper.
-                for occ in combined_wrapper["occ_offsets"]:
-                    name_end = occ + len(combined_wrapper["name"])
-                    rewriter.add_rewrite(filepath_str, name_end, 0, combined_wrapper["suffix"])
-
-        # For each non-main tissue function, add 'struct XjGlobals *xjg' as first parameter
-        print("phase1, adding rewrites for  nonmain_tissue_function_cursors")
-        for func_cursors in nonmain_tissue_function_cursors.values():
-            for func_info in func_cursors:
-                # Find the position after the opening parenthesis
-                content = rewriter.get_content(func_info.file)
-
-                # Find the opening parenthesis of the argument list
-                paren_pos = find_fn_opening_paren(func_info.cursor, content)
-                if paren_pos == -1:
-                    continue
-
-                # Check if there are existing parameters
-                closing_paren_pos = content.find(b")", paren_pos)
-                if closing_paren_pos == -1:
-                    continue
-
-                # Check if there are parameters already
-                param_section = content[paren_pos + 1 : closing_paren_pos].strip()
-
-                overwrite_len = 0
-                if param_section == b"" or param_section == b"void":
-                    # No parameters, just add our parameter
-                    insert_offset = paren_pos + 1
-                    insert_text = "struct XjGlobals *xjg"
-                    overwrite_len = len(b"void") if param_section == b"void" else 0
-                else:
-                    # Has parameters, add as first parameter with comma
-                    insert_offset = paren_pos + 1
-                    insert_text = "struct XjGlobals *xjg, "
-
-                rewriter.add_rewrite(func_info.file, insert_offset, overwrite_len, insert_text)
-
-        # Step 6: Modify call sites to pass placeholder-for-xjg (using JSON call site info)
-        print("phase1, adding rewrites for placeholder-for-xjg")
-        for call_info in call_sites_from_json:
-            caller_func = call_info.caller_func
-            i_file_path = call_info.i_file_path
-            line = call_info.line
-            col = call_info.col
-
-            # Working with .i files (in particular, ones without line markers)
-            # allows us to reliably edit call sites. Otherwise, we'd have to contend
-            # with call sites that are synthesized by the preprocessor in horrific ways.
-            assert i_file_path.endswith(".nolines.i"), (
-                f"Expected .nolines.i file, got {i_file_path}\n{compdb=}"
-            )
-            assert i_file_path in tus
-
-            param_to_pass = XJG_PLACEHOLDER
-
-            # Find the call expression at the given location
-            # We need to use libclang to find the exact offset
-            found_call = False
-            for cursor in call_expr_cursors_by_loc.get((line, col, i_file_path), []):
-                direct_callee = direct_call_callee_name(cursor)
-                if direct_callee is not None and direct_callee not in nonmain_tissue_functions:
-                    # Mixed call-graph components can include both direct calls to
-                    # non-tissue functions and indirect calls that do need wrappers.
-                    # Only the former are safe to leave unchanged here.
-                    found_call = True
-                    break
-
-                # Read file to find parenthesis
-                content = rewriter.get_content(i_file_path)
-
-                callee_expr = next(cursor.get_children(), None)
-                if callee_expr:
-                    # Ensure we skip past the callee when we look for
-                    # the opening parenthesis.
-                    call_start_offset = callee_expr.extent.end.offset
-                else:
-                    call_start_offset = cursor.extent.start.offset
-
-                paren_pos = content.find(b"(", call_start_offset)
-                if paren_pos == -1:
-                    break
-
-                # Check if there are existing arguments
-                closing_paren_pos = content.find(b")", paren_pos)
-                if closing_paren_pos == -1:
-                    break
-
-                args_section = content[paren_pos + 1 : closing_paren_pos].strip()
-
-                if args_section == b"":
-                    # No arguments
-                    insert_offset = paren_pos + 1
-                    insert_text = param_to_pass
-                else:
-                    # Has arguments, add as first argument with comma
-                    insert_offset = paren_pos + 1
-                    insert_text = param_to_pass + ", "
-
-                rewriter.add_rewrite(i_file_path, insert_offset, 0, insert_text)
-                found_call = True
-                break
-
-            if not found_call:
-                raise ValueError(
-                    f"  WARNING: Could not find call from {caller_func} at {i_file_path}:{line}:{col}"
-                )
-
-        print("phase1, finding main()")
-        if True:
-            # Find the file containing main() and its main function cursor
-            main_file = None
-            for abs_path, tu in tus.items():
-                for cursor in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
-                    if cursor.kind == CursorKind.FUNCTION_DECL and cursor.spelling == "main":
-                        main_file = abs_path
-                        break
-                if main_file:
-                    break
-
-        if True:
-            # Add forward declaration to every translation unit, just in case
-            for file_path_str in tus.keys():
-                fwd_decl_text = "struct XjGlobals;\n"
-                rewriter.add_rewrite(file_path_str, 0, 0, fwd_decl_text)
-
-        # Replicate edits to type definitions across translation units
-        equiv_classes = c_refact_type_mod_replicator.collect_type_definitions(
-            list(tus.values()),
-            fpd_output["var_decl_fn_ptr_arg_lparen_locs"],
-        )
-        pprint.pprint(
-            equiv_classes,
-            indent=2,
-            stream=open(current_codebase / "xj-type_equiv_classes.txt", "w", encoding="utf-8"),
-        )
-        print("phase1, replicating type modifications across TUs")
-        ext_rewrites = c_refact_type_mod_replicator.replicate_type_modifications(
-            rewriter.get_rewrites(), equiv_classes
-        )
-        rewriter.replace_rewrites(ext_rewrites)
-
-        print("phase1, appplying rewrites")
-        results.applied_rewrites = rewriter.get_rewrites(reverse=False)
-    return results
-
-
-class SingleUnmodFnOccWrapper(TypedDict):
-    name: str
-    suffix: str
-    occ_offset: int
-    decl_post_offset: int
-    wrapper_defn: str
-
-
-class CombinedUnmodFnOccWrapper(TypedDict):
-    name: str
-    suffix: str
-    occ_offsets: list[int]
-    decl_post_offset: int
-    wrapper_defn: str
-
-
-def combine_unmod_fn_occ_wrappers(
-    raws: list[SingleUnmodFnOccWrapper],
-) -> list[CombinedUnmodFnOccWrapper]:
-    combined_by_decl: dict[int, CombinedUnmodFnOccWrapper] = {}
-
-    for raw in raws:
-        decl_post_offset = raw["decl_post_offset"]
-        if decl_post_offset not in combined_by_decl:
-            combined_by_decl[decl_post_offset] = {
-                "name": raw["name"],
-                "suffix": raw["suffix"],
-                "occ_offsets": [raw["occ_offset"]],
-                "decl_post_offset": decl_post_offset,
-                "wrapper_defn": raw["wrapper_defn"],
-            }
-        else:
-            combined_by_decl[decl_post_offset]["occ_offsets"].append(raw["occ_offset"])
-
-    return list(combined_by_decl.values())
-
-
-type ModifiedFnPtrTypeLoc = tuple[int, int]  # start offsets for fn ty param parens
-
-
-class ModifiedFnPtrTypedefUse(TypedDict):
-    written_typedef_name: str
-    use_offset: int
-    clone_source_typedef_name: str
-
-
-class FnPtrTypedefDecl(TypedDict):
-    name: str
-    def_start_offset: int
-    decl_post_offset: int
-    name_offset: int
-    lparen_offset: int
-    rparen_offset: int
-
-
-class BaseXjFindPtrDeclsOutput(TypedDict):
-    modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
-    modified_fn_ptr_typedef_uses: dict[str, list[ModifiedFnPtrTypedefUse]]
-    fn_ptr_typedef_decls: dict[str, list[FnPtrTypedefDecl]]
-    higher_order_potentially_modified_fn_ptr_type_locs: dict[str, list[ModifiedFnPtrTypeLoc]]
-    var_decl_fn_ptr_arg_lparen_locs: dict[str, dict[str, int]]
-    globals_without_initializers: list[str]
-
-
-class RawXjFindPtrDeclsOutput(BaseXjFindPtrDeclsOutput):
-    unmod_fn_occ_wrappers: dict[str, list[SingleUnmodFnOccWrapper]]
-
-
-class XjFindPtrDeclsOutput(BaseXjFindPtrDeclsOutput):
-    unmod_fn_occ_wrappers: dict[str, list[CombinedUnmodFnOccWrapper]]
-
-
-def run_xj_prepare_findfnptrdecls(
-    current_codebase: Path,
-    nonmain_tissue_functions: set[str],
-    all_function_names: set[str],
-) -> XjFindPtrDeclsOutput:
-    builddir = hermetic.xj_prepare_findfnptrdecls_build_dir(repo_root.localdir())
-    assert builddir.exists(), (
-        f"Build directory {builddir} does not exist, should have been built already"
-    )
-
-    mod_fn_names_path = current_codebase / "nonmain_tissue_functions.txt"
-    with open(mod_fn_names_path, "w", encoding="utf-8") as f:
-        for fn in sorted(nonmain_tissue_functions):
-            f.write(fn + "\n")
-
-    unmod_fn_names_path = current_codebase / "unmod_fn_names.txt"
-    with open(unmod_fn_names_path, "w", encoding="utf-8") as f:
-        for fn in sorted(all_function_names - nonmain_tissue_functions):
-            f.write(fn + "\n")
-    # Keep in sync with `xj-prepare-findfnptrdecls/CMakeLists.txt`
-    binary_path = builddir / "xj-find-fn-ptr-decls"
-    xj_find_start = time.time()
-    cp = hermetic.run(
-        [
-            binary_path.as_posix(),
-            "--extra-arg=-Wno-zero-length-array",
-            "--extra-arg=-Wno-implicit-int-conversion",
-            "--extra-arg=-Wno-unused-function",
-            "--executor=all-TUs",
-            "--execute-concurrency=1",  # avoid race conditions, etc.
-            "--modified_fns_file",
-            mod_fn_names_path.as_posix(),
-            "--unmodified_fns_file",
-            unmod_fn_names_path.as_posix(),
-            (current_codebase / "compile_commands.json").as_posix(),
-        ],
-        cwd=current_codebase,
-        check=True,
-        capture_output=True,
-    )
-    xj_find_elapsed = time.time() - xj_find_start
-    print(f"xj-find-fn-ptr-decls completed in {xj_find_elapsed:.1f} seconds")
-
-    print("xj-find-fn-ptr-decls stderr:")
-    print("==========================")
-    print(cp.stderr.decode("utf-8"))
-    print("==========================")
-
-    print("xj-find-fn-ptr-decls stdout:")
-    print("==========================")
-    print(cp.stdout.decode("utf-8"))
-    print("==========================")
-    try:
-
-        def process(k: str, v):
-            if k == "unmod_fn_occ_wrappers":
-                return {f: combine_unmod_fn_occ_wrappers(occs) for f, occs in v.items()}
-            else:
-                return v
-
-        raw: RawXjFindPtrDeclsOutput = json.loads(cp.stdout.decode("utf-8"))
-        processed: XjFindPtrDeclsOutput = {k: process(k, v) for (k, v) in raw.items()}  # type: ignore
-    except:
-        print("Failed to parse xj-find-fn-ptr-decls output as JSON:")
-        print(cp.stdout.decode("utf-8"))
-        raise
-
-    return processed
 
 
 class XjLocateJoinedDeclsLoc(TypedDict):
@@ -1538,121 +976,6 @@ def run_xj_locate_joined_decls(
     return raw
 
 
-def translate_offset_thru_rewrites(
-    original_offset: int, rewrites: list[tuple[int, int, str]]
-) -> int:
-    new_offset = original_offset
-    for rw_start, rw_len, rw_text in rewrites:
-        if rw_start >= original_offset:
-            break
-        if rw_start + rw_len <= original_offset:
-            new_offset += len(rw_text) - rw_len
-        elif rw_start <= original_offset:
-            # Overlap case
-            raise ValueError("Cannot translate offset that overlaps with a rewrite")
-    return new_offset
-
-
-def speculatively_fix_higher_order_fn_ptr_types(
-    compdb: compilation_database.CompileCommands,
-    phase1results: LocalizeMutableGlobalsPhase1Results,
-):
-    """
-    At the end of phase 1, we have inserted placeholders at call sites and
-    have modified some but possibly not all function pointer types. Rather
-    than implement ad-hoc type inference to identify the function pointer
-    types needing modification, we'll use Clang as an oracle. In particular,
-    we'll (1) collect diagnostics; (2) assuming we see some "too many arguments"
-    errors, from having inserted placeholders without updating the corresponding
-    function pointer type, we'll add additional parameters to some pre-identified
-    function pointer types that might need them; (3) check again.
-    If step 3 still has errors we'll roll back to step 1 and print a warning.
-    If step 3 has no errors, we proceed directly to phase 2.
-    """
-    with batching_rewriter.BatchingRewriter() as rewriter:
-        index = create_xj_clang_index()
-
-        def count_possibly_fixable_errors(index: Index) -> tuple[int, int]:
-            tus = parse_project(index, compdb)
-            tu_possibly_fixable_errors = 0
-            total_errors = 0
-            for tu in tus.values():
-                for x in tu.diagnostics:
-                    if x.severity >= Diagnostic.Error:
-                        total_errors += 1
-                        print(f"Diagnostic {x.location}: {x.spelling} [{x.severity}]")
-
-                    if x.spelling.startswith("too many arguments to function call"):
-                        tu_possibly_fixable_errors += 1
-                    elif x.option == "-Wincompatible-function-pointer-types":
-                        tu_possibly_fixable_errors += 1
-
-            return tu_possibly_fixable_errors, total_errors
-
-        tu_possibly_fixable_errors, total_errors = count_possibly_fixable_errors(index)
-        if total_errors > tu_possibly_fixable_errors:
-            # raise ValueError(
-            print(
-                "Detected errors that are not possibly fixable; "
-                + "aborting localization of mutable globals."
-            )
-        if tu_possibly_fixable_errors > 0:
-            print(f"Detected {tu_possibly_fixable_errors} possibly fixable errors;")
-            for (
-                filepath_str,
-                ranges,
-            ) in phase1results.higher_order_potentially_modified_fn_ptr_type_locs.items():
-                content = rewriter.get_content(filepath_str)
-
-                for old_start_offset, old_end_offset in ranges:
-                    rewrites = phase1results.applied_rewrites.get(filepath_str, [])
-                    start_offset = translate_offset_thru_rewrites(old_start_offset, rewrites)
-                    end_offset = translate_offset_thru_rewrites(old_end_offset, rewrites)
-
-                    print(
-                        "~~~~~~~~~~~~~~~~ translating offsets:",
-                        old_start_offset,
-                        old_end_offset,
-                        "to",
-                        start_offset,
-                        end_offset,
-                    )
-
-                    original_text = content[start_offset:end_offset].decode("utf-8")
-                    between_parens = original_text[1:].strip()
-                    add_trailing_comma = False
-                    if between_parens == "void" or not between_parens:
-                        target_offset = end_offset  # replace void (and whitespace)
-                    else:
-                        add_trailing_comma = True
-                        target_offset = start_offset + 1
-
-                    after_opening_paren = start_offset + 1
-                    rewriter.add_rewrite(
-                        filepath_str,
-                        after_opening_paren,
-                        target_offset - after_opening_paren,
-                        f"struct XjGlobals *{', ' if add_trailing_comma else ''}",
-                    )
-
-            snapshot = rewriter.capture_snapshot()
-            rewriter.apply_rewrites()
-            rewriter.replace_rewrites({})  # clear rewrites
-
-            errors_after, total_errors_after = count_possibly_fixable_errors(index)
-            if total_errors_after > 0:
-                print(
-                    "After adding additional function pointer parameters, "
-                    + f"{errors_after} possibly fixable errors remain (of {total_errors_after} total); "
-                    + "rolling back these changes."
-                )
-                rewriter.restore_snapshot(snapshot)
-            else:
-                print(
-                    "After adding additional function pointer parameters, " + "all errors resolved."
-                )
-
-
 def cursor_extent_contains(outer: Cursor, inner: Cursor) -> bool:
     outer_file = outer.location.file
     inner_file = inner.location.file
@@ -1676,6 +999,7 @@ def type_names_declared_before_offset(tu: TranslationUnit, offset: int) -> set[s
     type_declaration_kinds = {
         CursorKind.STRUCT_DECL,
         CursorKind.UNION_DECL,
+        CursorKind.ENUM_DECL,
         CursorKind.TYPEDEF_DECL,
     }
     return {
@@ -1683,90 +1007,174 @@ def type_names_declared_before_offset(tu: TranslationUnit, offset: int) -> set[s
         for cursor in tu.cursor.walk_preorder()  # type: ignore[attr-defined]
         if cursor.kind in type_declaration_kinds
         and cursor.spelling
+        and cursor.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
         and cursor.extent.end.offset <= offset
     }
 
 
+def order_context_type_declarations(declarations: list[Cursor]) -> list[Cursor]:
+    """Order copied type declarations so their dependencies are declared first."""
+    tag_kinds = (CursorKind.STRUCT_DECL, CursorKind.UNION_DECL, CursorKind.ENUM_DECL)
+    owners = {}
+    for declaration in declarations:
+        for child in declaration.walk_preorder():
+            if child.kind in (*tag_kinds, CursorKind.TYPEDEF_DECL):
+                owners[child.kind, child.spelling] = declaration
+    result: list[Cursor] = []
+    visited = set()
+
+    def visit(declaration):
+        key = (declaration.kind, declaration.spelling)
+        if key in visited:
+            return
+        visited.add(key)
+
+        def dependencies(cursor):
+            for child in cursor.get_children():
+                if child.kind == CursorKind.TYPE_REF and child.referenced:
+                    referenced = child.referenced
+                    if (
+                        referenced.kind in tag_kinds
+                        and cursor.type.get_canonical().kind == TypeKind.POINTER
+                    ):
+                        # Tag forward declarations suffice for pointer fields.
+                        continue
+                    owner = owners.get((referenced.kind, referenced.spelling))
+                    if owner is not None:
+                        visit(owner)
+                dependencies(child)
+
+        dependencies(declaration)
+        result.append(declaration)
+
+    for declaration in sorted(
+        declarations, key=lambda c: (c.location.file.name, c.extent.start.offset)
+    ):
+        visit(declaration)
+    return result
+
+
+def anonymous_tag_definition(type_obj) -> Cursor | None:
+    """Find an anonymous tag written directly as part of a declarator's type."""
+    while True:
+        if type_obj.kind in (
+            TypeKind.CONSTANTARRAY,
+            TypeKind.INCOMPLETEARRAY,
+            TypeKind.VARIABLEARRAY,
+        ):
+            type_obj = type_obj.get_array_element_type()
+        elif type_obj.kind == TypeKind.POINTER:
+            type_obj = type_obj.get_pointee()
+        elif type_obj.kind == TypeKind.ELABORATED:
+            declaration = type_obj.get_declaration()
+            if (
+                declaration.kind
+                in (
+                    CursorKind.STRUCT_DECL,
+                    CursorKind.UNION_DECL,
+                    CursorKind.ENUM_DECL,
+                )
+                and declaration.is_anonymous()
+            ):
+                return declaration.get_definition() or declaration
+            type_obj = type_obj.get_named_type()
+        elif type_obj.kind in (TypeKind.RECORD, TypeKind.ENUM):
+            declaration = type_obj.get_declaration()
+            if declaration.is_anonymous():
+                return declaration.get_definition() or declaration
+            return None
+        else:
+            return None
+
+
+def render_source_backed_declaration(cursor: Cursor, rewriter) -> str:
+    """Render a declaration, recovering an inline anonymous tag from its source."""
+    declaration = anonymous_tag_definition(cursor.type)
+    base_type_spelling = None
+    if declaration is not None:
+        source_path = declaration.location.file.name
+        content = rewriter.get_content(source_path)
+        base_type_spelling = content[
+            declaration.extent.start.offset : declaration.extent.end.offset
+        ].decode("utf-8")
+    return render_declaration_sans_qualifiers(
+        cursor.type,
+        cursor.spelling,
+        base_type_spelling=base_type_spelling,
+    )
+
+
 def localize_mutable_globals(
-    json_path: Path,
+    manifest_path: Path,
     compdb: compilation_database.CompileCommands,
-    prev: Path,
     current_codebase: Path,
 ):
-    # Here is an example of the data output by `cc2json`:
-    # {
-    # "mutated_globals": [
-    #     "a_1.foo_xjtr_1",
-    #     "a_2.foo_xjtr_2",
-    #     "b_1.foo_xjtr_0"
-    # ],
-    # "escaped_globals": [
-    #     "b_1.foo_xjtr_0"
-    # ],
-    # "call_graph_components": [
-    #     {
-    #         "call_sites": [
-    #             {
-    #                 "line": 10,
-    #                 "col": 25,
-    #                 "p": "main",
-    #                 "uf": "main.c"
-    #             },
-    #             {
-    #                 "line": 11,
-    #                 "col": 25,
-    #                 "p": "main",
-    #                 "uf": "main.c"
-    #             },
-    #             {
-    #                 "line": 12,
-    #                 "col": 25,
-    #                 "p": "main",
-    #                 "uf": "main.c"
-    #             }
-    #         ],
-    #         "call_targets": [
-    #             "<llvm-link>:a_1"
-    #         ],
-    #         "all_mutable": true
-    #     },
-    #     {
-    #         "call_sites": [ ... ] }
-    # ],
-    # "unique_filenames": {
-    # "a.c": {"directory": "/home/brk/tenjin/ju_xjres2/c_03_run_cclzyerpp_analysis", "filename": "a.c"},
-    # "b.c": {"directory": "/home/brk/tenjin/ju_xjres2/c_03_run_cclzyerpp_analysis", "filename": "b.c"},
-    # "main.c": {"directory": "/home/brk/tenjin/ju_xjres2/c_03_run_cclzyerpp_analysis", "filename": "main.c"}
-    # },
-    # "mutable_global_tissue": {
-    #     "directly_accesses": [
-    #     "a_1",
-    #     "a_2",
-    #     "b_1"
-    #     ],
-    #     "tissue": [
-    #     "main",
-    #     "a_1",
-    #     "a_2",
-    #     "b_1"
-    #     ]
-    # },
-    # "global_initializer_references": {
-    # "basesort": ["alnumsort"]
-    # }
-    # }
+    """Materialize on a private copy, publishing only after both C validators pass."""
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    selected = manifest.get("context_rewrite", {}).get("selected")
+    if selected is not None and not selected["fields"]:
+        return
+    pangs_source.validate_plan(manifest, current_codebase)
+    with tempfile.TemporaryDirectory(
+        prefix="pangs-materialize-", dir=current_codebase.parent
+    ) as temp:
+        attempt_manifest = Path(temp) / "manifest.json"
+        attempt_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        staged = Path(temp) / "stage"
+        shutil.copytree(current_codebase, staged, symlinks=True)
+        staged_compdb = pangs_source.relocate_compdb(compdb, current_codebase, staged)
+        try:
+            _localize_mutable_globals_in_place(attempt_manifest, staged_compdb, staged)
+            pangs_source.validate_c(staged_compdb)
+            pangs_source.validate_cross_tu(
+                manifest, Path(manifest["run"]["analysis"]["repo_root"]), staged
+            )
+        except Exception as exc:
+            raise pangs_source.ContractViolation(
+                f"PANGS source-plan contract violated during materialization: {exc}"
+            ) from exc
+        for path in staged_compdb.get_source_files():
+            if XJG_PLACEHOLDER.encode() in path.read_bytes():
+                raise pangs_source.ContractViolation(
+                    f"PANGS source-plan contract violated: unmaterialized placeholder in {path}"
+                )
+        compdb.to_json_file(staged / "compile_commands.json")
+        manifest["materialization"] = {
+            "tool": {"name": "tenjin", "version": "source-plan-2"},
+            "marker_inventory": [],
+            "demotions": [],
+            "source_plan_version": 2,
+            "c_validation": ["clang-14", "clang-21"],
+            "applied_source_edits": len(selected["source_edits"]),
+        }
+        materialized_manifest = staged / "pangs-disposition" / "pangs-manifest.json"
+        materialized_manifest.parent.mkdir(parents=True, exist_ok=True)
+        materialized_manifest.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        original = Path(temp) / "original"
+        current_codebase.rename(original)
+        try:
+            staged.rename(current_codebase)
+        except BaseException:
+            original.rename(current_codebase)
+            raise
 
-    # Assume this value holds an instance of the above JSON type
-    j: dict = json.load(json_path.open("r"))
+
+def _localize_mutable_globals_in_place(
+    manifest_path: Path,
+    compdb: compilation_database.CompileCommands,
+    current_codebase: Path,
+):
+    manifest: dict = json.load(manifest_path.open("r"))
+    if manifest.get("schema_version") != 8:
+        raise ValueError("Tenjin requires PANGS disposition manifest schema version 8")
+    context_rewrite = manifest.get("context_rewrite")
+    if not isinstance(context_rewrite, dict) or "selected" not in context_rewrite:
+        raise ValueError("PANGS manifest has no finalized context-rewrite selection")
+    selected = context_rewrite["selected"]
 
     # To localize mutable globals, we perform the following steps:
-    # z. Inspect j["global_initializer_references"] to identify those globals which
-    #     reference other mutable globals in their initializers. To avoid creating a
-    #     self-referential Rust structure, we consider the *referenced* globals to be
-    #     ineligible for lifting.
-    # 1. Inspect j["call_graph_components"], discarding those which are not all_mutable.
-    # 2a. Find the definitions of of each mutated global, excluding those
-    #     which are ineligible for lifting.
+    # 1. Use only the fields selected for localization by PANGS disposition policy.
+    # 2a. Find the definitions of each selected global.
     # 2b. Construct the transitive closure of all directly used struct/union/enum/typedef
     #     definitions needed to define those globals. Note that fields which use
     #     a struct behind a pointer do not require inclusion of that struct definition,
@@ -1776,9 +1184,9 @@ def localize_mutable_globals(
     #    Place the declaration in a new header file `xj_globals.h`.
     # 4. Based on the definitions from step 2, initialize a singleton XjGlobals instance
     #    in `main()`, called `xjgv`, and a pointer to it called `xjg`.
-    # 5. For each function in the "tissue" part of "mutable_global_tissue", except for `main`,
+    # 5. For each function in the selected context rewrite, except for `main`,
     #    pass a pointer to the XjGlobals instance, called `xjg`, as an additional first parameter.
-    # 6. For each call to a tissue function, pass along the `xjg` parameter.
+    # 6. For each call to a selected context function, pass along the `xjg` parameter.
     # 8. Each syntatic use of a liftable mutable global named WHATEVER is replaced
     #    with `xjg->WHATEVER`.
     # 9. In each file that uses mutable globals, add `#include "xj_globals.h"`
@@ -1786,20 +1194,23 @@ def localize_mutable_globals(
     #
     # Use the `BatchingRewriter` to perform all of these rewrites in a single pass.
 
+    if not selected["fields"]:
+        print("No globals selected for localization; skipping localization.")
+        return
+
     compdb.to_json_file(current_codebase / "compile_commands.json")
 
-    nonmain_tissue_functions: set[str] = set(j.get("mutable_global_tissue", {}).get("tissue", []))
-    nonmain_tissue_functions.discard("main")  # Don't modify main
+    nonmain_context_functions: set[str] = set(selected["functions"])
+    nonmain_context_functions.discard("main")  # Don't modify main
+    localized_global_names = {demangle_meg(f["llvm_name"]) for f in selected["fields"]}
+    globals_without_initializers = set(context_rewrite["source"]["globals_without_initializers"])
 
-    print("calling localize_mutable_globals_phase1()...")
+    print("Applying PANGS source edits...")
     time_start = time.time()
-    phase1results = localize_mutable_globals_phase1(
-        compdb, j, current_codebase, prev, nonmain_tissue_functions
-    )
+    pangs_source.apply_source_edits(manifest, current_codebase)
     time_elapsed = time.time() - time_start
-    print(f"... localize_mutable_globals_phase1() done, elapsed: {time_elapsed:.1f}")
-
-    speculatively_fix_higher_order_fn_ptr_types(compdb, phase1results)
+    print(f"... PANGS source edits applied, elapsed: {time_elapsed:.1f}")
+    pangs_source.validate_c(compdb)
 
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
@@ -1807,23 +1218,44 @@ def localize_mutable_globals(
     globals_and_statics = compute_globals_and_statics_for_translation_units(
         list(tus.values()), elide_functions=True
     )
-    liftable_mutated_globals_and_statics = [
-        c
-        for c in globals_and_statics
-        if c.spelling in phase1results.mutd_global_names
-        and c.spelling not in phase1results.ineligible_for_lifting
+    localized_globals_and_statics = [
+        c for c in globals_and_statics if c.spelling in localized_global_names
     ]
 
-    if not liftable_mutated_globals_and_statics:
-        print("No liftable mutated globals found; skipping further localization steps.")
+    if not localized_globals_and_statics:
+        if localized_global_names:
+            raise ValueError(
+                "PANGS selected globals absent from the source tree: "
+                + ", ".join(sorted(localized_global_names))
+            )
+        print("No globals selected for localization; skipping further localization steps.")
         return
 
-    mutated_globals_cursors_by_name = {c.spelling: c for c in liftable_mutated_globals_and_statics}
+    localized_global_cursors_by_name = {c.spelling: c for c in localized_globals_and_statics}
 
-    assert len(mutated_globals_cursors_by_name) == len(liftable_mutated_globals_and_statics), (
-        "Expected all (liftable) mutated global names to be unique, "
-        + f"but got duplicates within: {mutated_globals_cursors_by_name.keys()}"
+    assert len(localized_global_cursors_by_name) == len(localized_globals_and_statics), (
+        "Expected all localized global names to be unique, "
+        + f"but got duplicates within: {localized_global_cursors_by_name.keys()}"
     )
+    missing_globals = localized_global_names - localized_global_cursors_by_name.keys()
+    if missing_globals:
+        raise ValueError(
+            "PANGS selected globals absent from the source tree: "
+            + ", ".join(sorted(missing_globals))
+        )
+
+    groups: dict[tuple[str, int], set[str]] = {}
+    for cursor in globals_and_statics:
+        groups.setdefault((cursor.location.file.name, cursor.extent.start.offset), set()).add(
+            cursor.spelling
+        )
+    for names in groups.values():
+        affected = names & localized_global_names
+        if len(names) > 1 and affected:
+            raise pangs_source.ContractViolation(
+                "PANGS selected an unsupported joined global declaration: "
+                + ", ".join(sorted(affected))
+            )
 
     # Step 2b: Construct transitive closure of struct/union definitions
     print("\n" + "=" * 80)
@@ -1832,7 +1264,8 @@ def localize_mutable_globals(
 
     needed_struct_defs = {}
     needed_typedefs: dict[str, tuple[Cursor, str]] = {}
-    forward_declarable_types = set()
+    forward_declarable_types: dict[str, str] = {}
+    visited_anonymous_type_defs: set[tuple[CursorKind, str, int, int]] = set()
 
     def collect_type_dependencies(type_obj_noncanonical, depth=0):
         """Recursively collect struct/union types needed to define this type."""
@@ -1890,6 +1323,10 @@ def localize_mutable_globals(
 
         if type_obj_noncanonical.kind == TypeKind.TYPEDEF:
             typedef_decl = type_obj_noncanonical.get_declaration()
+            needed_typedefs.setdefault(
+                typedef_decl.spelling,
+                (typedef_decl, typedef_decl.underlying_typedef_type.get_canonical().spelling),
+            )
             # print(f"{indent}  Saw typedef...")
             # print(f"{indent}    typedef cursor: {typedef_decl.kind}")
             # print(f"{indent}    typedef cursor: {typedef_decl.extent}")
@@ -1898,7 +1335,7 @@ def localize_mutable_globals(
             # print(f"{indent}    underlying type: {typedef_decl.underlying_typedef_type.kind}")
             # print(f"{indent}    referenced type: {typedef_decl.get_definition().referenced.kind}")
             collect_type_dependencies(typedef_decl.underlying_typedef_type, depth + 1)
-            pass
+            return
 
         if type_obj_canonical.kind == TypeKind.POINTER:
             while type_obj_noncanonical.kind == TypeKind.TYPEDEF:
@@ -1915,8 +1352,14 @@ def localize_mutable_globals(
 
             # Check if pointee is a struct/union
             decl = pointee_canonical.get_declaration()
-            if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
-                forward_declarable_types.add(decl.spelling)
+            if (
+                decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]
+                and not decl.is_anonymous()
+                and decl.spelling
+            ):
+                forward_declarable_types[decl.spelling] = (
+                    "union" if decl.kind == CursorKind.UNION_DECL else "struct"
+                )
                 # print(f"{indent}  -> Can forward-declare: {decl.spelling}")
 
             collect_type_dependencies(pointee, depth + 1)
@@ -1943,29 +1386,52 @@ def localize_mutable_globals(
 
         # If it's a struct or union, we need its full definition
         decl = type_obj_noncanonical.get_declaration()
+        decl = decl.get_definition() or decl
 
-        if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL]:
+        if decl.kind in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL, CursorKind.ENUM_DECL]:
             type_name = decl.spelling
-            if type_name and type_name not in needed_struct_defs:
+            if decl.is_anonymous():
+                definition_key = (
+                    decl.kind,
+                    decl.location.file.name,
+                    decl.extent.start.offset,
+                    decl.extent.end.offset,
+                )
+                if definition_key in visited_anonymous_type_defs:
+                    return
+                visited_anonymous_type_defs.add(definition_key)
+            elif type_name and type_name not in needed_struct_defs:
                 # print(f"{indent}  -> Need full definition: {type_name}")
                 needed_struct_defs[type_name] = decl
+            else:
+                return
 
-                # Recursively process fields
-                for field in decl.get_children():
-                    if field.kind == CursorKind.FIELD_DECL:
-                        # print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
-                        collect_type_dependencies(field.type, depth + 2)
+            # Anonymous definitions are embedded in their XjGlobals field, but
+            # their member types still have to be available at the include site.
+            for field in decl.get_children():
+                if field.kind == CursorKind.FIELD_DECL:
+                    # print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
+                    collect_type_dependencies(field.type, depth + 2)
 
-    for cursor in liftable_mutated_globals_and_statics:
+    for cursor in localized_globals_and_statics:
         # print(f"\nAnalyzing dependencies for {cursor.spelling}:")
         collect_type_dependencies(cursor.type, depth=1)
+
+    initializer_functions: dict[str, Cursor] = {}
+    for var_cursor in localized_globals_and_statics:
+        for child in var_cursor.walk_preorder():
+            if child.kind == CursorKind.DECL_REF_EXPR:
+                referenced = child.referenced
+                if referenced and referenced.kind == CursorKind.FUNCTION_DECL:
+                    initializer_functions[referenced.get_usr()] = referenced
+                    collect_type_dependencies(referenced.type)
 
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"\nFound {len(liftable_mutated_globals_and_statics)} mutated global definitions:")
+    print(f"\nFound {len(localized_globals_and_statics)} localized global definitions:")
 
-    for cursor in liftable_mutated_globals_and_statics:
+    for cursor in localized_globals_and_statics:
         print(
             f"  - {cursor.spelling}: {cursor.type.spelling} at {cursor.location.file}:{cursor.location.line}"
         )
@@ -2003,11 +1469,28 @@ def localize_mutable_globals(
     print("STEPS 5 & 6: Modifying function signatures and call sites")
     print("=" * 80)
 
-    print(f"\nTissue functions to modify: {nonmain_tissue_functions}")
+    print(f"\nContext functions to modify: {nonmain_context_functions}")
 
     with batching_rewriter.BatchingRewriter() as rewriter:
+        global_definition_rewrites: list[tuple[str, int, int, str]] = []
+        global_definition_ranges: dict[str, list[tuple[int, int]]] = {}
+        for var_cursor in localized_globals_and_statics:
+            definition_path = var_cursor.location.file.name  # type: ignore[union-attr]
+            rewrite = global_definition_blank_rewrite(
+                rewriter.get_content(definition_path),
+                var_cursor.extent.start.offset,
+                var_cursor.extent.end.offset,
+            )
+            start_offset, length, replacement = rewrite
+            global_definition_rewrites.append((definition_path, start_offset, length, replacement))
+            global_definition_ranges.setdefault(definition_path, []).append((
+                start_offset,
+                start_offset + length,
+            ))
+
         # TU -> offset of first fn using mutable globals
         lowest_mutable_accessing_fn_starts: dict[str, tuple[int, str]] = {}
+        initializer_prototypes: dict[str, list[str]] = {}
 
         def record_mutable_accessing_fn_start(tu_path: str, fn_start: tuple[int, str] | None):
             if fn_start is None:
@@ -2026,18 +1509,28 @@ def localize_mutable_globals(
             for child in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
                 if child.kind == CursorKind.FUNCTION_DECL:
                     if child.is_definition():
-                        q = c_refact_type_mod_replicator.quss(child, None)
+                        q = cindex_helpers.quss(child, None)
                         current_fn_start = (child.extent.start.offset, q)
 
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling in mutated_globals_cursors_by_name
+                    and child.spelling in localized_global_cursors_by_name
                 ):
                     # Get the extent of the variable reference
                     start_offset = child.extent.start.offset
                     end_offset = child.extent.end.offset
                     length = end_offset - start_offset
                     var_name = child.spelling
+
+                    if any(
+                        definition_start <= start_offset < definition_end
+                        for definition_start, definition_end in global_definition_ranges.get(
+                            tu_path, []
+                        )
+                    ):
+                        # Initializer text is copied into main below. Do not schedule an inner
+                        # access rewrite that would overlap the definition-blanking rewrite.
+                        continue
 
                     replacement = f"xjg->{var_name}"
                     # print(
@@ -2072,15 +1565,11 @@ def localize_mutable_globals(
         # Step 3: Create xj_globals.h header file
         print("\n  --- Step 3: Creating xj_globals.h ---")
 
-        # Get the directory where we should place the headers
-        # Use the directory from the compilation database
-        if compdb.get_source_files():
-            header_dir = compdb.get_source_files()[0].parent
-        else:
-            header_dir = Path(".")
-
         # Create xj_globals.h with full definitions
-        header_path = header_dir / "xj_globals.h"
+        # This is a generated project header, so it belongs at the root of the
+        # prepared codebase. A compilation database's sources can live in
+        # different subdirectories (and `get_source_files()` is unordered).
+        header_path = current_codebase / "xj_globals.h"
         print(f"  Creating full definition header at {header_path}")
 
         # Build the header content
@@ -2092,9 +1581,7 @@ def localize_mutable_globals(
         # Add forward declarations if needed
         if forward_declarable_types:
             for type_name in sorted(forward_declarable_types):
-                # Determine if it's a struct or union
-                # We'll default to struct (can improve this later)
-                header_lines.append(f"struct {type_name};")
+                header_lines.append(f"{forward_declarable_types[type_name]} {type_name};")
             header_lines.append("")
 
         # Add typedefs
@@ -2137,12 +1624,10 @@ def localize_mutable_globals(
 
         # Add the XjGlobals struct definition
         header_lines.append("struct XjGlobals {")
-        for global_name in sorted(mutated_globals_cursors_by_name.keys()):
-            var_cursor = mutated_globals_cursors_by_name[global_name]
+        for global_name in sorted(localized_global_cursors_by_name.keys()):
+            var_cursor = localized_global_cursors_by_name[global_name]
             # Add the field (we'll handle initialization separately)
-            header_lines.append(
-                render_declaration_sans_qualifiers(var_cursor.type, var_cursor.spelling) + ";"
-            )
+            header_lines.append(render_source_backed_declaration(var_cursor, rewriter) + ";")
 
         header_lines.append("};")
         header_lines.append("")
@@ -2162,14 +1647,14 @@ def localize_mutable_globals(
 
         global_dependencies: dict[str, set[str]] = {}  # global_name -> set of referenced globals
 
-        for var_cursor in liftable_mutated_globals_and_statics:
+        for var_cursor in localized_globals_and_statics:
             dependencies = set()
 
             # Walk through the initializer expression to find DECL_REF_EXPR nodes
             for child in var_cursor.walk_preorder():
                 if (
                     child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling not in phase1results.mutd_global_names
+                    and child.spelling not in localized_global_names
                 ):
                     dependencies.add(child.spelling)
                     print(f"    {var_cursor.spelling} references {child.spelling}")
@@ -2188,7 +1673,7 @@ def localize_mutable_globals(
                 globals_to_copy_to_main.add(dep)
                 collect_transitive_deps(dep, visited)
 
-        for global_name in phase1results.mutd_global_names:
+        for global_name in localized_global_names:
             collect_transitive_deps(global_name, set())
 
         print(f"\n  Globals to copy into main before xjgv: {globals_to_copy_to_main}")
@@ -2206,6 +1691,42 @@ def localize_mutable_globals(
                     # `main()` may not access mutable globals directly, but it needs to see the full
                     # declaration of the XjGlobals struct because it needs to construct the singleton.
                     record_mutable_accessing_fn_start(tu_path, (cursor.extent.start.offset, "main"))
+
+                    visible_functions = {
+                        decl.get_usr()
+                        for decl in tu.cursor.get_children()
+                        if decl.kind == CursorKind.FUNCTION_DECL
+                        and decl.extent.start.offset < cursor.extent.start.offset
+                    }
+                    for usr, function in sorted(initializer_functions.items()):
+                        if usr in visible_functions:
+                            continue
+                        if (
+                            function.linkage == LinkageKind.INTERNAL
+                            and function.location.file.name != tu_path
+                        ):
+                            raise pangs_source.ContractViolation(
+                                f"Cannot move initializer referencing private function "
+                                f"{function.spelling} from {function.location.file.name} into {tu_path}"
+                            )
+                        # Keep the rewritten signature's typedefs, qualifiers and attributes.
+                        body = next(
+                            (
+                                c
+                                for c in function.get_children()
+                                if c.kind == CursorKind.COMPOUND_STMT
+                            ),
+                            None,
+                        )
+                        end = body.extent.start.offset if body else function.extent.end.offset
+                        declaration = (
+                            rewriter.get_content(function.location.file.name)[
+                                function.extent.start.offset : end
+                            ]
+                            .decode("utf-8")
+                            .strip()
+                        )
+                        initializer_prototypes.setdefault(tu_path, []).append(declaration + ";")
 
                     globals_and_statics_by_name = {c.spelling: c for c in globals_and_statics}
 
@@ -2267,15 +1788,15 @@ def localize_mutable_globals(
                                             break
 
                                     init_lines.append(
-                                        f"  static {render_declaration_sans_qualifiers(var_cursor.type, var_cursor.spelling)} = {initializer};"
+                                        f"  static {render_source_backed_declaration(var_cursor, rewriter)} = {initializer};"
                                     )
 
                                 init_lines.append("")
 
                             # Initialize each field based on original initializers
                             field_inits = []
-                            for global_name in sorted(mutated_globals_cursors_by_name.keys()):
-                                var_cursor = mutated_globals_cursors_by_name[global_name]
+                            for global_name in sorted(localized_global_cursors_by_name.keys()):
+                                var_cursor = localized_global_cursors_by_name[global_name]
                                 content = rewriter.get_content(var_cursor.location.file.name)  # type:ignore[attr-defined]
                                 if global_name.startswith("pathsize_"):
                                     print(f"   Special handling for {global_name}")
@@ -2289,7 +1810,7 @@ def localize_mutable_globals(
                                         )
                                         print()
 
-                                if global_name in phase1results.globals_without_initializers:
+                                if global_name in globals_without_initializers:
                                     initializer = "{0}"
                                     try:
                                         if var_cursor.type.get_canonical().spelling.startswith(
@@ -2326,31 +1847,38 @@ def localize_mutable_globals(
                             break
                     break
 
+        # Step 7: erase the original definitions without changing source coordinates.
+        print("\n  --- Step 7: Blanking original global definitions ---")
+        for definition_path, start_offset, length, replacement in global_definition_rewrites:
+            rewriter.add_rewrite(definition_path, start_offset, length, replacement)
+
         # Step 9: Add includes and type definitions to files that use mutable globals
         print("\n  --- Step 9: Adding includes and type definitions ---")
 
-        # Phase 1 only inserted forward declarations, we'll also add the header as needed.
+        # The planned edits inserted forward declarations; add the header where needed.
         # (not much point in replacing the forward declarations).
         for tu_path, (offset, q) in lowest_mutable_accessing_fn_starts.items():
             tu = tus[tu_path]
 
             # print(f"\n  Analyzing types in scope in TU: {tu_path}")
 
-            # Keep the existing whole-TU struct/union behavior: copying a full
-            # definition earlier while leaving its original definition in place
-            # would redefine the tag. Typedefs, however, may be repeated when
-            # they name the same type, and must be copied when their original
-            # declaration occurs after the generated xj_globals.h include.
-            struct_union_types_in_tu = set()
-
-            # Find all struct/union declarations.
+            # Use this TU's own definitions when available, and distinguish a
+            # visible complete definition from a forward declaration or a late one.
+            local_type_definitions = {}
             for cursor in tu.cursor.walk_preorder():  # type:ignore[attr-defined]
-                if cursor.kind == CursorKind.STRUCT_DECL and cursor.spelling:
-                    struct_union_types_in_tu.add(cursor.spelling)
-                    # print(f"    Found struct in scope: {cursor.spelling}")
-                elif cursor.kind == CursorKind.UNION_DECL and cursor.spelling:
-                    struct_union_types_in_tu.add(cursor.spelling)
-                    # print(f"    Found union in scope: {cursor.spelling}")
+                if (
+                    cursor.kind
+                    in (
+                        CursorKind.STRUCT_DECL,
+                        CursorKind.UNION_DECL,
+                        CursorKind.ENUM_DECL,
+                        CursorKind.TYPEDEF_DECL,
+                    )
+                    and cursor.spelling
+                    and cursor.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+                    and (cursor.kind == CursorKind.TYPEDEF_DECL or cursor.is_definition())
+                ):
+                    local_type_definitions[cursor.kind, cursor.spelling] = cursor
 
             types_declared_before_include = type_names_declared_before_offset(tu, offset)
 
@@ -2359,15 +1887,31 @@ def localize_mutable_globals(
             types_to_emit_typedefs: dict[str, Cursor] = {}  # name -> decl_cursor
 
             for type_name, decl_cursor in needed_struct_defs.items():
-                if type_name not in struct_union_types_in_tu:
+                decl_cursor = local_type_definitions.get((decl_cursor.kind, type_name), decl_cursor)
+                definition_is_removed = any(
+                    start <= decl_cursor.extent.start.offset
+                    and decl_cursor.extent.end.offset <= end
+                    for start, end in global_definition_ranges.get(tu_path, [])
+                )
+                if (
+                    decl_cursor.location.file.name != tu_path
+                    or decl_cursor.extent.end.offset > offset
+                    or definition_is_removed
+                ):
                     types_to_emit_structs[type_name] = decl_cursor
                 #     print(f"    Will emit struct definition: {type_name}")
                 # else:
                 #     print(f"    Skipping struct (already in scope): {type_name}")
 
             for type_name, decl_cursor in needed_typedefs.items():
-                if type_name not in types_declared_before_include:
-                    types_to_emit_typedefs[type_name] = decl_cursor[0]
+                declaration = local_type_definitions.get(
+                    (CursorKind.TYPEDEF_DECL, type_name), decl_cursor[0]
+                )
+                if (
+                    declaration.location.file.name != tu_path
+                    or declaration.extent.end.offset > offset
+                ):
+                    types_to_emit_typedefs[type_name] = declaration
                 #     print(f"    Will emit typedef: {type_name}")
                 # else:
                 #     print(f"    Skipping typedef (already in scope): {type_name}")
@@ -2389,39 +1933,51 @@ def localize_mutable_globals(
             type_defs_lines.append("\n// Type definitions needed for XjGlobals")
 
             # Add forward declarations if needed
-            forward_decls_to_emit = forward_declarable_types - types_declared_before_include
+            forward_decls_to_emit = forward_declarable_types.keys() - types_declared_before_include
             if forward_decls_to_emit:
                 for type_name in sorted(forward_decls_to_emit):
-                    type_defs_lines.append(f"struct {type_name};")
+                    type_defs_lines.append(f"{forward_declarable_types[type_name]} {type_name};")
 
-            # Add typedefs
-            if types_to_emit_typedefs:
-                typedefs_sorted = sorted(
-                    list(types_to_emit_typedefs.items()), key=lambda item: item[1].location.line
-                )
-                for name, decl_cursor in typedefs_sorted:
-                    start_offset = decl_cursor.extent.start.offset
-                    end_offset = decl_cursor.extent.end.offset
-                    for local_tu_path, _ in tus.items():
-                        if str(local_tu_path) == decl_cursor.location.file.name:  # type:ignore[attr-defined]
-                            content = rewriter.get_content(local_tu_path)
-                            typedef_text = content[start_offset:end_offset].decode("utf-8")
-                            type_defs_lines.append(typedef_text + ";")
-                            break
+            # Preserve declaration order between tags and typedefs. Late local
+            # definitions are moved, not duplicated; leave any surrounding
+            # variable declarator intact when moving an embedded tag.
+            declarations = order_context_type_declarations(
+                [*types_to_emit_typedefs.values(), *types_to_emit_structs.values()],
+            )
+            for decl_cursor in declarations:
+                start_offset = decl_cursor.extent.start.offset
+                end_offset = decl_cursor.extent.end.offset
+                source_path = decl_cursor.location.file.name
+                content = rewriter.get_content(source_path)
+                type_defs_lines.append(content[start_offset:end_offset].decode("utf-8") + ";")
+                if source_path == tu_path and not any(
+                    start <= start_offset and end_offset <= end
+                    for start, end in global_definition_ranges.get(tu_path, [])
+                ):
+                    if decl_cursor.kind == CursorKind.TYPEDEF_DECL or content[
+                        end_offset:
+                    ].lstrip().startswith(b";"):
+                        replacement = ""
+                    else:
+                        tag = {
+                            CursorKind.STRUCT_DECL: "struct",
+                            CursorKind.UNION_DECL: "union",
+                            CursorKind.ENUM_DECL: "enum",
+                        }[decl_cursor.kind]
+                        replacement = f"{tag} {decl_cursor.spelling}"
+                    rewriter.add_rewrite(
+                        tu_path, start_offset, end_offset - start_offset, replacement
+                    )
 
-            # Add struct/union definitions
-            if types_to_emit_structs:
-                for type_name, decl_cursor in types_to_emit_structs.items():
-                    start_offset = decl_cursor.extent.start.offset
-                    end_offset = decl_cursor.extent.end.offset
-                    for local_tu_path, _ in tus.items():
-                        if str(local_tu_path) == decl_cursor.location.file.name:  # type:ignore[attr-defined]
-                            content = rewriter.get_content(local_tu_path)
-                            struct_text = content[start_offset:end_offset].decode("utf-8")
-                            type_defs_lines.append(struct_text + ";")
-                            break
-
-            type_defs_lines.append('#include "xj_globals.h"')
+            # These are preprocessed `.i` files, for which Clang does not
+            # honor `-I` flags. Use a path relative to this translation unit
+            # so a source under (for example) `demo/` can still include the
+            # generated header at the prepared-codebase root.
+            header_include = Path(
+                os.path.relpath(header_path, start=Path(tu_path).parent)
+            ).as_posix()
+            type_defs_lines.append(f'#include "{header_include}"')
+            type_defs_lines.extend(initializer_prototypes.get(tu_path, []))
             type_defs_lines.append(f"/* @{q} end include block for XjGlobals */")
 
             type_defs_text = "\n".join(type_defs_lines) + "\n"
@@ -2438,9 +1994,7 @@ def localize_mutable_globals(
             with open(tu_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
 
-    update_vars_of_type_guidance_for_xjg(current_codebase, phase1results, tus)
-
-    print(f"{phase1results.all_function_names=}")
+    update_vars_of_type_guidance_for_xjg(current_codebase, nonmain_context_functions, tus)
 
     print("=" * 80)
 
@@ -2449,15 +2003,15 @@ def localize_mutable_globals(
 # Functions which are used in higher-order ways must remain as raw pointers.
 def update_vars_of_type_guidance_for_xjg(
     current_codebase: Path,
-    phase1results: LocalizeMutableGlobalsPhase1Results,
+    nonmain_context_functions: set[str],
     tus: dict[str, TranslationUnit],
 ):
-    higher_order_tissue_functions = set()
+    higher_order_context_functions = set()
     for _tu_path, tu in tus.items():
         assert tu.cursor is not None, f"Translation unit {tu.spelling} has no cursor!"
         for v, ancestors in yield_matching_cursors(tu.cursor, [CursorKind.DECL_REF_EXPR]):
-            if v.spelling in phase1results.nonmain_tissue_functions:
-                # Found a use of a tissue function; was it in a call position?
+            if v.spelling in nonmain_context_functions:
+                # Found a use of a context function; was it in a call position?
                 parent = v
                 while ancestors:
                     parent, rest = ancestors
@@ -2467,7 +2021,7 @@ def update_vars_of_type_guidance_for_xjg(
                         break
                     ancestors = rest
                 if parent.kind != CursorKind.CALL_EXPR:
-                    higher_order_tissue_functions.add(v.spelling)
+                    higher_order_context_functions.add(v.spelling)
                 else:
                     # might be a callee, or a call arg
                     callee = next(parent.get_children(), None)
@@ -2476,243 +2030,12 @@ def update_vars_of_type_guidance_for_xjg(
                         pass
                     else:
                         # passed as an argument
-                        higher_order_tissue_functions.add(v.spelling)
+                        higher_order_context_functions.add(v.spelling)
     guidance: dict = json.load(open(current_codebase / XJ_GUIDANCE_FILENAME, "r", encoding="utf-8"))
-    can_take_mut_xjg = phase1results.nonmain_tissue_functions - higher_order_tissue_functions
+    can_take_mut_xjg = nonmain_context_functions - higher_order_context_functions
     mut_specs = guidance.get("vars_of_type", {}).get("&mut XjGlobals", [])
-    for tissue_fn_name in can_take_mut_xjg:
-        mut_specs.append(f"{tissue_fn_name}:xjg")
+    for context_fn_name in can_take_mut_xjg:
+        mut_specs.append(f"{context_fn_name}:xjg")
     guidance.setdefault("vars_of_type", {})["&mut XjGlobals"] = mut_specs
     with open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8") as fh:
         json.dump(guidance, fh, indent=2)
-
-
-def extract_function_info(
-    tus, nonmain_tissue_functions
-) -> tuple[
-    set[tenj_types.CIdentifier], dict[tenj_types.CIdentifier, list[TissueFunctionCursorInfo]]
-]:
-    all_function_names = set()
-
-    # Collect all declarations (both definitions and forward declarations)
-    nonmain_tissue_function_cursors: dict[
-        tenj_types.CIdentifier, list[TissueFunctionCursorInfo]
-    ] = {}
-
-    for abs_path, tu in tus.items():
-        for cursor in tu.cursor.walk_preorder():
-            if cursor.kind == CursorKind.FUNCTION_DECL:
-                func_name = cursor.spelling
-                all_function_names.add(func_name)
-                if func_name in nonmain_tissue_functions:
-                    if func_name not in nonmain_tissue_function_cursors:
-                        nonmain_tissue_function_cursors[func_name] = []
-                    nonmain_tissue_function_cursors[func_name].append(
-                        TissueFunctionCursorInfo(
-                            cursor=cursor,
-                            file=abs_path,
-                            is_definition=cursor.is_definition(),
-                        )
-                    )
-
-    return all_function_names, nonmain_tissue_function_cursors
-
-
-def get_call_sites_from_json(
-    prev: Path,
-    current_codebase: Path,
-    j: dict,
-    nonmain_tissue_functions: set[str],
-    escd_global_names: set[str],
-) -> list[TissueCallSiteInfo]:
-    def un_uf(uf: str) -> str:
-        v = j["unique_filenames"][uf]
-        return v["directory"] + "/" + v["filename"]
-
-    fns_with_possibly_unknown_call_sites = nonmain_tissue_functions.intersection(escd_global_names)
-    if fns_with_possibly_unknown_call_sites:
-        print(
-            f"""
-===============================================================================
-Error: Some functions which access mutable globals (or may eventually call one)
-    appear to have unknown call sites outside of our control. They are:
-
-{fns_with_possibly_unknown_call_sites}
-
-To help produce safe Rust output, we seek to move all mutable globals into
-   a context struct which is passed explicitly to functions that need them.
-   So the target functions involved must have their signatures modified to
-   take an additional parameter.
-But we cannot safely modify the signatures
-   of functions that have call sites outside of our control. An example
-   of such a call site would be `qsort()` calling a comparison function.
-Our determination of what functions might have unknown call sites is
-   by necessity conservative; it's uncomputable in general. Any function
-   pointer in a struct passed to an unknown third-party library function
-   might end up being called by that library. And when analyzing library
-   code (without a `main()` function), any non-static global is likewise
-   potentially accessible by whatever code links against it.
-Often an application will use function pointers in ways that are hard
-   for a static analyzer to track, but which a human can verify do not
-   have any external call sites.
-If, upon review, you believe the functions listed above do not escape,
-   you can add their names to the "assume_no_unknown_call_sites" list in
-   the input guidance provided to Tenjin.
-
-If a function which accesses globals does in fact get called externally,
-   there are two ways one might address the situation:
-
-   1. Mark the globals it accesses as being ineligible
-      for lifting into the context struct.
-   2. Modify the C code by hand to access globals
-      via an explicit context struct.
-
-For many standard library functions which call user-provided function pointers,
-a bare function pointer is often paired with a `void*` context parameter.
-For `qsort()` specifically, context parameter support is only provided by
-non-standard variants like `qsort_r()`.
-    See https://stackoverflow.com/a/39561369/169305 for details.
-
-Tenjin is not yet sophisticated enough to do option 2 automatically.
-
-Here are the call sites which may have been affected by this issue:
-"""
-        )
-        print()
-        affected_call_sites_by_location: dict[tuple[str, int, int], list[str]] = {}
-
-        for component in j.get("call_graph_components", []):
-            if component.get("all_mutable", True):
-                continue  # all-mutable call sites not affected!
-            call_targets = component.get("call_targets", [])
-            affected_targets = []
-            for target in call_targets:
-                # Target format: "<llvm-link>:function_name"
-                if ":" in target:
-                    callee_func = target.split(":")[-1]
-                    if callee_func in nonmain_tissue_functions:
-                        affected_targets.append(callee_func)
-
-            if affected_targets:
-                # Record all call sites for these targets
-                for site in component.get("call_sites", []):
-                    caller_func = site.get("p")
-                    line = site.get("line")
-                    col = site.get("col")
-
-                    # Get the actual file path - need to adjust for current directory
-                    # The JSON has paths from c_03 but we're working in c_04
-                    file_path_old = un_uf(site.get("uf"))
-                    assert file_path_old.startswith(prev.as_posix())
-                    i_file_path = file_path_old.replace(
-                        prev.as_posix(), current_codebase.as_posix()
-                    )
-
-                    location_key = (i_file_path, line, col)
-                    if location_key not in affected_call_sites_by_location:
-                        affected_call_sites_by_location[location_key] = []
-                    affected_call_sites_by_location[location_key].extend(affected_targets)
-
-        lines_by_file_path = {}
-        # Sort by file path, then line, then column
-        for location_key in sorted(affected_call_sites_by_location.keys()):
-            i_file_path, line, col = location_key
-            target_funcs = affected_call_sites_by_location[location_key]
-            print(f"Call site at {i_file_path}:{line}:{col}")
-            startline = max(0, line - 2)
-            endline = line + 1  # include one line after
-            if i_file_path not in lines_by_file_path:
-                with open(i_file_path, "r", encoding="utf-8") as fh:
-                    lines_by_file_path[i_file_path] = fh.readlines()
-            file_lines = lines_by_file_path[i_file_path][startline:endline]
-            for idx, file_line in enumerate(file_lines, start=startline + 1):
-                pointer = ">> " if idx == line else "   "
-                print(f"{pointer}{idx:4d}: {file_line.rstrip()}")
-            print()
-            print("            May call: " + " or ".join(target_funcs))
-            print()
-
-        print("""
-To err on the side of safety, we currently lift all mutable globals,
-but indirect calls to functions that might escape must be left unchanged,
-to match the signatures expected by the external callers.
-
-Rather than "resolving" this mismatch automatically by not lifting any
-globals transitively accessed during the execution of conflicted functions
-              (which could easily mean silently not lifting
-               any globals at all; a very confusing outcome),
-we're instead going to print this wall of text for you to enjoy. Oh,
-and we shan't proceed further with the refactoring, either, since the
-code we'd be generating would almost certainly have type mismatches.
-===============================================================================
-              """)
-        raise ValueError("please look ABOVE traceback for error info")
-
-    call_sites: list[TissueCallSiteInfo] = []
-
-    # Get call sites from JSON (more reliable than libclang semantic_parent)
-    for component in j.get("call_graph_components", []):
-        if not component.get("all_mutable", False):
-            continue
-        component_call_sites: list[TissueCallSiteInfo] = []
-        call_targets = component.get("call_targets", [])
-        call_target_fn_names = [target.split(":")[-1] for target in call_targets]
-        if any(fn in nonmain_tissue_functions for fn in call_target_fn_names):
-            for site in component.get("call_sites", []):
-                caller_func = site.get("p")
-                line = site.get("line")
-                col = site.get("col")
-
-                # Get the actual file path - need to adjust for current directory
-                # The JSON has paths from c_03 but we're working in c_04
-                file_path_old = un_uf(site.get("uf"))
-                assert file_path_old.startswith(prev.as_posix())
-                i_file_path = file_path_old.replace(prev.as_posix(), current_codebase.as_posix())
-
-                component_call_sites.append(
-                    TissueCallSiteInfo(
-                        caller_func=caller_func,
-                        callee_funcs=call_target_fn_names,
-                        i_file_path=i_file_path,
-                        line=line,
-                        col=col,
-                    )
-                )
-            call_sites.extend(component_call_sites)
-
-        # Mixed-usage call sites, which call both tissue and non-tissue functions,
-        # would lead to undefined behavior if unaddressed. In FindFnPtrDecls.cpp
-        # we detect when a non-tissue function pointer is assigned to a location
-        # with a modified signature, and generate a wrapper for it. This should
-        # ensure correct operation, but does not get reflected in the call target
-        # info at hand, which reflects the pre-wrapper-insertion code. Just in case
-        # our analysis is incomplete, here's some code to help identify mixed-usage
-        # call sites for debugging.
-        if False:
-            ctfn = set(call_target_fn_names)
-            ctfn_tissue = ctfn.intersection(nonmain_tissue_functions)
-            ctfn_nontissue = ctfn - ctfn_tissue
-            if ctfn_tissue and ctfn_nontissue:
-                print("WARNING: found mixed-usage call sites, which appear to call a mix")
-                print("         of global-accessing functions (which need modified signatures)")
-                print("         and non-global-accessing functions (which do not).")
-                print(
-                    "         This risks undefined behavior due to conflicting function signatures."
-                )
-                for idx, site in enumerate(component_call_sites):
-                    andq = "and" if idx > 0 else "   "
-                    print(f"{andq} Call site at {site.i_file_path}:{site.line}:{site.col}")
-
-                print("May call global-accessing functions: " + ", ".join(ctfn_tissue))
-                print("  or non-global-accessing functions: " + ", ".join(ctfn_nontissue))
-
-    return call_sites
-
-
-def find_fn_opening_paren(fn_cursor: Cursor, content: bytes) -> int:
-    """Like .find(), returns -1 if not found."""
-    fn_name_start = fn_cursor.location.offset
-
-    # Find the first '(' character after the fn name;
-    # this skips attributes
-    return content.find(b"(", fn_name_start)

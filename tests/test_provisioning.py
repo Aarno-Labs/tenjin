@@ -1,6 +1,29 @@
 from pathlib import Path
 
-from provisioning import cook_pkg_config_sysroot_prefixes_within
+import pytest
+
+from provisioning import (
+    ProvisioningError,
+    cook_pkg_config_sysroot_prefixes_within,
+    pangs_release_asset_name,
+)
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "expected"),
+    [
+        ("Linux", "x86_64", "pangs_linux-x86_64.tar.xz"),
+        ("Linux", "aarch64", "pangs_linux-aarch64.tar.xz"),
+        ("Darwin", "aarch64", "pangs_macos-aarch64.tar.xz"),
+    ],
+)
+def test_pangs_release_asset_name(system: str, machine: str, expected: str):
+    assert pangs_release_asset_name(system, machine) == expected
+
+
+def test_pangs_release_asset_name_rejects_unsupported_platform():
+    with pytest.raises(ProvisioningError, match="unsupported platform"):
+        pangs_release_asset_name("Darwin", "x86_64")
 
 
 def test_cook_pkg_config_sysroot_prefixes_within(tmp_path: Path):

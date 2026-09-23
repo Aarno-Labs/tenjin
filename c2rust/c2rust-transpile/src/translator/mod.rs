@@ -369,6 +369,7 @@ pub struct ParsedGuidance {
     pub declspecs_of_type: HashMap<syn::Type, Vec<TenjinDeclSpecifier>>,
     pub type_of_decl: HashMap<CDeclId, tenjin::GuidedType>,
     pub mut_of_decl: Vec<(TenjinDeclSpecifier, Mutability)>,
+    pub semantically_immutable_globals: Vec<TenjinDeclSpecifier>,
     pub fn_return_types: HashMap<String, syn::Type>,
     decls_without_type_guidance: HashSet<CDeclId>,
     pub using_crates: HashSet<String>,
@@ -385,6 +386,7 @@ impl ParsedGuidance {
         // These map will be filled in lazily.
         let type_of_decl: HashMap<CDeclId, tenjin::GuidedType> = HashMap::new();
         let mut mut_of_decl: Vec<(TenjinDeclSpecifier, Mutability)> = Vec::new();
+        let mut semantically_immutable_globals = Vec::new();
 
         if let Some(decls) = raw.get("vars_of_type") {
             if let Some(decls) = decls.as_object() {
@@ -444,6 +446,26 @@ impl ParsedGuidance {
                         }
                     }
                 }
+            }
+        }
+
+        if let Some(decls) = raw.get("semantically_immutable_globals") {
+            if let Some(decls) = decls.as_array() {
+                for decl in decls {
+                    match decl.as_str().and_then(parse_tenjin_decl_specifier) {
+                        Some(decl_specifier) => {
+                            semantically_immutable_globals.push(decl_specifier);
+                        }
+                        None => {
+                            log::error!(
+                                "Tenjin `semantically_immutable_globals` entry is not a valid variable specifier: {}",
+                                decl
+                            );
+                        }
+                    }
+                }
+            } else {
+                log::error!("Tenjin `semantically_immutable_globals` guidance is not an array");
             }
         }
 
@@ -550,6 +572,7 @@ impl ParsedGuidance {
             declspecs_of_type,
             type_of_decl,
             mut_of_decl,
+            semantically_immutable_globals,
             fn_return_types,
             decls_without_type_guidance: HashSet::new(),
             using_crates,
@@ -650,6 +673,12 @@ impl ParsedGuidance {
             return Some(*is_mut);
         }
         None
+    }
+
+    pub fn query_decl_semantically_immutable(&self, t: &Translation, id: CDeclId) -> bool {
+        self.semantically_immutable_globals
+            .iter()
+            .any(|d| t.matches_decl(d, id, None, None))
     }
 }
 
@@ -3007,9 +3036,9 @@ impl<'c> Translation<'c> {
             return true;
         }
 
-        let iter = DFExpr::new(&self.ast_context, expr_id.into());
+        let mut iter = DFExpr::new(&self.ast_context, expr_id.into());
 
-        for i in iter {
+        while let Some(i) = iter.next() {
             let expr_id = match i {
                 SomeId::Expr(expr_id) => expr_id,
                 _ => unreachable!("Found static initializer type other than expr"),
@@ -3017,6 +3046,11 @@ impl<'c> Translation<'c> {
 
             use CExprKind::*;
             match self.ast_context.index_unwrap_parens(expr_id).kind {
+                // Expression-form sizeof is translated from its operand's type.
+                // Its unevaluated operand therefore cannot make the surrounding
+                // static initializer uncompilable.
+                UnaryType(_, CUnTypeOp::SizeOf, Some(_), _) => iter.prune(1),
+
                 // Technically we're being conservative here, but it's only the most
                 // contrived array indexing initializers that would be accepted
                 ArraySubscript(..) => return true,
@@ -3040,10 +3074,17 @@ impl<'c> Translation<'c> {
                 ImplicitCast(_, _, PointerToIntegral, _, _)
                 | ExplicitCast(_, _, PointerToIntegral, _, _) => return true,
 
-                Binary(typ, op, _, _, _, _) => {
+                Binary(typ, op, lhs, rhs, _, _) => {
                     if op.is_arithmetic() {
                         let k = &self.ast_context.resolve_type(typ.ctype).kind;
-                        if k.is_unsigned_integral_type() || k.is_pointer() {
+                        let operands_are_sizeof = [lhs, rhs].into_iter().all(|operand| {
+                            matches!(
+                                self.ast_context.index_unwrap_parens(operand).kind,
+                                UnaryType(_, CUnTypeOp::SizeOf, _, _)
+                            )
+                        });
+                        if k.is_pointer() || (k.is_unsigned_integral_type() && !operands_are_sizeof)
+                        {
                             return true;
                         }
                     }
@@ -3332,6 +3373,170 @@ impl<'c> Translation<'c> {
         }
     }
 
+    /// Return whether the Rust translation of `ctype` will contain a raw
+    /// pointer which has not been replaced by type guidance.
+    fn type_contains_unguided_raw_pointer(&self, ctype: CTypeId) -> bool {
+        self.type_contains_unguided_raw_pointer_inner(ctype, &mut HashSet::new())
+    }
+
+    /// Return the mutability of the Rust `static` emitted for `decl_id`.
+    ///
+    /// Keep this decision centralized: expression lowering needs to know whether
+    /// it may form a mutable raw address of the emitted declaration.
+    fn static_decl_rust_mutability(&self, decl_id: CDeclId) -> Option<Mutability> {
+        let decl = self.ast_context.get_decl(&decl_id)?;
+        let (has_static_duration, has_thread_duration, initializer, typ) = match &decl.kind {
+            CDeclKind::Variable {
+                has_static_duration,
+                has_thread_duration,
+                initializer,
+                typ,
+                ..
+            } => (
+                *has_static_duration,
+                *has_thread_duration,
+                *initializer,
+                *typ,
+            ),
+            _ => return None,
+        };
+        if !has_static_duration && !has_thread_duration {
+            return None;
+        }
+
+        // A section-extracted initializer becomes an assignment in
+        // `c2rust_run_static_initializers`, so its destination must be mutable
+        // regardless of explicit or semantic immutability guidance.
+        if self.static_initializer_is_uncompilable(initializer, typ) {
+            return Some(Mutability::Mutable);
+        }
+
+        let guided_type = self
+            .parsed_guidance
+            .borrow_mut()
+            .query_decl_type(self, decl_id);
+        // XREF:static_var_nonmutbl
+        let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
+        let is_semantically_immutable = self
+            .parsed_guidance
+            .borrow()
+            .query_decl_semantically_immutable(self, decl_id);
+        let semantic_immutability_is_rust_safe = is_semantically_immutable
+            && (guided_type.is_some() || !self.type_contains_unguided_raw_pointer(typ.ctype));
+        // Rust atomic wrappers provide mutation through shared references, so
+        // atomic statics themselves do not need `static mut`.
+        let is_atomic = matches!(
+            self.ast_context.resolve_type(typ.ctype).kind,
+            CTypeKind::Atomic(_)
+        );
+
+        Some(if is_atomic {
+            Mutability::Immutable
+        } else if let Some(guided_mutbl) = guided_mutbl {
+            guided_mutbl
+        } else if semantic_immutability_is_rust_safe {
+            Mutability::Immutable
+        } else {
+            Mutability::Mutable
+        })
+    }
+
+    fn type_contains_unguided_raw_pointer_inner(
+        &self,
+        ctype: CTypeId,
+        visited_records: &mut HashSet<CRecordId>,
+    ) -> bool {
+        use CTypeKind::*;
+
+        match self.ast_context.resolve_type(ctype).kind.clone() {
+            // Function pointers translate to `Option<extern "C" fn(...)>`,
+            // which is `Sync`; other C pointers translate to Rust raw pointers.
+            Pointer(pointee) => !matches!(
+                self.ast_context.resolve_type(pointee.ctype).kind,
+                Function(..)
+            ),
+
+            ConstantArray(element, _) | IncompleteArray(element) => {
+                self.type_contains_unguided_raw_pointer_inner(element, visited_records)
+            }
+
+            // Variable-length arrays are represented by raw pointers.
+            VariableArray(..) | Reference(..) | BlockPointer(..) => true,
+
+            Struct(record_id) | Union(record_id) => {
+                if !visited_records.insert(record_id) {
+                    return false;
+                }
+
+                let fields = match self.ast_context.index(record_id).kind.clone() {
+                    CDeclKind::Struct { fields, .. } | CDeclKind::Union { fields, .. } => fields,
+                    _ => unreachable!("record type points to a non-record declaration"),
+                };
+                let Some(fields) = fields else {
+                    return false;
+                };
+                let record_name = self
+                    .type_converter
+                    .borrow()
+                    .resolve_decl_name(record_id)
+                    .expect("Expected record name");
+
+                fields.into_iter().any(|field_id| {
+                    let field_type = match self.ast_context.index(field_id).kind {
+                        CDeclKind::Field { typ, .. } => typ.ctype,
+                        _ => unreachable!("record contains a non-field declaration"),
+                    };
+                    let field_name = self
+                        .type_converter
+                        .borrow()
+                        .resolve_field_name(Some(record_id), field_id)
+                        .expect("Expected field name");
+                    let field_is_guided = self
+                        .parsed_guidance
+                        .borrow_mut()
+                        .query_field_type(self, &record_name, field_id, &field_name)
+                        .is_some();
+
+                    !field_is_guided
+                        && self
+                            .type_contains_unguided_raw_pointer_inner(field_type, visited_records)
+                })
+            }
+
+            // Atomic lowering is handled specially for statics, but nested
+            // atomics still use their translated inner type here.
+            Atomic(inner) => {
+                self.type_contains_unguided_raw_pointer_inner(inner.ctype, visited_records)
+            }
+
+            // These wrappers are normally removed by `resolve_type`, but keep
+            // the recursion explicit in case that normalization changes.
+            Complex(inner) | TypeOf(inner) | Decayed(inner) | Elaborated(inner) | Paren(inner)
+            | Auto(inner) => self.type_contains_unguided_raw_pointer_inner(inner, visited_records),
+            Attributed(inner, _) | Vector(inner, _) => {
+                self.type_contains_unguided_raw_pointer_inner(inner.ctype, visited_records)
+            }
+            Typedef(decl_id) => match self.ast_context.index(decl_id).kind {
+                CDeclKind::Typedef { typ, .. } => {
+                    self.type_contains_unguided_raw_pointer_inner(typ.ctype, visited_records)
+                }
+                _ => unreachable!("typedef type points to a non-typedef declaration"),
+            },
+
+            // These types either translate without raw pointers or cannot be
+            // embedded in a successfully translated static definition.
+            Void | Bool | Char | SChar | Short | Int | Long | LongLong | UChar | UShort | UInt
+            | ULong | ULongLong | Float | Double | LongDouble | Int128 | UInt128 | Function(..)
+            | Enum(..) | BuiltinFn | Half | BFloat16 | Float128 | Int8 | Int16 | Int32 | Int64
+            | IntPtr | UInt8 | UInt16 | UInt32 | UInt64 | UIntPtr | IntMax | UIntMax | Size
+            | SSize | PtrDiff | WChar => false,
+
+            // Be conservative for kinds which the normal type converter does
+            // not currently support.
+            TypeOfExpr(..) | UnhandledSveType => true,
+        }
+    }
+
     fn convert_decl(&self, ctx: ExprContext, decl_id: CDeclId) -> TranslationResult<ConvertedDecl> {
         let decl = self
             .ast_context
@@ -3535,14 +3740,10 @@ impl<'c> Translation<'c> {
                     .parsed_guidance
                     .borrow_mut()
                     .query_decl_type(self, decl_id);
-                // XREF:static_var_nonmutbl
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
-                // Rust atomic wrappers provide mutation through shared references,
-                // so atomic statics themselves do not need `static mut`.
-                let is_atomic = matches!(
-                    self.ast_context.resolve_type(typ.ctype).kind,
-                    CTypeKind::Atomic(_)
-                );
+                let rust_mutbl = self
+                    .static_decl_rust_mutability(decl_id)
+                    .expect("static-duration variable should have Rust static mutability");
 
                 let mut static_def = if is_externally_visible {
                     mk_linkage(false, new_name, ident, self.tcfg.edition)
@@ -3554,13 +3755,10 @@ impl<'c> Translation<'c> {
                     mk()
                 };
 
-                // Force mutability due to the potential for raw pointers occurring in the type
-                // and because we may be assigning to these variables in the external initializer
-                match if is_atomic {
-                    Mutability::Immutable
-                } else {
-                    guided_mutbl.unwrap_or(Mutability::Mutable)
-                } {
+                // Explicit mutability guidance wins over semantic immutability.  Otherwise,
+                // omit `mut` only when PANGS proved the static immutable and its Rust type
+                // will not contain an unguided raw pointer requiring `Sync`.
+                match rust_mutbl {
                     Mutability::Mutable => {
                         static_def = static_def.mutbl();
                     }

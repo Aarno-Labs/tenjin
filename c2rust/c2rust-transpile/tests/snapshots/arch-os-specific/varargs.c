@@ -73,6 +73,10 @@ struct vastruct {
     va_list args;
 };
 
+struct va_ptr_struct {
+    va_list *args;
+};
+
 // pattern first seen in apache (util_script.c)
 void valist_struct_member(const char *fmt, ...) {
     struct vastruct a, b;
@@ -114,6 +118,10 @@ void restart_valist(const char *fmt, ...) {
 
 void print_int(va_list *ap) {
     printf("%d", va_arg(*ap, int));
+}
+
+void use_va_ptr_struct(struct va_ptr_struct *s) {
+    print_int(s->args);
 }
 
 void borrowed_valist(size_t count, ...) {

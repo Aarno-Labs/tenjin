@@ -310,7 +310,11 @@ fn char_to_ident(c: char) -> char {
 }
 
 fn str_to_ident(s: &str) -> String {
-    s.chars().map(char_to_ident).collect()
+    let mut ident: String = s.chars().map(char_to_ident).collect();
+    if ident.chars().next().is_some_and(char::is_numeric) {
+        ident.insert(0, '_');
+    }
+    ident
 }
 
 /// Make sure that name:

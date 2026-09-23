@@ -43,6 +43,32 @@ those drops and splices the modification back into the residual `.c`. It uses
 the byte-range mapping emitted by `clang-refold --emit-edit-map` to anchor
 where to look.
 
+## Correspondence and shared-header reconstruction
+
+Keeping declarations compatible across translation units and reconstructing
+their shared header are separate problems. PANGS plans the former for
+[global localization](mutable_global_localization.md); consolidation and
+restoration preserve those planned changes through refolding.
+
+Corresponding declarations need not have identical text. Different macro
+expansions, typedef spellings or parameter names can produce compatible
+interfaces with different concrete edits. Semantic compatibility alone does
+not establish that one modified spelling can replace their shared header
+definition. Likewise, independent private definitions, including static inline
+function copies, can legitimately require different transformations.
+Consolidation must preserve each affected TU's result, not choose one copy as
+authoritative or force the others to match it. Declarations with no common
+source header have nothing to consolidate even when their edits must agree.
+
+Moving a modification into a header does not guarantee that refolding will
+restore its include. An unrelated edit can keep part of an include expansion
+in the output, and nested includes may fold only partially. The required
+modification must therefore survive in whichever form is emitted: the updated
+header, residual expanded source, or both for different occurrences. This is
+why consolidation records its temporary reverts and restoration tracks them
+individually rather than deciding success once per header or translation unit.
+The edit-map and textual-matching limitations described below still apply.
+
 ## Worked example
 
 ### Step 0 — original sources

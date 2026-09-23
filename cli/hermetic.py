@@ -79,8 +79,14 @@ def xj_crat(localdir: Path) -> Path:
     return localdir / "xj-crat"
 
 
-def xj_prepare_findfnptrdecls_build_dir(localdir: Path) -> Path:
-    return localdir / "_build_findfnptrdecls"
+def xj_pangs(localdir: Path) -> Path:
+    return localdir / "pangs"
+
+
+def xj_pangs_exe(localdir: Path) -> Path:
+    if override := os.environ.get("XJ_PANGS_EXE"):
+        return Path(override).resolve(strict=True)
+    return xj_pangs(localdir) / "bin" / "pangs"
 
 
 def xj_prepare_locatejoineddecls_build_dir(localdir: Path) -> Path:

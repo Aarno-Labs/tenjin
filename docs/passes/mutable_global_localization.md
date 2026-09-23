@@ -4,7 +4,7 @@
 
 - [cli/c_refact.py](/cli/c_refact.py)
 - [cli/c_refact_decl_splitter.py](/cli/c_refact_decl_splitter.py)
-- [@brk/cclyzerpp](https://github.com/brk/cclyzerpp/tree/tenjin)
+- PANGS disposition manifest schema v8
 
 ## What
 
@@ -18,19 +18,46 @@ Mutable global variables are unsafe in Rust.
 
 ## How
 
-- `cclyzerpp` computes a pointer analysis and call graph
-- Based on the points-to and call graphs, we compute mutability.
-  - Pointers that escape to unknown functions are assumed to be mutated.
-- The call graph feeds into an updatability determination:
-  - We construct a bipartite graph of call sites and callees.
-  - Either may be "unknown". Unknown call sites correspond to callback invocations
-    outside of our control.
-  - Any connected component which contains an unknown element is not updatable.
-- The call graph also determines the "mutable tissue" -- the set of functions which
-access mutable globals, plus the transitive closure of their callers.
-- Updatable call sites are modified to pass a context struct pointer.
-- Updatable function definitions are modified to take a context struct pointer,
-and to use it when accessing mutable globals.
+- PANGS computes a separate context-rewrite candidate for every defined mutable global.
+  Each candidate names direct source accessors, the transitive internal callers that
+  need a context parameter, exact callsites that must pass it, and any safety blockers.
+- PANGS disposition policy chooses among immutable, atomic, localization, and unhandled
+  outcomes. Its finalized manifest projects only `localize`-selected candidate fields
+  into `context_rewrite.selected`.
+- Tenjin treats that projection as authoritative. It does not infer localization from
+  mutation, escape, or call-graph-component summaries.
+- Selected callsites are modified to pass a context struct pointer. Selected functions
+  are modified to receive it and redirect accesses to selected globals through it.
+- PANGS supplies source-plan-v3 callback-type, typedef, declaration, and `_xjw`
+  adapter edits to keep those calls well-typed. An adapter ignores the context
+  and forwards to an unchanged function, preserving its original signature,
+  direct calls, and unrelated callback uses. One adapter identity is shared by
+  all affected uses of the same function, including across translation units.
+  When another selected global requires that function to take context, the
+  combined plan omits its adapter. PANGS alone composes and validates the final
+  edit list; Tenjin checks supported operations, paths, ranges, and overlaps.
+  Tenjin applies the finalized edits without reconstructing candidate recipes,
+  discovering additional functions, choosing callback wrappers, or repairing
+  compiler errors.
+  Unsupported callback forms block localization during planning.
+- Context construction brings required initializer function declarations into
+  `main`'s translation unit and moves late type definitions before the context
+  header. PANGS leaves callback storage in place if moving its initializer would
+  require naming another translation unit's private function.
+- After their declarations and initializers have been copied into the context construction,
+  selected globals' original definitions are overwritten with whitespace. Newlines and byte
+  widths are preserved so later source locations remain stable.
+
+## Cross-translation-unit edits
+
+PANGS plans compatible changes to corresponding declarations using each
+declaration's own syntax locations; Tenjin does not copy edits between type
+definitions. Correspondence is not simply matching names or text, and different
+TUs can contribute requirements that must be combined. PANGS's
+`SOURCE_PLANNING.md`, under "Corresponding declarations across translation
+units", explains these obligations and the planner's scope. Reconstructing
+shared headers is a separate responsibility described in
+[Refolding and Revert Restoration](refold_and_revert.md#correspondence-and-shared-header-reconstruction).
 
 ## Other Notes
 

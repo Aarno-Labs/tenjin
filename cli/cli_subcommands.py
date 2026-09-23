@@ -160,7 +160,6 @@ def do_test_unit_rs():
 
 def do_build_star(capture_output: bool = False):
     do_build_rs(repo_root.find_repo_root_dir_Path(), capture_output=capture_output)
-    do_build_xj_prepare_findfnptrdecls(capture_output=capture_output)
     do_build_xj_prepare_locatejoineddecls(capture_output=capture_output)
     do_build_xj_prepare_unionbitcasts(capture_output=capture_output)
     do_build_xj_prepare_atomics(capture_output=capture_output)
@@ -168,34 +167,6 @@ def do_build_star(capture_output: bool = False):
     do_build_xj_prepare_baserewrite(capture_output=capture_output)
     do_build_xj_prepare_slicetransform(capture_output=capture_output)
     do_build_xj_localize_errno(capture_output=capture_output)
-
-
-def do_build_xj_prepare_findfnptrdecls(capture_output: bool = False):
-    root = repo_root.find_repo_root_dir_Path()
-    builddir = hermetic.xj_prepare_findfnptrdecls_build_dir(repo_root.localdir())
-
-    if not builddir.exists():
-        cp = hermetic.run(
-            [
-                "cmake",
-                "-GNinja",
-                "-S",
-                (root / "xj-prepare-findfnptrdecls").as_posix(),
-                "-B",
-                builddir.as_posix(),
-            ],
-            cwd=root,
-            check=True,
-            capture_output=capture_output,
-        )
-        assert builddir.exists(), f"cmake config returned {cp.returncode}"
-
-    hermetic.run(
-        ["cmake", "--build", builddir.as_posix(), "--", "--quiet"],
-        cwd=root,
-        capture_output=capture_output,
-        check=True,
-    )
 
 
 def do_build_xj_localize_errno(capture_output: bool = False):

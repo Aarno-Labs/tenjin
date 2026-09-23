@@ -1,5 +1,6 @@
 ---
 source: c2rust-transpile/tests/snapshots.rs
+assertion_line: 186
 expression: cat tests/snapshots/arch-os-specific/varargs.2021.x86_64.linux.clang15.rs
 ---
 #![allow(
@@ -35,6 +36,11 @@ pub type size_t = usize;
 #[repr(C)]
 pub struct vastruct<'a> {
     pub args: ::core::ffi::VaListImpl<'a>,
+}
+#[derive()]
+#[repr(C)]
+pub struct va_ptr_struct<'a> {
+    pub args: *mut ::core::ffi::VaListImpl<'a>,
 }
 #[no_mangle]
 pub unsafe extern "C" fn call_printf() {
@@ -143,6 +149,10 @@ pub unsafe extern "C" fn restart_valist(mut fmt: *const ::core::ffi::c_char, mut
 #[no_mangle]
 pub unsafe extern "C" fn print_int(mut ap: *mut ::core::ffi::VaListImpl) {
     print!("{:}", (*ap).arg::<::core::ffi::c_int>() as core::ffi::c_int);
+}
+#[no_mangle]
+pub unsafe extern "C" fn use_va_ptr_struct(mut s: *mut va_ptr_struct) {
+    print_int((*s).args);
 }
 #[no_mangle]
 pub unsafe extern "C" fn borrowed_valist(mut count: size_t, mut c2rust_args: ...) {

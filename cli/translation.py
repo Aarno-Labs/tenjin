@@ -1,7 +1,6 @@
 import shutil
 from pathlib import Path
 from subprocess import CompletedProcess, CalledProcessError
-import re
 import json
 import pprint
 import time
@@ -360,24 +359,16 @@ def do_translate_with_tracker(
                     inject_tu_includes(output)
                 except CrateRootNotFound:
                     pass
-            run_improvement_passes(
+            final_output = run_improvement_passes(
                 translation_flags.root,
                 output,
                 resultsdir,
-                translation_flags.cratename,
                 tracker,
             )
         finally:
             tracker.mark_translation_finished()
 
-        # Find the highest numbered output directory and copy its contents
-        # to the final output directory.
-        highest_out = find_highest_numbered_dir(resultsdir)
-        if highest_out is not None:
-            shutil.copytree(
-                highest_out,
-                resultsdir / "final",
-            )
+        shutil.copytree(final_output, resultsdir / "final")
 
         print("Translation finished.")
         print("Collecting static code quality measurements...")
@@ -405,31 +396,6 @@ def load_and_parse_guidance(guidance_path_or_literal: str) -> dict:
     except json.JSONDecodeError:
         guidance = json.load(Path(guidance_path_or_literal).open("r", encoding="utf-8"))
     return guidance
-
-
-def find_highest_numbered_dir(base: Path) -> Path | None:
-    """
-    Find the directory with the largest underscore-suffixed numeric prefix.
-    """
-    pattern = re.compile(r"^(\d+)_.*$")
-    base = Path(base)
-
-    if not base.exists():
-        return None
-
-    max_num = -1
-    latest_dir = None
-
-    for item in base.iterdir():
-        if item.is_dir():
-            match = pattern.match(item.name)
-            if match:
-                num = int(match.group(1))
-                if num > max_num:
-                    max_num = num
-                    latest_dir = item
-
-    return latest_dir if latest_dir else None
 
 
 def fixup_binary_crates_in_workspace(outdir: Path, workspace_cratename: str):
