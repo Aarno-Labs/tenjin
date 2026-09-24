@@ -804,8 +804,8 @@ def expand_overlapping_decl_header_entries(
     expanded_entries = set()
 
     for header_path, header_entries in by_header.items():
-        # Sort entries within each header by start offset, so that overlaps will be adjacent.
-        header_entries.sort(key=lambda e: (e[1], e[2]))
+        # Sort by offsets and then contents, so overlaps are adjacent and ties are stable.
+        header_entries.sort()
 
         overlap_buckets = [[header_entries[0]]]
         for entry in header_entries[1:]:

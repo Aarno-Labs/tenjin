@@ -631,13 +631,6 @@ def want_10j_more_deps():
         if platform.system() == "Darwin":
             subprocess.check_call([
                 "install_name_tool",
-                "-add_rpath",
-                "@executable_path/../../xj-llvm-14/lib",
-                str(target / "bin" / "cc2json-llvm14"),
-            ])
-
-            subprocess.check_call([
-                "install_name_tool",
                 "-id",
                 str(target / "gmp-6.3.0" / "lib" / "libgmp.10.dylib"),
                 str(target / "gmp-6.3.0" / "lib" / "libgmp.10.dylib"),

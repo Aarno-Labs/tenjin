@@ -403,7 +403,7 @@ def normalize_member_cargo_tomls(
 
     union_cargo = copy.deepcopy(stripped[0])
 
-    for section, dep_name in all_intra_ws:
+    for section, dep_name in sorted(all_intra_ws):
         specs = [
             c.get(section, {}).get(dep_name)
             for c in cargo_tomls

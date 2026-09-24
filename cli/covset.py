@@ -611,7 +611,7 @@ def set_operation(
 
     all_file_hashes = set(set1.files.keys()) | set(set2.files.keys())
 
-    for fhash in all_file_hashes:
+    for fhash in sorted(all_file_hashes):
         in1 = fhash in set1.files
         in2 = fhash in set2.files
 

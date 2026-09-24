@@ -1755,12 +1755,12 @@ def _localize_mutable_globals_in_place(
                                     if g in visited or g not in globals_to_copy_to_main:
                                         return
                                     visited.add(g)
-                                    for dep in global_dependencies.get(g, set()):
+                                    for dep in sorted(global_dependencies.get(g, set())):
                                         if dep in globals_to_copy_to_main:
                                             visit_for_topo(dep)
                                     sorted_globals.append(g)
 
-                                for g in globals_to_copy_to_main:
+                                for g in sorted(globals_to_copy_to_main):
                                     visit_for_topo(g)
 
                                 # Generate local variable definitions
@@ -2034,7 +2034,7 @@ def update_vars_of_type_guidance_for_xjg(
     guidance: dict = json.load(open(current_codebase / XJ_GUIDANCE_FILENAME, "r", encoding="utf-8"))
     can_take_mut_xjg = nonmain_context_functions - higher_order_context_functions
     mut_specs = guidance.get("vars_of_type", {}).get("&mut XjGlobals", [])
-    for context_fn_name in can_take_mut_xjg:
+    for context_fn_name in sorted(can_take_mut_xjg):
         mut_specs.append(f"{context_fn_name}:xjg")
     guidance.setdefault("vars_of_type", {})["&mut XjGlobals"] = mut_specs
     with open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8") as fh:
