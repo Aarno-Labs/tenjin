@@ -549,8 +549,7 @@ def test_tractor_b1_organic_flip_horizontal_lib(tenjin_fixtures: TenjinFixtures)
 
 def test_tractor_b1_organic_float2half_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/float2half_lib"
-    guidance = """{"vars_mut":{"m__shift":false,"m__base": false}}"""
-    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, guidance)
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, "{}")
     assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 0
 
 
@@ -565,8 +564,7 @@ def test_tractor_b1_organic_gaussian_kernel_lib(tenjin_fixtures: TenjinFixtures)
 @pytest.mark.slow
 def test_tractor_b1_organic_half2float_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/half2float_lib"
-    guidance = """{"vars_mut":{"m__mantissa":false,"m__offset": false,"m__exponent": false}}"""
-    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, guidance)
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, "{}")
     assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 0
 
 
@@ -623,8 +621,7 @@ def test_tractor_b1_organic_ima_parse_lib(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow
 def test_tractor_b1_organic_ldexp_q2_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/ldexp_q2_lib"
-    guidance = """{"vars_mut":{"ldexp_q2:g_expfrac":false}}"""
-    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, guidance)
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, "{}")
     assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 0
 
 
@@ -668,8 +665,7 @@ def test_tractor_b1_organic_normalize_lib(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow
 def test_tractor_b1_organic_pow43_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/pow43_lib"
-    guidance = """{"vars_mut":{"g_pow43":false}}"""
-    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, guidance)
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, "{}")
     assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 0
 
 
