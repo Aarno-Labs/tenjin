@@ -525,11 +525,18 @@ def test_tractor_b1_organic_encode_quant_lib(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
-def test_tractor_b1_organic_flac_validate_lib(tenjin_fixtures: TenjinFixtures):
+def test_tractor_b1_organic_flac_validate_lib_g0(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/flac_validate_lib"
-    # guidance = """{"vars_of_type":{"&mut tflac":["flac_validate:t"]}}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
     assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 1
+
+
+@pytest.mark.slow
+def test_tractor_b1_organic_flac_validate_lib_g1(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B01_organic/flac_validate_lib"
+    guidance = """{"vars_of_type":{"&mut tflac":["flac_validate:t"]}}"""
+    eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir, guidance)
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 0
 
 
 @pytest.mark.slow
