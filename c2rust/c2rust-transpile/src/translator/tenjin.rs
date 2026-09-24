@@ -53,6 +53,16 @@ impl GuidedType {
         self.is_borrow() && !self.is_exclusive_borrow()
     }
 
+    pub fn borrow_mutability(&self) -> Option<Mutability> {
+        if !self.is_borrow() {
+            None
+        } else if self.is_exclusive_borrow() {
+            Some(Mutability::Mutable)
+        } else {
+            Some(Mutability::Immutable)
+        }
+    }
+
     pub fn is_slice_ref(&self) -> bool {
         match self.parsed {
             Type::Reference(ref tref) => matches!(*tref.elem, Type::Slice(_)),
@@ -477,7 +487,7 @@ pub fn type_of_array_ref(ty: &Type) -> Option<&Type> {
 
 pub fn type_try_arraylike_element(t: &Type) -> Option<&Type> {
     match t {
-        Type::Path(p) => path_get_1_segment(&p.path)
+        Type::Path(p) if tenjin::type_is_vec(t) /* this was a bug */ => path_get_1_segment(&p.path)
             .and_then(|s| segment_get_1_bracket_argument(s))
             .and_then(|args| match args {
                 GenericArgument::Type(t) => Some(t),
@@ -567,6 +577,50 @@ pub fn expr_is_lit_str_only(expr: &Expr) -> bool {
 
 pub fn expr_is_borrow(expr: &Expr) -> bool {
     matches!(expr, Expr::Reference(_))
+        || match expr {
+            Expr::Call(call) => {
+                let Some(func_path) = expr_get_path(&call.func) else {
+                    return false;
+                };
+                if func_path.segments.len() != 2 || func_path.segments[0].ident != "bytemuck" {
+                    return false;
+                }
+                let method = &func_path.segments[1].ident;
+                return method == "cast_ref"
+                    || method == "cast_mut"
+                    || method == "cast_slice"
+                    || method == "cast_slice_mut";
+            }
+            _ => false,
+        }
+}
+
+pub fn expr_bytemuck_cast_reference(t: &Translation, expr: &Expr, ty: &Type) -> Box<Expr> {
+    match ty {
+        Type::Reference(tref) => {
+            let mutbl = tref.mutability.is_some();
+            let method = if type_try_arraylike_element(&tref.elem).is_some() {
+                if mutbl {
+                    "cast_slice_mut"
+                } else {
+                    "cast_slice"
+                }
+            } else if mutbl {
+                "cast_mut"
+            } else {
+                "cast_ref"
+            };
+            t.use_crate(ExternCrate::Bytemuck);
+            mk().call_expr(
+                mk().path_expr(vec!["bytemuck", method]),
+                vec![Box::new(expr.clone())],
+            )
+        }
+        _ => panic!(
+            "expr_bytemuck_cast_reference requires a reference, got {:?}",
+            ty
+        ),
+    }
 }
 
 pub fn expr_strip_casts(expr: &Expr) -> &Expr {
@@ -2825,7 +2879,23 @@ impl Translation<'_> {
                 .borrow_mut()
                 .query_expr_type(self, cexpr)
             {
+                if target_guided_type.is_borrow()
+                    && expr_guided_type.is_slice_or_array()
+                    && tenjin::expr_is_borrow(&expr)
+                {
+                    // OK no coercion needed -- there's an array decay that we'll have
+                    // translated to some kind of reference
+                    return expr;
+                }
                 if target_guided_type.is_shared_borrow() && !expr_guided_type.is_borrow() {
+                    let expr = if !target_guided_type.is_slice_or_array_ref()
+                        && (expr_guided_type.is_slice_or_array()
+                            || expr_guided_type.is_slice_or_array())
+                    {
+                        mk().index_expr(expr, mk().lit_expr(mk().int_unsuffixed_lit(0)))
+                    } else {
+                        expr
+                    };
                     return mk().borrow_expr(expr);
                 }
 
@@ -2860,10 +2930,16 @@ impl Translation<'_> {
                     // XREF:unguided_arg_coerce_asref
                     // Coerce to `.as_ref().unwrap()`
                     let opt = mk().method_call_expr(expr, "as_ref", Vec::<Box<Expr>>::new());
+                    if target_guided_type.is_slice_or_array_ref() {
+                        return opt;
+                    }
                     return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
                 } else if target_guided_type.is_exclusive_borrow() {
                     // Coerce to `.as_mut().unwrap()`
                     let opt = mk().method_call_expr(expr, "as_mut", Vec::<Box<Expr>>::new());
+                    if target_guided_type.is_slice_or_array_ref() {
+                        return opt;
+                    }
                     return mk().method_call_expr(opt, "unwrap", Vec::<Box<Expr>>::new());
                 }
             }
@@ -2939,6 +3015,18 @@ impl Translation<'_> {
             .is_some()
     }
 
+    pub fn is_array(&self, c_ptr: CExprId) -> bool {
+        if let Some(id) = self.c_expr_get_var_decl_id(c_ptr) {
+            if let crate::c_ast::CDeclKind::Variable { typ, .. } = self.ast_context[id].kind {
+                return matches!(
+                    self.ast_context[typ.ctype].kind,
+                    crate::c_ast::CTypeKind::ConstantArray(_, _)
+                );
+            }
+        }
+        false
+    }
+
     pub fn wrapped_with_array_decay(&self, mut cexpr: CExprId) -> bool {
         while let Some(parent_id) = self.parent_expr_map.get(&cexpr) {
             match self.ast_context[*parent_id].kind {
@@ -2988,11 +3076,11 @@ impl Translation<'_> {
     /// Ex. if we have
     ///   let x = p + i
     /// where
-    ///   x has guided type &[u8]
+    ///   x has guided type &T
     ///   p has a pointer type
     ///   i has an integral type
     /// then
-    ///   the guided type for p should also be &[u8]
+    ///   the guided type for p should be &[T]
     ///   we have no guidance for i
     ///
     /// `lhs_type` (resp `rhs_type`) is the type of the lhs (rhs) operand
@@ -3000,6 +3088,8 @@ impl Translation<'_> {
     pub fn context_guidance_of_binary_op(
         &self,
         op: CBinOp,
+        lhs: CExprId,
+        rhs: CExprId,
         lhs_type: &CTypeKind,
         rhs_type: &CTypeKind,
         ctx_guided_type: &Option<GuidedType>,
@@ -3012,6 +3102,19 @@ impl Translation<'_> {
             return (
                 lhs_type.is_pointer().then(|| t.clone()),
                 rhs_type.is_pointer().then(|| t.clone()),
+            );
+        }
+
+        if t.is_borrow() && op.is_pointer_arithmetic() {
+            return (
+                self.is_array(lhs).then(|| {
+                    let base = t.parsed.clone();
+                    GuidedType::from_type(syn::parse_quote! { &[#base] })
+                }),
+                self.is_array(rhs).then(|| {
+                    let base = t.parsed.clone();
+                    GuidedType::from_type(syn::parse_quote! { &[#base] })
+                }),
             );
         }
 

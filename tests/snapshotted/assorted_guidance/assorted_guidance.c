@@ -346,8 +346,43 @@ void receive_slice(const unsigned char *rsu8)
 {
     char v = rsu8[0];
 }
-void pass_slice_offset(int idx)
+void receive_elem(const unsigned char *ru8)
 {
-    char unsigned arr[72] = {0};
+    unsigned char v = *ru8;
+}
+void pass_slice_offset_unguided_arr(int idx)
+{
+    char unsigned arr[8] = {0};
     receive_slice(&arr[idx + 2]);
+    receive_elem(&arr[idx + 2]);
+}
+void pass_slice_ptr_arith_unguided_arr(int idx)
+{
+    char unsigned arr[8] = {0};
+    receive_slice(arr + idx);
+    receive_elem(arr + idx);
+}
+void pass_slice_whole_unguided_arr()
+{
+    char unsigned arr[8] = {0};
+    receive_slice(arr);
+    receive_elem(arr);
+}
+void pass_slice_offset_guided_arr(int idx)
+{
+    char unsigned arru8_8[8] = {0};
+    receive_slice(&arru8_8[idx + 2]);
+    receive_elem(&arru8_8[idx + 2]);
+}
+void pass_slice_ptr_arith_guided_arr(int idx)
+{
+    char unsigned arru8_8[8] = {0};
+    receive_slice(arru8_8 + idx);
+    receive_elem(arru8_8 + idx);
+}
+void pass_slice_whole_guided_arr()
+{
+    char unsigned arru8_8[8] = {0};
+    receive_slice(arru8_8);
+    receive_elem(arru8_8);
 }

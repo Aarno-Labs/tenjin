@@ -6210,7 +6210,7 @@ impl<'c> Translation<'c> {
 
         match kind {
             CastKind::BitCast | CastKind::NoOp => {
-                self.convert_pointer_to_pointer_cast(source_cty, target_cty, val, expr, None)
+                self.convert_pointer_to_pointer_cast(source_cty, target_cty, val, expr, guided_type)
             }
 
             CastKind::IntegralToPointer => {
