@@ -922,10 +922,18 @@ def test_tractor_b1_synthetic_012_app(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
-def test_tractor_b1_synthetic_013_app(tenjin_fixtures: TenjinFixtures):
+def test_tractor_b1_synthetic_013_app_g0(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/013_poor_quality_addition"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
     assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 3
+
+
+@pytest.mark.slow
+def test_tractor_b1_synthetic_013_app_g1(tenjin_fixtures: TenjinFixtures):
+    case_dir = "Public-Tests/B01_synthetic/013_poor_quality_addition"
+    guidance = """{"vars_of_type":{"String":["printLine:line"]}}"""
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir, guidance)
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 0
 
 
 @pytest.mark.slow
