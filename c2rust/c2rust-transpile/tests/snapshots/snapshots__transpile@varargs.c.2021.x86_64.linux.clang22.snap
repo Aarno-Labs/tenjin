@@ -19,6 +19,7 @@ extern "C" {
         __arg: ::core::ffi::VaList,
     ) -> ::core::ffi::c_int;
     fn putchar(__c: ::core::ffi::c_int) -> ::core::ffi::c_int;
+    static va_callback_backend: va_callback_backend;
 }
 pub type __builtin_va_list = [__va_list_tag; 1];
 #[derive(Copy, Clone)]
@@ -36,6 +37,13 @@ pub type size_t = usize;
 pub struct vastruct<'a> {
     pub args: ::core::ffi::VaListImpl<'a>,
 }
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct va_callback_backend {
+    pub set_option:
+        Option<unsafe extern "C" fn(::core::ffi::c_int, ::core::ffi::VaList) -> ::core::ffi::c_int>,
+}
+pub const NULL: *mut ::core::ffi::c_void = ::core::ptr::null_mut::<::core::ffi::c_void>();
 #[no_mangle]
 pub unsafe extern "C" fn call_printf() {
     printf(
@@ -107,6 +115,23 @@ pub unsafe extern "C" fn simple_vacopy(mut fmt: *const ::core::ffi::c_char, mut 
     aq = ap.clone();
     vprintf(fmt as *const ::core::ffi::c_char, ap.as_va_list());
     vprintf(fmt as *const ::core::ffi::c_char, aq.as_va_list());
+}
+unsafe extern "C" fn callback_set_option(
+    mut option: ::core::ffi::c_int,
+    mut args: ::core::ffi::VaList,
+) -> ::core::ffi::c_int {
+    return option;
+}
+#[no_mangle]
+pub static mut defined_va_callback_backend: va_callback_backend = va_callback_backend {
+    set_option: Some(
+        callback_set_option
+            as unsafe extern "C" fn(::core::ffi::c_int, ::core::ffi::VaList) -> ::core::ffi::c_int,
+    ),
+};
+#[no_mangle]
+pub unsafe extern "C" fn has_va_callback_backend() -> ::core::ffi::c_int {
+    return va_callback_backend.set_option.is_some() as ::core::ffi::c_int;
 }
 #[no_mangle]
 pub unsafe extern "C" fn valist_struct_member(

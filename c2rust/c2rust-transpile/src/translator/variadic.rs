@@ -43,8 +43,10 @@ pub fn mk_va_list_ty(edition: RustEdition, lifetime: Option<&str>) -> Box<Type> 
     ])
 }
 
-/// Give every translated `VaList` within `ty` the lifetime owned by its
-/// enclosing item. Returns whether a `VaList` was found.
+/// Give translated `VaList` values stored in `ty` the lifetime owned by the
+/// enclosing item. A `VaList` in a function pointer's signature instead uses
+/// the function pointer's elided, late-bound lifetimes.
+/// Returns whether the enclosing item needs a lifetime parameter.
 pub fn set_va_list_lifetime(ty: &mut Type, lifetime: &str) -> bool {
     struct SetVaListLifetime<'a> {
         lifetime: &'a str,
@@ -52,6 +54,12 @@ pub fn set_va_list_lifetime(ty: &mut Type, lifetime: &str) -> bool {
     }
 
     impl VisitMut for SetVaListLifetime<'_> {
+        fn visit_type_bare_fn_mut(&mut self, _ty: &mut syn::TypeBareFn) {
+            // Rust binds elided lifetimes in function-pointer parameters. Giving
+            // those VaLists the enclosing struct's lifetime makes the struct
+            // generic and leaves extern statics of that type ill-formed.
+        }
+
         fn visit_type_path_mut(&mut self, ty: &mut syn::TypePath) {
             let segments = &mut ty.path.segments;
             let is_va_list = ty.qself.is_none()
