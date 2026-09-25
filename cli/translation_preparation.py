@@ -2506,17 +2506,10 @@ def run_preparation_passes(
         ("promote_atomics", prep_promote_atomics),
         ("pointertransform", prep_pointertransform),
         ("uniquify_statics", prep_uniquify_statics),
-    ]
-
-    if os.environ.get("XJ_SKIP_PANGS", "0") == "0":
-        preparation_passes.extend([
-            ("run_pangs_disposition", prep_run_pangs_disposition),
-            ("localize_mutable_globals", prep_localize_mutable_globals),
-        ])
-
-    preparation_passes.append(
+        ("run_pangs_disposition", prep_run_pangs_disposition),
+        ("localize_mutable_globals", prep_localize_mutable_globals),
         ("prep_un_uniquify_static_inline_fns", prep_un_uniquify_static_inline_fns),
-    )
+    ]
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") != "0":
         preparation_passes.extend([
