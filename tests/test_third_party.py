@@ -1933,10 +1933,10 @@ def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
 # gives each executable its own crate, and names the crate's binary after the C
 # source file rather than after the linked output.
 LIBZAHL_EXAMPLES = {
-    "zahl_sum": ("examples/01-sum.c", "01_sum"),
-    "zahl_prod": ("examples/02-prod.c", "02_prod"),
-    "zahl_avg": ("examples/03-avg.c", "03_avg"),
-    "zahl_median": ("examples/04-median.c", "04_median"),
+    "zahl_sum": ("examples/01-sum.c", "_01_sum"),
+    "zahl_prod": ("examples/02-prod.c", "_02_prod"),
+    "zahl_avg": ("examples/03-avg.c", "_03_avg"),
+    "zahl_median": ("examples/04-median.c", "_04_median"),
 }
 
 # Each example takes its operands as command line arguments and prints one line.

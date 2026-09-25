@@ -77,6 +77,23 @@ struct va_ptr_struct {
     va_list *args;
 };
 
+struct va_callback_backend {
+    int (*set_option)(int option, va_list args);
+};
+
+extern const struct va_callback_backend va_callback_backend;
+
+static int callback_set_option(int option, va_list args) {
+    (void)args;
+    return option;
+}
+
+const struct va_callback_backend defined_va_callback_backend = {callback_set_option};
+
+int has_va_callback_backend(void) {
+    return va_callback_backend.set_option != NULL;
+}
+
 // pattern first seen in apache (util_script.c)
 void valist_struct_member(const char *fmt, ...) {
     struct vastruct a, b;

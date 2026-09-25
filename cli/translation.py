@@ -278,6 +278,10 @@ def do_translate_with_tracker(
                 stem = targets.legalize_output_name_for_rust(cmd.absolute_file_path.stem)
                 # c2rust disallows dots in binary names
                 stem = stem.replace(".", "_")
+                # c2rust prefixes an underscore when a module name starts with a digit.
+                # --binary must match that module name or no binary target is emitted.
+                if stem[0].isnumeric():
+                    stem = f"_{stem}"
                 c2rust_transpile_flags.extend(["--binary", stem])
 
             saw_binaries = True

@@ -1,6 +1,5 @@
 ---
 source: c2rust-transpile/tests/snapshots.rs
-assertion_line: 186
 expression: cat tests/snapshots/arch-os-specific/varargs.2024.x86_64.linux.clang15.rs
 ---
 #![allow(
@@ -21,6 +20,7 @@ unsafe extern "C" {
         __arg: ::core::ffi::VaList,
     ) -> ::core::ffi::c_int;
     unsafe fn putchar(__c: ::core::ffi::c_int) -> ::core::ffi::c_int;
+    static va_callback_backend: va_callback_backend;
 }
 pub type __builtin_va_list = [__va_list_tag; 1];
 #[derive(Copy, Clone)]
@@ -43,6 +43,13 @@ pub struct vastruct<'a> {
 pub struct va_ptr_struct<'a> {
     pub args: *mut ::core::ffi::VaList<'a>,
 }
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct va_callback_backend {
+    pub set_option:
+        Option<unsafe extern "C" fn(::core::ffi::c_int, ::core::ffi::VaList) -> ::core::ffi::c_int>,
+}
+pub const NULL: *mut ::core::ffi::c_void = ::core::ptr::null_mut::<::core::ffi::c_void>();
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn call_printf() {
     println!("{:}, {:.6}", 10 as core::ffi::c_int, 1.5f64 as f64);
@@ -104,6 +111,23 @@ pub unsafe extern "C" fn simple_vacopy(mut fmt: *const ::core::ffi::c_char, mut 
     aq = ap.clone();
     vprintf(fmt, ap.clone());
     vprintf(fmt, aq.clone());
+}
+unsafe extern "C" fn callback_set_option(
+    mut option: ::core::ffi::c_int,
+    mut args: ::core::ffi::VaList,
+) -> ::core::ffi::c_int {
+    return option;
+}
+#[unsafe(no_mangle)]
+pub static mut defined_va_callback_backend: va_callback_backend = va_callback_backend {
+    set_option: Some(
+        callback_set_option
+            as unsafe extern "C" fn(::core::ffi::c_int, ::core::ffi::VaList) -> ::core::ffi::c_int,
+    ),
+};
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn has_va_callback_backend() -> ::core::ffi::c_int {
+    return va_callback_backend.set_option.is_some() as ::core::ffi::c_int;
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn valist_struct_member(
