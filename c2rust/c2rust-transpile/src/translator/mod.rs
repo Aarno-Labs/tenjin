@@ -65,6 +65,7 @@ mod pointers;
 mod simd;
 mod structs_unions;
 pub mod tenjin;
+mod tenjin_use_crates;
 pub(crate) mod variadic;
 
 pub use crate::diagnostics::{TranslationError, TranslationErrorKind};
