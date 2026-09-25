@@ -1074,6 +1074,104 @@ impl Rewriter {
         }
     }
 
+    /// Replace C numeric parsers when their input is backed by a byte slice.
+    /// `xj_atone` reports an end offset rather than a C end pointer, so the
+    /// non-null `endptr` forms use a small per-file adapter.
+    pub fn rewrite_atone_of_slice(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        let name = func.path.get_ident()?.to_string();
+        let expected_args = match name.as_str() {
+            "atof" | "atoi" | "atol" | "atoll" => 1,
+            "strtod" | "strtof" => 2,
+            "strtol" | "strtoul" | "strtoll" | "strtoull" => 3,
+            _ => return None,
+        };
+        if call.args.len() != expected_args {
+            return None;
+        }
+
+        let input = self.coerce_atone_input(&call.args[0], symbols)?;
+        self.add_dep("xj_atone");
+        let replacement: Expr = if expected_args == 1 {
+            let function = syn::Ident::new(&name, func.span());
+            syn::parse_quote! { ::xj_atone::#function(#input) }
+        } else {
+            let endptr = &call.args[1];
+            let base = call.args.iter().nth(2);
+            if is_null_pointer_expr(endptr) {
+                let function = syn::Ident::new(&format!("{name}_n"), func.span());
+                if let Some(base) = base {
+                    syn::parse_quote! { ::xj_atone::#function(#input, #base) }
+                } else {
+                    syn::parse_quote! { ::xj_atone::#function(#input) }
+                }
+            } else {
+                let helper = syn::Ident::new(&format!("xj_synsub_{name}_with_endptr"), func.span());
+                let helper_src = atone_endptr_helper_source(&name);
+                self.with_cur_file_item_store(|item_store| {
+                    item_store.add_item_str_once(&helper_src);
+                });
+                if matches!(name.as_str(), "strtod" | "strtof") {
+                    self.add_dep("errno");
+                }
+                if let Some(base) = base {
+                    syn::parse_quote! { #helper(#input, #endptr, #base) }
+                } else {
+                    syn::parse_quote! { #helper(#input, #endptr) }
+                }
+            }
+        };
+        Some((replacement, Depth::Unlimited))
+    }
+
+    fn coerce_atone_input(&self, expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> {
+        let expr = expr_strip_parens(expr);
+        if let Some(bytes) = coerce_cast_byte_str(expr) {
+            return Some(bytes);
+        }
+
+        let expr = expr_strip_refs(expr_strip_parens(expr_strip_casts(expr)));
+        if let Some(bytes) = coerce_str_as_bytes(expr, symbols) {
+            return Some(bytes);
+        }
+
+        if is_string_expr(expr, symbols) {
+            return Some(Box::new(syn::parse_quote! { #expr.as_bytes() }));
+        }
+
+        let slice = if is_atone_byte_slice_expr(expr, symbols) {
+            expr
+        } else if let Some(decayed) = Self::peek_array_decay_coercion(expr, symbols) {
+            if let Some(bytes) = coerce_str_as_bytes(decayed, symbols) {
+                return Some(bytes);
+            }
+            if is_string_expr(decayed, symbols) {
+                return Some(Box::new(syn::parse_quote! { #decayed.as_bytes() }));
+            }
+            if !is_atone_byte_slice_expr(decayed, symbols) {
+                return None;
+            }
+            decayed
+        } else {
+            return None;
+        };
+
+        self.add_dep("xj_cstr");
+        self.with_cur_file_item_store(|item_store| {
+            item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
+        });
+        Some(Box::new(syn::parse_quote! { #slice.as_u8_slice() }))
+    }
+
     /// Rewrite let-bound expressions when simpler forms exist.
     pub fn rewrite_local(&self, symbols: &SymbolTable, stmt: &Stmt) -> Option<(Stmt, Depth)> {
         let Stmt::Local(local) = stmt else {
@@ -1531,6 +1629,98 @@ fn coerce_str_as_bytes(expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> 
         #expr.as_bytes()
     };
     Some(Box::new(coerced))
+}
+
+fn is_null_pointer_expr(expr: &Expr) -> bool {
+    match expr_strip_parens(expr) {
+        Expr::Cast(cast) => is_null_pointer_expr(&cast.expr),
+        Expr::Lit(lit) => {
+            matches!(&lit.lit, syn::Lit::Int(value) if value.base10_parse::<u64>().ok() == Some(0))
+        }
+        Expr::Call(call) if call.args.is_empty() => {
+            let Expr::Path(function) = &*call.func else {
+                return false;
+            };
+            let mut segments = function.path.segments.iter().rev();
+            let Some(last) = segments.next() else {
+                return false;
+            };
+            matches!(last.ident.to_string().as_str(), "null" | "null_mut")
+                && segments
+                    .next()
+                    .is_some_and(|segment| segment.ident == "ptr")
+        }
+        _ => false,
+    }
+}
+
+fn is_atone_byte_slice_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
+    if let Expr::Index(index) = expr_strip_parens(expr) {
+        return matches!(&*index.index, Expr::Range(_))
+            && is_atone_byte_slice_expr(&index.expr, symbols);
+    }
+    let Some(ty) = symbols.type_of_expr(expr) else {
+        return false;
+    };
+    is_u8_or_i8_sliceable_type(&ty) || is_byte_vec_type(&ty)
+}
+
+fn is_byte_vec_type(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(reference) => is_byte_vec_type(&reference.elem),
+        Type::Path(path) => {
+            let Some(segment) = path.path.segments.last() else {
+                return false;
+            };
+            if segment.ident != "Vec" {
+                return false;
+            }
+            let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+                return false;
+            };
+            matches!(args.args.first(), Some(syn::GenericArgument::Type(elt)) if is_u8_or_i8_type(elt))
+        }
+        _ => false,
+    }
+}
+
+fn atone_endptr_helper_source(name: &str) -> String {
+    let (return_type, base_arg, parse_body) = match name {
+        "strtod" => (
+            "f64",
+            "",
+            "let (value, error) = ::xj_atone::strtod_u_e(input, &mut endoff);\n    if let Some(error) = error { ::errno::set_errno(error); }",
+        ),
+        "strtof" => (
+            "f32",
+            "",
+            "let (value, error) = ::xj_atone::strtof_u_e(input, &mut endoff);\n    if let Some(error) = error { ::errno::set_errno(error); }",
+        ),
+        "strtol" => (
+            "::core::ffi::c_long",
+            ", base: ::core::ffi::c_int",
+            "let value = ::xj_atone::strtol(input, &mut endoff, base);",
+        ),
+        "strtoul" => (
+            "::core::ffi::c_ulong",
+            ", base: ::core::ffi::c_int",
+            "let value = ::xj_atone::strtoul(input, &mut endoff, base);",
+        ),
+        "strtoll" => (
+            "::core::ffi::c_longlong",
+            ", base: ::core::ffi::c_int",
+            "let value = ::xj_atone::strtoll(input, &mut endoff, base);",
+        ),
+        "strtoull" => (
+            "::core::ffi::c_ulonglong",
+            ", base: ::core::ffi::c_int",
+            "let value = ::xj_atone::strtoull(input, &mut endoff, base);",
+        ),
+        _ => unreachable!("only strto* functions use an endptr adapter"),
+    };
+    format!(
+        "fn xj_synsub_{name}_with_endptr(\n    input: &[u8],\n    endptr: *mut *mut ::core::ffi::c_char{base_arg}\n) -> {return_type} {{\n    let mut endoff = 0usize;\n    {parse_body}\n    if !endptr.is_null() {{\n        unsafe {{ *endptr = input.as_ptr().add(endoff) as *mut ::core::ffi::c_char; }}\n    }}\n    value\n}}"
+    )
 }
 
 fn extract_slice_ptr_base<'e>(expr: &'e Expr, symbols: &SymbolTable) -> Option<&'e Expr> {

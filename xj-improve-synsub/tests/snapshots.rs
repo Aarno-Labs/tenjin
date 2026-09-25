@@ -584,6 +584,116 @@ fn strlen_of_slice_adds_use_item() {
 }
 
 #[test]
+fn atone_rewrites_all_null_endptr_and_simple_calls() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atone_of_slice);
+    let mut file = syn::parse_file(
+        r#"fn demo(bytes: &[u8], chars: &[::core::ffi::c_char], text: &str,
+                  vector: Vec<i8>, string: String) {
+            let _ = atof(bytes.as_ptr());
+            let _ = atof(vector.as_ptr());
+            let _ = atoi(chars.as_ptr());
+            let _ = atoi(string.as_ptr());
+            let _ = atoi("17".as_ptr());
+            let _ = atol(chars);
+            let _ = atol(bytes[1..].as_ptr());
+            let _ = atoll(b"42\0" as *const u8 as *const ::core::ffi::c_char);
+            let _ = strtod(chars.as_ptr(), ::core::ptr::null_mut());
+            let _ = strtof(text, 0 as *mut *mut ::core::ffi::c_char);
+            let _ = strtof(text.as_ptr(), ::core::ptr::null_mut());
+            let _ = strtol(bytes.as_ptr(), ::std::ptr::null_mut(), 10);
+            let _ = strtoul(bytes, ::core::ptr::null_mut(), 16);
+            let _ = strtoll(chars, ::core::ptr::null_mut(), 0);
+            let _ = strtoull(chars.as_ptr(), ::core::ptr::null_mut(), 8);
+        }"#,
+    )
+    .unwrap();
+
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+    for call in [
+        "::xj_atone::atof(bytes.as_u8_slice())",
+        "::xj_atone::atof(vector.as_u8_slice())",
+        "::xj_atone::atoi(chars.as_u8_slice())",
+        "::xj_atone::atoi(string.as_bytes())",
+        "::xj_atone::atoi(\"17\".as_bytes())",
+        "::xj_atone::atol(chars.as_u8_slice())",
+        "::xj_atone::atol(bytes[1..].as_u8_slice())",
+        "::xj_atone::atoll(b\"42\")",
+        "::xj_atone::strtod_n(chars.as_u8_slice())",
+        "::xj_atone::strtof_n(text.as_bytes())",
+        "::xj_atone::strtol_n(bytes.as_u8_slice(), 10)",
+        "::xj_atone::strtoul_n(bytes.as_u8_slice(), 16)",
+        "::xj_atone::strtoll_n(chars.as_u8_slice(), 0)",
+        "::xj_atone::strtoull_n(chars.as_u8_slice(), 8)",
+    ] {
+        assert!(output.contains(call), "missing {call} in {output}");
+    }
+    assert_eq!(
+        output
+            .matches("::xj_atone::strtof_n(text.as_bytes())")
+            .count(),
+        2
+    );
+    assert_eq!(output.matches("use ::xj_cstr::ByteSlice;").count(), 1);
+    assert_eq!(
+        rw.deps(),
+        ["xj_atone", "xj_cstr"].map(str::to_string).into()
+    );
+}
+
+#[test]
+fn atone_adapts_non_null_endptr_and_preserves_raw_pointer_calls() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_atone_of_slice);
+    let mut file = syn::parse_file(
+        r#"fn demo(input: &[i8], raw: *const i8) {
+            let mut end = ::core::ptr::null_mut();
+            let _ = strtod(input.as_ptr(), &mut end);
+            let _ = strtod(input.as_ptr(), &mut end);
+            let _ = strtof(input, &mut end);
+            let _ = strtol(input, &mut end, 10);
+            let _ = strtoul(input, &mut end, 10);
+            let _ = strtoll(input, &mut end, 10);
+            let _ = strtoull(input, &mut end, 10);
+            let _ = atoi(raw);
+            let _ = strtod(raw, ::core::ptr::null_mut());
+        }"#,
+    )
+    .unwrap();
+
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+    for function in [
+        "strtod", "strtof", "strtol", "strtoul", "strtoll", "strtoull",
+    ] {
+        assert!(
+            output.contains(&format!("fn xj_synsub_{function}_with_endptr(")),
+            "missing adapter for {function}: {output}"
+        );
+        assert!(
+            output.contains(&format!(
+                "xj_synsub_{function}_with_endptr(input.as_u8_slice()"
+            )),
+            "missing call for {function}: {output}"
+        );
+    }
+    assert_eq!(
+        output.matches("fn xj_synsub_strtod_with_endptr(").count(),
+        1
+    );
+    assert!(output.contains("::xj_atone::strtod_u_e(input, &mut endoff)"));
+    assert!(output.contains("::errno::set_errno(error)"));
+    assert!(output.contains("::xj_atone::strtol(input, &mut endoff, base)"));
+    assert!(output.contains("atoi(raw)"));
+    assert!(output.contains("strtod(raw, ::core::ptr::null_mut())"));
+    assert_eq!(
+        rw.deps(),
+        ["errno", "xj_atone", "xj_cstr"].map(str::to_string).into()
+    );
+}
+
+#[test]
 fn getchar_variants_add_use_and_helper_fn() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);

@@ -396,7 +396,7 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 18
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 15
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -436,7 +436,7 @@ def test_Old_Man_Programmer__tree_2_3_2(tenjin_fixtures: TenjinFixtures):
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 127
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 117
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -584,7 +584,7 @@ def test_libusb_shared_g0(tenjin_fixtures: TenjinFixtures):
     # Re-run the test suite against the Rust code
     hermetic.run("./.libs/stress", cwd=str(tmp_resultsdir / "_build_1" / "tests"), check=True)
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 342
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 339
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -631,7 +631,7 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 1025
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 1004
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -863,12 +863,12 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
         f" C: {summary_line(c_prog_output.stdout)!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 246
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 237
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow  # expected runtime: ~30 minutes
+@pytest.mark.slow  # expected runtime: ~15 minutes
 def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -954,7 +954,7 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
                     f"{label}: generated file {name!r} differed between Rust and C"
                 )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 399
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 384
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1341,7 +1341,7 @@ def test_socat_exe(tenjin_fixtures: TenjinFixtures):
         b"   options (general command line options):",
         b"      -V     print version and feature information to stdout, and exit",
     ]
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 534
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 512
 
 
 @pytest.mark.slow  # expected runtime: 220 seconds
