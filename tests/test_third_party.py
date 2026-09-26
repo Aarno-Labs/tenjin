@@ -2270,22 +2270,6 @@ def test_jqlang_jq(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: ~250 s, up to the xj-c2rust failure below
-@pytest.mark.xfail(
-    reason="parson does not yet translate end-to-end. Refolding now succeeds; the "
-    "blocker is prep_localize_mutable_globals threading xjg inconsistently across TUs. "
-    "cclyzer resolves the indirect call at parson.c:1550 to the tissue callback "
-    "custom_serialization_func_xjtr_0 (all_mutable=true), so the call gets xjg -- but "
-    "xj-prepare-findfnptrdecls is a strictly intra-TU analysis (ModifyingDeclIDs is "
-    "cleared in onStartOfTranslationUnit), and the evidence for threading the "
-    "JSON_*_Function typedefs exists only in tests.c. So parson.c gets the _xjtp clone "
-    "typedefs but no use rewrites: the struct XjGlobals field, the setter definitions "
-    "and parson.h keep the un-threaded types, and xj-c2rust dies (exit 101) on "
-    "'too many arguments to function call, expected 2, have 3'. Behind that is a "
-    "latent hazard: counted_malloc_xjtr_0/counted_free_xjtr_0 are threaded but stored "
-    "into 1-parameter slots that parson.c calls with one argument, so patching line "
-    "1550 alone would silently corrupt every allocation. Full analysis and a suggested "
-    "fix are in TENJIN_BUG_parson_fnptr_typedef_threading.md.",
-)
 def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -2326,7 +2310,7 @@ def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
         check=True,
         capture_output=True,
     )
-    rs_bin = tmp_resultsdir / "final" / "target" / "debug" / "parson_tests"
+    rs_bin = tmp_resultsdir / "final" / "target" / "debug" / "tests"
 
     # Run parson's own suite under each build. Each gets its own copy of the
     # fixtures, both because the suite writes into the directory it is given and
