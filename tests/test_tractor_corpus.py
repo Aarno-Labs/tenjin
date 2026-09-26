@@ -1166,7 +1166,7 @@ def test_tractor_b1_synthetic_014_app_hidden(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_synthetic_016_app_hidden(tenjin_fixtures: TenjinFixtures):
     case_dir = "Hidden-Tests/B01_synthetic/016_switch-arith"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 5
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 3
 
 
 @pytest.mark.slow

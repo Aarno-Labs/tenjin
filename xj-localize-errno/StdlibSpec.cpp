@@ -79,6 +79,12 @@ const std::set<std::string> ERRNO_UNMODIFIED = {
     "strlen",
     "strspn",
     "strcspn",
+    // random number generation
+    "rand",
+    "srand",
+    "random",
+    "srandom",
+    "setstate",
 };
 
 ErrnoBehavior FunctionMaySetErrno(clang::FunctionDecl *Decl)
