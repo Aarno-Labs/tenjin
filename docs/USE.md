@@ -487,6 +487,11 @@ limitations to its support:
 - Using macros to "hide" punctuator tokens (such as `;` or `,`)
   from source-level analysis can produce incorrect results.
 
+- If your codebase uses forced includes (that is, it passes `-include` to the compiler
+instead of using `#include` in the source), refolding will likely fail because
+refolding works only on source and cannot modify command lines.
+Either disable refolding or modify the source and build to use regular `#include`s.
+
 - C files which include the same header multiple times without an include
   guard, or which includes the same declarations in multiple headers that
   make it into the same translation unit, may (in some cases) become
@@ -550,3 +555,7 @@ might switch the build to produce/use a dynamic library instead of a static one.
  the issue may be due to having compiled the C code with a flag like
  `-Wno-implicit-function-declaration` for a file that was missing a required `#include`.
  The right fix is to add the required `#include` and re-run translation.
+
+* If the project has a single C file and a Makefile, Tenjin will try to compile the
+C file directly, without using the Makefile automatically. This may produce different
+results than using the Makefile, including compilation failures.
