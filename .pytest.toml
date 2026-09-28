@@ -1,3 +1,4 @@
 [pytest]
 pythonpath = ["cli"]
+testpaths = ["tests"]
 markers = ["slow: marks tests as slow (deselected by default)"]

@@ -1811,6 +1811,10 @@ def test_xiph_speex_speexenc_only(tenjin_fixtures: TenjinFixtures):
 
     download("https://speex.org/samples/audio/male.wav", Path(tmp_codebase, "male.wav"))
 
+    # Note: speexenc dynamically links against the sysroot's libogg, which
+    # may not be installed on the host; this makes it available.
+    tenjin_fixtures.monkeypatch.setenv("XJ_LD_SYSROOT", "1")
+
     male_c_spx: bytes = hermetic.run(
         ["builddir/src/speexenc", "male.wav", "-"],
         cwd=str(tmp_codebase),
