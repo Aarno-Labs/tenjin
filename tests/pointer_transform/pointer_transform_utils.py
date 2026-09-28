@@ -30,6 +30,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import click
+
 import hermetic
 import repo_root
 
@@ -120,6 +122,13 @@ def _compare_metadata_golden(case_dir: Path, golden_name: str, got_path: Path) -
     got = got_path.read_text(encoding="utf-8")
     golden = case_dir / golden_name
     if not golden.exists() or golden.read_text(encoding="utf-8") != got:
+        if hermetic.running_in_ci():
+            click.echo(golden.read_text(encoding="utf-8"), err=True)
+            click.echo(
+                f"@@@@@@@@@@@@@@@@@@@@ {case_dir.name}: metadata changed — {golden} updated",
+                err=True,
+            )
+            click.echo(got, err=True)
         golden.write_text(got, encoding="utf-8")
         raise AssertionError(
             f"{case_dir.name}: metadata changed — {golden} updated; "
