@@ -1,9 +1,10 @@
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CalledProcessError, CompletedProcess
 
 import pytest
 
 import ingest_tracking
+import repo_root
 import translation_improvement
 
 
@@ -77,3 +78,28 @@ def test_failed_improvement_stage_is_not_selected_as_output(
 
     assert selected == initial
     assert (tmp_path / "01_synsub" / "result.rs").read_text(encoding="utf-8") == ("failed output\n")
+
+
+def test_multitool_reports_compilation_failure_before_analysis(tmp_path: Path):
+    crate = tmp_path / "crate"
+    source = crate / "src" / "main.rs"
+    source.parent.mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "multitool_analysis_failure"\nversion = "0.1.0"\nedition = "2021"\n',
+        encoding="utf-8",
+    )
+    source.write_text("fn dead() {}\nfn main() { missing_symbol(); }\n", encoding="utf-8")
+
+    root = repo_root.find_repo_root_dir_Path()
+    with pytest.raises(CalledProcessError) as error:
+        translation_improvement.run_improve_multitool(
+            root, "TrimDeadItems", ["--modify-in-place"], crate
+        )
+    assert b"did not reach after_analysis" in error.value.stderr
+    assert source.read_text(encoding="utf-8").startswith("fn dead()")
+
+    source.write_text("fn dead() {}\nfn main() {}\n", encoding="utf-8")
+    translation_improvement.run_improve_multitool(
+        root, "TrimDeadItems", ["--modify-in-place"], crate
+    )
+    assert "fn dead()" not in source.read_text(encoding="utf-8")
