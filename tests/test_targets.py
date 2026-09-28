@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import bencodepy
+
 import targets
 import targets_from_intercept
 
@@ -171,3 +173,38 @@ def test_dotted_static_lib_output_legalized_for_c2rust(tmp_path):
 
     assert link_outputs == [".libs/usb_1_0.a"]
     assert "." not in Path(link_outputs[0]).stem
+
+
+def test_versioned_sibling_library_flag_becomes_crate_input(tmp_path):
+    builddir = tmp_path / "build"
+    builddir.mkdir()
+
+    build_info = targets.BuildInfo()
+    build_info.set_intercepted_commands([
+        targets_from_intercept.convert_intercepted_entry({
+            "type": "cc",
+            "directory": builddir.as_posix(),
+            "arguments": ["clang", "-shared", "-o", ".libs/libtre.so.5.0.0", "tre.o"],
+            "file": None,
+            "output": None,
+        }),
+        targets_from_intercept.convert_intercepted_entry({
+            "type": "cc",
+            "directory": builddir.as_posix(),
+            "arguments": ["clang", "-o", ".libs/agrep", "agrep.o", "-ltre", "-lm"],
+            "file": None,
+            "output": None,
+        }),
+    ])
+
+    compdb = build_info.compdb_for_all_targets_within(
+        builddir, link_cmd_handling=targets.LinkCommandHandling.ADAPT_FOR_C2RUST
+    )
+    agrep = next(cmd for cmd in compdb.commands if cmd.output == ".libs/agrep")
+    link_info = bencodepy.decode(agrep.file.removeprefix("/c2rust/link/").encode("utf-8"))
+
+    assert link_info[b"inputs"] == [
+        b"agrep.o",
+        (builddir / ".libs/tre_5_0_0.so").as_posix().encode("utf-8"),
+    ]
+    assert link_info[b"libs"] == [b"m"]
