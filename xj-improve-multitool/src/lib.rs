@@ -86,6 +86,17 @@ struct XjImproveMultitoolCallbacks {
     args: Option<XjImproveMultitoolPluginArgs>,
 }
 
+impl Drop for XjImproveMultitoolCallbacks {
+    fn drop(&mut self) {
+        if self.args.is_some() {
+            // rustc can abort before after_analysis without returning from
+            // run_compiler. A check after that call would miss this path.
+            eprintln!("xj-improve-multitool: rustc did not reach after_analysis");
+            std::process::exit(1);
+        }
+    }
+}
+
 impl rustc_driver::Callbacks for XjImproveMultitoolCallbacks {
     fn after_analysis(
         &mut self,
