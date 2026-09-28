@@ -201,22 +201,19 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
 
         m_edited_ranges.clear();
 
-        // Name every index up front, in source order so the assignment is
-        // reproducible. Sorting by location rather than iterating the map
-        // matters: the map is keyed by VarDecl address, which is
-        // allocation order and not a property of the source.
-        {
-            SourceManager &SM = Ctx.getSourceManager();
-            std::vector<const VarDecl *> ptrs;
-            for (const auto &pair : analysis.accesses)
-                ptrs.push_back(pair.first);
-            std::sort(ptrs.begin(), ptrs.end(),
-                      [&](const VarDecl *A, const VarDecl *B) {
-                          return SM.isBeforeInTranslationUnit(A->getLocation(),
-                                                              B->getLocation());
-                      });
-            assignIndexNames(ptrs);
-        }
+        // Name and process pointers in source order. The map is keyed by
+        // VarDecl address, so iterating it would make both index naming and
+        // metadata order depend on allocation order.
+        SourceManager &SM = Ctx.getSourceManager();
+        std::vector<const VarDecl *> ptrs;
+        for (const auto &pair : analysis.accesses)
+            ptrs.push_back(pair.first);
+        std::sort(ptrs.begin(), ptrs.end(),
+                  [&](const VarDecl *A, const VarDecl *B) {
+                      return SM.isBeforeInTranslationUnit(A->getLocation(),
+                                                          B->getLocation());
+                  });
+        assignIndexNames(ptrs);
 
         // Two-pass edit ordering: pointers whose bound comparison
         // resolves against a parameter are rewritten first, so that when
@@ -225,10 +222,9 @@ void FunctionAccessAnalyzer::transformAllFunctions(ASTContext &Ctx) {
         std::vector<const VarDecl *> rust_slice_candidates;
         std::vector<const VarDecl *> other_pointers;
 
-        for (auto &pair : analysis.accesses) {
-            const VarDecl *PtrVar = pair.first;
+        for (const VarDecl *PtrVar : ptrs) {
             auto &candidate = analysis.tracked_pointers[PtrVar];
-            auto &access_list = pair.second;
+            auto &access_list = analysis.accesses[PtrVar];
 
             bool is_rs_candidate = false;
             if (!candidate.is_parameter && FD->getNumParams() > 0) {
