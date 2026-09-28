@@ -22,9 +22,11 @@ use rustc_plugin::{CrateFilter, RustcPlugin, RustcPluginArgs, Utf8Path};
 use serde::{Deserialize, Serialize};
 
 mod extract_graph;
+mod legacy_va_list;
 mod span_eraser;
 
 use extract_graph::{GEdge, GNode};
+use legacy_va_list::{LegacyVaListFileLoader, OriginalSources};
 use span_eraser::SpanEraser;
 
 pub struct XjImproveMultitoolPlugin;
@@ -76,6 +78,7 @@ impl RustcPlugin for XjImproveMultitoolPlugin {
     ) -> rustc_interface::interface::Result<()> {
         let mut callbacks = XjImproveMultitoolCallbacks {
             args: Some(plugin_args),
+            original_sources: Default::default(),
         };
         rustc_driver::run_compiler(&compiler_args, &mut callbacks);
         Ok(())
@@ -84,6 +87,7 @@ impl RustcPlugin for XjImproveMultitoolPlugin {
 
 struct XjImproveMultitoolCallbacks {
     args: Option<XjImproveMultitoolPluginArgs>,
+    original_sources: OriginalSources,
 }
 
 impl Drop for XjImproveMultitoolCallbacks {
@@ -98,6 +102,12 @@ impl Drop for XjImproveMultitoolCallbacks {
 }
 
 impl rustc_driver::Callbacks for XjImproveMultitoolCallbacks {
+    fn config(&mut self, config: &mut rustc_interface::interface::Config) {
+        config.file_loader = Some(Box::new(LegacyVaListFileLoader::new(
+            self.original_sources.clone(),
+        )));
+    }
+
     fn after_analysis(
         &mut self,
         _compiler: &rustc_interface::interface::Compiler,
@@ -133,7 +143,7 @@ impl rustc_driver::Callbacks for XjImproveMultitoolCallbacks {
                     }
                 }
                 SelectedMultitool::TrimDeadItems => {
-                    trim_dead_items(tcx, args);
+                    trim_dead_items(tcx, args, self.original_sources.clone());
 
                     rustc_driver::Compilation::Continue
                 }
@@ -185,7 +195,7 @@ fn determine_multitool_mode(args: &XjImproveMultitoolPluginArgs) -> MultitoolMod
     }
 }
 
-fn trim_dead_items(tcx: TyCtxt, args: XjImproveMultitoolPluginArgs) {
+fn trim_dead_items(tcx: TyCtxt, args: XjImproveMultitoolPluginArgs, originals: OriginalSources) {
     let extracted = extract_graph::extract_def_graph(tcx);
     let mut graf = extracted.graf;
     let defspans = extracted.defspans;
@@ -231,7 +241,7 @@ fn trim_dead_items(tcx: TyCtxt, args: XjImproveMultitoolPluginArgs) {
 
     // Now that we have the set of dead crate-local definitions,
     // we can erase their spans from the source code.
-    let mut span_eraser = SpanEraser::new();
+    let mut span_eraser = SpanEraser::new(originals);
 
     for def in crate_dead {
         if let Some(def_span) = defspans.get(&def) {
