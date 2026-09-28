@@ -366,7 +366,10 @@ class BuildInfo:
         target_map = self._process_targets()
         return self._compdb_for_commands_within(
             self._intercepted_commands,
-            set(target_map.keys()),
+            {
+                key: (target.type, commands[0].abs_path(Path(key)))
+                for key, (target, commands) in target_map.items()
+            },
             current_codebase,
             link_cmd_handling=link_cmd_handling,
             extra_compile_or_link_flags=None,
@@ -391,7 +394,10 @@ class BuildInfo:
         _, cmds = target_map[target_key]
         return self._compdb_for_commands_within(
             cmds,
-            set(target_map.keys()),
+            {
+                key: (target.type, commands[0].abs_path(Path(key)))
+                for key, (target, commands) in target_map.items()
+            },
             current_codebase,
             link_cmd_handling=link_cmd_handling,
             extra_compile_or_link_flags=None,
@@ -400,7 +406,7 @@ class BuildInfo:
     def _compdb_for_commands_within(
         self,
         commands: list[targets_from_intercept.InterceptedCommand],
-        all_target_keys: set[BuildTargetKey] | None,
+        sibling_targets: dict[BuildTargetKey, tuple[TargetType, Path]] | None,
         current_codebase: Path,
         link_cmd_handling: LinkCommandHandling,
         extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None,
@@ -426,7 +432,7 @@ class BuildInfo:
                 link_cmd_handling,
                 extra_compile_or_link_flags,
                 exe_target_outputs,
-                all_target_keys,
+                sibling_targets,
             )
             for c in commands
             if c.compile_only
@@ -470,7 +476,7 @@ def _CompileCommand_from_intercepted_command(
     link_cmd_handling: LinkCommandHandling,
     extra_compile_or_link_flags: ExtraCompileOrLinkFlags | None,
     exe_target_outputs: set[str],
-    all_target_keys: set[BuildTargetKey] | None,
+    sibling_targets: dict[BuildTargetKey, tuple[TargetType, Path]] | None,
 ) -> compilation_database.CompileCommand:
     """Convert an InterceptedCommand to a CompileCommand."""
 
@@ -587,16 +593,32 @@ def _CompileCommand_from_intercepted_command(
         # a corresponding target being passed to c2rust, it should be treated as
         # being an external dependency, not a sibling crate.
         link_info_switched_libs = []
-        if all_target_keys:
+        if sibling_targets:
             for inp in icmd.rest_inputs:
                 if (
                     targets_from_intercept.shared_object_basename(inp)
-                    and inp not in all_target_keys
+                    and inp not in sibling_targets
                 ):
                     link_info_switched_libs.append(inp)
             icmd.rest_inputs = [
                 inp for inp in icmd.rest_inputs if inp not in link_info_switched_libs
             ]
+
+        # c2rust turns `inputs` into sibling crate dependencies, but turns
+        # `libs` into native links. Resolve a unique -lfoo to a built target.
+        sibling_inputs = []
+        external_libs = []
+        for lib in icmd.libs:
+            matches = [
+                path
+                for target_type, path in (sibling_targets or {}).values()
+                if target_type in (TargetType.SHARED, TargetType.STATIC)
+                and library_name_for_target_output(path) == lib
+            ]
+            if len(matches) == 1:
+                sibling_inputs.append(matches[0].as_posix())
+            else:
+                external_libs.append(lib)
 
         # XREF:c2rust_target_link_type
         if icmd.shared_lib:
@@ -607,12 +629,13 @@ def _CompileCommand_from_intercepted_command(
             link_type = "exe"
         link_info = {
             "inputs": [
-                drop_lib_prefix(legalize_output_name_for_rust(inp)) for inp in icmd.rest_inputs
+                drop_lib_prefix(legalize_output_name_for_rust(inp))
+                for inp in icmd.rest_inputs + sibling_inputs
             ],  # FIXME: wrong order???
             "c_files": [],
             "libs": [
                 drop_lib_prefix(legalize_name_for_ld(Path(lib).name))
-                for lib in icmd.libs + link_info_switched_libs
+                for lib in external_libs + link_info_switched_libs
             ],
             "lib_dirs": icmd.lib_dirs,
             "type": link_type,
@@ -647,6 +670,19 @@ def _CompileCommand_from_intercepted_command(
         arguments=[update_arg(arg) for arg in raw_arguments],
         output=drop_lib_prefix(output),
     )
+
+
+def library_name_for_target_output(path: Path) -> str | None:
+    name = path.name
+    if not name.startswith("lib"):
+        return None
+    if ".so." in name:
+        stem = name.split(".so.", 1)[0]
+    elif name.endswith((".so", ".a", ".dylib", ".dll")):
+        stem = name.rsplit(".", 1)[0]
+    else:
+        return None
+    return stem[3:] or None
 
 
 def legalize_name_for_ld(name: str) -> str:
