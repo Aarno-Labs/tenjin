@@ -2304,6 +2304,10 @@ def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
         ),
         guidance_path_or_literal="{}",
     )
+    parson_rs = (tmp_resultsdir / "final" / "parson_tests" / "src" / "parson.rs").read_text()
+    assert "fn isspace(" not in parson_rs
+    assert "::core::ffi::VaListImpl" in parson_rs
+    assert "args.as_va_list()" in parson_rs
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
 
     # Reference build straight from the pristine C sources, to diff against.

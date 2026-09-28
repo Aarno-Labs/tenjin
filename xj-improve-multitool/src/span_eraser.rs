@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::{RelativeBytePos, SourceFile, Span, StableSourceFileId};
 
+use crate::legacy_va_list::{OriginalSources, adapt_legacy_va_list, canonical_path};
+
 pub struct SpanEraser {
     spans_to_erase: SpansToErase,
     rewriting: SourceBeingRewritten,
 }
 
 impl SpanEraser {
-    pub fn new() -> Self {
+    pub fn new(original_sources: OriginalSources) -> Self {
         SpanEraser {
             spans_to_erase: SpansToErase {
                 directly: Vec::new(),
@@ -17,6 +19,7 @@ impl SpanEraser {
             },
             rewriting: SourceBeingRewritten {
                 rewritten_source: HashMap::new(),
+                original_sources,
             },
         }
     }
@@ -150,6 +153,7 @@ struct SpansToErase {
 }
 struct SourceBeingRewritten {
     rewritten_source: HashMap<StableSourceFileId, String>,
+    original_sources: OriginalSources,
 }
 
 impl SourceBeingRewritten {
@@ -159,14 +163,29 @@ impl SourceBeingRewritten {
         span: Span,
     ) -> (std::sync::Arc<SourceFile>, &mut String) {
         let srcfile = tcx.sess.source_map().lookup_source_file(span.lo());
+        let original_sources = &self.original_sources;
         self.rewritten_source
             .entry(srcfile.stable_id)
             .or_insert_with(|| {
-                srcfile
+                let compiler_source = srcfile
                     .src
                     .as_ref()
-                    .expect("Source file should have... source...")
-                    .to_string()
+                    .expect("Source file should have... source...");
+                if let rustc_span::FileName::Real(real) = &srcfile.name
+                    && let Some(path) = real.local_path()
+                    && let Some(original) = original_sources
+                        .lock()
+                        .expect("original source map was poisoned")
+                        .get(&canonical_path(path))
+                {
+                    assert_eq!(
+                        adapt_legacy_va_list(original),
+                        **compiler_source,
+                        "compiler source differs from the adapted original at {path:?}"
+                    );
+                    return original.clone();
+                }
+                compiler_source.to_string()
             });
         (
             srcfile.clone(),
