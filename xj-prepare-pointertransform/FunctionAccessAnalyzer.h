@@ -17,6 +17,7 @@
 //      declared. Settled first because a pointer's index may name another's.
 //   2. EditPlan: plan every access rewrite in the TU at once, so two that
 //      nest fold together instead of one silently displacing the other.
+//      Knowing the rewritten set, the plan also decides which indices pair.
 //   3. Apply, then record each rewritten pointer in the metadata side-file.
 //
 // This tool performs NO RustSlice-related work: candidate detection and
@@ -39,11 +40,11 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // One pointer that survived validation and has a home for its index.
     // `accesses` points into the analysis that owns it — g_function_analyses
     // for a local or parameter, g_global_pointer_map for a file-scope
-    // pointer — and is written through when a pairwise root is demoted.
+    // pointer.
     struct PointerPlan {
         const FunctionDecl *FD = nullptr;   // null for a file-scope pointer
         const VarDecl *ptr = nullptr;
-        std::vector<PointerAccess> *accesses = nullptr;
+        const std::vector<PointerAccess> *accesses = nullptr;
         IndexDeclSite site;
     };
 
@@ -68,9 +69,11 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     void printAccesses(const VarDecl *VD, const std::vector<PointerAccess> &seq,
                        ASTContext &Ctx);
 
-    // Defined in ValidationMethods.cpp.
+    // Defined in ValidationMethods.cpp. `roots` is every reference in the TU
+    // that some assignment takes as its root.
     bool validatePointerCandidate(const VarDecl *PtrVar,
-                                  std::vector<PointerAccess> &accesses,
+                                  const std::vector<PointerAccess> &accesses,
+                                  const std::set<const Expr *> &roots,
                                   ASTContext &Ctx,
                                   std::string &error);
 

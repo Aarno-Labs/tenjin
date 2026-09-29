@@ -59,14 +59,14 @@ PointerFacts pointerFactsOf(const std::vector<PointerAccess> &accesses);
 // of the edit extent: validation, the planner and the renderer all ask
 // here, so they cannot disagree about what a rewrite covers.
 //
-// Null when the access produces no edit: a pairwise root is carried by its
-// owner's assignment, `sizeof p` never reads the value, an unsplit
-// initializer keeps its text with the index simply starting at zero, and a
-// null test stays as written unless `facts.null_in_index`. Also null when
-// an edit is needed but its anchor cannot be found; the classifier rules
-// that out, and the planner reports it as a bug.
-const Stmt *editedNode(const PointerAccess &access, const PointerFacts &facts,
-                       ASTContext &Ctx);
+// Null when the access produces no edit: `sizeof p` never reads the value,
+// an unsplit initializer keeps its text with the index simply starting at
+// zero, and a null test stays as written unless `facts.null_in_index`.
+//
+// This is the extent of an access taken by itself. The plan goes on to drop
+// the rewrite of a reference that a pairing carries instead; see
+// EditPlan::pairedRoot.
+const Stmt *editedNode(const PointerAccess &access, const PointerFacts &facts);
 
 // The file offsets `N` spans, or false when the range is unusable: inside
 // a macro expansion, which the Rewriter cannot edit, or split across two
@@ -76,6 +76,12 @@ bool editRangeOf(const Stmt *N, ASTContext &Ctx, FileID &file, unsigned &begin,
 
 // EditPlan — every access rewrite in the translation unit, arranged as a
 // nesting forest and rendered from the leaves up.
+//
+// The plan is also where two indices are paired. `q = p + 1` can become
+// `q = p` with `q_index_xj = p_index_xj + 1` only if p has an index, and the
+// plan is the first place that knows which pointers do. It decides once, in
+// pairedRoot, and both ends follow: the owner's index names the root's, and
+// the root's own rewrite is dropped so the reference stays bare.
 class EditPlan {
   public:
     EditPlan(ASTContext &Ctx, const std::set<const VarDecl *> &transformed);
@@ -91,9 +97,10 @@ class EditPlan {
     void add(const FunctionDecl *FD, const VarDecl *ptr,
              const std::vector<PointerAccess> &accesses);
 
-    // Arrange the recorded edits into the nesting forest. Node ranges
-    // cannot partially overlap or coincide, so a hit reports an edit
-    // extent that came from somewhere other than editedNode().
+    // Drop the rewrites that pairing replaces, then arrange the rest into
+    // the nesting forest. Node ranges cannot partially overlap or coincide,
+    // so a hit reports an edit extent that came from somewhere other than
+    // editedNode(). Follows the last add().
     void build();
 
     // Render every root and append it to `edits`, followed by the body of
@@ -154,8 +161,23 @@ class EditPlan {
     // own rendered text.
     std::string renderWithin(const Stmt *S, size_t owner);
 
-    // The index an Init or Assign installs. When the root is a pointer this
-    // pass also rewrote, the two indices are paired — `p = q + 1` is
+    // The rewritten pointer that `access` starts from, or null. `access` is
+    // an Init, an Assign or an AssignFromAllowedFunc, and the pointer is the
+    // one its root names.
+    //
+    // Non-null means the two indices are paired: the index `access` installs
+    // names the root's index, and the root's own reference gets no rewrite.
+    const VarDecl *pairedRoot(const PointerAccess &access) const;
+
+    // True when the split of an Init or Assign is used, so the right-hand
+    // side keeps only its root. A split that steps its root — `q = p++` —
+    // moves the step into the root's index, so it is used only when the root
+    // is paired. Otherwise the right-hand side is kept whole, where `p++`
+    // still moves p itself, and the index starts at 0.
+    bool splitStands(const PointerAccess &access) const;
+
+    // The index an Init or Assign installs. When the root is paired, the
+    // index counts from the root's — `p = q + 1` is
     // `p_index_xj = q_index_xj + 1`. Otherwise the root's value is still its
     // own position, so the offset counts from zero. `owner` is the edit the
     // terms were lifted out of, or kNoParent when there is none to render
@@ -171,6 +193,9 @@ class EditPlan {
     const LangOptions &LO;
     const std::set<const VarDecl *> &transformed;
     std::vector<PlannedEdit> edits;
+    // The root reference of every paired access. These are the references
+    // whose own rewrite build() drops.
+    std::set<const Expr *> paired_roots;
     // Kept per pointer so that render() can reach them from a single access.
     std::map<const VarDecl *, PointerFacts> facts;
     // Library function name -> the earliest function needing its wrapper.

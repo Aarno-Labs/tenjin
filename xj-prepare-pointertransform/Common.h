@@ -61,27 +61,22 @@ inline constexpr bool VERBOSE = false;
 // The value read is the fallback, and it is what makes the rewrite total:
 // any use of the pointer's value that is not one of the other three
 // buckets is still expressible.
+//
+// A kind says which rule applies. What the rule is applied to — the step in
+// `*p++`, the offset in `*(p + n)`, the field in `p->f` — is carried by the
+// fields of PointerAccess, not by a kind of its own.
 
 enum class PointerAccessKind {
     // --- Element access: the index selects an element of the base ---------
-    Deref,              // *p                        -> p[p_index_xj]
-    DerefWrite,         // *p = v                    -> p[p_index_xj] = v
-    DerefPostInc,       // *p++                      -> p[p_index_xj++]
-    DerefPreInc,        // *++p                      -> p[++p_index_xj]
-    DerefPostDec,       // *p--                      -> p[p_index_xj--]
-    DerefPreDec,        // *--p                      -> p[--p_index_xj]
-    DerefOffset,        // *(p + n)                  -> p[p_index_xj + n]
-    DerefOffsetWrite,   // *(p + n) = v              -> p[p_index_xj + n] = v
-    ArrowAccess,        // p->field                  -> p[p_index_xj].field
-    ArrowWrite,         // p->field = v              -> p[p_index_xj].field = v
-    Subscript,          // p[i]                      -> p[p_index_xj + i]
-    SubscriptWrite,     // p[i] = v                  -> p[p_index_xj + i] = v
+    Element,            // *p                        -> p[p_index_xj]
+                        // *p++                      -> p[p_index_xj++]
+                        // *(p + n)                  -> p[p_index_xj + n]
+                        // p[i]                      -> p[p_index_xj + i]
+                        // p->field                  -> p[p_index_xj].field
 
     // --- Position: the index moves, the base stays put --------------------
-    Increment,          // p++ / ++p                 -> p_index_xj++ / ++p_index_xj
-    Decrement,          // p-- / --p                 -> p_index_xj-- / --p_index_xj
-    PlusAssign,         // p += n                    -> p_index_xj += n
-    MinusAssign,        // p -= n                    -> p_index_xj -= n
+    Move,               // p++ / ++p                 -> p_index_xj++ / ++p_index_xj
+                        // p += n / p -= n           -> p_index_xj += n / -= n
 
     // --- (base, index) assignment -----------------------------------------
     // The RHS is split syntactically into a root and an offset; see
@@ -107,9 +102,6 @@ enum class PointerAccessKind {
     // --- Reads of the pointer's value -------------------------------------
     ValueUse,           // f(p), return p, p < end, p - buf, (char *)p, ...
                         //                           -> (p + p_index_xj)
-    PairwiseRoot,       // this reference *is* the root of another tracked
-                        // pointer's Init/Assign RHS, whose rewrite carries
-                        // the pair. No edit of its own.
     NullTest,           // if (p), !p, p == NULL, p && q — the retained
                         // pointer is null exactly when it was before, so
                         // these are left alone.
@@ -135,26 +127,27 @@ struct OffsetTerm {
     bool minus = false;
 };
 
-// How the base of a decomposed right-hand side is stepped as it is read.
-// `q = p++` reads p's position and advances it in one go, so what q inherits
-// is not an addend onto p's index but p's index *and* the bump. That cannot
-// ride in an OffsetTerm — the step both reads and mutates the index — so it
-// travels alongside the terms.
-enum class RootAdjust { None, PostInc, PreInc, PostDec, PreDec };
+// How an index is stepped as it is read: the `++` or `--` on a pointer,
+// carried over to the index that now holds its position.
+//
+// On the base of a decomposed right-hand side, `q = p++` reads p's position
+// and advances it in one go, so what q inherits is not an addend onto p's
+// index but p's index *and* the bump. That cannot ride in an OffsetTerm — the
+// step both reads and mutates the index — so it travels alongside the terms.
+enum class IndexStep { None, PostInc, PreInc, PostDec, PreDec };
 
 // The base a pointer-valued expression starts from and the offset, in
 // elements, that it lands at: `base(e)` and `offset(e)` for the `q = e` rule,
 // so that `q = e` becomes `q = base(e); q_index_xj = offset(e)`.
 //
-// `base` is always a *bare* DeclRefExpr when `ok`. Two things downstream
-// compare it by pointer identity — index pairing in EditPlan::renderIndexValue
-// and the root check in PointerAccessCollector::pairwiseOwner — and neither
-// reports a mismatch, so a base that merely *contains* the reference would
-// silently degrade the pointer to index 0.
+// `base` is always a *bare* DeclRefExpr when `ok`. The edit plan pairs two
+// indices by finding this very node among the root pointer's own references
+// (EditPlan::pairedRoot), and a miss is not reported, so a base that merely
+// *contains* the reference would silently leave both rewrites standing.
 struct PointerSplit {
     const Expr *base = nullptr;
     std::vector<OffsetTerm> terms;
-    RootAdjust step = RootAdjust::None;
+    IndexStep step = IndexStep::None;
     bool ok = false;
 };
 
@@ -169,11 +162,22 @@ struct PointerAccess {
     PointerAccessKind kind;
     SourceLocation loc;
     const Expr *expr = nullptr;    // the DeclRefExpr (or, for Init, the initializer)
-    const Stmt *enclosing_stmt = nullptr;  // Assign: the BinaryOperator;
-                                           // DerefOffset: the UO_Deref node
 
-    // DerefOffset / DerefOffsetWrite: the arithmetic after the pointer's
-    // name — `*(p + a - b)` becomes `p[p_index_xj + a - b]`.
+    // The node the rewrite replaces, where that is not `expr` itself:
+    //   Element   the dereference, subscript or member access
+    //   Move      the `p++`, or the `p += n`
+    //   Assign    the assignment
+    //   NullTest  the comparison, for `p == NULL` and `p != NULL`
+    const Stmt *enclosing_stmt = nullptr;
+
+    // The `++` or `--` applied as the position is read, and whose index it
+    // moves:
+    //   Element, Move   this pointer's own — `*p++`, `p++`
+    //   Init, Assign    the root's — `q = p++`
+    IndexStep step = IndexStep::None;
+
+    // Element: the arithmetic after the pointer's name — `*(p + a - b)`
+    // becomes `p[p_index_xj + a - b]`.
     std::vector<OffsetTerm> offset_terms;
 
     // Init / Assign: the terms lifted out of the right-hand side and into
@@ -181,38 +185,33 @@ struct PointerAccess {
     // unless the split was taken.
     std::vector<OffsetTerm> index_terms;
 
-    const Expr *subscript_expr = nullptr;  // Subscript / SubscriptWrite: the index
+    const Expr *subscript_expr = nullptr;  // Element: the `i` of `p[i]`
 
     // The member's name, not source text: it is an identifier the AST
     // supplies, so nothing can be nested inside it to lose.
-    std::string field_name;        // ArrowAccess / ArrowWrite
+    std::string field_name;        // Element: the `field` of `p->field`
 
-    // Init / Assign only. `rhs_expr` is the whole right-hand side;
-    // `root_expr` is the sub-expression that becomes the new base, or null
-    // when the RHS is taken whole and the index starts at 0. When they
-    // differ the split was taken; see isSplit().
+    // Init / Assign. `rhs_expr` is the whole right-hand side; `root_expr` is
+    // the sub-expression that becomes the new base, or null when the RHS is
+    // taken whole and the index starts at 0. When they differ the split was
+    // taken; see isSplit().
+    //
+    // AssignFromAllowedFunc sets `root_expr` alone: the region searched,
+    // which is the base the assigned pointer is reseated to.
     const Expr *rhs_expr = nullptr;
     const Expr *root_expr = nullptr;
 
     // Init / Assign: true when the split was taken. The rewriter then
     // replaces the right-hand side with its root, and `index_terms` and
-    // `root_adjust` hold what that dropped — at least one of them is set.
+    // `step` hold what that dropped — at least one of them is set.
+    //
+    // This is what the syntax offers. A stepped root needs an index to step,
+    // so whether the split is *used* waits until it is known which pointers
+    // are rewritten; see EditPlan::splitStands.
     bool isSplit() const {
         return root_expr && rhs_expr &&
                root_expr != rhs_expr->IgnoreParenImpCasts();
     }
-
-    // Init / Assign: how the root's own index is stepped as it is read, for a
-    // right-hand side like `q = p++`. Also carried on a PairwiseRoot, where it
-    // records what the root would have to do for itself if the owner turns out
-    // not to be rewritten — see the demotion in FunctionAccessAnalyzer.
-    RootAdjust root_adjust = RootAdjust::None;
-
-    // PairwiseRoot only: the pointer whose assignment carries this
-    // reference. If that pointer turns out not to be rewritten, the
-    // reference is demoted to an ordinary value read — nothing else
-    // would restore the position the root used to hold.
-    const VarDecl *pair_owner = nullptr;
 };
 
 // ============================================================================
@@ -494,21 +493,8 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 // Debug helper: stringify a PointerAccessKind for trace logs.
 const char *pointerAccessKindToString(PointerAccessKind kind);
 
-// `name` stepped as the adjustment says: p++, ++p, p--, --p. Shared so the
-// spelling the collector snapshots and the one the rewriter emits cannot
-// drift apart.
-std::string applyRootAdjust(RootAdjust adj, const std::string &name);
-
-// What a PairwiseRoot is on its own, once its owner is not rewritten and no
-// longer carries it: a stepped root is its own Increment or Decrement again,
-// and a bare one is a ValueUse. Returns `access` with only its kind changed.
-PointerAccess demoted(const PointerAccess &access);
-
-// What an Init or Assign is once its split is withdrawn: the right-hand side
-// is taken whole and the index starts at 0, as if the split had been declined
-// when the access was collected. Returns `access` with its root, its step and
-// its index terms cleared.
-PointerAccess unsplit(const PointerAccess &access);
+// `name` stepped as `step` says: p++, ++p, p--, --p.
+std::string applyStep(IndexStep step, const std::string &name);
 
 // ============================================================================
 // Index variable naming

@@ -122,11 +122,11 @@ static bool consumerOf(const Stmt *S, ASTContext &Ctx,
 // land they are rendered by the edit plan, exactly like the offset of an
 // element access.
 //
-// The one case where splitting *is* required is a root that is itself a
-// tracked pointer. After the rewrite such a root holds its base, not its
-// position, so `p = q + 1` left alone would silently reset p to wherever q
-// started. Recording the root here is what lets the rewriter pair the
-// indices instead.
+// A root that is itself a rewritten pointer is *paired*: `p = q + 1` becomes
+// `p = q` with `p_index_xj = q_index_xj + 1`, so p shares q's base instead of
+// starting a new one inside it. Whether q is rewritten is not known here, so
+// the root is only recorded; the edit plan decides (EditPlan::pairedRoot).
+// The root's own reference is classified like any other in the meantime.
 
 bool PointerAccessCollector::escapesForInitScope(const Stmt *S,
                                                  const VarDecl *Owner)
@@ -140,21 +140,17 @@ bool PointerAccessCollector::escapesForInitScope(const Stmt *S,
     return referencesAnyOf(S, bound);
 }
 
-// A node the decomposition below descends through on its way to the base.
-// The climb in pairwiseOwner has to step through exactly these: the two must
-// agree about which reference is a root, and neither side reports it when
-// they do not.
-static bool isSplitTransparent(const Stmt *S)
+// The step a `++` or `--` applies.
+static IndexStep stepOf(const UnaryOperator *UO)
 {
-    if (!S)
-        return false;
-    if (isa<ParenExpr>(S) || isa<ImplicitCastExpr>(S))
-        return true;
-    if (const auto *UO = dyn_cast<UnaryOperator>(S))
-        return UO->isIncrementDecrementOp();
-    if (const auto *BO = dyn_cast<BinaryOperator>(S))
-        return BO->getOpcode() == BO_Add || BO->getOpcode() == BO_Sub;
-    return false;
+    switch (UO->getOpcode())
+    {
+    case UO_PostInc: return IndexStep::PostInc;
+    case UO_PreInc: return IndexStep::PreInc;
+    case UO_PostDec: return IndexStep::PostDec;
+    case UO_PreDec: return IndexStep::PreDec;
+    default: return IndexStep::None;
+    }
 }
 
 bool PointerAccessCollector::decomposePointer(const Expr *E, PointerSplit &out)
@@ -179,11 +175,11 @@ bool PointerAccessCollector::decomposePointer(const Expr *E, PointerSplit &out)
     if (const auto *UO = dyn_cast<UnaryOperator>(Core))
     {
         // q = p++ — the base is p, and what q lands at is p's position and
-        // the step together. Only a tracked p has an index to step; for an
-        // untracked one there is nothing to carry the increment, and taking
-        // the split anyway would drop it on the floor. Tracked is not yet
-        // rewritten: if p turns out not to be, the split is withdrawn once
-        // that is known (see unsplit).
+        // the step together. Only a tracked p can have an index to step; for
+        // an untracked one there is nothing to carry the increment, and
+        // taking the split anyway would drop it on the floor. Tracked is not
+        // yet rewritten, so the edit plan uses this split only if p turns out
+        // to be (EditPlan::splitStands).
         if (UO->isIncrementDecrementOp())
         {
             const auto *OpDRE =
@@ -192,14 +188,7 @@ bool PointerAccessCollector::decomposePointer(const Expr *E, PointerSplit &out)
                 return false;
             if (!isTracked(OpDRE->getDecl()))
                 return false;
-            switch (UO->getOpcode())
-            {
-            case UO_PostInc: out.step = RootAdjust::PostInc; break;
-            case UO_PreInc: out.step = RootAdjust::PreInc; break;
-            case UO_PostDec: out.step = RootAdjust::PostDec; break;
-            case UO_PreDec: out.step = RootAdjust::PreDec; break;
-            default: return false;
-            }
+            out.step = stepOf(UO);
             out.base = OpDRE;
             out.ok = true;
             return true;
@@ -253,7 +242,7 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
 {
     pa.rhs_expr = RHS;
     pa.root_expr = nullptr;
-    pa.root_adjust = RootAdjust::None;
+    pa.step = IndexStep::None;
     pa.index_terms.clear();
 
     if (!RHS)
@@ -294,100 +283,8 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     pa.root_expr = split.base;
     if (pa.isSplit())
     {
-        pa.root_adjust = split.step;
+        pa.step = split.step;
         pa.index_terms = std::move(split.terms);
-    }
-}
-
-// The mirror of splitAssignedValue, seen from the root's own reference:
-// if this reference is the root that some tracked pointer's Init or Assign
-// will pair with, that owner is returned and the reference emits no edit.
-const VarDecl *PointerAccessCollector::pairwiseOwner(const DeclRefExpr *DRE,
-                                                     RootAdjust *step)
-{
-    if (step)
-        *step = RootAdjust::None;
-
-    const Stmt *Outer = DRE;
-    DynTypedNode Parent;
-    if (!consumerOf(DRE, Ctx, Outer, Parent))
-        return nullptr;
-
-    // `q = strchr(p, c)` — the search argument names the region the result
-    // lands in, and the assignment's rewrite spells that region itself, so
-    // this reference emits no edit. No climbing: the argument is the region
-    // exactly when it is the call's first operand.
-    if (const auto *CE = dyn_cast_or_null<CallExpr>(Parent.get<Stmt>()))
-    {
-        if (searchBaseArg(CE) == DRE && isAllowedSearch(CE))
-        {
-            const Stmt *Up = skipTransparentParents(CE, Ctx);
-            if (const auto *BO = dyn_cast_or_null<BinaryOperator>(Up))
-            {
-                const auto *LHS =
-                    dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts());
-                if (BO->getOpcode() == BO_Assign && LHS && isTracked(LHS->getDecl()))
-                    return cast<VarDecl>(LHS->getDecl());
-            }
-        }
-    }
-
-    // Climb whatever the decomposition descends through, looking for an
-    // assignment or an initializer this reference might be the root of, then
-    // ask splitAssignedValue whether it actually is. Deciding it with the
-    // same function that the rewriter uses is the point: the two must agree,
-    // or a reference is either rewritten twice or not at all.
-    for (;;)
-    {
-        const VarDecl *Owner = nullptr;
-        const Expr *RHS = nullptr;
-        bool declared_here = false;
-
-        // `q = p++ + 1` puts both an increment and an addition between the
-        // reference and the assignment. Stopping short of either would leave
-        // p to rewrite its own increment, which then collides with the edit
-        // the owner's split is already making over the same text.
-        if (const Stmt *S = Parent.get<Stmt>())
-            if (isSplitTransparent(S))
-            {
-                if (!consumerOf(cast<Expr>(S), Ctx, Outer, Parent))
-                    return nullptr;
-                continue;
-            }
-
-        if (const auto *BO = dyn_cast_or_null<BinaryOperator>(Parent.get<Stmt>()))
-        {
-            if (BO->getOpcode() == BO_Assign)
-            {
-                const auto *LHS =
-                    dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts());
-                if (LHS && isTracked(LHS->getDecl()))
-                {
-                    Owner = cast<VarDecl>(LHS->getDecl());
-                    RHS = BO->getRHS();
-                }
-            }
-        }
-        else if (const auto *VD = Parent.get<VarDecl>())
-        {
-            if (isTracked(VD) && VD->hasInit())
-            {
-                Owner = VD;
-                RHS = VD->getInit();
-                declared_here = true;
-            }
-        }
-
-        if (!Owner || !RHS)
-            return nullptr;
-
-        PointerAccess probe;
-        splitAssignedValue(RHS, probe, Owner, declared_here);
-        if (probe.root_expr != static_cast<const Expr *>(DRE))
-            return nullptr;
-        if (step)
-            *step = probe.root_adjust;
-        return Owner;
     }
 }
 
@@ -519,21 +416,13 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
         return;
     }
 
-    // ---- the root of another tracked pointer's (base, index) assignment --
-    RootAdjust pair_step = RootAdjust::None;
-    if (const VarDecl *Owner = pairwiseOwner(DRE, &pair_step))
-    {
-        PointerAccess &pa =
-            emit(PointerAccessKind::PairwiseRoot, DRE->getLocation());
-        pa.pair_owner = Owner;
-        // Remembered so that, if the owner turns out not to be rewritten, the
-        // demotion can put the step back instead of dropping it.
-        pa.root_adjust = pair_step;
-        return;
-    }
+    // A reference that is the root of another pointer's assignment gets no
+    // kind of its own. It is classified below as what it is by itself — a
+    // read, or a move for `q = p++` — and the edit plan drops that rewrite
+    // if it pairs the two indices instead.
 
-    // An initializer the owner did not take as its root — say because the
-    // offset mentions another tracked pointer — is still just a read.
+    // An initializer's consumer is the variable it initializes, which is not
+    // a statement. The reference is a read of the pointer's value.
     if (!Parent)
     {
         emitValueUse();
@@ -546,16 +435,8 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
         switch (UO->getOpcode())
         {
         case UO_Deref:
-        {
-            const Stmt *GP = skipTransparentParents(UO, Ctx);
-            bool is_write = false;
-            if (const auto *BO = dyn_cast_or_null<BinaryOperator>(GP))
-                is_write = BO->isAssignmentOp() &&
-                           BO->getLHS()->IgnoreParenImpCasts() == UO;
-            emit(is_write ? PointerAccessKind::DerefWrite : PointerAccessKind::Deref,
-                 UO->getBeginLoc());
+            emit(PointerAccessKind::Element, UO->getBeginLoc(), UO);
             return;
-        }
         case UO_PostInc:
         case UO_PreInc:
         case UO_PostDec:
@@ -564,24 +445,14 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
             // Either standalone (`p++`) or the mutation inside `*p++`. The
             // dereferenced form is one edit over the whole `*p++`, and it
             // is valid on either side of an assignment.
-            bool is_inc = UO->getOpcode() == UO_PostInc || UO->getOpcode() == UO_PreInc;
-            bool is_post = UO->getOpcode() == UO_PostInc || UO->getOpcode() == UO_PostDec;
-            const Stmt *GP = skipTransparentParents(UO, Ctx);
-            if (const auto *GUO = dyn_cast_or_null<UnaryOperator>(GP))
-            {
-                if (GUO->getOpcode() == UO_Deref)
-                {
-                    PointerAccessKind k =
-                        is_inc ? (is_post ? PointerAccessKind::DerefPostInc
-                                          : PointerAccessKind::DerefPreInc)
-                               : (is_post ? PointerAccessKind::DerefPostDec
-                                          : PointerAccessKind::DerefPreDec);
-                    emit(k, GUO->getBeginLoc());
-                    return;
-                }
-            }
-            emit(is_inc ? PointerAccessKind::Increment : PointerAccessKind::Decrement,
-                 UO->getBeginLoc());
+            const auto *Deref =
+                dyn_cast_or_null<UnaryOperator>(skipTransparentParents(UO, Ctx));
+            bool is_element = Deref && Deref->getOpcode() == UO_Deref;
+            PointerAccess &pa =
+                is_element
+                    ? emit(PointerAccessKind::Element, Deref->getBeginLoc(), Deref)
+                    : emit(PointerAccessKind::Move, UO->getBeginLoc(), UO);
+            pa.step = stepOf(UO);
             return;
         }
         case UO_LNot:
@@ -618,17 +489,8 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 RealME = OuterME;
                 Outer = skipTransparentParents(OuterME, Ctx);
             }
-            bool is_write = false;
-            if (const auto *BO = dyn_cast_or_null<BinaryOperator>(Outer))
-                is_write = BO->isAssignmentOp() &&
-                           BO->getLHS()->IgnoreParenImpCasts() == RealME;
-            if (const auto *UO2 = dyn_cast_or_null<UnaryOperator>(Outer))
-                is_write = is_write || UO2->isIncrementDecrementOp();
-
             PointerAccess &pa =
-                emit(is_write ? PointerAccessKind::ArrowWrite
-                              : PointerAccessKind::ArrowAccess,
-                     ME->getBeginLoc());
+                emit(PointerAccessKind::Element, ME->getBeginLoc(), ME);
             pa.field_name = RealME->getMemberDecl()->getNameAsString();
             return;
         }
@@ -640,15 +502,8 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
         // Only when p is the base of the subscript, not the index.
         if (isSelf(ASE->getBase()) || isSelf(ASE->getLHS()))
         {
-            const Stmt *GP = skipTransparentParents(ASE, Ctx);
-            bool is_write = false;
-            if (const auto *BO = dyn_cast_or_null<BinaryOperator>(GP))
-                is_write = BO->isAssignmentOp() &&
-                           BO->getLHS()->IgnoreParenImpCasts() == ASE;
             PointerAccess &pa =
-                emit(is_write ? PointerAccessKind::SubscriptWrite
-                              : PointerAccessKind::Subscript,
-                     ASE->getBeginLoc());
+                emit(PointerAccessKind::Element, ASE->getBeginLoc(), ASE);
             pa.subscript_expr = ASE->getIdx();
             return;
         }
@@ -665,7 +520,9 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 dyn_cast<CallExpr>(BO->getRHS()->IgnoreParenImpCasts());
             if (isAllowedSearch(RhsCall))
             {
-                emit(PointerAccessKind::AssignFromAllowedFunc, BO->getBeginLoc(), BO);
+                PointerAccess &pa = emit(PointerAccessKind::AssignFromAllowedFunc,
+                                         BO->getBeginLoc(), BO);
+                pa.root_expr = searchBaseArg(RhsCall);
                 return;
             }
         }
@@ -685,9 +542,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
         if ((BO->getOpcode() == BO_AddAssign || BO->getOpcode() == BO_SubAssign) &&
             isSelf(BO->getLHS()))
         {
-            emit(BO->getOpcode() == BO_AddAssign ? PointerAccessKind::PlusAssign
-                                                 : PointerAccessKind::MinusAssign,
-                 BO->getBeginLoc());
+            emit(PointerAccessKind::Move, BO->getBeginLoc(), BO);
             return;
         }
 
@@ -719,16 +574,8 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                     if (DerefUO->getOpcode() != UO_Deref)
                         break;
 
-                    const Stmt *DerefParent = skipTransparentParents(DerefUO, Ctx);
-                    bool is_write = false;
-                    if (const auto *AssignBO = dyn_cast_or_null<BinaryOperator>(DerefParent))
-                        is_write = AssignBO->isAssignmentOp() &&
-                                   AssignBO->getLHS()->IgnoreParenImpCasts() == DerefUO;
-
-                    PointerAccess &pa =
-                        emit(is_write ? PointerAccessKind::DerefOffsetWrite
-                                      : PointerAccessKind::DerefOffset,
-                             DerefUO->getBeginLoc(), DerefUO);
+                    PointerAccess &pa = emit(PointerAccessKind::Element,
+                                             DerefUO->getBeginLoc(), DerefUO);
                     pa.offset_terms = terms;
                     return;
                 }

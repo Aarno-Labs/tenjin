@@ -18,7 +18,8 @@
 
 bool FunctionAccessAnalyzer::validatePointerCandidate(
     const VarDecl *PtrVar,
-    std::vector<PointerAccess> &accesses,
+    const std::vector<PointerAccess> &accesses,
+    const std::set<const Expr *> &roots,
     ASTContext &Ctx,
     std::string &error) {
 
@@ -52,22 +53,10 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
                     access.loc.printToString(Ctx.getSourceManager());
             return false;
         }
-        // A pairwise root emits nothing *while its owner is rewritten*, and
-        // whether the owner is rewritten is what this pass is deciding. If
-        // it turns out not to be, the root is rebuilt as whatever it would
-        // have been on its own — so hold it to that standard now. The
-        // demotion happens once validation is over, with no second chance to
-        // refuse.
-        //
-        // Which standard that is depends on the step. A bare root becomes a
-        // value read, whose edit is the reference itself. A stepped root
-        // becomes its own increment, whose edit covers the whole `p++` — a
-        // wider span, and one that can fail to be addressable where the bare
-        // reference would not.
-        const Stmt *node = editedNode(
-            access.kind == PointerAccessKind::PairwiseRoot ? demoted(access)
-                                                           : access,
-            facts, Ctx);
+        // A reference that ends up the root of a pairing gets no rewrite, but
+        // whether it does is the plan's to decide, later. It is held to the
+        // standard of the rewrite it would have by itself.
+        const Stmt *node = editedNode(access, facts);
         if (!node)
             continue;  // this access legitimately rewrites nothing
 
@@ -104,21 +93,15 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
 
     for (const auto &access : accesses) {
         switch (access.kind) {
-        case PointerAccessKind::Increment:
-        case PointerAccessKind::Decrement:
-        case PointerAccessKind::PlusAssign:
-        case PointerAccessKind::MinusAssign:
-        case PointerAccessKind::DerefPostInc:
-        case PointerAccessKind::DerefPreInc:
-        case PointerAccessKind::DerefPostDec:
-        case PointerAccessKind::DerefPreDec:
+        case PointerAccessKind::Move:
         case PointerAccessKind::AssignFromAllowedFunc:
             has_mutation = true;
             break;
-        case PointerAccessKind::PairwiseRoot:
-            // `q = p++` moves p, whichever pointer ends up carrying the step.
-            if (access.root_adjust != RootAdjust::None)
+        case PointerAccessKind::Element:
+            // `*p++` is both.
+            if (access.step != IndexStep::None)
                 has_mutation = true;
+            has_meaningful_use = true;
             break;
         case PointerAccessKind::Init:
         case PointerAccessKind::InitNull:
@@ -130,25 +113,11 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
             if (access.isSplit())
                 has_offset_assignment = true;
             break;
-        default:
-            break;
-        }
-
-        switch (access.kind) {
-        case PointerAccessKind::Deref:
-        case PointerAccessKind::DerefWrite:
-        case PointerAccessKind::DerefPostInc:
-        case PointerAccessKind::DerefPreInc:
-        case PointerAccessKind::DerefPostDec:
-        case PointerAccessKind::DerefPreDec:
-        case PointerAccessKind::DerefOffset:
-        case PointerAccessKind::DerefOffsetWrite:
-        case PointerAccessKind::ArrowAccess:
-        case PointerAccessKind::ArrowWrite:
-        case PointerAccessKind::Subscript:
-        case PointerAccessKind::SubscriptWrite:
         case PointerAccessKind::ValueUse:
-            has_meaningful_use = true;
+            // Being copied into another pointer is not a use of what this
+            // one reaches.
+            if (!roots.count(access.expr))
+                has_meaningful_use = true;
             break;
         default:
             break;

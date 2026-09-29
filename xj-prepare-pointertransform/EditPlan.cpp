@@ -25,7 +25,6 @@ static bool accessNeedsEdit(const PointerAccess &access,
                             const PointerFacts &facts) {
     switch (access.kind) {
     case PointerAccessKind::NoEdit:
-    case PointerAccessKind::PairwiseRoot:
     case PointerAccessKind::AddressOf:
     case PointerAccessKind::Unknown:
         return false;
@@ -64,64 +63,24 @@ static std::string wrapperBodyFor(const std::string &func_name) {
     return "";
 }
 
-const Stmt *editedNode(const PointerAccess &access, const PointerFacts &facts,
-                       ASTContext &Ctx) {
+const Stmt *editedNode(const PointerAccess &access, const PointerFacts &facts) {
     if (!accessNeedsEdit(access, facts))
         return nullptr;
-
-    const Expr *E = access.expr;
-    auto parentOf = [&](const Expr *X) -> const Stmt * {
-        return X ? skipTransparentParents(X, Ctx) : nullptr;
-    };
 
     switch (access.kind) {
     case PointerAccessKind::Init:
     case PointerAccessKind::InitNull:
         return access.rhs_expr;
 
-    case PointerAccessKind::Deref:
-    case PointerAccessKind::DerefWrite:
-        return dyn_cast_or_null<UnaryOperator>(parentOf(E));
-
-    case PointerAccessKind::DerefPostInc:
-    case PointerAccessKind::DerefPreInc:
-    case PointerAccessKind::DerefPostDec:
-    case PointerAccessKind::DerefPreDec: {
-        const auto *MutOp = dyn_cast_or_null<UnaryOperator>(parentOf(E));
-        if (!MutOp)
-            return nullptr;
-        return dyn_cast_or_null<UnaryOperator>(skipTransparentParents(MutOp, Ctx));
-    }
-
-    case PointerAccessKind::DerefOffset:
-    case PointerAccessKind::DerefOffsetWrite:
-        return dyn_cast_or_null<UnaryOperator>(access.enclosing_stmt);
-
-    case PointerAccessKind::ArrowAccess:
-    case PointerAccessKind::ArrowWrite:
-        return dyn_cast_or_null<MemberExpr>(parentOf(E));
-
-    case PointerAccessKind::Subscript:
-    case PointerAccessKind::SubscriptWrite:
-        return dyn_cast_or_null<ArraySubscriptExpr>(parentOf(E));
-
-    case PointerAccessKind::Increment:
-    case PointerAccessKind::Decrement:
-        return dyn_cast_or_null<UnaryOperator>(parentOf(E));
-
-    // The whole `p += n` rather than the name alone: where the value is
-    // consumed the rewrite hands back a pointer, and that wraps the operand.
-    case PointerAccessKind::PlusAssign:
-    case PointerAccessKind::MinusAssign:
-        return dyn_cast_or_null<BinaryOperator>(parentOf(E));
-
+    case PointerAccessKind::Element:
+    case PointerAccessKind::Move:
     case PointerAccessKind::Assign:
     case PointerAccessKind::AssignNull:
     case PointerAccessKind::AssignFromAllowedFunc:
-        return dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
+        return access.enclosing_stmt;
 
     case PointerAccessKind::ValueUse:
-        return E;
+        return access.expr;
 
     // `p == NULL` / `p != NULL` compare against a pointer, so the whole
     // comparison is replaced. Every other form — `if (p)`, `!p`, `p && q` —
@@ -130,7 +89,7 @@ const Stmt *editedNode(const PointerAccess &access, const PointerFacts &facts,
         const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
         if (BO && BO->isComparisonOp())
             return BO;
-        return E;
+        return access.expr;
     }
 
     default:
@@ -189,14 +148,23 @@ void EditPlan::add(const FunctionDecl *FD, const VarDecl *ptr,
     const PointerFacts &f = facts[ptr] = pointerFactsOf(accesses);
 
     for (const PointerAccess &access : accesses) {
+        if (pairedRoot(access))
+            paired_roots.insert(access.root_expr);
+
         if (!accessNeedsEdit(access, f))
+            continue;
+        // An initializer is rewritten only to drop what its split moved into
+        // the index, so one whose split is not used keeps its text.
+        if ((access.kind == PointerAccessKind::Init ||
+             access.kind == PointerAccessKind::InitNull) &&
+            !splitStands(access))
             continue;
 
         PlannedEdit e;
         e.FD = FD;
         e.ptr = ptr;
         e.access = &access;
-        e.node = editedNode(access, f, Ctx);
+        e.node = editedNode(access, f);
 
         // Validation has already refused a pointer with an access it cannot
         // reach, and the classifier leaves none it cannot anchor, so either
@@ -214,6 +182,15 @@ void EditPlan::add(const FunctionDecl *FD, const VarDecl *ptr,
 }
 
 void EditPlan::build() {
+    // A paired root stays bare: its position reaches the owner through the
+    // owner's index, so the root's own rewrite is dropped. Done here rather
+    // than in add(), because only now has every owner been seen.
+    edits.erase(std::remove_if(edits.begin(), edits.end(),
+                               [&](const PlannedEdit &e) {
+                                   return paired_roots.count(e.access->expr) != 0;
+                               }),
+                edits.end());
+
     // Sort by (file, start, widest first) so a containing range always
     // precedes what it contains, then sweep with a stack of open ranges.
     std::vector<size_t> order(edits.size());
@@ -356,6 +333,16 @@ void EditPlan::needWrapper(const std::string &func_name, const FunctionDecl *FD)
         it->second = FD;
 }
 
+const VarDecl *EditPlan::pairedRoot(const PointerAccess &a) const {
+    const auto *DRE = dyn_cast_or_null<DeclRefExpr>(a.root_expr);
+    const auto *RootVD = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
+    return RootVD && transformed.count(RootVD) ? RootVD : nullptr;
+}
+
+bool EditPlan::splitStands(const PointerAccess &a) const {
+    return a.isSplit() && (a.step == IndexStep::None || pairedRoot(a));
+}
+
 std::string EditPlan::renderIndexValue(const PointerAccess &a, size_t owner) {
     // A null right-hand side reseats the region; the index goes to the
     // sentinel so that `off < 0` alone decides nullness, without leaning on
@@ -366,24 +353,17 @@ std::string EditPlan::renderIndexValue(const PointerAccess &a, size_t owner) {
 
     // The terms were lifted out of the right-hand side, so they are
     // rendered against the edit that removed them — a term reading through
-    // a rewritten pointer carries that rewrite here with it.
+    // a rewritten pointer carries that rewrite here with it. Where the split
+    // is not used they never left, and the index counts from zero.
     std::string terms;
-    for (const OffsetTerm &t : a.index_terms)
-        terms += (t.minus ? " - " : " + ") +
-                 (owner == kNoParent ? getSourceText(t.expr, SM, LO)
-                                     : renderWithin(t.expr, owner));
+    if (splitStands(a))
+        for (const OffsetTerm &t : a.index_terms)
+            terms += (t.minus ? " - " : " + ") +
+                     (owner == kNoParent ? getSourceText(t.expr, SM, LO)
+                                         : renderWithin(t.expr, owner));
 
-    if (const auto *DRE = dyn_cast_or_null<DeclRefExpr>(a.root_expr)) {
-        const auto *RootVD = dyn_cast<VarDecl>(DRE->getDecl());
-        if (RootVD && transformed.count(RootVD))
-            return applyRootAdjust(a.root_adjust, indexNameFor(RootVD)) + terms;
-        // A root that carries a step but was not itself transformed has no
-        // index to bump, and rendering the position without it would lose the
-        // increment outright. Such a split is withdrawn before planning (see
-        // unsplit), so one that arrives here is a bug.
-        if (a.root_adjust != RootAdjust::None)
-            reportViolation("a stepped root was not transformed", a.loc);
-    }
+    if (const VarDecl *RootVD = pairedRoot(a))
+        return applyStep(a.step, indexNameFor(RootVD)) + terms;
     if (terms.empty())
         return "0";
     // `q + 1` counts from 1 on its own; `q - 1` needs the zero to subtract
@@ -446,46 +426,28 @@ std::string EditPlan::render(size_t i) {
 
     const std::string ptr = e.ptr->getNameAsString();
     const std::string idx = indexNameFor(e.ptr);
-    const std::string elem = ptr + "[" + idx;  // prefix of every element access
 
     switch (a.kind) {
     // ---- Element access: the index names the element ------------------
-    case PointerAccessKind::Deref:
-    case PointerAccessKind::DerefWrite:
-        return elem + "]";
-
-    case PointerAccessKind::DerefPostInc:
-    case PointerAccessKind::DerefPreInc:
-    case PointerAccessKind::DerefPostDec:
-    case PointerAccessKind::DerefPreDec: {
-        const char *op = (a.kind == PointerAccessKind::DerefPostInc ||
-                          a.kind == PointerAccessKind::DerefPreInc)
-                             ? "++"
-                             : "--";
-        bool is_post = a.kind == PointerAccessKind::DerefPostInc ||
-                       a.kind == PointerAccessKind::DerefPostDec;
-        return is_post ? elem + op + "]" : ptr + "[" + op + idx + "]";
-    }
-
-    case PointerAccessKind::DerefOffset:
-    case PointerAccessKind::DerefOffsetWrite: {
+    // Every form is `p[INDEX]`, with INDEX counted from the pointer's own
+    // index. An access has at most one of a step, offset terms and a
+    // subscript, and only `p->field` has anything after the bracket.
+    case PointerAccessKind::Element: {
+        std::string index = applyStep(a.step, idx);  // *p++
         // Each term is rendered rather than copied, so an offset that
         // reads through a rewritten pointer — `*(p + strlen(p) - 1)` —
         // carries that pointer's rewrite along instead of losing it.
-        std::string offset;
-        for (const OffsetTerm &t : a.offset_terms)
-            offset += (t.minus ? " - " : " + ") + renderWithin(t.expr, i);
-        return elem + offset + "]";
-    }
-
-    case PointerAccessKind::ArrowAccess:
-    case PointerAccessKind::ArrowWrite:
-        return elem + "]." + a.field_name;
-
-    case PointerAccessKind::Subscript:
-    case PointerAccessKind::SubscriptWrite: {
-        std::string sub = renderWithin(a.subscript_expr, i);
-        return sub == "0" ? elem + "]" : elem + " + " + sub + "]";
+        for (const OffsetTerm &t : a.offset_terms)   // *(p + a - b)
+            index += (t.minus ? " - " : " + ") + renderWithin(t.expr, i);
+        if (a.subscript_expr) {                      // p[i]
+            std::string sub = renderWithin(a.subscript_expr, i);
+            if (sub != "0")
+                index += " + " + sub;
+        }
+        std::string out = ptr + "[" + index + "]";
+        if (!a.field_name.empty())                   // p->field
+            out += "." + a.field_name;
+        return out;
     }
 
     // ---- Position: the index moves, the base stays put ----------------
@@ -500,26 +462,20 @@ std::string EditPlan::render(size_t i) {
     // increments first, so both see the new position; post-increment
     // returns the old pointer and `(p + p_index_xj++)` yields the old
     // index, so both see the old one.
-    case PointerAccessKind::Increment:
-    case PointerAccessKind::Decrement: {
-        const auto *UO = cast<UnaryOperator>(e.node);
-        bool wrap = valueIsUsed(UO, Ctx);
-        const char *op = a.kind == PointerAccessKind::Increment ? "++" : "--";
-        bool is_post = UO->getOpcode() == UO_PostInc || UO->getOpcode() == UO_PostDec;
-        std::string bare = is_post ? idx + op : op + idx;
-        return wrap ? "(" + ptr + " + " + bare + ")" : bare;
-    }
-
+    //
     // `p += n` moves the index by `n` and yields the new pointer, which
     // `(p + (p_index_xj += n))` rebuilds from the new index. The operand
     // is rendered rather than copied, so a rewrite inside it is carried
     // along.
-    case PointerAccessKind::PlusAssign:
-    case PointerAccessKind::MinusAssign: {
-        const auto *BO = cast<BinaryOperator>(e.node);
-        const char *op = a.kind == PointerAccessKind::PlusAssign ? " += " : " -= ";
-        std::string bare = idx + op + renderWithin(BO->getRHS(), i);
-        return valueIsUsed(BO, Ctx) ? "(" + ptr + " + (" + bare + "))" : bare;
+    case PointerAccessKind::Move: {
+        bool wrap = valueIsUsed(cast<Expr>(e.node), Ctx);
+        if (const auto *BO = dyn_cast<BinaryOperator>(e.node)) {
+            const char *op = BO->getOpcode() == BO_AddAssign ? " += " : " -= ";
+            std::string bare = idx + op + renderWithin(BO->getRHS(), i);
+            return wrap ? "(" + ptr + " + (" + bare + "))" : bare;
+        }
+        std::string bare = applyStep(a.step, idx);
+        return wrap ? "(" + ptr + " + " + bare + ")" : bare;
     }
 
     // ---- (base, index) assignment -------------------------------------
@@ -534,7 +490,7 @@ std::string EditPlan::render(size_t i) {
         const auto *BO = cast<BinaryOperator>(e.node);
         bool value_used = valueIsUsed(BO, Ctx);
 
-        if (a.isSplit()) {
+        if (splitStands(a)) {
             // Split: the right-hand side keeps only its root and the rest
             // becomes the index.
             //
@@ -587,9 +543,7 @@ std::string EditPlan::render(size_t i) {
         const auto *CE = dyn_cast<CallExpr>(BO->getRHS()->IgnoreParenImpCasts());
         // The classifier reached this kind only by finding both, and the
         // planner reached this rendering only through the classifier.
-        const DeclRefExpr *BaseDRE =
-            CE ? dyn_cast<DeclRefExpr>(CE->getArg(0)->IgnoreParenImpCasts())
-               : nullptr;
+        const auto *BaseDRE = dyn_cast_or_null<DeclRefExpr>(a.root_expr);
         const auto *BaseVD = BaseDRE ? dyn_cast<VarDecl>(BaseDRE->getDecl()) : nullptr;
         const FunctionDecl *Callee = CE ? CE->getDirectCallee() : nullptr;
         if (!BaseVD || !Callee) {
@@ -613,8 +567,7 @@ std::string EditPlan::render(size_t i) {
         // If that argument is itself a rewritten pointer its position lives
         // in its index; otherwise it is a plain pointer at its own origin.
         const std::string base_text = BaseVD->getNameAsString();
-        const std::string start =
-            transformed.count(BaseVD) ? indexNameFor(BaseVD) : "0";
+        const std::string start = pairedRoot(a) ? indexNameFor(BaseVD) : "0";
         const std::string wrapper_name = func_name + "_index_xj";
 
         std::string out = idx + " = " + wrapper_name + "(" + base_text + ", " +

@@ -142,18 +142,6 @@ void FunctionAccessAnalyzer::run(const MatchFinder::MatchResult &Result)
     g_function_analyses[FD->getCanonicalDecl()] = std::move(fa);
 }
 
-// True when `acc` is an Init or Assign whose split steps a root that is not
-// rewritten: `q = p++` with p left alone.
-static bool stepsUntransformedRoot(const PointerAccess &acc,
-                                   const std::set<const VarDecl *> &transformed)
-{
-    if (!acc.isSplit() || acc.root_adjust == RootAdjust::None)
-        return false;
-    const auto *DRE = dyn_cast<DeclRefExpr>(acc.root_expr);
-    const auto *RootVD = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
-    return !RootVD || !transformed.count(RootVD);
-}
-
 // All actual source rewriting happens here, once every function in the
 // TU has been analyzed. This tool knows nothing about RustSlice
 // reshaping: it rewrites moving pointers as indices and records each
@@ -161,7 +149,8 @@ static bool stepsUntransformedRoot(const PointerAccess &acc,
 // candidate detection happens downstream, in xj-prepare-slicetransform.
 //
 // The order of the phases is the whole design. Which pointers are rewritten
-// is settled first, because a pointer's index may name another's. Every
+// is settled first, because a pointer's index may name another's — and only
+// the plan, which is handed that answer, decides that one does. Every
 // rewrite is then planned across the entire TU before any of them is
 // written, because two rewrites can nest — an offset that reads through a
 // second pointer, say — and only a plan that sees both can fold one into
@@ -178,42 +167,18 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit()
     std::set<const VarDecl *> transformed;
     collectCandidates(Ctx, plans, transformed);
 
-    // ---- 2. A pairing was offered between two *tracked* pointers, and holds
-    // only while both are rewritten. Where one end is out, the other is put
-    // back on its own.
-    for (PointerPlan &P : plans)
-        for (PointerAccess &acc : *P.accesses)
-        {
-            // The owner is out. A pairwise root is left bare because its
-            // owner's assignment restores the position; nothing does now, so
-            // a bare root is just a value read. A *stepped* root still has to
-            // move: `q = p++` with q not rewritten is p's own increment
-            // again, rendered in value position because the initializer
-            // still wants a pointer.
-            if (acc.kind == PointerAccessKind::PairwiseRoot &&
-                !transformed.count(acc.pair_owner))
-                acc = demoted(acc);
-            // The root is out. A bare one needs nothing: it still holds its
-            // own position, and the owner's index counts from there. A
-            // stepped one was to be stepped through an index it does not
-            // have, so the right-hand side is kept whole, where `p++` still
-            // moves p itself.
-            else if (stepsUntransformedRoot(acc, transformed))
-                acc = unsplit(acc);
-        }
-
-    // ---- 3. Plan every access rewrite in the TU at once ---------------
+    // ---- 2. Plan every access rewrite in the TU at once ---------------
     EditPlan plan(Ctx, transformed);
-    for (PointerPlan &P : plans)
+    for (const PointerPlan &P : plans)
         plan.add(P.FD, P.ptr, *P.accesses);
     plan.build();
 
-    // ---- 4. Write ------------------------------------------------------
+    // ---- 3. Write ------------------------------------------------------
     // Declarations first, in the order the pointers were planned, so that
     // two sharing an anchor stack back into source order; then one
     // replacement per outermost access rewrite.
     std::vector<Edit> edits;
-    for (PointerPlan &P : plans)
+    for (const PointerPlan &P : plans)
         emitIndexDecl(P.site, P.ptr, plan.indexDeclInit(P.ptr, *P.accesses), SM,
                       edits);
     plan.appendRootEdits(edits);
@@ -226,7 +191,7 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit()
 
     applyEdits(edits, SM);
 
-    // ---- 5. Record what was done --------------------------------------
+    // ---- 4. Record what was done --------------------------------------
     for (const PointerPlan &P : plans)
         recordTransformed(P, Ctx);
 }
@@ -235,10 +200,10 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit()
 // collectCandidates — decide the rewritten set, TU-wide
 // ============================================================================
 //
-// Validation is a pure function of one pointer's own access list, and
-// placement is a pure function of its declaration, so a single pass
-// settles both. Nothing here depends on what any other pointer turns out
-// to be — which is what lets step 2 above run once, on a final answer.
+// Validation is a function of one pointer's own access list and of which
+// references are roots, and placement is a function of its declaration, so
+// a single pass settles both. Nothing here depends on what any other
+// pointer turns out to be.
 //
 // Pointers are appended in reverse source order within each scope. Two
 // index declarations sharing an anchor are both InsertTextBefore at one
@@ -251,13 +216,28 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
 {
     SourceManager &SM = Ctx.getSourceManager();
 
+    // Every reference that some assignment takes as its root, in the whole
+    // TU. Candidacy asks for them; see validatePointerCandidate.
+    std::set<const Expr *> roots;
+    auto noteRoots = [&](const std::vector<PointerAccess> &accesses)
+    {
+        for (const PointerAccess &a : accesses)
+            if (a.root_expr)
+                roots.insert(a.root_expr);
+    };
+    for (const auto &[FDCanon, analysis] : g_function_analyses)
+        for (const auto &[VD, accesses] : analysis.accesses)
+            noteRoots(accesses);
+    for (const auto &[VD, accesses] : g_global_pointer_map)
+        noteRoots(accesses);
+
     auto consider = [&](const FunctionDecl *FD, const VarDecl *PtrVar,
-                        std::vector<PointerAccess> &accesses)
+                        const std::vector<PointerAccess> &accesses)
     {
         printAccesses(PtrVar, accesses, Ctx);
 
         std::string error;
-        if (!validatePointerCandidate(PtrVar, accesses, Ctx, error))
+        if (!validatePointerCandidate(PtrVar, accesses, roots, Ctx, error))
         {
             gLog.error = error;
             logFailedPointer(PtrVar, Ctx, error);
@@ -322,7 +302,7 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
 
     for (const VarDecl *VD : globals)
     {
-        std::vector<PointerAccess> &accesses = g_global_pointer_map[VD];
+        const std::vector<PointerAccess> &accesses = g_global_pointer_map[VD];
         if (accesses.empty())
             continue;
         // The Rewriter cannot edit macro-expanded text, so a global
@@ -442,8 +422,8 @@ void FunctionAccessAnalyzer::printAccesses(const VarDecl *VD,
             llvm::outs() << " offset=" << spell(access.offset_terms);
         if (access.isSplit())
             llvm::outs() << " root="
-                         << applyRootAdjust(access.root_adjust,
-                                            getSourceText(access.root_expr, SM, LO));
+                         << applyStep(access.step,
+                                      getSourceText(access.root_expr, SM, LO));
         if (!access.index_terms.empty())
             llvm::outs() << " index=" << spell(access.index_terms);
         if (!access.field_name.empty())
@@ -451,10 +431,9 @@ void FunctionAccessAnalyzer::printAccesses(const VarDecl *VD,
         if (access.subscript_expr)
             llvm::outs() << " subscript="
                          << getSourceText(access.subscript_expr, SM, LO);
-        if (access.kind == PointerAccessKind::PlusAssign ||
-            access.kind == PointerAccessKind::MinusAssign)
-            if (const auto *BO = dyn_cast_or_null<BinaryOperator>(
-                    skipTransparentParents(access.expr, Ctx)))
+        if (access.kind == PointerAccessKind::Move)
+            if (const auto *BO =
+                    dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt))
                 llvm::outs() << " operand=" << getSourceText(BO->getRHS(), SM, LO);
         llvm::outs() << "\n";
     }

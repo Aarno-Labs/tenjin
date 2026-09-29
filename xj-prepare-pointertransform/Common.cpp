@@ -147,41 +147,15 @@ const std::string &indexNameFor(const VarDecl *VD)
 // Pre-increment yields the new position and post-increment the old one, so
 // `q = ++p` and `q = p++` differ only in where the operator lands — the same
 // distinction the index has to reproduce.
-std::string applyRootAdjust(RootAdjust adj, const std::string &name) {
-    switch (adj) {
-    case RootAdjust::PostInc: return name + "++";
-    case RootAdjust::PostDec: return name + "--";
-    case RootAdjust::PreInc: return "++" + name;
-    case RootAdjust::PreDec: return "--" + name;
-    case RootAdjust::None: break;
+std::string applyStep(IndexStep step, const std::string &name) {
+    switch (step) {
+    case IndexStep::PostInc: return name + "++";
+    case IndexStep::PostDec: return name + "--";
+    case IndexStep::PreInc: return "++" + name;
+    case IndexStep::PreDec: return "--" + name;
+    case IndexStep::None: break;
     }
     return name;
-}
-
-PointerAccess demoted(const PointerAccess &access) {
-    PointerAccess out = access;
-    switch (access.root_adjust) {
-    case RootAdjust::PostInc:
-    case RootAdjust::PreInc:
-        out.kind = PointerAccessKind::Increment;
-        break;
-    case RootAdjust::PostDec:
-    case RootAdjust::PreDec:
-        out.kind = PointerAccessKind::Decrement;
-        break;
-    case RootAdjust::None:
-        out.kind = PointerAccessKind::ValueUse;
-        break;
-    }
-    return out;
-}
-
-PointerAccess unsplit(const PointerAccess &access) {
-    PointerAccess out = access;
-    out.root_expr = nullptr;
-    out.root_adjust = RootAdjust::None;
-    out.index_terms.clear();
-    return out;
 }
 
 // Stringify a PointerAccessKind for verbose / debug output.
@@ -189,38 +163,10 @@ const char *pointerAccessKindToString(PointerAccessKind kind)
 {
     switch (kind)
     {
-    case PointerAccessKind::Deref:
-        return "Deref";
-    case PointerAccessKind::DerefWrite:
-        return "DerefWrite";
-    case PointerAccessKind::DerefPostInc:
-        return "DerefPostInc";
-    case PointerAccessKind::DerefPreInc:
-        return "DerefPreInc";
-    case PointerAccessKind::DerefPostDec:
-        return "DerefPostDec";
-    case PointerAccessKind::DerefPreDec:
-        return "DerefPreDec";
-    case PointerAccessKind::DerefOffset:
-        return "DerefOffset";
-    case PointerAccessKind::DerefOffsetWrite:
-        return "DerefOffsetWrite";
-    case PointerAccessKind::ArrowAccess:
-        return "ArrowAccess";
-    case PointerAccessKind::ArrowWrite:
-        return "ArrowWrite";
-    case PointerAccessKind::Subscript:
-        return "Subscript";
-    case PointerAccessKind::SubscriptWrite:
-        return "SubscriptWrite";
-    case PointerAccessKind::Increment:
-        return "Increment";
-    case PointerAccessKind::Decrement:
-        return "Decrement";
-    case PointerAccessKind::PlusAssign:
-        return "PlusAssign";
-    case PointerAccessKind::MinusAssign:
-        return "MinusAssign";
+    case PointerAccessKind::Element:
+        return "Element";
+    case PointerAccessKind::Move:
+        return "Move";
     case PointerAccessKind::Init:
         return "Init";
     case PointerAccessKind::Assign:
@@ -233,8 +179,6 @@ const char *pointerAccessKindToString(PointerAccessKind kind)
         return "AssignFromAllowedFunc";
     case PointerAccessKind::ValueUse:
         return "ValueUse";
-    case PointerAccessKind::PairwiseRoot:
-        return "PairwiseRoot";
     case PointerAccessKind::NullTest:
         return "NullTest";
     case PointerAccessKind::NoEdit:
