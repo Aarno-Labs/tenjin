@@ -22,11 +22,11 @@ use rustc_plugin::{CrateFilter, RustcPlugin, RustcPluginArgs, Utf8Path};
 use serde::{Deserialize, Serialize};
 
 mod extract_graph;
-mod legacy_va_list;
+mod legacy_source;
 mod span_eraser;
 
 use extract_graph::{GEdge, GNode};
-use legacy_va_list::{LegacyVaListFileLoader, OriginalSources};
+use legacy_source::{LegacySourceFileLoader, OriginalSources, canonical_path};
 use span_eraser::SpanEraser;
 
 pub struct XjImproveMultitoolPlugin;
@@ -103,7 +103,7 @@ impl Drop for XjImproveMultitoolCallbacks {
 
 impl rustc_driver::Callbacks for XjImproveMultitoolCallbacks {
     fn config(&mut self, config: &mut rustc_interface::interface::Config) {
-        config.file_loader = Some(Box::new(LegacyVaListFileLoader::new(
+        config.file_loader = Some(Box::new(LegacySourceFileLoader::new(
             self.original_sources.clone(),
         )));
     }
@@ -134,7 +134,11 @@ impl rustc_driver::Callbacks for XjImproveMultitoolCallbacks {
                         eprintln!("Output directory for CACG does not exist: {}", outdir);
                         return rustc_driver::Compilation::Stop;
                     }
-                    match extract_condensed_approximated_call_graph(tcx, outdir) {
+                    match extract_condensed_approximated_call_graph(
+                        tcx,
+                        outdir,
+                        &self.original_sources,
+                    ) {
                         Ok(()) => rustc_driver::Compilation::Continue,
                         Err(e) => {
                             eprintln!("Failed to extract CACG: {}", e);
@@ -279,7 +283,11 @@ impl CondensedSpanGraph {
         call_graph: DiGraph<DefId, ()>,
         defspans: &HashMap<DefId, rustc_span::Span>,
         source_map: &rustc_span::source_map::SourceMap,
+        original_sources: &OriginalSources,
     ) -> Self {
+        let originals = original_sources
+            .lock()
+            .expect("original source map was poisoned");
         let mut file_map: HashMap<rustc_span::StableSourceFileId, usize> = HashMap::new();
         let mut def_to_file_idx: HashMap<DefId, usize> = HashMap::new();
         let mut def_to_elt_idx: HashMap<DefId, usize> = HashMap::new();
@@ -335,10 +343,18 @@ impl CondensedSpanGraph {
                 .expect("DefId should have a file index");
             let elt_idx = c.elts.len();
             def_to_elt_idx.insert(*def_id, elt_idx);
+            // The compiler sees expanded legacy intrinsics, but consumers of
+            // this graph rewrite the original files on disk.
+            let original = originals.get(&canonical_path(&c.files[*file_idx]));
+            let original_offset = |offset: u32| {
+                original.map_or(offset, |source| {
+                    source.original_offset(offset as usize) as u32
+                })
+            };
             c.elts.push(ExplicitSpan {
                 fileid: *file_idx as u32,
-                lo: srcfile.relative_position(span.lo()).0,
-                hi: srcfile.relative_position(span.hi()).0,
+                lo: original_offset(srcfile.relative_position(span.lo()).0),
+                hi: original_offset(srcfile.relative_position(span.hi()).0),
             });
         }
 
@@ -383,6 +399,7 @@ impl CondensedSpanGraph {
 fn extract_condensed_approximated_call_graph(
     tcx: TyCtxt,
     outdir: &Utf8Path,
+    original_sources: &OriginalSources,
 ) -> Result<(), std::io::Error> {
     let extracted = extract_graph::extract_def_graph(tcx);
     let graf = extracted.graf;
@@ -410,8 +427,12 @@ fn extract_condensed_approximated_call_graph(
         },
     );
 
-    let condensed =
-        CondensedSpanGraph::from(call_graph, &extracted.defspans, tcx.sess.source_map());
+    let condensed = CondensedSpanGraph::from(
+        call_graph,
+        &extracted.defspans,
+        tcx.sess.source_map(),
+        original_sources,
+    );
 
     let j = serde_json::to_string(&condensed)
         .expect("Failed to serialize condensed call graph to JSON");

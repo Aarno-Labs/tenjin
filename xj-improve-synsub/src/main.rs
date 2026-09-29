@@ -34,6 +34,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
+    rw.add_expr_rewrite(Rewriter::rewrite_null_pointer_offsetof);
     rw.add_expr_rewrite(Rewriter::rewrite_isatty_standard_stream);
     rw.add_expr_rewrite(Rewriter::rewrite_print_byte);
     //rw.add_expr_rewrite(Rewriter::rewrite_strstr);
@@ -41,6 +42,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_usize_array_subscript_literal);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_deref);
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
+    rw.add_expr_rewrite(Rewriter::rewrite_atone_of_slice);
     rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
     rw.add_expr_rewrite(Rewriter::rewrite_printf_with_lone_offset_fmt);
     rw.add_expr_rewrite(Rewriter::rewrite_usleep);
@@ -128,6 +130,8 @@ fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
         "xj_ctime" => "0.1.1",
         "xj_cstr" => "0.1.4",
+        "xj_atone" => "0.1.0",
+        "errno" => "0.3.14",
         "xj_scanf" => "0.2.6",
         "atty" => "0.2.14",
         "bytemuck" => "1.25.0",
