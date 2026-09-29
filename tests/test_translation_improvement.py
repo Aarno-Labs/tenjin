@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess
 
@@ -103,3 +104,40 @@ def test_multitool_reports_compilation_failure_before_analysis(tmp_path: Path):
         root, "TrimDeadItems", ["--modify-in-place"], crate
     )
     assert "fn dead()" not in source.read_text(encoding="utf-8")
+
+
+def test_cacg_spans_use_original_offsets_after_legacy_intrinsic_rewrite(tmp_path: Path):
+    crate = tmp_path / "crate"
+    source = crate / "src" / "main.rs"
+    source.parent.mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "cacg_legacy_intrinsic"\nversion = "0.1.0"\nedition = "2021"\n',
+        encoding="utf-8",
+    )
+    source.write_text(
+        "#![feature(core_intrinsics)]\n"
+        "unsafe fn before(ptr: *mut i32) {\n"
+        "    ::core::intrinsics::atomic_cxchg_seqcst_seqcst(ptr, 0, 1);\n"
+        "}\n"
+        "fn after() {}\n"
+        "fn main() {}\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "cacg"
+    output.mkdir()
+
+    translation_improvement.run_improve_multitool(
+        repo_root.find_repo_root_dir_Path(),
+        "ExtractCACG",
+        ["--cacg-json-outdir", str(output)],
+        crate,
+    )
+
+    graph = json.loads(next(output.glob("*.cacg.json")).read_text(encoding="utf-8"))
+    contents = source.read_bytes()
+    spans = [
+        contents[span["lo"] : span["hi"]]
+        for span in graph["elts"]
+        if Path(graph["files"][span["fileid"]]).name == "main.rs"
+    ]
+    assert b"fn after() {}" in spans

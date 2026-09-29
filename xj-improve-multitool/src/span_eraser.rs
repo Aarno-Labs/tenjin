@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::{RelativeBytePos, SourceFile, Span, StableSourceFileId};
 
-use crate::legacy_va_list::{
-    OriginalSource, OriginalSources, adapt_legacy_va_list, canonical_path,
-};
+use crate::legacy_source::{OriginalSource, OriginalSources, adapt_legacy_source, canonical_path};
 
 pub struct SpanEraser {
     spans_to_erase: SpansToErase,
@@ -188,7 +186,7 @@ impl SourceBeingRewritten {
                         .get(&canonical_path(path))
                 {
                     assert_eq!(
-                        adapt_legacy_va_list(&original.text).0,
+                        adapt_legacy_source(&original.text).0,
                         **compiler_source,
                         "compiler source differs from the adapted original at {path:?}"
                     );
@@ -196,7 +194,7 @@ impl SourceBeingRewritten {
                 }
                 OriginalSource {
                     text: compiler_source.to_string(),
-                    insertion_ends: Vec::new(),
+                    expansions: Vec::new(),
                 }
             });
         (
