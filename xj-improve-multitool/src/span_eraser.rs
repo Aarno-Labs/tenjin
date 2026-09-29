@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::{RelativeBytePos, SourceFile, Span, StableSourceFileId};
 
-use crate::legacy_va_list::{OriginalSources, adapt_legacy_va_list, canonical_path};
+use crate::legacy_va_list::{
+    OriginalSource, OriginalSources, adapt_legacy_va_list, canonical_path,
+};
 
 pub struct SpanEraser {
     spans_to_erase: SpansToErase,
@@ -45,16 +47,20 @@ impl SpanEraser {
         // First, directly erase the requested spans.
         for span in &self.spans_to_erase.directly {
             let (srcfile, src) = self.rewriting.get_source_file(tcx, *span);
-            let rel_start = srcfile.relative_position(span.lo());
-            let rel_end = srcfile.relative_position(span.hi());
+            let rel_start = RelativeBytePos(
+                src.original_offset(srcfile.relative_position(span.lo()).0 as usize) as u32,
+            );
+            let rel_end = RelativeBytePos(
+                src.original_offset(srcfile.relative_position(span.hi()).0 as usize) as u32,
+            );
 
-            erase_span_in_source(rel_start, rel_end, src);
+            erase_span_in_source(rel_start, rel_end, &mut src.text);
         }
 
         // Second, erase the attributes preceding certain spans.
         for item_span in &self.spans_to_erase.for_attributes {
             let (srcfile, src) = self.rewriting.get_source_file(tcx, *item_span);
-            let srclines = src.lines().collect::<Vec<_>>();
+            let srclines = src.text.lines().collect::<Vec<_>>();
 
             let item_start = srcfile.relative_position(item_span.lo());
             let item_start_lineno = srcfile
@@ -101,7 +107,10 @@ impl SpanEraser {
             let attr_rel_start = srcfile.lines()[current_lineno];
             let attr_rel_end = srcfile.lines()[item_start_lineno];
 
-            erase_span_in_source(attr_rel_start, attr_rel_end, src);
+            let attr_rel_start =
+                RelativeBytePos(src.original_offset(attr_rel_start.0 as usize) as u32);
+            let attr_rel_end = RelativeBytePos(src.original_offset(attr_rel_end.0 as usize) as u32);
+            erase_span_in_source(attr_rel_start, attr_rel_end, &mut src.text);
         }
     }
 
@@ -113,7 +122,7 @@ impl SpanEraser {
     ) {
         for (id, src) in &self.rewriting.rewritten_source {
             if print_to_stdout {
-                println!("Rewritten source for {:?}:\n{}", id, src);
+                println!("Rewritten source for {:?}:\n{}", id, src.text);
             }
             if modify_in_place {
                 // Apply the modifications to the original source files.
@@ -128,7 +137,7 @@ impl SpanEraser {
                             .open(path)
                         {
                             use std::io::Write;
-                            if let Err(e) = file.write_all(src.as_bytes()) {
+                            if let Err(e) = file.write_all(src.text.as_bytes()) {
                                 eprintln!("Error writing to {:?}: {}", path, e);
                             }
                         } else {
@@ -152,7 +161,7 @@ struct SpansToErase {
     for_attributes: Vec<Span>,
 }
 struct SourceBeingRewritten {
-    rewritten_source: HashMap<StableSourceFileId, String>,
+    rewritten_source: HashMap<StableSourceFileId, OriginalSource>,
     original_sources: OriginalSources,
 }
 
@@ -161,7 +170,7 @@ impl SourceBeingRewritten {
         &mut self,
         tcx: TyCtxt,
         span: Span,
-    ) -> (std::sync::Arc<SourceFile>, &mut String) {
+    ) -> (std::sync::Arc<SourceFile>, &mut OriginalSource) {
         let srcfile = tcx.sess.source_map().lookup_source_file(span.lo());
         let original_sources = &self.original_sources;
         self.rewritten_source
@@ -179,13 +188,16 @@ impl SourceBeingRewritten {
                         .get(&canonical_path(path))
                 {
                     assert_eq!(
-                        adapt_legacy_va_list(original),
+                        adapt_legacy_va_list(&original.text).0,
                         **compiler_source,
                         "compiler source differs from the adapted original at {path:?}"
                     );
                     return original.clone();
                 }
-                compiler_source.to_string()
+                OriginalSource {
+                    text: compiler_source.to_string(),
+                    insertion_ends: Vec::new(),
+                }
             });
         (
             srcfile.clone(),
