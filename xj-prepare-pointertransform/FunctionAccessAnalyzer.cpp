@@ -142,6 +142,18 @@ void FunctionAccessAnalyzer::run(const MatchFinder::MatchResult &Result)
     g_function_analyses[FD->getCanonicalDecl()] = std::move(fa);
 }
 
+// True when `acc` is an Init or Assign whose split steps a root that is not
+// rewritten: `q = p++` with p left alone.
+static bool stepsUntransformedRoot(const PointerAccess &acc,
+                                   const std::set<const VarDecl *> &transformed)
+{
+    if (!acc.isSplit() || acc.root_adjust == RootAdjust::None)
+        return false;
+    const auto *DRE = dyn_cast<DeclRefExpr>(acc.root_expr);
+    const auto *RootVD = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
+    return !RootVD || !transformed.count(RootVD);
+}
+
 // All actual source rewriting happens here, once every function in the
 // TU has been analyzed. This tool knows nothing about RustSlice
 // reshaping: it rewrites moving pointers as indices and records each
@@ -166,18 +178,29 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit()
     std::set<const VarDecl *> transformed;
     collectCandidates(Ctx, plans, transformed);
 
-    // ---- 2. A pairwise root is left bare because its owner's assignment
-    // restores the position. If the owner is not rewritten, nothing does,
-    // so the root has to be rebuilt like any other value read.
+    // ---- 2. A pairing was offered between two *tracked* pointers, and holds
+    // only while both are rewritten. Where one end is out, the other is put
+    // back on its own.
     for (PointerPlan &P : plans)
         for (PointerAccess &acc : *P.accesses)
-            // A bare root is just a value read once its owner is out. A
-            // *stepped* root still has to move: `q = p++` with q not
-            // rewritten is p's own increment again, rendered in value
-            // position because the initializer still wants a pointer.
+        {
+            // The owner is out. A pairwise root is left bare because its
+            // owner's assignment restores the position; nothing does now, so
+            // a bare root is just a value read. A *stepped* root still has to
+            // move: `q = p++` with q not rewritten is p's own increment
+            // again, rendered in value position because the initializer
+            // still wants a pointer.
             if (acc.kind == PointerAccessKind::PairwiseRoot &&
                 !transformed.count(acc.pair_owner))
                 acc = demoted(acc);
+            // The root is out. A bare one needs nothing: it still holds its
+            // own position, and the owner's index counts from there. A
+            // stepped one was to be stepped through an index it does not
+            // have, so the right-hand side is kept whole, where `p++` still
+            // moves p itself.
+            else if (stepsUntransformedRoot(acc, transformed))
+                acc = unsplit(acc);
+        }
 
     // ---- 3. Plan every access rewrite in the TU at once ---------------
     EditPlan plan(Ctx, transformed);

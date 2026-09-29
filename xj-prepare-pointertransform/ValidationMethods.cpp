@@ -115,6 +115,11 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         case PointerAccessKind::AssignFromAllowedFunc:
             has_mutation = true;
             break;
+        case PointerAccessKind::PairwiseRoot:
+            // `q = p++` moves p, whichever pointer ends up carrying the step.
+            if (access.root_adjust != RootAdjust::None)
+                has_mutation = true;
+            break;
         case PointerAccessKind::Init:
         case PointerAccessKind::InitNull:
         case PointerAccessKind::Assign:

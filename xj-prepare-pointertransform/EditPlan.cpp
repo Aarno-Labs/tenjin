@@ -379,9 +379,8 @@ std::string EditPlan::renderIndexValue(const PointerAccess &a, size_t owner) {
             return applyRootAdjust(a.root_adjust, indexNameFor(RootVD)) + terms;
         // A root that carries a step but was not itself transformed has no
         // index to bump, and rendering the position without it would lose the
-        // increment outright. The split should never have been offered: only
-        // a tracked root is decomposed, and an untransformed one is demoted
-        // back to its own increment before rendering.
+        // increment outright. Such a split is withdrawn before planning (see
+        // unsplit), so one that arrives here is a bug.
         if (a.root_adjust != RootAdjust::None)
             reportViolation("a stepped root was not transformed", a.loc);
     }

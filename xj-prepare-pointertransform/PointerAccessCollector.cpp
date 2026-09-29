@@ -181,7 +181,9 @@ bool PointerAccessCollector::decomposePointer(const Expr *E, PointerSplit &out)
         // q = p++ — the base is p, and what q lands at is p's position and
         // the step together. Only a tracked p has an index to step; for an
         // untracked one there is nothing to carry the increment, and taking
-        // the split anyway would drop it on the floor.
+        // the split anyway would drop it on the floor. Tracked is not yet
+        // rewritten: if p turns out not to be, the split is withdrawn once
+        // that is known (see unsplit).
         if (UO->isIncrementDecrementOp())
         {
             const auto *OpDRE =

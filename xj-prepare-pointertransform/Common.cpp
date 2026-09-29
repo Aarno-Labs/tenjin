@@ -176,6 +176,14 @@ PointerAccess demoted(const PointerAccess &access) {
     return out;
 }
 
+PointerAccess unsplit(const PointerAccess &access) {
+    PointerAccess out = access;
+    out.root_expr = nullptr;
+    out.root_adjust = RootAdjust::None;
+    out.index_terms.clear();
+    return out;
+}
+
 // Stringify a PointerAccessKind for verbose / debug output.
 const char *pointerAccessKindToString(PointerAccessKind kind)
 {

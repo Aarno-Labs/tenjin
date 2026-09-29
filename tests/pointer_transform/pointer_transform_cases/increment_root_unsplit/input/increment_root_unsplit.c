@@ -1,0 +1,77 @@
+#include <stdio.h>
+
+/* q = p++ pairs q's index with p's, which needs p to be rewritten. */
+
+/* The step is p's only motion. It still counts as one, so p is rewritten
+   and the pair stands. */
+static int step_is_only_motion(char *s) {
+    char *p = s;
+    char *q = p++;
+    q++;
+    return *q + *p;
+}
+
+/* In the rest p is declined because its address is taken, so there is no
+   p_index_xj for the step to move. The right-hand side is kept whole and
+   q's index starts at 0. */
+
+static int address_taken(char *buf) {
+    char *p = buf;
+    char **pp = &p;
+    char *q;
+    q = p++;
+    q++;
+    *q = 'x';
+    return (int)(*pp - buf);
+}
+
+/* The assignment's value is read, and the step is a pre-decrement. */
+static int value_read(char *buf, int n) {
+    char *p = buf + n;
+    char **pp = &p;
+    char *q;
+    int seen = 0;
+    while ((q = --p) > buf) {
+        q--;
+        seen += *q;
+    }
+    return seen + (int)(*pp - buf);
+}
+
+/* An offset that reads through a rewritten pointer stays in the right-hand
+   side, and is still rewritten there. */
+static int offset_through_other(char *buf) {
+    char *p = buf;
+    char **pp = &p;
+    char *r = buf;
+    r++;
+    char *q = p++ + (r - buf);
+    q++;
+    return *q + (int)(*pp - buf);
+}
+
+/* File-scope pointers pair with each other the same way. */
+static char *g_cur;
+static char *g_mark;
+
+static int file_scope(char *s) {
+    char **cur = &g_cur;
+    g_cur = s;
+    g_mark = g_cur++;
+    g_mark++;
+    return *g_mark + (int)(*cur - s);
+}
+
+int main(void) {
+    char a[] = "abcde";
+    char b[] = "abcde";
+    char c[] = "abcde";
+    char d[] = "abcde";
+    char e[] = "abcde";
+    printf("%d\n", step_is_only_motion(a));
+    printf("%d %s\n", address_taken(b), b);
+    printf("%d\n", value_read(c, 5));
+    printf("%d\n", offset_through_other(d));
+    printf("%d\n", file_scope(e));
+    return 0;
+}

@@ -504,6 +504,12 @@ std::string applyRootAdjust(RootAdjust adj, const std::string &name);
 // and a bare one is a ValueUse. Returns `access` with only its kind changed.
 PointerAccess demoted(const PointerAccess &access);
 
+// What an Init or Assign is once its split is withdrawn: the right-hand side
+// is taken whole and the index starts at 0, as if the split had been declined
+// when the access was collected. Returns `access` with its root, its step and
+// its index terms cleared.
+PointerAccess unsplit(const PointerAccess &access);
+
 // ============================================================================
 // Index variable naming
 // ============================================================================
