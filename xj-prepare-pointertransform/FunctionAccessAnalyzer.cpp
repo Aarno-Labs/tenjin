@@ -59,33 +59,17 @@ void FunctionAccessAnalyzer::collectGlobalPointers(ASTContext &Ctx)
             continue;
         }
 
-        if (VERBOSE)
-            llvm::outs() << "[Collect] Found global pointer: " << VD->getNameAsString() << "\n";
-
-        GlobalPointerState state;
-        state.candidate.ptr_var = VD;
-        state.candidate.is_parameter = false;
-        g_global_pointer_map[VD] = state;
         globals.push_back(VD);
     }
 
     // Splitting an initializer has to know which names are tracked
-    // pointers, so it runs only once every global is registered.
-    PointerAccessCollector splitter(Ctx);
-    for (VarDecl *VD : globals)
-        splitter.tracked_pointers[VD] = g_global_pointer_map[VD].candidate;
-
+    // pointers, so every global is registered before any is visited.
+    PointerAccessCollector collector(Ctx);
+    collector.tracked_pointers.insert(globals.begin(), globals.end());
     for (VarDecl *VD : globals)
     {
-        if (!VD->hasInit())
-            continue;
-        PointerAccess pa;
-        pa.kind = PointerAccessKind::Init;
-        pa.loc = VD->getInit()->getBeginLoc();
-        pa.expr = VD->getInit();
-        splitter.splitAssignedValue(VD->getInit(), pa, VD,
-                                    /*owner_is_declared_here=*/true);
-        g_global_pointer_map[VD].accesses.push_back(pa);
+        collector.VisitVarDecl(VD);
+        g_global_pointer_map[VD] = collector.accesses[VD];
     }
 }
 
@@ -120,9 +104,9 @@ void FunctionAccessAnalyzer::run(const MatchFinder::MatchResult &Result)
 
     // Seed the visitor with global pointers so VisitDeclRefExpr knows
     // they are tracked.
-    for (auto &[GVD, state] : g_global_pointer_map)
+    for (auto &[GVD, global_accesses] : g_global_pointer_map)
     {
-        V.tracked_pointers[GVD] = state.candidate;
+        V.tracked_pointers.insert(GVD);
         V.accesses[GVD] = {};
     }
 
@@ -135,13 +119,13 @@ void FunctionAccessAnalyzer::run(const MatchFinder::MatchResult &Result)
 
     // Roll any global-pointer accesses we just observed into the shared
     // g_global_pointer_map.
-    for (auto &[GVD, state] : g_global_pointer_map)
+    for (auto &[GVD, global_accesses] : g_global_pointer_map)
     {
         auto it = V.accesses.find(GVD);
         if (it != V.accesses.end() && !it->second.empty())
         {
-            state.accesses.insert(state.accesses.end(),
-                                  it->second.begin(), it->second.end());
+            global_accesses.insert(global_accesses.end(),
+                                   it->second.begin(), it->second.end());
         }
     }
 
@@ -153,7 +137,6 @@ void FunctionAccessAnalyzer::run(const MatchFinder::MatchResult &Result)
     {
         if (g_global_pointer_map.count(pair.first))
             continue;
-        fa.tracked_pointers[pair.first] = V.tracked_pointers[pair.first];
         fa.accesses[pair.first] = pair.second;
     }
     g_function_analyses[FD->getCanonicalDecl()] = std::move(fa);
@@ -188,26 +171,13 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit()
     // so the root has to be rebuilt like any other value read.
     for (PointerPlan &P : plans)
         for (PointerAccess &acc : *P.accesses)
+            // A bare root is just a value read once its owner is out. A
+            // *stepped* root still has to move: `q = p++` with q not
+            // rewritten is p's own increment again, rendered in value
+            // position because the initializer still wants a pointer.
             if (acc.kind == PointerAccessKind::PairwiseRoot &&
-                !transformed.count(acc.pair_owner)) {
-                // A bare root is just a value read once its owner is out. A
-                // *stepped* root still has to move: `q = p++` with q not
-                // rewritten is p's own increment again, rendered in value
-                // position because the initializer still wants a pointer.
-                switch (acc.root_adjust) {
-                case RootAdjust::PostInc:
-                case RootAdjust::PreInc:
-                    acc.kind = PointerAccessKind::Increment;
-                    break;
-                case RootAdjust::PostDec:
-                case RootAdjust::PreDec:
-                    acc.kind = PointerAccessKind::Decrement;
-                    break;
-                case RootAdjust::None:
-                    acc.kind = PointerAccessKind::ValueUse;
-                    break;
-                }
-            }
+                !transformed.count(acc.pair_owner))
+                acc = demoted(acc);
 
     // ---- 3. Plan every access rewrite in the TU at once ---------------
     EditPlan plan(Ctx, transformed);
@@ -259,13 +229,12 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
     SourceManager &SM = Ctx.getSourceManager();
 
     auto consider = [&](const FunctionDecl *FD, const VarDecl *PtrVar,
-                        PointerCandidate &candidate,
                         std::vector<PointerAccess> &accesses)
     {
         printAccesses(PtrVar, accesses, Ctx);
 
         std::string error;
-        if (!validatePointerCandidate(PtrVar, candidate, accesses, Ctx, error))
+        if (!validatePointerCandidate(PtrVar, accesses, Ctx, error))
         {
             gLog.error = error;
             logFailedPointer(PtrVar, Ctx, error);
@@ -281,7 +250,7 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
         P.FD = FD;
         P.ptr = PtrVar;
         P.accesses = &accesses;
-        if (!findIndexDeclSite(FD, PtrVar, candidate, Ctx, P.site))
+        if (!findIndexDeclSite(FD, PtrVar, Ctx, P.site))
         {
             error = "No position for the index declaration";
             gLog.error = error;
@@ -314,7 +283,7 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
         assignIndexNames(ptrs);
 
         for (auto it = ptrs.rbegin(); it != ptrs.rend(); ++it)
-            consider(FD, *it, analysis.tracked_pointers[*it], analysis.accesses[*it]);
+            consider(FD, *it, analysis.accesses[*it]);
     }
 
     // File-scope pointers, collected once during the first run() call.
@@ -330,8 +299,8 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
 
     for (const VarDecl *VD : globals)
     {
-        GlobalPointerState &state = g_global_pointer_map[VD];
-        if (state.accesses.empty())
+        std::vector<PointerAccess> &accesses = g_global_pointer_map[VD];
+        if (accesses.empty())
             continue;
         // The Rewriter cannot edit macro-expanded text, so a global
         // declared inside a macro would have its uses rewritten without
@@ -343,7 +312,7 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
                              << ": declaration in macro expansion\n";
             continue;
         }
-        consider(/*FD=*/nullptr, VD, state.candidate, state.accesses);
+        consider(/*FD=*/nullptr, VD, accesses);
     }
 }
 
@@ -423,7 +392,8 @@ void FunctionAccessAnalyzer::logFailedPointer(const VarDecl *VD, ASTContext &Ctx
 }
 
 // Verbose-mode debug dump of an access list — useful when chasing down
-// why a pointer was misclassified or rejected.
+// why a pointer was misclassified or rejected. Spellings are lexed here,
+// from the expressions each access carries.
 void FunctionAccessAnalyzer::printAccesses(const VarDecl *VD,
                                            const std::vector<PointerAccess> &seq,
                                            ASTContext &Ctx)
@@ -431,19 +401,38 @@ void FunctionAccessAnalyzer::printAccesses(const VarDecl *VD,
     if (!VERBOSE)
         return;
     SourceManager &SM = Ctx.getSourceManager();
+    const LangOptions &LO = Ctx.getLangOpts();
+    auto spell = [&](const std::vector<OffsetTerm> &terms)
+    {
+        std::string text;
+        for (const OffsetTerm &t : terms)
+            text += (t.minus ? " - " : " + ") + getSourceText(t.expr, SM, LO);
+        return text;
+    };
+
     llvm::outs() << "[Debug] Accesses for pointer '" << VD->getNameAsString() << "':\n";
     for (const auto &access : seq)
     {
         llvm::outs() << "  " << pointerAccessKindToString(access.kind)
                      << " at " << access.loc.printToString(SM);
-        if (!access.offset_text.empty())
-            llvm::outs() << " offset=" << access.offset_text;
+        if (!access.offset_terms.empty())
+            llvm::outs() << " offset=" << spell(access.offset_terms);
+        if (access.isSplit())
+            llvm::outs() << " root="
+                         << applyRootAdjust(access.root_adjust,
+                                            getSourceText(access.root_expr, SM, LO));
+        if (!access.index_terms.empty())
+            llvm::outs() << " index=" << spell(access.index_terms);
         if (!access.field_name.empty())
             llvm::outs() << " field=" << access.field_name;
-        if (!access.subscript_text.empty())
-            llvm::outs() << " subscript=" << access.subscript_text;
-        if (!access.operand_text.empty())
-            llvm::outs() << " operand=" << access.operand_text;
+        if (access.subscript_expr)
+            llvm::outs() << " subscript="
+                         << getSourceText(access.subscript_expr, SM, LO);
+        if (access.kind == PointerAccessKind::PlusAssign ||
+            access.kind == PointerAccessKind::MinusAssign)
+            if (const auto *BO = dyn_cast_or_null<BinaryOperator>(
+                    skipTransparentParents(access.expr, Ctx)))
+                llvm::outs() << " operand=" << getSourceText(BO->getRHS(), SM, LO);
         llvm::outs() << "\n";
     }
 }

@@ -20,10 +20,9 @@ DeclarationMatcher FunctionMatcher = functionDecl(isDefinition()).bind("funcDecl
 
 bool g_inplace = false;
 bool g_verbose = false;
-std::map<const VarDecl *, GlobalPointerState> g_global_pointer_map;
+std::map<const VarDecl *, std::vector<PointerAccess>> g_global_pointer_map;
 
 std::set<std::string> g_allowed_funcs = {"strchr", "strstr"};
-std::set<std::string> g_emitted_wrappers;
 
 std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
 xj::PtrIndexMetadata g_metadata;
@@ -34,39 +33,30 @@ std::vector<PendingDeclLoc> g_pending_decl_locs;
 // Helpers
 // ============================================================================
 
-// Locate the DeclStmt that declares `VD` inside `FunctionBody`. Useful
-// when we want to rewrite the declaration line as a whole rather than
-// just the VarDecl's range.
-const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody)
+// A local's DeclStmt is its parent in the AST. A parameter's parent is its
+// function and a file-scope variable's is the translation unit, so neither
+// has one.
+const DeclStmt *declStmtOf(const VarDecl *VD, ASTContext &Ctx)
 {
-    if (!VD || !FunctionBody)
+    if (!VD)
         return nullptr;
+    for (const DynTypedNode &P : Ctx.getParents(*VD))
+        if (const auto *DS = P.get<DeclStmt>())
+            return DS;
+    return nullptr;
+}
 
-    class DeclStmtFinder : public RecursiveASTVisitor<DeclStmtFinder>
-    {
-    public:
-        const VarDecl *Target;
-        const DeclStmt *Found = nullptr;
-
-        explicit DeclStmtFinder(const VarDecl *V) : Target(V) {}
-
-        bool VisitDeclStmt(DeclStmt *DS)
-        {
-            for (const Decl *D : DS->decls())
-            {
-                if (D == Target)
-                {
-                    Found = DS;
-                    return false;
-                }
-            }
+bool referencesAnyOf(const Stmt *S, const std::set<const Decl *> &decls)
+{
+    if (!S)
+        return false;
+    if (const auto *DRE = dyn_cast<DeclRefExpr>(S))
+        if (decls.count(DRE->getDecl()))
             return true;
-        }
-    };
-
-    DeclStmtFinder finder(VD);
-    finder.TraverseStmt(FunctionBody);
-    return finder.Found;
+    for (const Stmt *Child : S->children())
+        if (referencesAnyOf(Child, decls))
+            return true;
+    return false;
 }
 
 // The ForStmt `DS` is the init clause of, if any. Only the init clause
@@ -166,6 +156,24 @@ std::string applyRootAdjust(RootAdjust adj, const std::string &name) {
     case RootAdjust::None: break;
     }
     return name;
+}
+
+PointerAccess demoted(const PointerAccess &access) {
+    PointerAccess out = access;
+    switch (access.root_adjust) {
+    case RootAdjust::PostInc:
+    case RootAdjust::PreInc:
+        out.kind = PointerAccessKind::Increment;
+        break;
+    case RootAdjust::PostDec:
+    case RootAdjust::PreDec:
+        out.kind = PointerAccessKind::Decrement;
+        break;
+    case RootAdjust::None:
+        out.kind = PointerAccessKind::ValueUse;
+        break;
+    }
+    return out;
 }
 
 // Stringify a PointerAccessKind for verbose / debug output.

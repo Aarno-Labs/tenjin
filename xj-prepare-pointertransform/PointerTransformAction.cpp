@@ -17,11 +17,6 @@ bool PointerTransformAction::BeginSourceFileAction(CompilerInstance &CI) {
     // cleared here becomes a use-after-free on the next translation unit.
     g_global_pointer_map.clear();
     g_function_analyses.clear();
-    // Wrapper bodies are `static`, so each file that uses one needs its own
-    // definition; carrying the set across files would suppress every
-    // definition after the first and leave later files calling a name they
-    // do not declare.
-    g_emitted_wrappers.clear();
     // Positions are mapped through *this* TU's Rewriter, so a leftover
     // entry from an earlier file would be translated through the wrong
     // edits.

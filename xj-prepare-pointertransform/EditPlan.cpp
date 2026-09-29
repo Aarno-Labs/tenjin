@@ -6,14 +6,31 @@
 // The extent of one rewrite
 // ============================================================================
 
-bool accessNeedsEdit(const PointerAccess &access) {
+PointerFacts pointerFactsOf(const std::vector<PointerAccess> &accesses) {
+    PointerFacts facts;
+    for (const PointerAccess &a : accesses) {
+        if (a.kind == PointerAccessKind::AssignFromAllowedFunc)
+            facts.null_in_index = true;
+        if (a.kind == PointerAccessKind::InitNull ||
+            a.kind == PointerAccessKind::AssignNull ||
+            a.kind == PointerAccessKind::AssignFromAllowedFunc)
+            facts.may_be_null = true;
+    }
+    return facts;
+}
+
+// True when `access` must produce an edit. The kinds that legitimately
+// produce none are listed with editedNode, in EditPlan.h.
+static bool accessNeedsEdit(const PointerAccess &access,
+                            const PointerFacts &facts) {
     switch (access.kind) {
-    case PointerAccessKind::NullTest:
     case PointerAccessKind::NoEdit:
     case PointerAccessKind::PairwiseRoot:
     case PointerAccessKind::AddressOf:
     case PointerAccessKind::Unknown:
         return false;
+    case PointerAccessKind::NullTest:
+        return facts.null_in_index;
     case PointerAccessKind::Init:
     case PointerAccessKind::InitNull:
         // Only a split initializer is rewritten — `int *q = p + 1` keeps
@@ -21,36 +38,10 @@ bool accessNeedsEdit(const PointerAccess &access) {
         // already the base it should be, and `T *p = NULL` is unsplit: the
         // sentinel reaches the index through its declaration's
         // initializer, which is indexDeclInit's answer and not an edit.
-        return access.root_expr && access.rhs_expr &&
-               access.root_expr != access.rhs_expr->IgnoreParenImpCasts();
+        return access.isSplit();
     default:
         return true;
     }
-}
-
-bool nullLivesInIndex(const std::vector<PointerAccess> &accesses) {
-    for (const PointerAccess &a : accesses)
-        if (a.kind == PointerAccessKind::AssignFromAllowedFunc)
-            return true;
-    return false;
-}
-
-bool pointerMayBeNull(const std::vector<PointerAccess> &accesses) {
-    for (const PointerAccess &a : accesses)
-        if (a.kind == PointerAccessKind::InitNull ||
-            a.kind == PointerAccessKind::AssignNull ||
-            a.kind == PointerAccessKind::AssignFromAllowedFunc)
-            return true;
-    return false;
-}
-
-const Stmt *nullTestNode(const PointerAccess &access) {
-    if (access.kind != PointerAccessKind::NullTest)
-        return nullptr;
-    const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
-    if (BO && BO->isComparisonOp())
-        return BO;
-    return access.expr;
 }
 
 // A wrapper turns a library function that hands back a *pointer* into one
@@ -73,8 +64,9 @@ static std::string wrapperBodyFor(const std::string &func_name) {
     return "";
 }
 
-const Stmt *editedNode(const PointerAccess &access, ASTContext &Ctx) {
-    if (!accessNeedsEdit(access))
+const Stmt *editedNode(const PointerAccess &access, const PointerFacts &facts,
+                       ASTContext &Ctx) {
+    if (!accessNeedsEdit(access, facts))
         return nullptr;
 
     const Expr *E = access.expr;
@@ -131,6 +123,16 @@ const Stmt *editedNode(const PointerAccess &access, ASTContext &Ctx) {
     case PointerAccessKind::ValueUse:
         return E;
 
+    // `p == NULL` / `p != NULL` compare against a pointer, so the whole
+    // comparison is replaced. Every other form — `if (p)`, `!p`, `p && q` —
+    // is a truth test on the reference itself.
+    case PointerAccessKind::NullTest: {
+        const auto *BO = dyn_cast_or_null<BinaryOperator>(access.enclosing_stmt);
+        if (BO && BO->isComparisonOp())
+            return BO;
+        return E;
+    }
+
     default:
         return nullptr;
     }
@@ -184,33 +186,21 @@ void EditPlan::reportViolation(const llvm::Twine &what, SourceLocation loc) {
 
 void EditPlan::add(const FunctionDecl *FD, const VarDecl *ptr,
                    const std::vector<PointerAccess> &accesses) {
-    PointerFacts &f = facts[ptr];
-    f.may_be_null = pointerMayBeNull(accesses);
-    f.null_in_index = nullLivesInIndex(accesses);
+    const PointerFacts &f = facts[ptr] = pointerFactsOf(accesses);
 
     for (const PointerAccess &access : accesses) {
-        // A null test is planned only where the index can go negative under
-        // a live region; validation asked the same question, of the same
-        // two functions, before accepting the pointer.
-        const Stmt *node = nullptr;
-        if (access.kind == PointerAccessKind::NullTest) {
-            if (!f.null_in_index)
-                continue;
-            node = nullTestNode(access);
-        } else {
-            if (!accessNeedsEdit(access))
-                continue;
-            node = editedNode(access, Ctx);
-        }
+        if (!accessNeedsEdit(access, f))
+            continue;
 
         PlannedEdit e;
         e.FD = FD;
         e.ptr = ptr;
         e.access = &access;
-        e.node = node;
+        e.node = editedNode(access, f, Ctx);
 
         // Validation has already refused a pointer with an access it cannot
-        // anchor or reach, so either failing here means the two disagree.
+        // reach, and the classifier leaves none it cannot anchor, so either
+        // failing here is a bug.
         if (!e.node || !editRangeOf(e.node, Ctx, e.file, e.begin, e.end)) {
             reportViolation(llvm::Twine("no usable edit range for a ") +
                                 pointerAccessKindToString(access.kind) + " of '" +
@@ -333,19 +323,6 @@ static bool assignmentIsCondition(const BinaryOperator *BO, ASTContext &Ctx) {
     return Cond && Cond->IgnoreParenImpCasts() == BO;
 }
 
-// True if `S` names `VD` anywhere in its subtree.
-static bool referencesDecl(const Stmt *S, const VarDecl *VD) {
-    if (!S)
-        return false;
-    if (const auto *DRE = dyn_cast<DeclRefExpr>(S))
-        if (DRE->getDecl() == VD)
-            return true;
-    for (const Stmt *Child : S->children())
-        if (referencesDecl(Child, VD))
-            return true;
-    return false;
-}
-
 // The pointer a rewritten reference hands back. A pointer that can hold
 // the sentinel has to map it to a real null: `base + -1` is one element
 // before the region and is not null, so a callee's null check on it would
@@ -364,8 +341,7 @@ std::string EditPlan::pointerValue(const VarDecl *ptr) {
 }
 
 void EditPlan::needWrapper(const std::string &func_name, const FunctionDecl *FD) {
-    if (!FD || g_emitted_wrappers.count(func_name + "_index_xj") ||
-        wrapperBodyFor(func_name).empty())
+    if (!FD || wrapperBodyFor(func_name).empty())
         return;
     auto [it, inserted] = wrappers.insert({func_name, FD});
     if (inserted)
@@ -559,8 +535,7 @@ std::string EditPlan::render(size_t i) {
         const auto *BO = cast<BinaryOperator>(e.node);
         bool value_used = valueIsUsed(BO, Ctx);
 
-        if (a.root_expr && a.rhs_expr &&
-            a.root_expr != a.rhs_expr->IgnoreParenImpCasts()) {
+        if (a.isSplit()) {
             // Split: the right-hand side keeps only its root and the rest
             // becomes the index.
             //
@@ -579,7 +554,7 @@ std::string EditPlan::render(size_t i) {
             // one; the alternative is neither.
             bool index_first = false;
             for (const OffsetTerm &t : a.index_terms)
-                if (referencesDecl(t.expr, e.ptr)) {
+                if (referencesAnyOf(t.expr, {e.ptr})) {
                     index_first = true;
                     break;
                 }
@@ -617,10 +592,15 @@ std::string EditPlan::render(size_t i) {
             CE ? dyn_cast<DeclRefExpr>(CE->getArg(0)->IgnoreParenImpCasts())
                : nullptr;
         const auto *BaseVD = BaseDRE ? dyn_cast<VarDecl>(BaseDRE->getDecl()) : nullptr;
-        if (!BaseVD) {
-            reportViolation("an allowlisted search lost its region argument", a.loc);
+        const FunctionDecl *Callee = CE ? CE->getDirectCallee() : nullptr;
+        if (!BaseVD || !Callee) {
+            reportViolation("an allowlisted search lost its callee or its "
+                            "region argument",
+                            a.loc);
             return getSourceText(e.node->getSourceRange(), SM, LO);
         }
+        // The library function — `strchr` — that the wrapper is named after.
+        const std::string func_name = Callee->getNameAsString();
 
         // Argument 0 is the region searched; it becomes the wrapper's
         // `base`, and everything after it is passed through — rendered
@@ -636,7 +616,7 @@ std::string EditPlan::render(size_t i) {
         const std::string base_text = BaseVD->getNameAsString();
         const std::string start =
             transformed.count(BaseVD) ? indexNameFor(BaseVD) : "0";
-        const std::string wrapper_name = a.offset_text + "_index_xj";
+        const std::string wrapper_name = func_name + "_index_xj";
 
         std::string out = idx + " = " + wrapper_name + "(" + base_text + ", " +
                           start + other_args + ")";
@@ -660,7 +640,7 @@ std::string EditPlan::render(size_t i) {
         else if (valueIsUsed(BO, Ctx))
             out = "(" + out + ", " + pointerValue(e.ptr) + ")";
 
-        needWrapper(a.offset_text, e.FD);
+        needWrapper(func_name, e.FD);
         return out;
     }
 
@@ -671,7 +651,7 @@ std::string EditPlan::render(size_t i) {
     // may still be null, so `off >= 0` alone would call it non-null.
     //
     // Only planned at all where an index can go negative under a live
-    // region; see nullLivesInIndex.
+    // region; see PointerFacts::null_in_index.
     case PointerAccessKind::NullTest: {
         const std::string non_null = "(" + ptr + " && " + idx + " >= 0)";
         const auto *BO = dyn_cast<BinaryOperator>(e.node);
@@ -712,12 +692,8 @@ void EditPlan::appendRootEdits(std::vector<Edit> &out) {
         out.push_back(std::move(edit));
     }
 
-    // After rendering, because rendering is what discovers them. A wrapper
-    // is emitted once per file: g_emitted_wrappers keeps a second plan over
-    // the same file from writing a duplicate definition.
+    // After rendering, because rendering is what discovers them.
     for (const auto &[func_name, FD] : wrappers) {
-        if (!g_emitted_wrappers.insert(func_name + "_index_xj").second)
-            continue;
         Edit edit;
         edit.type = Edit::InsertBefore;
         edit.start = FD->getBeginLoc();

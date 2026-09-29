@@ -70,7 +70,6 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
 
     // Defined in ValidationMethods.cpp.
     bool validatePointerCandidate(const VarDecl *PtrVar,
-                                  PointerCandidate &candidate,
                                   std::vector<PointerAccess> &accesses,
                                   ASTContext &Ctx,
                                   std::string &error);

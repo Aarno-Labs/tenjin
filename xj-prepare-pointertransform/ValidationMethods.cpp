@@ -18,13 +18,11 @@
 
 bool FunctionAccessAnalyzer::validatePointerCandidate(
     const VarDecl *PtrVar,
-    PointerCandidate &candidate,
     std::vector<PointerAccess> &accesses,
     ASTContext &Ctx,
     std::string &error) {
 
     (void)PtrVar;
-    (void)candidate;
 
     if (accesses.empty()) {
         error = "No accesses found";
@@ -32,10 +30,10 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
     }
 
     // Whether a null test has to move is a property of the whole access
-    // list, not of the test — see nullLivesInIndex. Asked here, of the same
+    // list, not of the test — see PointerFacts. Asked here, of the same
     // function the planner asks, so the two cannot disagree about which
     // tests need an editable range.
-    const bool null_in_index = nullLivesInIndex(accesses);
+    const PointerFacts facts = pointerFactsOf(accesses);
 
     for (const auto &access : accesses) {
         // &p means the pointer's storage is observable. A retained pointer
@@ -66,23 +64,10 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         // becomes its own increment, whose edit covers the whole `p++` — a
         // wider span, and one that can fail to be addressable where the bare
         // reference would not.
-        const Stmt *node = nullptr;
-        if (access.kind == PointerAccessKind::PairwiseRoot) {
-            if (access.root_adjust == RootAdjust::None) {
-                node = access.expr;
-            } else {
-                PointerAccess demoted = access;
-                demoted.kind = (access.root_adjust == RootAdjust::PostInc ||
-                                access.root_adjust == RootAdjust::PreInc)
-                                   ? PointerAccessKind::Increment
-                                   : PointerAccessKind::Decrement;
-                node = editedNode(demoted, Ctx);
-            }
-        } else if (access.kind == PointerAccessKind::NullTest) {
-            node = null_in_index ? nullTestNode(access) : nullptr;
-        } else {
-            node = editedNode(access, Ctx);
-        }
+        const Stmt *node = editedNode(
+            access.kind == PointerAccessKind::PairwiseRoot ? demoted(access)
+                                                           : access,
+            facts, Ctx);
         if (!node)
             continue;  // this access legitimately rewrites nothing
 
@@ -134,12 +119,10 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         case PointerAccessKind::InitNull:
         case PointerAccessKind::Assign:
         case PointerAccessKind::AssignNull:
-            // Asked of the split itself, not of its spelling: an assignment
-            // lands at an offset when the decomposition moved something into
-            // the index, either addend terms or a step on the base's own
-            // index.
-            if (!access.index_terms.empty() ||
-                access.root_adjust != RootAdjust::None)
+            // An assignment lands at an offset when the split moved
+            // something into the index, either addend terms or a step on
+            // the base's own index.
+            if (access.isSplit())
                 has_offset_assignment = true;
             break;
         default:

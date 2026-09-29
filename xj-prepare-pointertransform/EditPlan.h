@@ -28,47 +28,45 @@
 
 #include "Common.h"
 
-// True when `access` must produce an edit. False for the kinds that
-// legitimately produce none: a pairwise root is carried by its owner's
-// assignment, `sizeof p` never reads the value, and an unsplit
-// initializer keeps its text with the index simply starting at zero.
+// What a pointer's whole access list decides about each of its rewrites.
+// These are questions about the pointer and not about any one access, so
+// they are answered once, by pointerFactsOf, and handed to whatever looks
+// at an access.
+struct PointerFacts {
+    // The -1 sentinel can reach this pointer's index, so every site turning
+    // the index back into a pointer has to map it back to a real null:
+    // `base + -1` addresses one element before the region and is
+    // emphatically not null.
+    //
+    // The sentinel arrives from exactly three places. Two are explicit
+    // nulls; the third is the generated wrapper for an allowlisted
+    // function, which returns -1 for "not found" — so a strchr-derived
+    // pointer can be null without any NULL appearing in the source. A
+    // future kind that can assign -1 to an index belongs in this list.
+    bool may_be_null = false;
+
+    // The index can go negative while the region stays non-null, which
+    // happens only through an allowlisted-function wrapper. It is the one
+    // condition under which a null test has to be rewritten: a pointer
+    // whose only null is `p = NULL` reseats the region and really is null,
+    // so `if (p)` already reads correctly.
+    bool null_in_index = false;
+};
+
+PointerFacts pointerFactsOf(const std::vector<PointerAccess> &accesses);
+
+// The node whose source range `access` replaces. This is the single owner
+// of the edit extent: validation, the planner and the renderer all ask
+// here, so they cannot disagree about what a rewrite covers.
 //
-// A null test is not among them unconditionally — see nullLivesInIndex —
-// so it is asked separately, through nullTestNode.
-bool accessNeedsEdit(const PointerAccess &access);
-
-// True when this pointer can carry a negative index while its region stays
-// non-null, which happens only through an allowlisted-function wrapper. It
-// is the one condition under which a null test has to be rewritten: a
-// pointer whose only null is `p = NULL` reseats the region and really is
-// null, so `if (p)` already reads correctly.
-bool nullLivesInIndex(const std::vector<PointerAccess> &accesses);
-
-// True when the -1 sentinel can reach this pointer's index at all, so that
-// every site turning the index back into a pointer has to map it back to a
-// real null. `base + -1` addresses one element before the region and is
-// emphatically not null.
-//
-// The sentinel arrives from exactly three places. Two are explicit nulls;
-// the third is the generated wrapper for an allowlisted function, which
-// returns -1 for "not found" — so a strchr-derived pointer can be null
-// without any NULL appearing in the source. A future kind that can assign
-// -1 to an index belongs in this list.
-bool pointerMayBeNull(const std::vector<PointerAccess> &accesses);
-
-// The node a null-test rewrite replaces: the whole comparison for
-// `p == NULL` / `p != NULL`, which compares against a pointer, and the
-// reference itself for every other form — `if (p)`, `!p`, `p && q` — which
-// are truth tests on the reference. Null when this access is not a null
-// test. Asked only when nullLivesInIndex says the test has to move.
-const Stmt *nullTestNode(const PointerAccess &access);
-
-// The node whose source range `access` replaces, or null when it needs no
-// edit (or, if it does need one, when the anchor cannot be found — which
-// validation rejects). This is the single owner of the edit extent: the
-// planner, the renderer and the verifier all ask here, so they cannot
-// disagree about what a rewrite covers.
-const Stmt *editedNode(const PointerAccess &access, ASTContext &Ctx);
+// Null when the access produces no edit: a pairwise root is carried by its
+// owner's assignment, `sizeof p` never reads the value, an unsplit
+// initializer keeps its text with the index simply starting at zero, and a
+// null test stays as written unless `facts.null_in_index`. Also null when
+// an edit is needed but its anchor cannot be found; the classifier rules
+// that out, and the planner reports it as a bug.
+const Stmt *editedNode(const PointerAccess &access, const PointerFacts &facts,
+                       ASTContext &Ctx);
 
 // The file offsets `N` spans, or false when the range is unusable: inside
 // a macro expansion, which the Rewriter cannot edit, or split across two
@@ -86,12 +84,10 @@ class EditPlan {
     // ignored. `accesses` must outlive the plan; it is read again during
     // rendering.
     //
-    // The whole access list rather than one access at a time, because two
-    // of the questions a rewrite asks are about the pointer and not about
-    // the access: whether the sentinel can reach its index at all
-    // (pointerMayBeNull) and whether a null test has to move
-    // (nullLivesInIndex). `FD` is the function the pointer lives in, and
-    // is where a generated wrapper body goes.
+    // The whole access list rather than one access at a time, because some
+    // of what a rewrite asks is about the pointer and not about the access;
+    // see PointerFacts. `FD` is the function the pointer lives in, and is
+    // where a generated wrapper body goes.
     void add(const FunctionDecl *FD, const VarDecl *ptr,
              const std::vector<PointerAccess> &accesses);
 
@@ -139,13 +135,6 @@ class EditPlan {
 
     static constexpr size_t kNoParent = static_cast<size_t>(-1);
 
-    // What a pointer's whole access list decided, kept where render() can
-    // reach it from a single access.
-    struct PointerFacts {
-        bool may_be_null = false;
-        bool null_in_index = false;
-    };
-
     // The pointer value for `ptr`'s index, guarded only where the sentinel
     // can actually reach. A pointer that never holds null keeps the bare
     // `base + index` spelling, which is what the slice pass matches.
@@ -182,10 +171,11 @@ class EditPlan {
     const LangOptions &LO;
     const std::set<const VarDecl *> &transformed;
     std::vector<PlannedEdit> edits;
+    // Kept per pointer so that render() can reach them from a single access.
     std::map<const VarDecl *, PointerFacts> facts;
     // Library function name -> the earliest function needing its wrapper.
-    // Emission is also gated on g_emitted_wrappers, so a body already
-    // written for this file is not written twice.
+    // There is one plan per translation unit, so one entry is one body per
+    // file.
     std::map<std::string, const FunctionDecl *> wrappers;
     // Violations are counted for the whole run, so a plan judges itself by
     // what it added rather than by the total.

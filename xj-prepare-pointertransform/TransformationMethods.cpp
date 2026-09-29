@@ -92,12 +92,11 @@ static bool forInitSite(const ForStmt *FS, ASTContext &Ctx, IndexDeclSite &site)
 }
 
 bool findIndexDeclSite(const FunctionDecl *FD, const VarDecl *PtrVar,
-                       const PointerCandidate &candidate, ASTContext &Ctx,
-                       IndexDeclSite &site) {
+                       ASTContext &Ctx, IndexDeclSite &site) {
     const SourceManager &SM = Ctx.getSourceManager();
     const LangOptions &LO = Ctx.getLangOpts();
 
-    if (candidate.is_parameter) {
+    if (isa<ParmVarDecl>(PtrVar)) {
         // The parameter arrives holding its base; the index starts at 0.
         const auto *CS = FD ? dyn_cast_or_null<CompoundStmt>(FD->getBody()) : nullptr;
         if (!CS) {
@@ -133,7 +132,7 @@ bool findIndexDeclSite(const FunctionDecl *FD, const VarDecl *PtrVar,
         return true;
     }
 
-    const DeclStmt *DS = FD ? findDeclStmtForVar(PtrVar, FD->getBody()) : nullptr;
+    const DeclStmt *DS = declStmtOf(PtrVar, Ctx);
     if (!DS) {
         if (VERBOSE)
             llvm::outs() << "[Error] Could not find DeclStmt for "

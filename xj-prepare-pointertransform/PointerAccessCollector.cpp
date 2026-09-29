@@ -14,7 +14,7 @@
 #include "PointerAccessCollector.h"
 
 PointerAccessCollector::PointerAccessCollector(ASTContext &Ctx)
-    : Ctx(Ctx), SM(Ctx.getSourceManager()), LO(Ctx.getLangOpts()) {}
+    : Ctx(Ctx), SM(Ctx.getSourceManager()) {}
 
 bool PointerAccessCollector::isTracked(const Decl *D) const
 {
@@ -127,28 +127,13 @@ static bool consumerOf(const Stmt *S, ASTContext &Ctx,
 // position, so `p = q + 1` left alone would silently reset p to wherever q
 // started. Recording the root here is what lets the rewriter pair the
 // indices instead.
-static bool referencesAnyOf(const Stmt *S, const std::set<const Decl *> &bound)
-{
-    if (!S)
-        return false;
-    if (const auto *DRE = dyn_cast<DeclRefExpr>(S))
-        if (bound.count(DRE->getDecl()))
-            return true;
-    for (const Stmt *Child : S->children())
-        if (referencesAnyOf(Child, bound))
-            return true;
-    return false;
-}
 
 bool PointerAccessCollector::escapesForInitScope(const Stmt *S,
                                                  const VarDecl *Owner)
 {
     if (!S || !Owner)
         return false;
-    const DeclStmt *DS = nullptr;
-    for (const DynTypedNode &P : Ctx.getParents(*Owner))
-        if ((DS = P.get<DeclStmt>()))
-            break;
+    const DeclStmt *DS = declStmtOf(Owner, Ctx);
     if (!DS || !forStmtInitializedBy(DS, Ctx))
         return false;
     std::set<const Decl *> bound(DS->decl_begin(), DS->decl_end());
@@ -267,8 +252,6 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     pa.rhs_expr = RHS;
     pa.root_expr = nullptr;
     pa.root_adjust = RootAdjust::None;
-    pa.offset_text = "0";
-    pa.operand_text = "";
     pa.index_terms.clear();
 
     if (!RHS)
@@ -307,25 +290,9 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     }
 
     pa.root_expr = split.base;
-    if (split.base != RHS->IgnoreParenImpCasts())
+    if (pa.isSplit())
     {
-        // Spellings only, for the verbose dump. Rebuilt from the terms rather
-        // than sliced out of the whole expression's source text, so a
-        // parenthesised root like `(q) + 1` leaves no stray `)` behind.
-        std::string remainder;
-        for (const OffsetTerm &t : split.terms)
-            remainder += (t.minus ? " - " : " + ") + getSourceText(t.expr, SM, LO);
-        // `q + 1` counts from 1 on its own; `q - 1` needs the zero to
-        // subtract from. A stepped root counts from the step instead.
-        std::string standalone =
-            split.step != RootAdjust::None
-                ? applyRootAdjust(split.step, getSourceText(split.base, SM, LO)) + remainder
-            : remainder.compare(0, 3, " + ") == 0 ? remainder.substr(3)
-                                                  : "0" + remainder;
-
         pa.root_adjust = split.step;
-        pa.offset_text = standalone;
-        pa.operand_text = remainder;
         pa.index_terms = std::move(split.terms);
     }
 }
@@ -426,19 +393,17 @@ const VarDecl *PointerAccessCollector::pairwiseOwner(const DeclRefExpr *DRE,
 // Collection
 // ============================================================================
 
-// Pick up every pointer-typed VarDecl (locals and parameters) and record
-// it in `tracked_pointers`. A pointer with an initializer also gets an
-// Init access carrying the (root, offset) split of that initializer.
+// Pick up a pointer-typed VarDecl — a local or a parameter during
+// traversal, a file-scope pointer when FunctionAccessAnalyzer hands one
+// over — and record it in `tracked_pointers`. A pointer with an initializer
+// also gets an Init or InitNull access carrying the (root, offset) split of
+// that initializer.
 bool PointerAccessCollector::VisitVarDecl(VarDecl *VD)
 {
     if (!VD->getType()->isPointerType())
         return true;
     if (SM.isInSystemHeader(VD->getLocation()))
         return true;
-
-    PointerCandidate candidate;
-    candidate.ptr_var = VD;
-    candidate.is_parameter = isa<ParmVarDecl>(VD);
 
     std::vector<PointerAccess> access_list;
     if (VD->hasInit())
@@ -452,12 +417,15 @@ bool PointerAccessCollector::VisitVarDecl(VarDecl *VD)
         access_list.push_back(pa);
     }
 
-    tracked_pointers[VD] = candidate;
+    tracked_pointers.insert(VD);
     accesses[VD] = access_list;
 
     if (VERBOSE)
         llvm::outs() << "[Collect] Tracking pointer: " << VD->getNameAsString()
-                     << (candidate.is_parameter ? " (parameter)" : " (local)") << "\n";
+                     << (isa<ParmVarDecl>(VD)      ? " (parameter)"
+                         : VD->hasGlobalStorage() ? " (global)"
+                                                  : " (local)")
+                     << "\n";
 
     return true;
 }
@@ -471,8 +439,7 @@ bool PointerAccessCollector::VisitDeclRefExpr(DeclRefExpr *DRE)
     if (!VD)
         return true;
 
-    auto it = tracked_pointers.find(VD);
-    if (it == tracked_pointers.end())
+    if (!tracked_pointers.count(VD))
         return true;
 
     if (VD->hasInit())
@@ -681,7 +648,6 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                               : PointerAccessKind::Subscript,
                      ASE->getBeginLoc());
             pa.subscript_expr = ASE->getIdx();
-            pa.subscript_text = getSourceText(ASE->getIdx(), SM, LO);
             return;
         }
     }
@@ -697,8 +663,7 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                 dyn_cast<CallExpr>(BO->getRHS()->IgnoreParenImpCasts());
             if (isAllowedSearch(RhsCall))
             {
-                emit(PointerAccessKind::AssignFromAllowedFunc, BO->getBeginLoc(), BO)
-                    .offset_text = RhsCall->getDirectCallee()->getNameAsString();
+                emit(PointerAccessKind::AssignFromAllowedFunc, BO->getBeginLoc(), BO);
                 return;
             }
         }
@@ -718,11 +683,9 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
         if ((BO->getOpcode() == BO_AddAssign || BO->getOpcode() == BO_SubAssign) &&
             isSelf(BO->getLHS()))
         {
-            PointerAccess &pa =
-                emit(BO->getOpcode() == BO_AddAssign ? PointerAccessKind::PlusAssign
-                                                     : PointerAccessKind::MinusAssign,
-                     BO->getBeginLoc());
-            pa.operand_text = getSourceText(BO->getRHS(), SM, LO);
+            emit(BO->getOpcode() == BO_AddAssign ? PointerAccessKind::PlusAssign
+                                                 : PointerAccessKind::MinusAssign,
+                 BO->getBeginLoc());
             return;
         }
 
@@ -765,9 +728,6 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
                                       : PointerAccessKind::DerefOffset,
                              DerefUO->getBeginLoc(), DerefUO);
                     pa.offset_terms = terms;
-                    for (const OffsetTerm &t : terms)
-                        pa.offset_text += (t.minus ? " - " : " + ") +
-                                          getSourceText(t.expr, SM, LO);
                     return;
                 }
                 if (const auto *UpBO = dyn_cast<BinaryOperator>(Up))

@@ -21,6 +21,15 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
     bool VisitVarDecl(VarDecl *VD);
     bool VisitDeclRefExpr(DeclRefExpr *DRE);
 
+    // Output: every tracked pointer in the visited function and the
+    // ordered list of accesses recorded for it.
+    std::set<const VarDecl *> tracked_pointers;
+    std::map<const VarDecl *, std::vector<PointerAccess>> accesses;
+
+  private:
+    ASTContext &Ctx;
+    const SourceManager &SM;
+
     // Split a pointer-valued right-hand side into a root and an offset and
     // record the result on `pa`. `Owner` is the pointer being assigned;
     // `owner_is_declared_here` says its index declaration may have to be
@@ -30,16 +39,6 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
     void splitAssignedValue(const Expr *RHS, PointerAccess &pa,
                             const VarDecl *Owner = nullptr,
                             bool owner_is_declared_here = false);
-
-    // Output: every tracked pointer in the visited function and the
-    // ordered list of accesses recorded for it.
-    std::map<const VarDecl *, PointerCandidate> tracked_pointers;
-    std::map<const VarDecl *, std::vector<PointerAccess>> accesses;
-
-  private:
-    ASTContext &Ctx;
-    const SourceManager &SM;
-    const LangOptions &LO;
 
     // Walk up the AST parent chain from `DRE` to determine what kind of
     // use this is (Deref, Increment, Subscript, ...) and append a

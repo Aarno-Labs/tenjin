@@ -3,13 +3,12 @@
 // This header defines the data structures every other component reads or
 // writes:
 //   - PointerAccessKind: the classification of a single pointer use
-//   - PointerCandidate: per-pointer metadata (base array, offset bounds, ...)
 //   - PointerAccess:    one classified use of a pointer
 //   - FunctionAnalysis: per-function snapshot saved from run() to use in
 //                       onEndOfTranslationUnit()
 //   - Edit:             one pending source-text rewrite
-//   - Globals (extern): cross-phase state (transformed functions, emitted
-//                       wrappers/typedefs, etc.). Defined in Common.cpp.
+//   - Globals (extern): cross-phase state (per-function analyses, logs,
+//                       metadata, etc.). Defined in Common.cpp.
 
 #pragma once
 
@@ -95,7 +94,7 @@ enum class PointerAccessKind {
     // A null right-hand side reseats the region to the null region and
     // drives the index to the -1 sentinel. Both are ordinary (base, index)
     // assignments in every other respect — these kinds exist so
-    // pointerMayBeNull can recognize them.
+    // pointerFactsOf can recognize them.
     InitNull,           // T *p = NULL;              -> (p = NULL, p_index_xj = -1)
     AssignNull,         // p = NULL                  -> (p = NULL, p_index_xj = -1)
 
@@ -121,14 +120,6 @@ enum class PointerAccessKind {
                         // cannot carry a base while an index carries the
                         // position.
     Unknown             // no parent at all; nothing to anchor an edit to
-};
-
-// One pointer the tool is considering rewriting. The pointer variable is
-// its own base, so there is nothing here about *what* the base is — that
-// question belongs to base resolution, which runs on this tool's output.
-struct PointerCandidate {
-    const VarDecl *ptr_var = nullptr;
-    bool is_parameter = false;      // true if this pointer is a function parameter
 };
 
 // One term of a pointer-arithmetic offset: `p + a - b` has terms `a` and
@@ -171,11 +162,9 @@ struct PointerSplit {
 // the populated fields tells the rewriter exactly what edit to produce;
 // unused fields are left empty.
 //
-// There are two kinds of field here and the difference is load-bearing.
-// The *expression* fields are what a rewrite is built from: whatever they
+// The expression fields are what a rewrite is built from: whatever they
 // name is rendered by the edit plan, so a rewrite nested inside one is
-// carried along instead of pasted over. The *text* fields are spellings
-// snapshotted at classification time; no rewrite is emitted from them.
+// carried along instead of pasted over.
 struct PointerAccess {
     PointerAccessKind kind;
     SourceLocation loc;
@@ -198,27 +187,20 @@ struct PointerAccess {
     // supplies, so nothing can be nested inside it to lose.
     std::string field_name;        // ArrowAccess / ArrowWrite
 
-    // ---- Spellings, for the verbose access dump --------------------------
-    //
-    // Logging only. Whether an Init or Assign lands at an offset is asked
-    // structurally, of `index_terms` and `root_adjust`, not of this text —
-    // spelling the question as `offset_text != "0"` made a field that is
-    // otherwise a snapshot decide which pointers get rewritten.
-    std::string offset_text;       // DerefOffset: the arithmetic after the name.
-                                   // Init/Assign: the whole index expression
-                                   // ("0", "3", "0 + 1 - 2").
-    std::string subscript_text;    // Subscript / SubscriptWrite
-    std::string operand_text;      // PlusAssign / MinusAssign: the RHS.
-                                   // Init/Assign: the remainder after the
-                                   // root's index ("", " + 1 - 2").
-
     // Init / Assign only. `rhs_expr` is the whole right-hand side;
     // `root_expr` is the sub-expression that becomes the new base, or null
     // when the RHS is taken whole and the index starts at 0. When they
-    // differ the split was taken: the rewriter replaces the RHS range with
-    // the root, and `index_terms` holds what it dropped.
+    // differ the split was taken; see isSplit().
     const Expr *rhs_expr = nullptr;
     const Expr *root_expr = nullptr;
+
+    // Init / Assign: true when the split was taken. The rewriter then
+    // replaces the right-hand side with its root, and `index_terms` and
+    // `root_adjust` hold what that dropped — at least one of them is set.
+    bool isSplit() const {
+        return root_expr && rhs_expr &&
+               root_expr != rhs_expr->IgnoreParenImpCasts();
+    }
 
     // Init / Assign: how the root's own index is stepped as it is read, for a
     // right-hand side like `q = p++`. Also carried on a PairwiseRoot, where it
@@ -262,17 +244,6 @@ struct SucceededPointerLog {
 };
 
 // ============================================================================
-// Global (file-scope) pointer tracking
-// ============================================================================
-
-// File-scope pointer variables are collected once per TU into
-// g_global_pointer_map and transformed separately from local pointers.
-struct GlobalPointerState {
-    PointerCandidate candidate;
-    std::vector<PointerAccess> accesses;
-};
-
-// ============================================================================
 // FunctionAnalysis — per-function snapshot saved during run()
 // ============================================================================
 //
@@ -283,7 +254,8 @@ struct GlobalPointerState {
 
 struct FunctionAnalysis {
     const FunctionDecl *FD = nullptr;
-    std::map<const VarDecl *, PointerCandidate> tracked_pointers;
+    // Every local and parameter pointer the function declares, with its
+    // accesses in the order they were visited.
     std::map<const VarDecl *, std::vector<PointerAccess>> accesses;
 };
 
@@ -293,8 +265,7 @@ struct FunctionAnalysis {
 //
 // The tool intentionally keeps cross-phase state in globals because
 // analysis is snapshotted per function during run() and consumed at
-// end-of-TU, and emission needs to dedupe across functions (one
-// strchr_index wrapper per TU).
+// end-of-TU.
 
 extern int g_pointers_found;
 extern int g_pointers_replaced;
@@ -311,18 +282,15 @@ extern DeclarationMatcher FunctionMatcher;     // matches every function definit
 extern bool g_inplace;                         // --inplace CLI flag
 extern bool g_verbose;                         // --verbose CLI flag
 
-// File-scope pointers found in this TU (separate from per-function locals).
-extern std::map<const VarDecl *, GlobalPointerState> g_global_pointer_map;
+// File-scope pointers found in this TU, each with its accesses from every
+// function. Collected once per TU, separately from per-function locals.
+extern std::map<const VarDecl *, std::vector<PointerAccess>> g_global_pointer_map;
 
 // Library functions whose return values we know how to turn into an
 // index (see AssignFromAllowedFunc). Every name here must have a wrapper
 // body in wrapperBodyFor(), or a rewritten call site would name a wrapper
 // that is never emitted.
 extern std::set<std::string> g_allowed_funcs;
-
-// Names of _index wrappers already emitted (e.g. "strchr_index_xj"). Used
-// to make wrapper emission idempotent across the TU.
-extern std::set<std::string> g_emitted_wrappers;
 
 // Per-function analysis snapshots saved during run() for later phases.
 extern std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
@@ -393,8 +361,7 @@ struct IndexDeclSite {
 // Locate a home for `PtrVar`'s index. False when there is none, which is
 // the one remaining reason a validated pointer is left alone.
 bool findIndexDeclSite(const FunctionDecl *FD, const VarDecl *PtrVar,
-                       const PointerCandidate &candidate, ASTContext &Ctx,
-                       IndexDeclSite &site);
+                       ASTContext &Ctx, IndexDeclSite &site);
 
 // Append the edits that write the declaration at `site`. `index_init` is
 // the index's starting value, rendered by the edit plan — see
@@ -494,9 +461,12 @@ inline const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx) {
 // Free helpers (defined in Common.cpp)
 // ============================================================================
 
-// Find the DeclStmt that introduces `VD` inside `FunctionBody`. Used to
-// position rewrites at the variable's declaration line.
-const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody);
+// The DeclStmt that declares `VD`, or null when it has none: a parameter
+// or a file-scope variable.
+const DeclStmt *declStmtOf(const VarDecl *VD, ASTContext &Ctx);
+
+// True if `S` names any of `decls` anywhere in its subtree.
+bool referencesAnyOf(const Stmt *S, const std::set<const Decl *> &decls);
 
 // The ForStmt whose init clause is `DS`, or null when `DS` is an ordinary
 // statement-level declaration.
@@ -528,6 +498,11 @@ const char *pointerAccessKindToString(PointerAccessKind kind);
 // spelling the collector snapshots and the one the rewriter emits cannot
 // drift apart.
 std::string applyRootAdjust(RootAdjust adj, const std::string &name);
+
+// What a PairwiseRoot is on its own, once its owner is not rewritten and no
+// longer carries it: a stepped root is its own Increment or Decrement again,
+// and a bare one is a ValueUse. Returns `access` with only its kind changed.
+PointerAccess demoted(const PointerAccess &access);
 
 // ============================================================================
 // Index variable naming
