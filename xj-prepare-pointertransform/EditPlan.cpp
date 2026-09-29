@@ -117,11 +117,11 @@ const Stmt *editedNode(const PointerAccess &access, ASTContext &Ctx) {
     case PointerAccessKind::Decrement:
         return dyn_cast_or_null<UnaryOperator>(parentOf(E));
 
-    // Only the name moves, so the operand keeps whatever edits of its own
-    // it has: `p += n` is `p_index_xj += n` with `n` rewritten in place.
+    // The whole `p += n` rather than the name alone: where the value is
+    // consumed the rewrite hands back a pointer, and that wraps the operand.
     case PointerAccessKind::PlusAssign:
     case PointerAccessKind::MinusAssign:
-        return E;
+        return dyn_cast_or_null<BinaryOperator>(parentOf(E));
 
     case PointerAccessKind::Assign:
     case PointerAccessKind::AssignNull:
@@ -268,16 +268,12 @@ void EditPlan::build() {
 // Rendering
 // ============================================================================
 
-// True when the value of an increment expression is consumed. A discarded
-// `p++` can stay a bare index bump; a consumed one has to hand back a
-// pointer, so it renders as `(p + p_index_xj++)`.
+// True unless `E`'s value is discarded: it is a statement of its own, the
+// left arm of a comma, or a for-loop init/increment clause.
 //
-// The question is asked as "is the value discarded?", which is a closed set
-// of statement positions, rather than by enumerating the contexts that
-// consume it. The enumeration is what let `char *q = p++;` through: a
-// declarator is neither a call argument, a return, nor an assignment, so the
-// increment rendered as a bare index and the initializer got an int.
-static bool incrementValueIsUsed(const Expr *E, ASTContext &Ctx) {
+// Asked of every rewrite that moves or reseats a pointer. A discarded one
+// can end at the index update; a consumed one has to hand back a pointer.
+static bool valueIsUsed(const Expr *E, ASTContext &Ctx) {
     auto Parents = Ctx.getParents(*E);
     if (Parents.empty())
         return true;
@@ -290,15 +286,15 @@ static bool incrementValueIsUsed(const Expr *E, ASTContext &Ctx) {
         return false;
     // Parentheses are transparent to whether the value is wanted.
     if (const auto *PE = dyn_cast<ParenExpr>(P))
-        return incrementValueIsUsed(PE, Ctx);
+        return valueIsUsed(PE, Ctx);
     // A comma discards its left arm unconditionally; the right arm inherits
     // the comma's own fate. This is what keeps the increments in
-    // `for (...; ...; p++, q++)` a pair of bare index bumps.
+    // `for (...; ...; p++, q++)` a pair of bare index bumps. `P` is `E`'s
+    // immediate parent, so the arm is compared as it stands: `E` may itself
+    // be the parentheses this walk climbed through.
     if (const auto *BO = dyn_cast<BinaryOperator>(P))
         if (BO->getOpcode() == BO_Comma)
-            return BO->getLHS()->IgnoreParenImpCasts() == E
-                       ? false
-                       : incrementValueIsUsed(BO, Ctx);
+            return BO->getLHS() == E ? false : valueIsUsed(BO, Ctx);
     if (const auto *FS = dyn_cast<ForStmt>(P))
         return FS->getCond() == E;
     if (const auto *IS = dyn_cast<IfStmt>(P))
@@ -312,51 +308,29 @@ static bool incrementValueIsUsed(const Expr *E, ASTContext &Ctx) {
     return true;
 }
 
-// True when the value of an assignment expression is consumed. A discarded
-// assignment can end at the index update; a consumed one has to hand back a
-// pointer, so it appends `p + p_index_xj` as a third comma element.
-static bool assignmentValueIsUsed(const BinaryOperator *BO, ASTContext &Ctx) {
-    auto Parents = Ctx.getParents(*BO);
-    if (Parents.empty())
-        return true;
-    const Stmt *P = Parents[0].get<Stmt>();
-    if (!P)
-        return true;
-    if (isa<CompoundStmt>(P) || isa<LabelStmt>(P) || isa<CaseStmt>(P) ||
-        isa<DefaultStmt>(P))
-        return false;
-    if (const auto *FS = dyn_cast<ForStmt>(P))
-        return FS->getCond() == BO;
-    if (const auto *IS = dyn_cast<IfStmt>(P))
-        return IS->getCond() == BO;
-    if (const auto *WS = dyn_cast<WhileStmt>(P))
-        return WS->getCond() == BO;
-    if (const auto *DS = dyn_cast<DoStmt>(P))
-        return DS->getCond() == BO;
-    if (const auto *SS = dyn_cast<SwitchStmt>(P))
-        return SS->getCond() == BO;
-    return true;
-}
-
-// True when the assignment *is* a condition rather than merely having its
-// value read. An index update is already an int that is negative exactly
-// when the pointer test would have failed, so these can end at `>= 0`
-// instead of rebuilding a pointer.
+// True when the assignment *is* a truth test rather than merely having its
+// value read: the condition of an `if` or a loop, or an operand of `&&` or
+// `||`, parenthesized or not. An index update is already an int that is
+// negative exactly when the pointer test would have failed, so these can
+// end at `>= 0` instead of rebuilding a pointer.
 static bool assignmentIsCondition(const BinaryOperator *BO, ASTContext &Ctx) {
     const Stmt *P = skipTransparentParents(BO, Ctx);
     if (!P)
         return false;
-    if (const auto *IS = dyn_cast<IfStmt>(P))
-        return IS->getCond() == BO;
-    if (const auto *WS = dyn_cast<WhileStmt>(P))
-        return WS->getCond() == BO;
-    if (const auto *FS = dyn_cast<ForStmt>(P))
-        return FS->getCond() == BO;
-    if (const auto *DS = dyn_cast<DoStmt>(P))
-        return DS->getCond() == BO;
     if (const auto *LogBO = dyn_cast<BinaryOperator>(P))
         return LogBO->getOpcode() == BO_LAnd || LogBO->getOpcode() == BO_LOr;
-    return false;
+    const Expr *Cond = nullptr;
+    if (const auto *IS = dyn_cast<IfStmt>(P))
+        Cond = IS->getCond();
+    else if (const auto *WS = dyn_cast<WhileStmt>(P))
+        Cond = WS->getCond();
+    else if (const auto *FS = dyn_cast<ForStmt>(P))
+        Cond = FS->getCond();
+    else if (const auto *DS = dyn_cast<DoStmt>(P))
+        Cond = DS->getCond();
+    // `P` was reached through any parentheses around the assignment, so the
+    // condition is looked through the same way before it is compared.
+    return Cond && Cond->IgnoreParenImpCasts() == BO;
 }
 
 // True if `S` names `VD` anywhere in its subtree.
@@ -554,18 +528,24 @@ std::string EditPlan::render(size_t i) {
     case PointerAccessKind::Increment:
     case PointerAccessKind::Decrement: {
         const auto *UO = cast<UnaryOperator>(e.node);
-        bool wrap = incrementValueIsUsed(UO, Ctx);
+        bool wrap = valueIsUsed(UO, Ctx);
         const char *op = a.kind == PointerAccessKind::Increment ? "++" : "--";
         bool is_post = UO->getOpcode() == UO_PostInc || UO->getOpcode() == UO_PostDec;
         std::string bare = is_post ? idx + op : op + idx;
         return wrap ? "(" + ptr + " + " + bare + ")" : bare;
     }
 
-    // `p += n` replaces only the name, so an edit inside the operand is
-    // outside this range entirely and needs no splicing.
+    // `p += n` moves the index by `n` and yields the new pointer, which
+    // `(p + (p_index_xj += n))` rebuilds from the new index. The operand
+    // is rendered rather than copied, so a rewrite inside it is carried
+    // along.
     case PointerAccessKind::PlusAssign:
-    case PointerAccessKind::MinusAssign:
-        return idx;
+    case PointerAccessKind::MinusAssign: {
+        const auto *BO = cast<BinaryOperator>(e.node);
+        const char *op = a.kind == PointerAccessKind::PlusAssign ? " += " : " -= ";
+        std::string bare = idx + op + renderWithin(BO->getRHS(), i);
+        return valueIsUsed(BO, Ctx) ? "(" + ptr + " + (" + bare + "))" : bare;
+    }
 
     // ---- (base, index) assignment -------------------------------------
     case PointerAccessKind::Init:
@@ -577,7 +557,7 @@ std::string EditPlan::render(size_t i) {
     case PointerAccessKind::Assign:
     case PointerAccessKind::AssignNull: {
         const auto *BO = cast<BinaryOperator>(e.node);
-        bool value_used = assignmentValueIsUsed(BO, Ctx);
+        bool value_used = valueIsUsed(BO, Ctx);
 
         if (a.root_expr && a.rhs_expr &&
             a.root_expr != a.rhs_expr->IgnoreParenImpCasts()) {
@@ -677,7 +657,7 @@ std::string EditPlan::render(size_t i) {
         // Ending at `>= 0` there would leave an int compared to NULL.
         if (assignmentIsCondition(BO, Ctx))
             out = "(" + out + ") >= 0";
-        else if (assignmentValueIsUsed(BO, Ctx))
+        else if (valueIsUsed(BO, Ctx))
             out = "(" + out + ", " + pointerValue(e.ptr) + ")";
 
         needWrapper(a.offset_text, e.FD);
