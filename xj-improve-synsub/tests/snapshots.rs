@@ -406,6 +406,132 @@ fn usize_suffix_is_kept_outside_direct_array_subscript_literals() {
 }
 
 #[test]
+fn null_pointer_offsetof_with_zero_one_or_two_integer_casts() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_null_pointer_offsetof);
+    check(
+        &rw,
+        r#"struct s_t { f1: u8, f2: u32 }
+        fn demo() {
+            let a = (&raw mut (*::core::ptr::null_mut::<s_t>()).f1 as *mut ::core::ffi::c_char)
+                .offset_from(::core::ptr::null_mut::<s_t>() as *mut ::core::ffi::c_char);
+            let b = (&raw mut (*::core::ptr::null_mut::<s_t>()).f2 as *mut ::core::ffi::c_char)
+                .offset_from(::core::ptr::null_mut::<s_t>() as *mut ::core::ffi::c_char)
+                as ::core::ffi::c_uint;
+            let c = (&raw mut (*::core::ptr::null_mut::<s_t>()).f1 as *mut ::core::ffi::c_char)
+                .offset_from(::core::ptr::null_mut::<s_t>() as *mut ::core::ffi::c_char)
+                as ::core::ffi::c_uint as core::ffi::c_uint;
+            let d = (&raw mut (*::core::ptr::null_mut::<s_t>()).f2 as *mut ::core::ffi::c_char)
+                .offset_from(::core::ptr::null_mut::<s_t>() as *mut ::core::ffi::c_char)
+                as u16 as usize;
+        }"#,
+        expect![[r#"
+            struct s_t {
+                f1: u8,
+                f2: u32,
+            }
+            fn demo() {
+                let a = ::core::mem::offset_of!(s_t, f1);
+                let b = ::core::mem::offset_of!(s_t, f2) as ::core::ffi::c_uint;
+                let c = ::core::mem::offset_of!(s_t, f1) as ::core::ffi::c_uint;
+                let d = ::core::mem::offset_of!(s_t, f2) as u16 as usize;
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn null_pointer_offsetof_from_expose_provenance() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_null_pointer_offsetof);
+    check(
+        &rw,
+        r#"type size_t = usize;
+        struct interface_t { iff_opts: i32 }
+        struct para_t { interface: interface_t }
+        struct xiosingle_t { howtoend: i32, para: para_t }
+        fn demo() {
+            let a = (&raw mut (*::core::ptr::null_mut::<xiosingle_t>()).howtoend)
+                .expose_provenance();
+            let b = (&raw mut (*::core::ptr::null_mut::<xiosingle_t>()).howtoend)
+                .expose_provenance() as size_t;
+            let c = (&raw mut (*::core::ptr::null_mut::<xiosingle_t>()).howtoend)
+                .expose_provenance() as size_t as ::core::ffi::c_long;
+            let major = (&raw mut (*::core::ptr::null_mut::<xiosingle_t>())
+                .para
+                .interface
+                .iff_opts)
+                .expose_provenance() as size_t as ::core::ffi::c_long;
+            let nested_byte_offset = (&raw mut (*::core::ptr::null_mut::<xiosingle_t>())
+                .para.interface.iff_opts as *mut ::core::ffi::c_char)
+                .offset_from(::core::ptr::null_mut::<xiosingle_t>() as *mut ::core::ffi::c_char)
+                as size_t;
+        }"#,
+        expect![[r#"
+            type size_t = usize;
+            struct interface_t {
+                iff_opts: i32,
+            }
+            struct para_t {
+                interface: interface_t,
+            }
+            struct xiosingle_t {
+                howtoend: i32,
+                para: para_t,
+            }
+            fn demo() {
+                let a = ::core::mem::offset_of!(xiosingle_t, howtoend);
+                let b = ::core::mem::offset_of!(xiosingle_t, howtoend) as size_t;
+                let c = ::core::mem::offset_of!(xiosingle_t, howtoend) as size_t
+                    as ::core::ffi::c_long;
+                let major = ::core::mem::offset_of!(xiosingle_t, para.interface.iff_opts) as size_t
+                    as ::core::ffi::c_long;
+                let nested_byte_offset = ::core::mem::offset_of!(
+                    xiosingle_t, para.interface.iff_opts
+                ) as size_t;
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn null_pointer_offsetof_rejects_mismatched_types_and_nonbyte_offsets() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_null_pointer_offsetof);
+    check(
+        &rw,
+        r#"struct s_t { f1: u32 }
+        struct t_t { f1: u32 }
+        fn demo(p: *mut s_t) {
+            let a = (&raw mut (*::core::ptr::null_mut::<s_t>()).f1 as *mut ::core::ffi::c_char)
+                .offset_from(::core::ptr::null_mut::<t_t>() as *mut ::core::ffi::c_char);
+            let b = (&raw mut (*::core::ptr::null_mut::<s_t>()).f1 as *mut ::core::ffi::c_int)
+                .offset_from(::core::ptr::null_mut::<s_t>() as *mut ::core::ffi::c_int);
+            let c = (&raw mut (*p).f1 as *mut ::core::ffi::c_char)
+                .offset_from(::core::ptr::null_mut::<s_t>() as *mut ::core::ffi::c_char);
+            let d = (&raw mut (*p).f1).expose_provenance();
+        }"#,
+        expect![[r#"
+            struct s_t {
+                f1: u32,
+            }
+            struct t_t {
+                f1: u32,
+            }
+            fn demo(p: *mut s_t) {
+                let a = (&raw mut (*::core::ptr::null_mut::<s_t>()).f1 as *mut ::core::ffi::c_char)
+                    .offset_from(::core::ptr::null_mut::<t_t>() as *mut ::core::ffi::c_char);
+                let b = (&raw mut (*::core::ptr::null_mut::<s_t>()).f1 as *mut ::core::ffi::c_int)
+                    .offset_from(::core::ptr::null_mut::<s_t>() as *mut ::core::ffi::c_int);
+                let c = (&raw mut (*p).f1 as *mut ::core::ffi::c_char)
+                    .offset_from(::core::ptr::null_mut::<s_t>() as *mut ::core::ffi::c_char);
+                let d = (&raw mut (*p).f1).expose_provenance();
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn string_pop_trailing_nul_on_string() {
     let mut rw = Rewriter::new();
     rw.add_stmt_rewrite(Rewriter::rewrite_string_pop_trailing_nul);

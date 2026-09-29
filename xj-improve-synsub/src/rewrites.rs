@@ -143,6 +143,68 @@ impl Rewriter {
         Some((Expr::Index(replacement), Depth::Unlimited))
     }
 
+    /// Replace C-style null-pointer field offsets with Rust's `offset_of!`.
+    /// Handles both byte-pointer `offset_from` and raw-pointer provenance idioms.
+    /// Keep up to two integer casts, dropping a repeated cast to the same type.
+    pub fn rewrite_null_pointer_offsetof(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let mut core = expr_strip_parens(expr);
+        let mut casts = Vec::new();
+        for _ in 0..2 {
+            let Expr::Cast(cast) = core else {
+                break;
+            };
+            if !is_integer_cast_type(&cast.ty) {
+                return None;
+            }
+            casts.push(&*cast.ty);
+            core = expr_strip_parens(&cast.expr);
+        }
+        let Expr::MethodCall(call) = core else {
+            return None;
+        };
+        if call.turbofish.is_some() {
+            return None;
+        }
+        let (struct_ty, fields) = if call.method == "offset_from" && call.args.len() == 1 {
+            let Expr::Cast(field_cast) = expr_strip_parens(&call.receiver) else {
+                return None;
+            };
+            let Expr::Cast(null_cast) = expr_strip_parens(&call.args[0]) else {
+                return None;
+            };
+            if !is_byte_pointer_type(&field_cast.ty) || !is_byte_pointer_type(&null_cast.ty) {
+                return None;
+            }
+            let (struct_ty, fields) = raw_null_field(&field_cast.expr)?;
+            let other_ty = null_mut_type(&null_cast.expr)?;
+            if struct_ty != other_ty {
+                return None;
+            }
+            (struct_ty, fields)
+        } else if call.method == "expose_provenance" && call.args.is_empty() {
+            raw_null_field(&call.receiver)?
+        } else {
+            return None;
+        };
+
+        let mut replacement: Expr = syn::parse_quote! {
+            ::core::mem::offset_of!(#struct_ty, #(#fields).*)
+        };
+        let mut previous_cast: Option<&Type> = None;
+        for ty in casts.into_iter().rev() {
+            if previous_cast.is_some_and(|previous| same_integer_type(previous, ty)) {
+                continue;
+            }
+            replacement = syn::parse_quote! { #replacement as #ty };
+            previous_cast = Some(ty);
+        }
+        Some((replacement, Depth::Unlimited))
+    }
+
     /// Rewrite `(_ BINOP1 _) as Y CMP_BINOP3 (_ BINOP2 _) as Y`
     /// into    `(_ BINOP1 _)      CMP_BINOP3 (_ BINOP2 _)`
     pub fn rewrite_casted_literal_comparison(
@@ -1718,6 +1780,143 @@ fn expr_strip_parens(expr: &Expr) -> &Expr {
             _ => break ep,
         }
     }
+}
+
+fn raw_null_field(expr: &Expr) -> Option<(&Type, Vec<&syn::Ident>)> {
+    let Expr::RawAddr(raw_addr) = expr_strip_parens(expr) else {
+        return None;
+    };
+    let mut base = expr_strip_parens(&raw_addr.expr);
+    let mut fields = Vec::new();
+    while let Expr::Field(field) = base {
+        let syn::Member::Named(field_name) = &field.member else {
+            return None;
+        };
+        fields.push(field_name);
+        base = expr_strip_parens(&field.base);
+    }
+    if fields.is_empty() {
+        return None;
+    }
+    let Expr::Unary(deref) = base else {
+        return None;
+    };
+    if !matches!(deref.op, syn::UnOp::Deref(_)) {
+        return None;
+    }
+    let struct_ty = null_mut_type(&deref.expr)?;
+    fields.reverse();
+    Some((struct_ty, fields))
+}
+
+fn null_mut_type(expr: &Expr) -> Option<&Type> {
+    let Expr::Call(call) = expr_strip_parens(expr) else {
+        return None;
+    };
+    if !call.args.is_empty() {
+        return None;
+    }
+    let Expr::Path(function) = expr_strip_parens(&call.func) else {
+        return None;
+    };
+    if function.qself.is_some() || function.path.segments.len() != 3 {
+        return None;
+    }
+    let mut segments = function.path.segments.iter();
+    let core = segments.next()?;
+    let ptr = segments.next()?;
+    let null_mut = segments.next()?;
+    if core.ident != "core"
+        || ptr.ident != "ptr"
+        || null_mut.ident != "null_mut"
+        || !matches!(core.arguments, syn::PathArguments::None)
+        || !matches!(ptr.arguments, syn::PathArguments::None)
+    {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &null_mut.arguments else {
+        return None;
+    };
+    if args.args.len() != 1 {
+        return None;
+    }
+    let syn::GenericArgument::Type(ty) = &args.args[0] else {
+        return None;
+    };
+    Some(ty)
+}
+
+fn is_byte_pointer_type(ty: &Type) -> bool {
+    let Type::Ptr(pointer) = ty else {
+        return false;
+    };
+    let Type::Path(path) = &*pointer.elem else {
+        return false;
+    };
+    if path.qself.is_some() {
+        return false;
+    }
+    let names = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    matches!(names.as_slice(), [name] if name == "c_char" || name == "i8" || name == "u8")
+        || matches!(names.as_slice(), [core, ffi, char_ty] if core == "core" && ffi == "ffi" && char_ty == "c_char")
+}
+
+fn is_integer_cast_type(ty: &Type) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    if path.qself.is_some() || path.path.segments.is_empty() {
+        return false;
+    }
+    let name = path.path.segments.last().unwrap().ident.to_string();
+    matches!(
+        name.as_str(),
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "c_char"
+            | "c_schar"
+            | "c_uchar"
+            | "c_short"
+            | "c_ushort"
+            | "c_int"
+            | "c_uint"
+            | "c_long"
+            | "c_ulong"
+            | "c_longlong"
+            | "c_ulonglong"
+            | "size_t"
+            | "ssize_t"
+            | "ptrdiff_t"
+    )
+}
+
+fn same_integer_type(left: &Type, right: &Type) -> bool {
+    let (Type::Path(left), Type::Path(right)) = (left, right) else {
+        return false;
+    };
+    left.qself.is_none()
+        && right.qself.is_none()
+        && left.path.segments.len() == right.path.segments.len()
+        && left
+            .path
+            .segments
+            .iter()
+            .zip(right.path.segments.iter())
+            .all(|(a, b)| a.ident == b.ident && a.arguments == b.arguments)
 }
 
 fn is_nul_char_expr(expr: &Expr) -> bool {
