@@ -30,7 +30,7 @@
 
 // What a pointer's whole access list decides about each of its rewrites.
 // These are questions about the pointer and not about any one access, so
-// they are answered once, by pointerFactsOf, and handed to whatever looks
+// they are answered once, by pointerFacts, and handed to whatever looks
 // at an access.
 struct PointerFacts {
     // The -1 sentinel can reach this pointer's index, so every site turning
@@ -38,22 +38,40 @@ struct PointerFacts {
     // `base + -1` addresses one element before the region and is
     // emphatically not null.
     //
-    // The sentinel arrives from exactly three places. Two are explicit
+    // The sentinel arrives from exactly four places. Two are explicit
     // nulls; the third is the generated wrapper for an allowlisted
     // function, which returns -1 for "not found" — so a strchr-derived
-    // pointer can be null without any NULL appearing in the source. A
-    // future kind that can assign -1 to an index belongs in this list.
+    // pointer can be null without any NULL appearing in the source. The
+    // fourth is a pairing that copies: `p = q` takes q's index, sentinel
+    // and all. A future kind that can assign -1 to an index belongs in this
+    // list.
     bool may_be_null = false;
 
-    // The index can go negative while the region stays non-null, which
-    // happens only through an allowlisted-function wrapper. It is the one
-    // condition under which a null test has to be rewritten: a pointer
-    // whose only null is `p = NULL` reseats the region and really is null,
-    // so `if (p)` already reads correctly.
+    // The sentinel can sit over a region that is not null, which happens
+    // only through an allowlisted-function wrapper, or a copy of a pointer
+    // it happens to. The index is then the only witness, and any negative
+    // index is read as null — one that got there by stepping back past
+    // where its pointer was seated included, which such a pointer cannot
+    // tell apart. Everywhere else the region is null exactly when the
+    // pointer is, so the region is what gets tested: `if (p)` already reads
+    // correctly, and a negative index is only ever a position.
     bool null_in_index = false;
+
+    bool operator==(const PointerFacts &o) const {
+        return may_be_null == o.may_be_null && null_in_index == o.null_in_index;
+    }
 };
 
-PointerFacts pointerFactsOf(const std::vector<PointerAccess> &accesses);
+// The pointers being rewritten, each with its accesses.
+using RewrittenPointers =
+    std::map<const VarDecl *, const std::vector<PointerAccess> *>;
+
+// The facts of every pointer in `rewritten`: what its own accesses decide,
+// and what reaches it through a pairing that copies another's index.
+// Nothing about a pointer that is not rewritten reaches anyone — its value
+// arrives as a region.
+std::map<const VarDecl *, PointerFacts>
+pointerFacts(const RewrittenPointers &rewritten);
 
 // The node whose source range `access` replaces. This is the single owner
 // of the edit extent: validation, the planner and the renderer all ask
@@ -84,18 +102,14 @@ bool editRangeOf(const Stmt *N, ASTContext &Ctx, FileID &file, unsigned &begin,
 // the root's own rewrite is dropped so the reference stays bare.
 class EditPlan {
   public:
-    EditPlan(ASTContext &Ctx, const std::set<const VarDecl *> &transformed);
+    // `facts` is pointerFacts() of the pointers in `transformed`.
+    EditPlan(ASTContext &Ctx, const std::set<const VarDecl *> &transformed,
+             const std::map<const VarDecl *, PointerFacts> &facts);
 
     // Record one pointer's rewrites. Accesses that need no edit are
     // ignored. `accesses` must outlive the plan; it is read again during
     // rendering.
-    //
-    // The whole access list rather than one access at a time, because some
-    // of what a rewrite asks is about the pointer and not about the access;
-    // see PointerFacts. `FD` is the function the pointer lives in, and is
-    // where a generated wrapper body goes.
-    void add(const FunctionDecl *FD, const VarDecl *ptr,
-             const std::vector<PointerAccess> &accesses);
+    void add(const VarDecl *ptr, const std::vector<PointerAccess> &accesses);
 
     // Drop the rewrites that pairing replaces, then arrange the rest into
     // the nesting forest. Node ranges cannot partially overlap or coincide,
@@ -128,7 +142,6 @@ class EditPlan {
   private:
     // One access's rewrite, before its text has been rendered.
     struct PlannedEdit {
-        const FunctionDecl *FD = nullptr;  // where a wrapper body would go
         const VarDecl *ptr = nullptr;
         const PointerAccess *access = nullptr;
         const Stmt *node = nullptr;
@@ -147,11 +160,25 @@ class EditPlan {
     // `base + index` spelling, which is what the slice pass matches.
     std::string pointerValue(const VarDecl *ptr);
 
-    // Note that `func_name`'s wrapper has to be defined before `FD`. The
-    // earliest such function in the file wins, so one body serves every use
-    // in the TU and no use can precede it. `func_name` is the library
-    // function — `strchr` — not the wrapper it is spelled through.
-    void needWrapper(const std::string &func_name, const FunctionDecl *FD);
+    // Note that `func_name`'s wrapper has to be defined before the function
+    // containing `use`. The earliest such function in the file wins, so one
+    // body serves every use in the TU and no use can precede it.
+    // `func_name` is the library function — `strchr` — not the wrapper it
+    // is spelled through.
+    void needWrapper(const std::string &func_name, const Stmt *use);
+
+    // The text of `term`, an operand spliced into an index sum after a `+`
+    // or a `-`, parenthesized where it would otherwise regroup: `p[i & 3]`
+    // is `p[p_index_xj + (i & 3)]`. Rendered within edit `owner`, or copied
+    // from the source when that is kNoParent.
+    //
+    // `as_subscript` says the sum is used as a subscript as it stands. An
+    // unsigned term would make it an unsigned sum, and an index that has
+    // stepped back past where its pointer was seated would wrap around
+    // instead of going negative, so such a term is cast to its signed type.
+    // A sum assigned to an index is converted back on the way in.
+    std::string renderTerm(const OffsetTerm &term, size_t owner,
+                           bool as_subscript);
 
     // The replacement text for edit `i`, with every descendant spliced in.
     std::string render(size_t i);
@@ -197,7 +224,7 @@ class EditPlan {
     // whose own rewrite build() drops.
     std::set<const Expr *> paired_roots;
     // Kept per pointer so that render() can reach them from a single access.
-    std::map<const VarDecl *, PointerFacts> facts;
+    const std::map<const VarDecl *, PointerFacts> &facts;
     // Library function name -> the earliest function needing its wrapper.
     // There is one plan per translation unit, so one entry is one body per
     // file.

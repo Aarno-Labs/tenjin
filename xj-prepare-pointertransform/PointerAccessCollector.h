@@ -31,11 +31,14 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
     const SourceManager &SM;
 
     // Split a pointer-valued right-hand side into a root and an offset and
-    // record the result on `pa`. `Owner` is the pointer being assigned;
-    // `owner_is_declared_here` says its index declaration may have to be
-    // hoisted out of a for-init, which is the one thing left that can
-    // refuse the split — an offset cannot move to a position ahead of the
-    // names it reads.
+    // record the result on `pa`. `Owner` is the pointer being assigned.
+    //
+    // The split is refused, and the right-hand side kept whole, when the
+    // root steps over another type than `Owner` does. It is also refused
+    // when `owner_is_declared_here` and the offset cannot move to where the
+    // index is declared: ahead of the names it reads
+    // (escapesForInitScope), or across a sibling declarator that could
+    // tell (crossesSibling).
     void splitAssignedValue(const Expr *RHS, PointerAccess &pa,
                             const VarDecl *Owner = nullptr,
                             bool owner_is_declared_here = false);
@@ -61,4 +64,16 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
     // index has to be declared before the whole loop, where those names do
     // not exist yet.
     bool escapesForInitScope(const Stmt *S, const VarDecl *Owner);
+
+    // True if moving `split`'s offset into `Owner`'s index declaration would
+    // change what a sibling declarator sees, or what the offset does.
+    //
+    // An index is an int, so it cannot be declared among its pointer's
+    // siblings: it goes after the whole statement, or ahead of the loop for
+    // a for-init, and its initializer is evaluated there. That carries it
+    // across the initializers on that side — `char *a = p++, c = *p;` would
+    // read `c` before the step. Only a side effect can tell, on either
+    // part: a step shows to a sibling that reads the stepped pointer, and
+    // anything else is taken to show to all of them.
+    bool crossesSibling(const PointerSplit &split, const VarDecl *Owner);
 };

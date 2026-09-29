@@ -17,6 +17,7 @@ bool PointerTransformAction::BeginSourceFileAction(CompilerInstance &CI) {
     // cleared here becomes a use-after-free on the next translation unit.
     g_global_pointer_map.clear();
     g_function_analyses.clear();
+    resetIndexNames();
     // Positions are mapped through *this* TU's Rewriter, so a leftover
     // entry from an earlier file would be translated through the wrong
     // edits.

@@ -69,6 +69,29 @@ static bool isAllowedSearch(const CallExpr *CE)
     return searchBaseArg(CE) != nullptr;
 }
 
+// What a pointer or an array steps over: the pointee, or the element.
+static QualType elementTypeOf(QualType T, ASTContext &Ctx)
+{
+    if (T->isPointerType())
+        return T->getPointeeType();
+    if (const auto *AT = Ctx.getAsArrayType(T))
+        return AT->getElementType();
+    return QualType();
+}
+
+// True when `Root` and `Owner` step over the same type, so that an offset
+// counted from one lands at the same address counted from the other.
+//
+// An implicit conversion does not keep that: `void *raw = v + 1` with an
+// `int *v` is four bytes on, and `raw_index_xj = 1` is one.
+static bool stepsAlike(const VarDecl *Owner, const Expr *Root, ASTContext &Ctx)
+{
+    QualType OwnerElem = elementTypeOf(Owner->getType(), Ctx);
+    QualType RootElem = elementTypeOf(Root->getType(), Ctx);
+    return !OwnerElem.isNull() && !RootElem.isNull() &&
+           Ctx.hasSameUnqualifiedType(OwnerElem, RootElem);
+}
+
 // ============================================================================
 // Parent walking
 // ============================================================================
@@ -138,6 +161,43 @@ bool PointerAccessCollector::escapesForInitScope(const Stmt *S,
         return false;
     std::set<const Decl *> bound(DS->decl_begin(), DS->decl_end());
     return referencesAnyOf(S, bound);
+}
+
+bool PointerAccessCollector::crossesSibling(const PointerSplit &split,
+                                            const VarDecl *Owner)
+{
+    const DeclStmt *DS = declStmtOf(Owner, Ctx);
+    if (!DS || DS->isSingleDecl())
+        return false;
+
+    bool terms_have_effects = false;
+    for (const OffsetTerm &t : split.terms)
+        terms_have_effects |= t.expr->HasSideEffects(Ctx);
+    const auto *RootDRE = dyn_cast<DeclRefExpr>(split.base);
+    const Decl *Stepped =
+        RootDRE && split.step != IndexStep::None ? RootDRE->getDecl() : nullptr;
+
+    // Hoisted ahead of the loop, the initializer crosses the declarators
+    // before its own; placed after the statement, the ones after.
+    bool crosses_earlier = forStmtInitializedBy(DS, Ctx) != nullptr;
+    bool earlier = true;
+    for (const Decl *D : DS->decls())
+    {
+        if (D == Owner)
+        {
+            earlier = false;
+            continue;
+        }
+        const auto *Sibling = dyn_cast<VarDecl>(D);
+        const Expr *Init = Sibling ? Sibling->getInit() : nullptr;
+        if (!Init || earlier != crosses_earlier)
+            continue;
+        if (terms_have_effects || Init->HasSideEffects(Ctx))
+            return true;
+        if (Stepped && referencesAnyOf(Init, {Stepped}))
+            return true;
+    }
+    return false;
 }
 
 // The step a `++` or `--` applies.
@@ -267,6 +327,17 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
             if (escapesForInitScope(t.expr, Owner))
                 return;
 
+    // Nor can it fix order: the index is initialized in its own
+    // declaration, which is not where the pointer's initializer was
+    // evaluated.
+    if (owner_is_declared_here && crossesSibling(split, Owner))
+        return;
+
+    // The index counts the owner's elements, and the offset was written in
+    // the root's.
+    if (Owner && !stepsAlike(Owner, split.base, Ctx))
+        return;
+
     // Pairing two indices only works when both pointers are rewritten in
     // the same batch: each batch decides which of its members transformed,
     // and a root belonging to the other one would be edited by that batch
@@ -302,6 +373,10 @@ bool PointerAccessCollector::VisitVarDecl(VarDecl *VD)
     if (!VD->getType()->isPointerType())
         return true;
     if (SM.isInSystemHeader(VD->getLocation()))
+        return true;
+    // A block-scope `extern T *p;` declares no pointer of its own. It names
+    // one at file scope, and that is where the pointer is considered.
+    if (VD->hasExternalStorage())
         return true;
 
     std::vector<PointerAccess> access_list;
@@ -516,9 +591,14 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
         // collapses to an index update through a generated wrapper.
         if (BO->getOpcode() == BO_Assign && isSelf(BO->getLHS()))
         {
+            // The wrapper hands back an offset in chars from its first
+            // argument, so both pointers have to step over chars for it to
+            // be this one's index.
             const auto *RhsCall =
                 dyn_cast<CallExpr>(BO->getRHS()->IgnoreParenImpCasts());
-            if (isAllowedSearch(RhsCall))
+            if (isAllowedSearch(RhsCall) &&
+                PtrVar->getType()->getPointeeType()->isCharType() &&
+                stepsAlike(PtrVar, searchBaseArg(RhsCall), Ctx))
             {
                 PointerAccess &pa = emit(PointerAccessKind::AssignFromAllowedFunc,
                                          BO->getBeginLoc(), BO);

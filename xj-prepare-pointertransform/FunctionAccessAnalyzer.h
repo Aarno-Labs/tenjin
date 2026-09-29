@@ -1,5 +1,6 @@
 #pragma once
 
+#include "EditPlan.h"
 #include "PointerAccessCollector.h"
 
 // FunctionAccessAnalyzer — the main orchestrator of the tool.
@@ -59,8 +60,10 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
 
     // Decide which pointers in the TU are rewritten and where each index
     // is declared, in the order their declarations should be emitted.
+    // `facts` is pointerFacts() of the ones that are.
     void collectCandidates(ASTContext &Ctx, std::vector<PointerPlan> &plans,
-                           std::set<const VarDecl *> &transformed);
+                           std::set<const VarDecl *> &transformed,
+                           std::map<const VarDecl *, PointerFacts> &facts);
 
     // Log one rewritten pointer and add it to the metadata side-file.
     void recordTransformed(const PointerPlan &P, ASTContext &Ctx);
@@ -69,13 +72,23 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     void printAccesses(const VarDecl *VD, const std::vector<PointerAccess> &seq,
                        ASTContext &Ctx);
 
-    // Defined in ValidationMethods.cpp. `roots` is every reference in the TU
-    // that some assignment takes as its root.
-    bool validatePointerCandidate(const VarDecl *PtrVar,
-                                  const std::vector<PointerAccess> &accesses,
-                                  const std::set<const Expr *> &roots,
-                                  ASTContext &Ctx,
-                                  std::string &error);
+    // Both defined in ValidationMethods.cpp, and both leave the reason in
+    // `error` when they return false.
+    //
+    // True if the pointer is one to rewrite: nothing takes its address, and
+    // it moves. `roots` is every reference in the TU that some assignment
+    // takes as its root.
+    bool isCandidate(const std::vector<PointerAccess> &accesses,
+                     const std::set<const Expr *> &roots,
+                     ASTContext &Ctx,
+                     std::string &error);
+
+    // True if every access that `facts` says is rewritten has text the
+    // Rewriter can replace.
+    bool isEditable(const std::vector<PointerAccess> &accesses,
+                    const PointerFacts &facts,
+                    ASTContext &Ctx,
+                    std::string &error);
 
     // Apply a vector<Edit> to the Rewriter, highest offset first so the
     // offsets still to come stay valid. Every edit handed here is applied;

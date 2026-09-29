@@ -1,0 +1,67 @@
+{
+  "functions": {
+    "hoisted@multi_declarator_order.c": {
+      "file": "multi_declarator_order.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 35,
+          "decl_line": 37,
+          "index_var": "a_index_xj",
+          "name": "a",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 32,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "pair@multi_declarator_order.c": {
+      "file": "multi_declarator_order.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 13,
+          "index_var": "a_index_xj",
+          "name": "a",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 10,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "sibling_steps@multi_declarator_order.c": {
+      "file": "multi_declarator_order.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 24,
+          "index_var": "a_index_xj",
+          "name": "a",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 21,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

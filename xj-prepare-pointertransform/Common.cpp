@@ -120,9 +120,20 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 // Index names, keyed by the pointer's declaration. See Common.h.
 static std::map<const VarDecl *, std::string> g_index_names;
 
+void resetIndexNames()
+{
+    g_index_names.clear();
+}
+
 void assignIndexNames(const std::vector<const VarDecl *> &ptrs)
 {
+    // A file-scope index is in scope throughout the function, and a local
+    // index does not always share its pointer's scope, so a local must not
+    // take a file-scope index's name.
     std::set<std::string> used;
+    for (const auto &[GVD, accesses] : g_global_pointer_map)
+        used.insert(indexNameFor(GVD));
+
     for (const VarDecl *VD : ptrs)
     {
         const std::string base = VD->getNameAsString() + "_index_xj";

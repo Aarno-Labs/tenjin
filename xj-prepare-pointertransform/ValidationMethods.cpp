@@ -5,36 +5,31 @@
 // out from under an access. Nothing here judges a base. Two questions
 // remain, and neither is about what a pointer points at:
 //
-//   1. Can every access be classified and edited?
-//   2. Is this pointer worth rewriting at all?
+//   1. Is this pointer worth rewriting at all?
+//   2. Can every access be edited?
 //
-// The second is candidacy, not correctness. A pointer that never moves is
+// The first is candidacy, not correctness. A pointer that never moves is
 // already an ordinary indexable name; giving it an index that stays 0
 // would be noise.
+//
+// They are asked separately because the second has to wait for the first.
+// Which accesses are edited depends on the pointer's facts, and those
+// follow its pairings, which are with candidates.
 
 #include "FunctionAccessAnalyzer.h"
 
 #include "EditPlan.h"
 
-bool FunctionAccessAnalyzer::validatePointerCandidate(
-    const VarDecl *PtrVar,
+bool FunctionAccessAnalyzer::isCandidate(
     const std::vector<PointerAccess> &accesses,
     const std::set<const Expr *> &roots,
     ASTContext &Ctx,
     std::string &error) {
 
-    (void)PtrVar;
-
     if (accesses.empty()) {
         error = "No accesses found";
         return false;
     }
-
-    // Whether a null test has to move is a property of the whole access
-    // list, not of the test — see PointerFacts. Asked here, of the same
-    // function the planner asks, so the two cannot disagree about which
-    // tests need an editable range.
-    const PointerFacts facts = pointerFactsOf(accesses);
 
     for (const auto &access : accesses) {
         // &p means the pointer's storage is observable. A retained pointer
@@ -53,37 +48,8 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
                     access.loc.printToString(Ctx.getSourceManager());
             return false;
         }
-        // A reference that ends up the root of a pairing gets no rewrite, but
-        // whether it does is the plan's to decide, later. It is held to the
-        // standard of the rewrite it would have by itself.
-        const Stmt *node = editedNode(access, facts);
-        if (!node)
-            continue;  // this access legitimately rewrites nothing
-
-        // The Rewriter cannot edit text inside a macro expansion, so an
-        // access there would be left naming the pointer while its
-        // siblings moved to the index form.
-        if (access.loc.isMacroID()) {
-            error = "Pointer used inside macro expansion";
-            return false;
-        }
-
-        // An access that needs a rewrite needs a span to put it in, and
-        // that span has to be addressable. Asking here — through the same
-        // function the planner asks later — is what lets the planner treat
-        // a missing extent as a bug rather than as a case to handle: by the
-        // time it runs, every access it sees is plannable.
-        FileID file;
-        unsigned begin = 0, end = 0;
-        if (!editRangeOf(node, Ctx, file, begin, end)) {
-            error = std::string("No editable range for a ") +
-                    pointerAccessKindToString(access.kind) + " at " +
-                    access.loc.printToString(Ctx.getSourceManager());
-            return false;
-        }
     }
 
-    // ---- Candidacy -------------------------------------------------------
     // Require at least one mutation (++/--/+=/-=) or one assignment that
     // lands at a non-zero offset. A pointer that is only ever dereferenced
     // is not iterating and gains nothing from an index.
@@ -137,6 +103,44 @@ bool FunctionAccessAnalyzer::validatePointerCandidate(
         return false;
     }
 
-    gLog.foundPointer = true;
+    return true;
+}
+
+bool FunctionAccessAnalyzer::isEditable(
+    const std::vector<PointerAccess> &accesses,
+    const PointerFacts &facts,
+    ASTContext &Ctx,
+    std::string &error) {
+
+    for (const auto &access : accesses) {
+        // A reference that ends up the root of a pairing gets no rewrite, but
+        // whether it does is the plan's to decide, later. It is held to the
+        // standard of the rewrite it would have by itself.
+        const Stmt *node = editedNode(access, facts);
+        if (!node)
+            continue;  // this access legitimately rewrites nothing
+
+        // The Rewriter cannot edit text inside a macro expansion, so an
+        // access there would be left naming the pointer while its
+        // siblings moved to the index form.
+        if (access.loc.isMacroID()) {
+            error = "Pointer used inside macro expansion";
+            return false;
+        }
+
+        // An access that needs a rewrite needs a span to put it in, and
+        // that span has to be addressable. Asking here — through the same
+        // function the planner asks later — is what lets the planner treat
+        // a missing extent as a bug rather than as a case to handle: by the
+        // time it runs, every access it sees is plannable.
+        FileID file;
+        unsigned begin = 0, end = 0;
+        if (!editRangeOf(node, Ctx, file, begin, end)) {
+            error = std::string("No editable range for a ") +
+                    pointerAccessKindToString(access.kind) + " at " +
+                    access.loc.printToString(Ctx.getSourceManager());
+            return false;
+        }
+    }
     return true;
 }

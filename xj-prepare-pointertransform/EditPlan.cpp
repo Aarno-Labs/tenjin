@@ -6,7 +6,8 @@
 // The extent of one rewrite
 // ============================================================================
 
-PointerFacts pointerFactsOf(const std::vector<PointerAccess> &accesses) {
+// What a pointer's own accesses decide, before any pairing is considered.
+static PointerFacts pointerFactsOf(const std::vector<PointerAccess> &accesses) {
     PointerFacts facts;
     for (const PointerAccess &a : accesses) {
         if (a.kind == PointerAccessKind::AssignFromAllowedFunc)
@@ -15,6 +16,45 @@ PointerFacts pointerFactsOf(const std::vector<PointerAccess> &accesses) {
             a.kind == PointerAccessKind::AssignNull ||
             a.kind == PointerAccessKind::AssignFromAllowedFunc)
             facts.may_be_null = true;
+    }
+    return facts;
+}
+
+// The variable `access` takes as its root, rewritten or not.
+static const VarDecl *rootVar(const PointerAccess &access) {
+    const auto *DRE = dyn_cast_or_null<DeclRefExpr>(access.root_expr);
+    return DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
+}
+
+std::map<const VarDecl *, PointerFacts>
+pointerFacts(const RewrittenPointers &rewritten) {
+    std::map<const VarDecl *, PointerFacts> facts;
+    for (const auto &[ptr, accesses] : rewritten)
+        facts[ptr] = pointerFactsOf(*accesses);
+
+    // `p = q` copies q's index as it stands, so whatever q's index can hold
+    // p's can. `p = q + 1` does not: a null has no offset to land at, so the
+    // source already rules one out. Copies chain — `r = p` after `p = q` —
+    // so this runs until nothing changes.
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (const auto &[ptr, accesses] : rewritten)
+            for (const PointerAccess &a : *accesses) {
+                if (a.isSplit())
+                    continue;
+                auto root = facts.find(rootVar(a));
+                if (root == facts.end())
+                    continue;
+                PointerFacts &f = facts[ptr];
+                PointerFacts merged;
+                merged.may_be_null = f.may_be_null || root->second.may_be_null;
+                merged.null_in_index =
+                    f.null_in_index || root->second.null_in_index;
+                if (merged == f)
+                    continue;
+                f = merged;
+                changed = true;
+            }
     }
     return facts;
 }
@@ -131,9 +171,11 @@ bool editRangeOf(const Stmt *N, ASTContext &Ctx, FileID &file, unsigned &begin,
 // Planning
 // ============================================================================
 
-EditPlan::EditPlan(ASTContext &Ctx, const std::set<const VarDecl *> &transformed)
+EditPlan::EditPlan(ASTContext &Ctx, const std::set<const VarDecl *> &transformed,
+                   const std::map<const VarDecl *, PointerFacts> &facts)
     : Ctx(Ctx), SM(Ctx.getSourceManager()), LO(Ctx.getLangOpts()),
-      transformed(transformed), violations_at_start(g_invariant_violations) {}
+      transformed(transformed), facts(facts),
+      violations_at_start(g_invariant_violations) {}
 
 void EditPlan::reportViolation(const llvm::Twine &what, SourceLocation loc) {
     g_invariant_violations++;
@@ -143,9 +185,9 @@ void EditPlan::reportViolation(const llvm::Twine &what, SourceLocation loc) {
     llvm::errs() << "\n";
 }
 
-void EditPlan::add(const FunctionDecl *FD, const VarDecl *ptr,
+void EditPlan::add(const VarDecl *ptr,
                    const std::vector<PointerAccess> &accesses) {
-    const PointerFacts &f = facts[ptr] = pointerFactsOf(accesses);
+    const PointerFacts &f = facts.at(ptr);
 
     for (const PointerAccess &access : accesses) {
         if (pairedRoot(access))
@@ -161,7 +203,6 @@ void EditPlan::add(const FunctionDecl *FD, const VarDecl *ptr,
             continue;
 
         PlannedEdit e;
-        e.FD = FD;
         e.ptr = ptr;
         e.access = &access;
         e.node = editedNode(access, f);
@@ -305,21 +346,46 @@ static bool assignmentIsCondition(const BinaryOperator *BO, ASTContext &Ctx) {
 // before the region and is not null, so a callee's null check on it would
 // wrongly succeed.
 //
-// NB: xj-prepare-slicetransform recognizes this shape and simplifies it
-// where it can, so it has to stay in sync with stripNullGuard in
-// SliceRewriter.cpp.
+// What is tested is whatever holds the null; see PointerFacts.
+//
+// NB: xj-prepare-slicetransform recognizes this shape — a conditional with
+// a null pointer constant for one arm — and simplifies it where it can, so
+// it has to stay in sync with stripNullGuard in SliceRewriter.cpp.
 std::string EditPlan::pointerValue(const VarDecl *ptr) {
     const std::string name = ptr->getNameAsString();
     const std::string idx = indexNameFor(ptr);
+    const std::string value = name + " + " + idx;
     auto it = facts.find(ptr);
     if (it == facts.end() || !it->second.may_be_null)
-        return "(" + name + " + " + idx + ")";
-    return "(" + idx + " < 0 ? (void *)0 : " + name + " + " + idx + ")";
+        return "(" + value + ")";
+    if (it->second.null_in_index)
+        return "(" + idx + " < 0 ? (void *)0 : " + value + ")";
+    return "(" + name + " ? " + value + " : (void *)0)";
 }
 
-void EditPlan::needWrapper(const std::string &func_name, const FunctionDecl *FD) {
-    if (!FD || wrapperBodyFor(func_name).empty())
+// The function whose body contains `S`, or null.
+static const FunctionDecl *enclosingFunction(const Stmt *S, ASTContext &Ctx) {
+    DynTypedNode N = DynTypedNode::create(*S);
+    while (true) {
+        auto Parents = Ctx.getParents(N);
+        if (Parents.empty())
+            return nullptr;
+        N = Parents[0];
+        if (const auto *FD = N.get<FunctionDecl>())
+            return FD;
+    }
+}
+
+void EditPlan::needWrapper(const std::string &func_name, const Stmt *use) {
+    // The function the use is in, not the one the pointer is declared in:
+    // a file-scope pointer has none.
+    const FunctionDecl *FD = enclosingFunction(use, Ctx);
+    if (!FD || wrapperBodyFor(func_name).empty()) {
+        reportViolation("no wrapper can be defined for this use of '" +
+                            func_name + "'",
+                        use->getBeginLoc());
         return;
+    }
     auto [it, inserted] = wrappers.insert({func_name, FD});
     if (inserted)
         return;
@@ -334,8 +400,7 @@ void EditPlan::needWrapper(const std::string &func_name, const FunctionDecl *FD)
 }
 
 const VarDecl *EditPlan::pairedRoot(const PointerAccess &a) const {
-    const auto *DRE = dyn_cast_or_null<DeclRefExpr>(a.root_expr);
-    const auto *RootVD = DRE ? dyn_cast<VarDecl>(DRE->getDecl()) : nullptr;
+    const VarDecl *RootVD = rootVar(a);
     return RootVD && transformed.count(RootVD) ? RootVD : nullptr;
 }
 
@@ -344,9 +409,10 @@ bool EditPlan::splitStands(const PointerAccess &a) const {
 }
 
 std::string EditPlan::renderIndexValue(const PointerAccess &a, size_t owner) {
-    // A null right-hand side reseats the region; the index goes to the
-    // sentinel so that `off < 0` alone decides nullness, without leaning on
-    // `NULL + 0` being a null pointer.
+    // A null right-hand side reseats the region, and the index goes to the
+    // sentinel with it. The region is what this pass tests; the sentinel is
+    // what is left to say null once xj-prepare-slicetransform has moved the
+    // pointer into index space.
     if (a.kind == PointerAccessKind::InitNull ||
         a.kind == PointerAccessKind::AssignNull)
         return "-1";
@@ -359,8 +425,7 @@ std::string EditPlan::renderIndexValue(const PointerAccess &a, size_t owner) {
     if (splitStands(a))
         for (const OffsetTerm &t : a.index_terms)
             terms += (t.minus ? " - " : " + ") +
-                     (owner == kNoParent ? getSourceText(t.expr, SM, LO)
-                                         : renderWithin(t.expr, owner));
+                     renderTerm(t, owner, /*as_subscript=*/false);
 
     if (const VarDecl *RootVD = pairedRoot(a))
         return applyStep(a.step, indexNameFor(RootVD)) + terms;
@@ -386,6 +451,57 @@ std::string EditPlan::indexDeclInit(const VarDecl *ptr,
         return renderIndexValue(a, kNoParent);
     }
     return "0";
+}
+
+// How tightly an expression's own text holds together, loosest first.
+enum class Binding { Loose, Additive, Multiplicative, Unary };
+
+static Binding bindingOf(const Expr *E) {
+    // An implicit conversion has no text; parentheses do, and hold.
+    E = E->IgnoreImpCasts();
+    if (isa<AbstractConditionalOperator>(E))
+        return Binding::Loose;
+    if (const auto *BO = dyn_cast<BinaryOperator>(E)) {
+        if (BO->isMultiplicativeOp())
+            return Binding::Multiplicative;
+        if (BO->isAdditiveOp())
+            return Binding::Additive;
+        return Binding::Loose;
+    }
+    return Binding::Unary;
+}
+
+// The signed type to read `E` as, when `E` is unsigned and wide enough to
+// make the sum it joins unsigned. Null otherwise: a narrower type is
+// promoted to int whatever its sign.
+static QualType signedCounterpart(const Expr *E, ASTContext &Ctx) {
+    QualType T = E->getType();
+    if (const auto *ET = T->getAs<EnumType>())
+        T = ET->getDecl()->getIntegerType();
+    if (T.isNull())
+        return QualType();
+    T = T.getCanonicalType().getUnqualifiedType();
+    if (!T->isUnsignedIntegerType() ||
+        Ctx.getIntWidth(T) < Ctx.getIntWidth(Ctx.IntTy))
+        return QualType();
+    return Ctx.getCorrespondingSignedType(T);
+}
+
+std::string EditPlan::renderTerm(const OffsetTerm &term, size_t owner,
+                                 bool as_subscript) {
+    std::string text = owner == kNoParent ? getSourceText(term.expr, SM, LO)
+                                          : renderWithin(term.expr, owner);
+    auto held = [&](Binding at_least) {
+        return bindingOf(term.expr) < at_least ? "(" + text + ")" : text;
+    };
+
+    QualType Signed =
+        as_subscript ? signedCounterpart(term.expr, Ctx) : QualType();
+    if (!Signed.isNull())
+        return "(" + Signed.getAsString(Ctx.getPrintingPolicy()) + ")" +
+               held(Binding::Unary);
+    // `a + b` can follow a `+` as it is, and not a `-`.
+    return held(term.minus ? Binding::Multiplicative : Binding::Additive);
 }
 
 std::string EditPlan::renderWithin(const Stmt *S, size_t owner) {
@@ -438,9 +554,11 @@ std::string EditPlan::render(size_t i) {
         // reads through a rewritten pointer — `*(p + strlen(p) - 1)` —
         // carries that pointer's rewrite along instead of losing it.
         for (const OffsetTerm &t : a.offset_terms)   // *(p + a - b)
-            index += (t.minus ? " - " : " + ") + renderWithin(t.expr, i);
+            index += (t.minus ? " - " : " + ") +
+                     renderTerm(t, i, /*as_subscript=*/true);
         if (a.subscript_expr) {                      // p[i]
-            std::string sub = renderWithin(a.subscript_expr, i);
+            std::string sub = renderTerm({a.subscript_expr, /*minus=*/false}, i,
+                                         /*as_subscript=*/true);
             if (sub != "0")
                 index += " + " + sub;
         }
@@ -592,7 +710,7 @@ std::string EditPlan::render(size_t i) {
         else if (valueIsUsed(BO, Ctx))
             out = "(" + out + ", " + pointerValue(e.ptr) + ")";
 
-        needWrapper(func_name, e.FD);
+        needWrapper(func_name, e.node);
         return out;
     }
 

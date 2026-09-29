@@ -89,7 +89,7 @@ enum class PointerAccessKind {
     // A null right-hand side reseats the region to the null region and
     // drives the index to the -1 sentinel. Both are ordinary (base, index)
     // assignments in every other respect — these kinds exist so
-    // pointerFactsOf can recognize them.
+    // pointerFacts can recognize them.
     InitNull,           // T *p = NULL;              -> (p = NULL, p_index_xj = -1)
     AssignNull,         // p = NULL                  -> (p = NULL, p_index_xj = -1)
 
@@ -511,10 +511,16 @@ std::string applyStep(IndexStep step, const std::string &name);
 // assignIndexNames() takes one function's pointers in source order and
 // hands out `p_index_xj`, then `p_index_xj_1`, `p_index_xj_2`, ... on
 // collision. The first pointer of a given name keeps the plain form, so
-// the common case reads exactly as before.
+// the common case reads exactly as before. The file-scope pointers in
+// g_global_pointer_map have their names first, so a local that shares a
+// name with one of them starts at `p_index_xj_1`.
 void assignIndexNames(const std::vector<const VarDecl *> &ptrs);
 
 // The index name for `VD`. Falls back to the plain convention for
 // pointers that never went through assignIndexNames (file-scope ones,
 // which are rewritten on their own path).
 const std::string &indexNameFor(const VarDecl *VD);
+
+// Forget every name. They are keyed by declarations that do not outlive
+// their translation unit.
+void resetIndexNames();

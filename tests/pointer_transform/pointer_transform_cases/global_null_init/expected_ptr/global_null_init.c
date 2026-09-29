@@ -13,7 +13,7 @@ static int next(void) {
     return cursor[cursor_index_xj++];
 }
 
-static const char *where(void) { return (cursor_index_xj < 0 ? (void *)0 : cursor + cursor_index_xj); }
+static const char *where(void) { return (cursor ? cursor + cursor_index_xj : (void *)0); }
 
 int main(void) {
     int before = next();

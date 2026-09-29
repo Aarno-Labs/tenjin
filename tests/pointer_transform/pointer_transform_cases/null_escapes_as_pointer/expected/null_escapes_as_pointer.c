@@ -39,7 +39,7 @@ static void pick(const char *s, int take) {
         (p = s, p_index_xj = 1);
     else
         (p = NULL, p_index_xj = -1);
-    observe((p_index_xj < 0 ? (void *)0 : p + p_index_xj), "pick");
+    observe((p ? p + p_index_xj : (void *)0), "pick");
 }
 
 /* The same sentinel crossing a return boundary rather than a call. */
@@ -51,7 +51,7 @@ static const char *maybe_tail(const char *s, int take) {
         (p = s, p_index_xj = 2);
     else
         (p = NULL, p_index_xj = -1);
-    return (p_index_xj < 0 ? (void *)0 : p + p_index_xj);
+    return (p ? p + p_index_xj : (void *)0);
 }
 
 int main(void) {

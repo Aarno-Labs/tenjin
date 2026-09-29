@@ -150,6 +150,16 @@ bool findIndexDeclSite(const FunctionDecl *FD, const VarDecl *PtrVar,
         return true;
     }
 
+    // The index does not exist until the statement is over, so a declarator
+    // further along cannot read through the pointer: `int *p = a, v = *p;`.
+    bool later = false;
+    for (const Decl *D : DS->decls()) {
+        const auto *Sibling = dyn_cast<VarDecl>(D);
+        if (later && Sibling && referencesAnyOf(Sibling->getInit(), {PtrVar}))
+            return false;
+        later |= D == PtrVar;
+    }
+
     // On the next line, where every name the declaration binds — including
     // a sibling declarator's index — is already in scope. InsertBefore at
     // the position past the terminator rather than InsertAfterToken on it:

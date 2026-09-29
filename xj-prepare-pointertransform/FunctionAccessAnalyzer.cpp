@@ -58,6 +58,14 @@ void FunctionAccessAnalyzer::collectGlobalPointers(ASTContext &Ctx)
                              << ": external linkage\n";
             continue;
         }
+        // Declared more than once — tentatively, or again by a block-scope
+        // `extern` — its references are spread over declarations that are
+        // tracked one at a time, so no single access list covers them.
+        if (VD->getFirstDecl() != VD->getMostRecentDecl())
+        {
+            logFailedPointer(VD, Ctx, "file-scope pointer is declared more than once");
+            continue;
+        }
 
         globals.push_back(VD);
     }
@@ -165,12 +173,13 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit()
     // ---- 1. Who is rewritten, and where each index lives --------------
     std::vector<PointerPlan> plans;
     std::set<const VarDecl *> transformed;
-    collectCandidates(Ctx, plans, transformed);
+    std::map<const VarDecl *, PointerFacts> facts;
+    collectCandidates(Ctx, plans, transformed, facts);
 
     // ---- 2. Plan every access rewrite in the TU at once ---------------
-    EditPlan plan(Ctx, transformed);
+    EditPlan plan(Ctx, transformed, facts);
     for (const PointerPlan &P : plans)
-        plan.add(P.FD, P.ptr, *P.accesses);
+        plan.add(P.ptr, *P.accesses);
     plan.build();
 
     // ---- 3. Write ------------------------------------------------------
@@ -200,24 +209,26 @@ void FunctionAccessAnalyzer::onEndOfTranslationUnit()
 // collectCandidates — decide the rewritten set, TU-wide
 // ============================================================================
 //
-// Validation is a function of one pointer's own access list and of which
+// Candidacy is a function of one pointer's own access list and of which
 // references are roots, and placement is a function of its declaration, so
-// a single pass settles both. Nothing here depends on what any other
-// pointer turns out to be.
+// a single pass settles both. Whether a candidate can be edited is the one
+// question that depends on what the others turn out to be, and it is asked
+// once they are all known.
 //
 // Pointers are appended in reverse source order within each scope. Two
 // index declarations sharing an anchor are both InsertTextBefore at one
 // location, where a later insertion is placed ahead of an earlier one, so
 // planning them backwards puts their declarations back in source order —
 // which is what a paired index needs to name the one before it.
-void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
-                                               std::vector<PointerPlan> &plans,
-                                               std::set<const VarDecl *> &transformed)
+void FunctionAccessAnalyzer::collectCandidates(
+    ASTContext &Ctx, std::vector<PointerPlan> &plans,
+    std::set<const VarDecl *> &transformed,
+    std::map<const VarDecl *, PointerFacts> &facts)
 {
     SourceManager &SM = Ctx.getSourceManager();
 
     // Every reference that some assignment takes as its root, in the whole
-    // TU. Candidacy asks for them; see validatePointerCandidate.
+    // TU. Candidacy asks for them; see isCandidate.
     std::set<const Expr *> roots;
     auto noteRoots = [&](const std::vector<PointerAccess> &accesses)
     {
@@ -231,22 +242,28 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
     for (const auto &[VD, accesses] : g_global_pointer_map)
         noteRoots(accesses);
 
+    auto decline = [&](const VarDecl *PtrVar, const std::string &error)
+    {
+        gLog.error = error;
+        logFailedPointer(PtrVar, Ctx, error);
+        if (VERBOSE)
+            llvm::outs() << "[Skip] " << PtrVar->getNameAsString() << ": "
+                         << error << "\n";
+    };
+
     auto consider = [&](const FunctionDecl *FD, const VarDecl *PtrVar,
                         const std::vector<PointerAccess> &accesses)
     {
         printAccesses(PtrVar, accesses, Ctx);
 
         std::string error;
-        if (!validatePointerCandidate(PtrVar, accesses, roots, Ctx, error))
+        if (!isCandidate(accesses, roots, Ctx, error))
         {
-            gLog.error = error;
-            logFailedPointer(PtrVar, Ctx, error);
-            if (VERBOSE)
-                llvm::outs() << "[Skip] " << PtrVar->getNameAsString() << ": "
-                             << error << "\n";
+            decline(PtrVar, error);
             return;
         }
 
+        gLog.foundPointer = true;
         g_pointers_found++;
 
         PointerPlan P;
@@ -255,9 +272,7 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
         P.accesses = &accesses;
         if (!findIndexDeclSite(FD, PtrVar, Ctx, P.site))
         {
-            error = "No position for the index declaration";
-            gLog.error = error;
-            logFailedPointer(PtrVar, Ctx, error);
+            decline(PtrVar, "No position for the index declaration");
             return;
         }
 
@@ -316,6 +331,31 @@ void FunctionAccessAnalyzer::collectCandidates(ASTContext &Ctx,
             continue;
         }
         consider(/*FD=*/nullptr, VD, accesses);
+    }
+
+    // Whether the candidates can be edited is asked last, of all of them
+    // together. What is edited depends on a pointer's facts, and those
+    // follow its pairings — so dropping one pointer can change another's.
+    // It can only take facts away, so going round again settles.
+    for (bool settled = false; !settled;)
+    {
+        settled = true;
+        RewrittenPointers rewritten;
+        for (const PointerPlan &P : plans)
+            rewritten[P.ptr] = P.accesses;
+        facts = pointerFacts(rewritten);
+
+        for (auto it = plans.begin(); it != plans.end(); ++it)
+        {
+            std::string error;
+            if (isEditable(*it->accesses, facts.at(it->ptr), Ctx, error))
+                continue;
+            decline(it->ptr, error);
+            transformed.erase(it->ptr);
+            plans.erase(it);
+            settled = false;
+            break;
+        }
     }
 }
 
