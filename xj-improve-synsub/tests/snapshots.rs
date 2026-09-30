@@ -584,6 +584,23 @@ fn strlen_of_slice_adds_use_item() {
 }
 
 #[test]
+fn strlen_of_u8_array_borrows_slice() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
+    check(
+        &rw,
+        "fn demo() { let mut buf: [u8; 100] = [0; 100]; let _ = strlen(buf.as_mut_ptr()); }",
+        expect![[r#"
+            fn demo() {
+                let mut buf: [u8; 100] = [0; 100];
+                let _ = (::std::ffi::CStr::from_bytes_until_nul(&buf[..]).unwrap().count_bytes())
+                    as size_t;
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn atone_rewrites_all_null_endptr_and_simple_calls() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_atone_of_slice);
