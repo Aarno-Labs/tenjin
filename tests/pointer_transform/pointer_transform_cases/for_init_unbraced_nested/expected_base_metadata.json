@@ -1,0 +1,72 @@
+{
+  "functions": {
+    "dangling_else@for_init_unbraced_nested.c": {
+      "file": "for_init_unbraced_nested.c",
+      "pointers": [
+        {
+          "base_text": "a",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "a",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "do_inside_while@for_init_unbraced_nested.c": {
+      "file": "for_init_unbraced_nested.c",
+      "pointers": [
+        {
+          "base_text": "a",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "a",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "four_levels@for_init_unbraced_nested.c": {
+      "file": "for_init_unbraced_nested.c",
+      "pointers": [
+        {
+          "base_text": "a",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "a",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "if_while_for@for_init_unbraced_nested.c": {
+      "file": "for_init_unbraced_nested.c",
+      "pointers": [
+        {
+          "base_text": "a",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "a",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

@@ -50,14 +50,28 @@ def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp
         encoding="utf-8",
     )
 
-    # The T*-to-int rewrite under test is performed by the slice tool,
-    # so run the full pointer -> slice pipeline (in-place: the slice
-    # tool re-parses the pointer tool's output from disk).
+    # The T*-to-int rewrite under test is performed by the slice tool, so
+    # run the whole pointer -> base -> slice pipeline (in-place: each tool
+    # re-parses the previous one's output from disk).
     pointer_transform = root / "_local" / "_build_pointertransform" / "xj-prepare-pointertransform"
+    base_rewrite = root / "_local" / "_build_baserewrite" / "xj-prepare-baserewrite"
     slice_transform = root / "_local" / "_build_slicetransform" / "xj-prepare-slicetransform"
     metadata = tmp_codebase / "metadata.json"
     hermetic.run(
         [pointer_transform, "--inplace", f"--metadata-out={metadata}", "-p", tmp_codebase, source],
+        check=True,
+        capture_output=True,
+    )
+    hermetic.run(
+        [
+            base_rewrite,
+            "--inplace",
+            f"--metadata-in={metadata}",
+            f"--metadata-out={metadata}",
+            "-p",
+            tmp_codebase,
+            source,
+        ],
         check=True,
         capture_output=True,
     )
