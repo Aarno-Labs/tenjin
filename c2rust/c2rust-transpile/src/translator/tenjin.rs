@@ -2,6 +2,7 @@ use super::*;
 use quote::ToTokens; // for to_token_stream()
 use serde_derive::Deserialize;
 use std::str::FromStr;
+use syn::visit_mut::{self, VisitMut};
 use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,36 @@ impl FromStr for GuidedType {
 }
 
 impl GuidedType {
+    pub fn required_xj_zstr_types(&self) -> IndexSet<&'static str> {
+        #[derive(Default)]
+        struct FindZstrTypes(IndexSet<&'static str>);
+
+        impl VisitMut for FindZstrTypes {
+            fn visit_type_path_mut(&mut self, ty: &mut syn::TypePath) {
+                let segments = &ty.path.segments;
+                if ty.qself.is_none()
+                    && (segments.len() == 1
+                        || (segments.len() == 2 && segments[0].ident == "xj_zstr"))
+                {
+                    match segments.last().unwrap().ident.to_string().as_str() {
+                        "ZString" => {
+                            self.0.insert("ZString");
+                        }
+                        "ZStr" => {
+                            self.0.insert("ZStr");
+                        }
+                        _ => {}
+                    }
+                }
+                visit_mut::visit_type_path_mut(self, ty);
+            }
+        }
+
+        let mut visitor = FindZstrTypes::default();
+        visitor.visit_type_mut(&mut self.parsed.clone());
+        visitor.0
+    }
+
     pub fn new(pretty: String, parsed: Type) -> Self {
         GuidedType { pretty, parsed }
     }
@@ -2866,6 +2897,27 @@ impl Translation<'_> {
 #[cfg(test)]
 mod guided_type_tests {
     use super::*;
+
+    #[test]
+    fn find_nested_zstr_types() {
+        let t = GuidedType::from_str(
+            "(Vec<xj_zstr::ZString>, Option<&'a mut ::xj_zstr::ZStr>, [ZString; 2])",
+        )
+        .unwrap();
+        assert_eq!(
+            t.required_xj_zstr_types().into_iter().collect::<Vec<_>>(),
+            vec!["ZString", "ZStr"]
+        );
+    }
+
+    #[test]
+    fn other_crates_zstr_names_do_not_require_xj_zstr() {
+        let t = GuidedType::from_str(
+            "(other::ZString, &other::ZStr, my::xj_zstr::ZString, xj_zstr::Other)",
+        )
+        .unwrap();
+        assert!(t.required_xj_zstr_types().is_empty());
+    }
 
     #[test]
     fn parse_vec() {

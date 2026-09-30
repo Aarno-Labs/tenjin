@@ -4691,6 +4691,20 @@ impl<'c> Translation<'c> {
         let mutbl = guided_mutbl.unwrap_or_else(|| typ.mutability());
 
         if let Some(guided_type) = guided_type {
+            let zstr_types = guided_type.required_xj_zstr_types();
+            if !zstr_types.is_empty() {
+                self.use_crate(ExternCrate::XjZstr);
+                self.with_cur_file_item_store(|store| {
+                    for name in zstr_types {
+                        store.add_use_with_attr(
+                            true,
+                            vec!["xj_zstr".into()],
+                            name,
+                            mk().call_attr("allow", vec!["unused_imports"]),
+                        );
+                    }
+                });
+            }
             // If we have a type override, we use it instead of the converted type
             return Ok(ConvertedVariable {
                 ty: Box::new(guided_type.parsed.clone()),
