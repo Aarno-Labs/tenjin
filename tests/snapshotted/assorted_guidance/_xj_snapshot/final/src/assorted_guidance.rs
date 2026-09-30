@@ -246,7 +246,7 @@ pub fn use_pod_structs(mut png: PodNotGuided, mut pg: PodGuided) -> ::core::ffi:
 }
 #[no_mangle]
 pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
-    if printf(b"%s\n\0".as_ptr() as *const ::core::ffi::c_char, ostr) < 0 as ::core::ffi::c_int {
+    if printf(b"%s\n\0".as_ptr() as *const ::core::ffi::c_char, ostr) < 0 {
         return 42;
     }
     0
