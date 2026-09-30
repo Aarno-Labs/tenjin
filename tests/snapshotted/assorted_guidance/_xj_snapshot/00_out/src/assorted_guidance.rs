@@ -6,30 +6,18 @@ extern "C" {
         src: *const ::core::ffi::c_void,
         n: ::core::ffi::c_ulong,
     ) -> *mut ::core::ffi::c_void;
-    fn printf(fmt: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
-    fn snprintf(
-        buf: *mut ::core::ffi::c_char,
-        _: ::core::ffi::c_ulong,
-        fmt: *const ::core::ffi::c_char,
-        ...
-    ) -> ::core::ffi::c_int;
-    fn sprintf(
-        buf: *mut ::core::ffi::c_char,
-        fmt: *const ::core::ffi::c_char,
-        ...
-    ) -> ::core::ffi::c_int;
-    fn strlen(s: *const ::core::ffi::c_char) -> size_t;
+    fn printf(fmt: *const u8, ...) -> ::core::ffi::c_int;
+    fn snprintf(buf: *mut u8, _: ::core::ffi::c_ulong, fmt: *const u8, ...) -> ::core::ffi::c_int;
+    fn sprintf(buf: *mut u8, fmt: *const u8, ...) -> ::core::ffi::c_int;
+    fn strlen(s: *const u8) -> size_t;
     fn memset(
         s: *mut ::core::ffi::c_void,
         c: ::core::ffi::c_int,
         n: ::core::ffi::c_long,
     ) -> *mut ::core::ffi::c_void;
-    fn strcspn(
-        _: *const ::core::ffi::c_char,
-        _: *const ::core::ffi::c_char,
-    ) -> ::core::ffi::c_ulong;
+    fn strcspn(_: *const u8, _: *const u8) -> ::core::ffi::c_ulong;
     fn isalnum(c: ::core::ffi::c_int) -> ::core::ffi::c_int;
-    fn tolower(c: ::core::ffi::c_int) -> ::core::ffi::c_char;
+    fn tolower(c: ::core::ffi::c_int) -> u8;
     fn exit(status: ::core::ffi::c_int) -> !;
     fn putchar(c: ::core::ffi::c_int) -> ::core::ffi::c_int;
     static mut extern_int_unguided: ::core::ffi::c_int;
@@ -72,8 +60,8 @@ pub unsafe fn print_owned_String(mut ostr: String) {
     println!("{:>}", ostr);
 }
 #[no_mangle]
-pub unsafe fn print_unguided_ptr(mut ptr: *const ::core::ffi::c_char) {
-    println!("{:>}", { xj_str_from_ptr(ptr as *const core::ffi::c_char) });
+pub unsafe fn print_unguided_ptr(mut ptr: *const u8) {
+    println!("{:>}", { xj_str_from_ptr(ptr as *const u8) });
 }
 #[no_mangle]
 pub unsafe fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
@@ -92,7 +80,7 @@ pub unsafe fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
 pub unsafe fn guided_str_init_lit() {
     let ostr: String = String::from("owned String");
     print_owned_String(String::from("ddedd"));
-    let mut uptr = b"unguided pointer\0".as_ptr() as *const ::core::ffi::c_char;
+    let mut uptr = b"unguided pointer\0".as_ptr() as *const u8;
 }
 #[no_mangle]
 pub unsafe fn guided_str_init_empty_lit() {
@@ -112,12 +100,12 @@ pub unsafe fn guided_array_vec() {
 #[no_mangle]
 pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
     let rsu8: &[u8] = ::core::mem::transmute::<[u8; 1], [::core::ffi::c_uchar; 1]>(*b"\0");
-    strlen(&raw const rsu8 as *const ::core::ffi::c_uchar as *const ::core::ffi::c_char);
+    strlen(&raw const rsu8 as *const ::core::ffi::c_uchar as *const u8);
 }
 #[no_mangle]
 pub unsafe fn guided_immutable_u8_pointer() {
     let mut rsu8: &[u8] = b"\0";
-    strlen(rsu8.as_ptr() as *const ::core::ffi::c_char);
+    strlen(rsu8.as_ptr() as *const u8);
 }
 #[no_mangle]
 pub unsafe fn recognize_call_exit() {
@@ -147,8 +135,7 @@ pub unsafe fn guided_condition_string_null_check_neq(mut ostr: String) -> ::core
 }
 #[no_mangle]
 pub unsafe fn guided_c_assignment_string_pop(mut ostr: String) {
-    *ostr.offset((ostr.len() as size_t).wrapping_sub(1 as size_t) as isize) =
-        '\0' as ::core::ffi::c_char;
+    *ostr.offset((ostr.len() as size_t).wrapping_sub(1 as size_t) as isize) = '\0' as u8;
 }
 #[no_mangle]
 pub unsafe fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
@@ -211,7 +198,7 @@ pub unsafe fn guided_2d_vec(
 }
 #[no_mangle]
 pub unsafe fn guided_local_int_as_char() {
-    let mut unguided = 65 as ::core::ffi::c_char;
+    let mut unguided = 65 as u8;
     let mut oc: char = 'A';
 }
 #[no_mangle]
@@ -288,7 +275,7 @@ pub unsafe fn guided_int_putchar(mut oc: char) {
     print!("{:}", oc as u8 as char);
 }
 #[no_mangle]
-pub unsafe fn unguided_char_putchar(mut c: ::core::ffi::c_char) {
+pub unsafe fn unguided_char_putchar(mut c: u8) {
     print!("{:}", c as ::core::ffi::c_int as u8 as char);
 }
 #[no_mangle]
@@ -297,7 +284,7 @@ pub unsafe fn use_pod_structs(mut png: PodNotGuided, mut pg: PodGuided) -> ::cor
 }
 #[no_mangle]
 pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
-    if printf(b"%s\n\0".as_ptr() as *const ::core::ffi::c_char, ostr) < 0 as ::core::ffi::c_int {
+    if printf(b"%s\n\0".as_ptr() as *const u8, ostr) < 0 as ::core::ffi::c_int {
         return 42 as ::core::ffi::c_int;
     }
     return 0 as ::core::ffi::c_int;
@@ -308,7 +295,7 @@ pub unsafe fn peek_slice(mut rsu8: &[u8]) {
 }
 #[no_mangle]
 pub unsafe fn receive_slice(mut rsu8: &[u8]) {
-    let mut v = rsu8[0 as usize] as ::core::ffi::c_char;
+    let mut v = rsu8[0 as usize] as u8;
 }
 #[no_mangle]
 pub unsafe fn pass_slice_offset(mut idx: ::core::ffi::c_int) {
@@ -388,11 +375,13 @@ pub unsafe fn pass_slice_offset(mut idx: ::core::ffi::c_int) {
     ];
     receive_slice(&(&mut arr)[(idx + 2 as ::core::ffi::c_int) as usize..]);
 }
-unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
+unsafe fn xj_str_from_ptr<'a>(ptr: *const u8) -> &'a str {
     if ptr.is_null() {
         "(null)"
     } else {
-        core::ffi::CStr::from_ptr(ptr).to_str().unwrap()
+        core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char)
+            .to_str()
+            .unwrap()
     }
 }
 fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {

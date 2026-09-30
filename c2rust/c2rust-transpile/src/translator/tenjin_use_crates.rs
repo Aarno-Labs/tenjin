@@ -141,10 +141,10 @@ fn libbz2_rs_sys_shim_defn(ident: &str) -> Option<&'static str> {
             "unsafe fn xj_BZ2_bzWriteClose64(bzerror: *mut ::core::ffi::c_int, b: *mut ::core::ffi::c_void, abandon: ::core::ffi::c_int, nbytes_in_lo32: *mut ::core::ffi::c_uint, nbytes_in_hi32: *mut ::core::ffi::c_uint, nbytes_out_lo32: *mut ::core::ffi::c_uint, nbytes_out_hi32: *mut ::core::ffi::c_uint) { libbz2_rs_sys::BZ2_bzWriteClose64(bzerror, b.cast(), abandon, nbytes_in_lo32, nbytes_in_hi32, nbytes_out_lo32, nbytes_out_hi32) }"
         }
         "BZ2_bzopen" => {
-            "unsafe fn xj_BZ2_bzopen(path: *const ::core::ffi::c_char, mode: *const ::core::ffi::c_char) -> *mut ::core::ffi::c_void { libbz2_rs_sys::BZ2_bzopen(path, mode).cast() }"
+            "unsafe fn xj_BZ2_bzopen(path: *const u8, mode: *const u8) -> *mut ::core::ffi::c_void { libbz2_rs_sys::BZ2_bzopen(path.cast(), mode.cast()).cast() }"
         }
         "BZ2_bzdopen" => {
-            "unsafe fn xj_BZ2_bzdopen(fd: ::core::ffi::c_int, mode: *const ::core::ffi::c_char) -> *mut ::core::ffi::c_void { libbz2_rs_sys::BZ2_bzdopen(fd, mode).cast() }"
+            "unsafe fn xj_BZ2_bzdopen(fd: ::core::ffi::c_int, mode: *const u8) -> *mut ::core::ffi::c_void { libbz2_rs_sys::BZ2_bzdopen(fd, mode.cast()).cast() }"
         }
         "BZ2_bzread" => {
             "unsafe fn xj_BZ2_bzread(b: *mut ::core::ffi::c_void, buf: *mut ::core::ffi::c_void, len: ::core::ffi::c_int) -> ::core::ffi::c_int { libbz2_rs_sys::BZ2_bzread(b.cast(), buf, len) }"
@@ -159,7 +159,7 @@ fn libbz2_rs_sys_shim_defn(ident: &str) -> Option<&'static str> {
             "unsafe fn xj_BZ2_bzclose(b: *mut ::core::ffi::c_void) { libbz2_rs_sys::BZ2_bzclose(b.cast()) }"
         }
         "BZ2_bzerror" => {
-            "unsafe fn xj_BZ2_bzerror(b: *const ::core::ffi::c_void, errnum: *mut ::core::ffi::c_int) -> *const ::core::ffi::c_char { libbz2_rs_sys::BZ2_bzerror(b.cast(), errnum) }"
+            "unsafe fn xj_BZ2_bzerror(b: *const ::core::ffi::c_void, errnum: *mut ::core::ffi::c_int) -> *const u8 { libbz2_rs_sys::BZ2_bzerror(b.cast(), errnum).cast() }"
         }
         _ => return None,
     })

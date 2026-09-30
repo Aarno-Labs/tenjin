@@ -416,6 +416,10 @@ pub fn transpile(tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&str]
     let clang_args: Vec<String> = get_extra_args_macos();
     let mut clang_args: Vec<&str> = clang_args.iter().map(AsRef::as_ref).collect();
     clang_args.extend_from_slice(extra_clang_args);
+    // Plain `char` is translated as `u8` regardless of target, so have clang agree that
+    // `char` is unsigned (affects constant evaluation, `CHAR_MIN`/`CHAR_MAX`, etc.).
+    // This comes last so that it overrides any `-fsigned-char` from the build.
+    clang_args.push("-funsigned-char");
 
     let mut top_level_ccfg = None;
     let mut workspace_members = vec![];

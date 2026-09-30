@@ -979,13 +979,13 @@ impl Rewriter {
         let then_expr = if let Some(lit) = mb_then_lit {
             *lit
         } else {
-            syn::parse_quote! { xj_str_from_ptr( #then_expr_full as *const core::ffi::c_char ) }
+            syn::parse_quote! { xj_str_from_ptr( #then_expr_full as *const u8 ) }
         };
 
         let else_expr = if let Some(lit) = mb_else_lit {
             *lit
         } else {
-            syn::parse_quote! { xj_str_from_ptr( #else_expr_full as *const core::ffi::c_char ) }
+            syn::parse_quote! { xj_str_from_ptr( #else_expr_full as *const u8 ) }
         };
 
         let cond = &if_expr.cond;
@@ -1016,8 +1016,8 @@ impl Rewriter {
     }
 
     /// Rewrite
-    ///     `*s1.offset(s1.len().wrapping_sub(1 as size_t) as isize) = '\0' as ::core::ffi::c_char;`
-    ///  or `*s1.offset((s1.len() as ___ - 1 as ___) as isize) = '\0' as ::core::ffi::c_char;`
+    ///     `*s1.offset(s1.len().wrapping_sub(1 as size_t) as isize) = '\0' as u8;`
+    ///  or `*s1.offset((s1.len() as ___ - 1 as ___) as isize) = '\0' as u8;`
     /// into
     ///      `s1.pop();`
     /// when `s1` is an identifier typed as `String`.
@@ -1301,34 +1301,9 @@ impl Rewriter {
             return None;
         }
 
-        // We can't call CStr::from_ptr(x) on x: *mut T, we need to cast to *const T first.
-        let casted_type = match expr_ident_type(expr, symbols) {
-            Some(syn::Type::Ptr(pointee)) if is_u8_or_i8_type(pointee.elem.as_ref()) => {
-                if pointee.mutability.is_some() {
-                    Some(syn::TypePtr {
-                        star_token: pointee.star_token,
-                        const_token: Default::default(),
-                        mutability: None,
-                        elem: pointee.elem.clone(),
-                    })
-                } else {
-                    None
-                }
-            }
-            _ => return None,
-        };
-
-        let coerced: Expr = if casted_type.is_some() {
-            syn::parse_quote! {
-                ::core::ffi::CStr::from_ptr(#expr as *const i8).to_bytes()
-            }
-        } else {
-            syn::parse_quote! {
-                ::core::ffi::CStr::from_ptr(#expr).to_bytes()
-            }
-        };
-
-        Some(Box::new(coerced))
+        Some(Box::new(syn::parse_quote! {
+            ::core::ffi::CStr::from_ptr(#expr as *const core::ffi::c_char).to_bytes()
+        }))
     }
 
     /// Convert `x.as_mut_ptr()` on a `u8` slice expression into `x.as_u8_slice()`.
@@ -1755,7 +1730,7 @@ fn atone_endptr_helper_source(name: &str) -> String {
         _ => unreachable!("only strto* functions use an endptr adapter"),
     };
     format!(
-        "fn xj_synsub_{name}_with_endptr(\n    input: &[u8],\n    endptr: *mut *mut ::core::ffi::c_char{base_arg}\n) -> {return_type} {{\n    let mut endoff = 0usize;\n    {parse_body}\n    if !endptr.is_null() {{\n        unsafe {{ *endptr = input.as_ptr().add(endoff) as *mut ::core::ffi::c_char; }}\n    }}\n    value\n}}"
+        "fn xj_synsub_{name}_with_endptr(\n    input: &[u8],\n    endptr: *mut *mut u8{base_arg}\n) -> {return_type} {{\n    let mut endoff = 0usize;\n    {parse_body}\n    if !endptr.is_null() {{\n        unsafe {{ *endptr = input.as_ptr().add(endoff) as *mut u8; }}\n    }}\n    value\n}}"
     )
 }
 

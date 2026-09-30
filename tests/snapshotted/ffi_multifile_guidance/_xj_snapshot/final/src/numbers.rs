@@ -1,5 +1,5 @@
 extern "C" {
-    fn first_byte(s: *const ::core::ffi::c_char) -> ::core::ffi::c_uchar;
+    fn first_byte(s: *const u8) -> ::core::ffi::c_uchar;
     fn strings_demo() -> ::core::ffi::c_int;
 }
 pub fn sum_n(mut xs: &[::core::ffi::c_int], mut n: ::core::ffi::c_int) -> ::core::ffi::c_int {
@@ -25,7 +25,7 @@ pub unsafe extern "C" fn numbers_demo() -> ::core::ffi::c_int {
             .as_mut()
             .unwrap(),
     );
-    total += first_byte(b"world\0".as_ptr() as *const ::core::ffi::c_char) as ::core::ffi::c_int;
+    total += first_byte(b"world\0".as_ptr() as *const u8) as ::core::ffi::c_int;
     total + strings_demo()
 }
 pub mod xj_ffi {

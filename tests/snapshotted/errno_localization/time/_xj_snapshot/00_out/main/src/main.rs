@@ -22,10 +22,7 @@ unsafe fn _xj_wrap_time(mut _xj_errno: &mut i32, mut __timer: *mut time_t) -> ti
     *_xj_errno = *__errno_location();
     return ret;
 }
-unsafe fn main_0(
-    mut argc: ::core::ffi::c_int,
-    mut argv: *mut *mut ::core::ffi::c_char,
-) -> ::core::ffi::c_int {
+unsafe fn main_0(mut argc: ::core::ffi::c_int, mut argv: *mut *mut u8) -> ::core::ffi::c_int {
     let mut _xj_local_errno: i32 = 0;
     _xj_local_errno = 0 as ::core::ffi::c_int;
     let mut t: time_t = 0;
@@ -49,6 +46,6 @@ pub fn main() -> ExitCode {
         .chain(::core::iter::once(::core::ptr::null_mut()))
         .collect();
     let argc = (args_ptrs.len() - 1) as ::core::ffi::c_int;
-    let argv = args_ptrs.as_mut_ptr() as *mut *mut ::core::ffi::c_char;
+    let argv = args_ptrs.as_mut_ptr() as *mut *mut u8;
     unsafe { ExitCode::from(main_0(argc, argv) as u8) }
 }

@@ -2407,11 +2407,11 @@ mod refactor_format {
                 x.with_cur_file_item_store(|item_store| {
                     // TODO(brk): handle emission of bytes
                     item_store.add_item_str_once(
-                        r#"unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
+                        r#"unsafe fn xj_str_from_ptr<'a>(ptr: *const u8) -> &'a str {
                           if ptr.is_null() {
                               "(null)"
                           } else {
-                              core::ffi::CStr::from_ptr(ptr).to_str().unwrap()
+                              core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char).to_str().unwrap()
                           }
                         }"#,
                     );
@@ -2419,7 +2419,7 @@ mod refactor_format {
 
                 let span = e.span();
 
-                let e = mk().cast_expr(e, mk().ptr_ty(mk().path_ty(vec!["core", "ffi", "c_char"])));
+                let e = mk().cast_expr(e, mk().ptr_ty(mk().ident_ty("u8")));
                 let cs = mk().call_expr(mk().path_expr(vec!["xj_str_from_ptr"]), vec![e]);
                 let b = mk().unsafe_().block(vec![mk().expr_stmt(cs)]);
                 mk().span(span).block_expr(b)
@@ -6349,8 +6349,7 @@ impl<'c> Translation<'c> {
         let to_method_name = match target_ty_ctype {
             CTypeKind::Float => "to_f32",
             CTypeKind::Double => "to_f64",
-            CTypeKind::Char => "to_i8",
-            CTypeKind::UChar => "to_u8",
+            CTypeKind::Char | CTypeKind::UChar => "to_u8",
             CTypeKind::Short => "to_i16",
             CTypeKind::UShort => "to_u16",
             CTypeKind::Int => "to_i32",

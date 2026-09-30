@@ -17,11 +17,11 @@ pub mod xj_ffi {
     #[allow(unused_imports)]
     use super::*;
     #[no_mangle]
-    pub unsafe extern "C" fn first_byte(s: *const ::core::ffi::c_char) -> ::core::ffi::c_uchar {
-        super::first_byte({
-            let __lift_2_922_0 = libc::strlen(s) + 1;
-            std::slice::from_raw_parts(s.cast(), __lift_2_922_0)
-        })
+    pub unsafe extern "C" fn first_byte(s: *const u8) -> ::core::ffi::c_uchar {
+        super::first_byte(std::slice::from_raw_parts(
+            s.cast(),
+            libc::strlen(s as *const ::core::ffi::c_char) + 1,
+        ))
     }
     #[no_mangle]
     pub unsafe extern "C" fn zero_first(buf: *mut ::core::ffi::c_uchar, n: ::core::ffi::c_int) {

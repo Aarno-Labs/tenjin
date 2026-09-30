@@ -13,11 +13,8 @@ expression: cat tests/snapshots/arch-os-specific/varargs.2021.x86_64.linux.clang
 )]
 #![feature(c_variadic, raw_ref_op)]
 extern "C" {
-    fn printf(__format: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
-    fn vprintf(
-        __format: *const ::core::ffi::c_char,
-        __arg: ::core::ffi::VaList,
-    ) -> ::core::ffi::c_int;
+    fn printf(__format: *const u8, ...) -> ::core::ffi::c_int;
+    fn vprintf(__format: *const u8, __arg: ::core::ffi::VaList) -> ::core::ffi::c_int;
     fn putchar(__c: ::core::ffi::c_int) -> ::core::ffi::c_int;
     static va_callback_backend: va_callback_backend;
 }
@@ -54,23 +51,17 @@ pub unsafe extern "C" fn call_printf() {
     println!("{:}, {:.6}", 10 as core::ffi::c_int, 1.5f64 as f64);
 }
 #[no_mangle]
-pub unsafe extern "C" fn my_vprintf(
-    mut format: *const ::core::ffi::c_char,
-    mut ap: ::core::ffi::VaList,
-) {
+pub unsafe extern "C" fn my_vprintf(mut format: *const u8, mut ap: ::core::ffi::VaList) {
     vprintf(format, ap.as_va_list());
 }
 #[no_mangle]
-pub unsafe extern "C" fn call_vprintf(
-    mut format: *const ::core::ffi::c_char,
-    mut c2rust_args: ...
-) {
+pub unsafe extern "C" fn call_vprintf(mut format: *const u8, mut c2rust_args: ...) {
     let mut ap: ::core::ffi::VaListImpl;
     ap = c2rust_args.clone();
     my_vprintf(format, ap.as_va_list());
 }
 #[no_mangle]
-pub unsafe extern "C" fn my_printf(mut fmt: *const ::core::ffi::c_char, mut c2rust_args: ...) {
+pub unsafe extern "C" fn my_printf(mut fmt: *const u8, mut c2rust_args: ...) {
     let mut ap: ::core::ffi::VaListImpl;
     ap = c2rust_args.clone();
     while *fmt != 0 {
@@ -87,8 +78,7 @@ pub unsafe extern "C" fn my_printf(mut fmt: *const ::core::ffi::c_char, mut c2ru
                         }
                         115 => {
                             print!("{:>}", {
-                                xj_str_from_ptr(ap.arg::<*mut ::core::ffi::c_char>()
-                                    as *const core::ffi::c_char)
+                                xj_str_from_ptr(ap.arg::<*mut u8>() as *const u8)
                             });
                         }
                         _ => {}
@@ -103,7 +93,7 @@ pub unsafe extern "C" fn my_printf(mut fmt: *const ::core::ffi::c_char, mut c2ru
     }
 }
 #[no_mangle]
-pub unsafe extern "C" fn simple_vacopy(mut fmt: *const ::core::ffi::c_char, mut c2rust_args: ...) {
+pub unsafe extern "C" fn simple_vacopy(mut fmt: *const u8, mut c2rust_args: ...) {
     let mut ap: ::core::ffi::VaListImpl;
     let mut aq: ::core::ffi::VaListImpl;
     ap = c2rust_args.clone();
@@ -129,10 +119,7 @@ pub unsafe extern "C" fn has_va_callback_backend() -> ::core::ffi::c_int {
     return va_callback_backend.set_option.is_some() as ::core::ffi::c_int;
 }
 #[no_mangle]
-pub unsafe extern "C" fn valist_struct_member(
-    mut fmt: *const ::core::ffi::c_char,
-    mut c2rust_args: ...
-) {
+pub unsafe extern "C" fn valist_struct_member(mut fmt: *const u8, mut c2rust_args: ...) {
     let mut a: vastruct = vastruct {
         args: ::core::mem::MaybeUninit::uninit().assume_init(),
     };
@@ -145,10 +132,7 @@ pub unsafe extern "C" fn valist_struct_member(
     vprintf(fmt, b.args.as_va_list());
 }
 #[no_mangle]
-pub unsafe extern "C" fn valist_struct_pointer_member(
-    mut fmt: *const ::core::ffi::c_char,
-    mut c2rust_args: ...
-) {
+pub unsafe extern "C" fn valist_struct_pointer_member(mut fmt: *const u8, mut c2rust_args: ...) {
     let mut a: vastruct = vastruct {
         args: ::core::mem::MaybeUninit::uninit().assume_init(),
     };
@@ -163,7 +147,7 @@ pub unsafe extern "C" fn valist_struct_pointer_member(
     vprintf(fmt, (*q).args.as_va_list());
 }
 #[no_mangle]
-pub unsafe extern "C" fn restart_valist(mut fmt: *const ::core::ffi::c_char, mut c2rust_args: ...) {
+pub unsafe extern "C" fn restart_valist(mut fmt: *const u8, mut c2rust_args: ...) {
     let mut ap: ::core::ffi::VaListImpl;
     ap = c2rust_args.clone();
     vprintf(fmt, ap.as_va_list());
@@ -187,10 +171,12 @@ pub unsafe extern "C" fn borrowed_valist(mut count: size_t, mut c2rust_args: ...
         count = count.wrapping_sub(1);
     }
 }
-unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
+unsafe fn xj_str_from_ptr<'a>(ptr: *const u8) -> &'a str {
     if ptr.is_null() {
         "(null)"
     } else {
-        core::ffi::CStr::from_ptr(ptr).to_str().unwrap()
+        core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char)
+            .to_str()
+            .unwrap()
     }
 }

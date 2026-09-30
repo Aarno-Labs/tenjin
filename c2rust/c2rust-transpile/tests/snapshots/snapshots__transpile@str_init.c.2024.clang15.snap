@@ -15,27 +15,25 @@ expression: cat tests/snapshots/str_init.2024.clang15.rs
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct s {
-    pub entries: [[::core::ffi::c_char; 10]; 3],
+    pub entries: [[u8; 10]; 3],
 }
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct alpn_spec {
-    pub entries: [[::core::ffi::c_char; 10]; 3],
+    pub entries: [[u8; 10]; 3],
     pub count: ::core::ffi::c_uint,
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ptr() {
-    let mut _s: *const ::core::ffi::c_char = b"hello\0".as_ptr() as *const ::core::ffi::c_char;
+    let mut _s: *const u8 = b"hello\0".as_ptr() as *const u8;
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn array_deduced_length() {
-    let mut _s: [::core::ffi::c_char; 6] =
-        ::core::mem::transmute::<[u8; 6], [::core::ffi::c_char; 6]>(*b"hello\0");
+    let mut _s: [u8; 6] = *b"hello\0";
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn array() {
-    let mut _s: [::core::ffi::c_char; 10] =
-        ::core::mem::transmute::<[u8; 10], [::core::ffi::c_char; 10]>(*b"hello\0\0\0\0\0");
+    let mut _s: [u8; 10] = *b"hello\0\0\0\0\0";
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn int_array_extra_braces() {
@@ -58,49 +56,32 @@ pub unsafe extern "C" fn int_array_extra_braces() {
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ptr_extra_braces() {
-    let mut _s: *const ::core::ffi::c_char = b"hello\0".as_ptr() as *const ::core::ffi::c_char;
+    let mut _s: *const u8 = b"hello\0".as_ptr() as *const u8;
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn array_extra_braces() {
-    let _s: [::core::ffi::c_char; 10] =
-        ::core::mem::transmute::<[u8; 10], [::core::ffi::c_char; 10]>(*b"hello\0\0\0\0\0");
+    let _s: [u8; 10] = *b"hello\0\0\0\0\0";
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn array_of_ptrs() {
-    let mut _s: [*const ::core::ffi::c_char; 3] = [
-        b"hello\0".as_ptr() as *const ::core::ffi::c_char,
-        ::core::ptr::null::<::core::ffi::c_char>(),
-        ::core::ptr::null::<::core::ffi::c_char>(),
+    let mut _s: [*const u8; 3] = [
+        b"hello\0".as_ptr() as *const u8,
+        ::core::ptr::null::<u8>(),
+        ::core::ptr::null::<u8>(),
     ];
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn array_of_arrays() {
-    let mut _s: [[::core::ffi::c_char; 10]; 3] = [
-        ::core::mem::transmute::<[u8; 10], [::core::ffi::c_char; 10]>(*b"hello\0\0\0\0\0"),
-        [0; 10],
-        [0; 10],
-    ];
+    let mut _s: [[u8; 10]; 3] = [*b"hello\0\0\0\0\0", [0; 10], [0; 10]];
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn array_of_arrays_static() {
-    static mut _S: [[::core::ffi::c_char; 10]; 3] = unsafe {
-        [
-            ::core::mem::transmute::<[u8; 10], [::core::ffi::c_char; 10]>(*b"hello\0\0\0\0\0"),
-            [0; 10],
-            [0; 10],
-        ]
-    };
+    static mut _S: [[u8; 10]; 3] = [*b"hello\0\0\0\0\0", [0; 10], [0; 10]];
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn array_of_arrays_static_struct() {
-    static mut _S: s = unsafe {
-        s {
-            entries: [
-                ::core::mem::transmute::<[u8; 10], [::core::ffi::c_char; 10]>(*b"hello\0\0\0\0\0"),
-                [0; 10],
-                [0; 10],
-            ],
-        }
+    static mut _S: s = s {
+        entries: [*b"hello\0\0\0\0\0", [0; 10], [0; 10]],
     };
 }
 #[unsafe(no_mangle)]
@@ -110,5 +91,4 @@ pub unsafe extern "C" fn curl_alpn_spec() {
         count: 1 as ::core::ffi::c_uint,
     };
 }
-pub const ALPN_HTTP_1_1: [::core::ffi::c_char; 10] =
-    unsafe { ::core::mem::transmute::<[u8; 10], [::core::ffi::c_char; 10]>(*b"http/1.1\0\0") };
+pub const ALPN_HTTP_1_1: [u8; 10] = *b"http/1.1\0\0";

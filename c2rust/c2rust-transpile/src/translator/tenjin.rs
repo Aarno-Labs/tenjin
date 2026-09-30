@@ -181,7 +181,12 @@ impl FFIInConversion {
                 mutable,
             } => {
                 translation.use_crate(ExternCrate::Libc);
-                let len = mk().call_expr(mk().path_expr(vec!["libc", "strlen"]), vec![e.clone()]);
+                // `e` may be `*const u8` (our translation of `char*`), not `*const c_char`.
+                let e_cast = mk().cast_expr(
+                    e.clone(),
+                    mk().ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_char"])),
+                );
+                let len = mk().call_expr(mk().path_expr(vec!["libc", "strlen"]), vec![e_cast]);
                 let len_plus_one = mk().binary_expr(
                     BinOp::Add(Default::default()),
                     len,
