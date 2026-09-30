@@ -2,11 +2,16 @@ cmake_minimum_required(VERSION 3.17)
 project(xj-prepare-atomics)
 
 set(XJ_LLVM_ROOT "${CMAKE_CURRENT_LIST_DIR}/../_local/xj-llvm")
-include_directories("${XJ_LLVM_ROOT}/include")
+set(XJ_SUPPORT_DIR "${CMAKE_CURRENT_LIST_DIR}/../xj-prepare-support")
+
+include_directories("${XJ_LLVM_ROOT}/include" "${XJ_SUPPORT_DIR}")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 
-add_executable(xj-prepare-atomics AtomicTransform.cpp)
+add_executable(xj-prepare-atomics
+    AtomicTransform.cpp
+    "${XJ_SUPPORT_DIR}/EditForest.cpp"
+)
 
 set_target_properties(xj-prepare-atomics PROPERTIES
     CXX_STANDARD 17
