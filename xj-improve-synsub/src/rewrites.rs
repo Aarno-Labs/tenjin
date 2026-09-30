@@ -526,6 +526,76 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Use the safe stat wrappers when the path is an owned ZString.
+    pub fn rewrite_stat_of_zstring(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(function) = &*call.func else {
+            return None;
+        };
+        let segments = &function.path.segments;
+        let name = match segments.len() {
+            1 => &segments[0].ident,
+            2 if segments[0].ident == "libc" => &segments[1].ident,
+            _ => return None,
+        };
+        if !(name == "stat" || name == "lstat" || name == "stat64" || name == "lstat64")
+            || call.args.len() != 2
+        {
+            return None;
+        }
+
+        let path_arg = expr_strip_parens(&call.args[0]);
+        let path = match path_arg {
+            Expr::MethodCall(method)
+                if (method.method == "as_ptr" || method.method == "as_mut_ptr")
+                    && method.args.is_empty()
+                    && method.turbofish.is_none() =>
+            {
+                &*method.receiver
+            }
+            Expr::MethodCall(method)
+                if method.method == "as_z_str"
+                    && method.args.is_empty()
+                    && method.turbofish.is_none() =>
+            {
+                &*method.receiver
+            }
+            Expr::Reference(reference) => &*reference.expr,
+            other => other,
+        };
+        if !is_zstring_type(&symbols.type_of_expr(path)?) {
+            return None;
+        }
+        let path: Expr = syn::parse_quote! { &#path };
+
+        let output = match expr_strip_parens(&call.args[1]) {
+            Expr::Reference(reference) if reference.mutability.is_some() => {
+                Expr::Reference(reference.clone())
+            }
+            Expr::RawAddr(raw) if matches!(raw.mutability, syn::PointerMutability::Mut(_)) => {
+                // A named local is an addressable place that can be borrowed.
+                let Expr::Path(place) = expr_strip_parens(&raw.expr) else {
+                    return None;
+                };
+                place.path.get_ident()?;
+                syn::parse_quote! { &mut #place }
+            }
+            _ => return None,
+        };
+
+        self.add_dep("xj_cstat");
+        let replacement: Expr = syn::parse_quote! {
+            xj_cstat::c::#name(#path, #output)
+        };
+        Some((replacement, Depth::Unlimited))
+    }
+
     /// Rewrite `getchar()` and `fgetc(stdin)`
     pub fn rewrite_getchar_variants(
         &self,
@@ -1308,9 +1378,7 @@ impl Rewriter {
                 }
             }
             Expr::Repeat(repeat) if is_zero_byte_expr(&repeat.expr) => {
-                let n: usize = expr_get_int_literal(&repeat.len)?
-                    .base10_parse()
-                    .ok()?;
+                let n: usize = expr_get_int_literal(&repeat.len)?.base10_parse().ok()?;
                 with_capacity(n.checked_sub(1)?)
             }
             _ => return None,
@@ -2180,6 +2248,25 @@ fn is_ref_str_type(ty: &syn::Type) -> bool {
 
 fn is_string_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "String"))
+}
+
+fn is_zstring_type(ty: &Type) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    if path.qself.is_some() {
+        return false;
+    }
+    let segments = &path.path.segments;
+    let correct_name = match segments.len() {
+        1 => segments[0].ident == "ZString",
+        2 => segments[0].ident == "xj_zstr" && segments[1].ident == "ZString",
+        _ => false,
+    };
+    correct_name
+        && segments
+            .iter()
+            .all(|segment| matches!(segment.arguments, syn::PathArguments::None))
 }
 
 fn is_c_float_type(ty: &syn::Type) -> bool {

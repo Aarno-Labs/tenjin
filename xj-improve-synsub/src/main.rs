@@ -55,6 +55,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_libm_call_to_cmath);
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
     rw.add_expr_rewrite(Rewriter::rewrite_ctime_time);
+    rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_redundant_borrow);
 
@@ -134,6 +135,7 @@ fn add_deps_to_manifest(
 fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
         "xj_ctime" => "0.1.1",
+        "xj_cstat" => "0.1.0",
         "xj_cstr" => "0.1.4",
         "xj_atone" => "0.1.0",
         "errno" => "0.3.14",

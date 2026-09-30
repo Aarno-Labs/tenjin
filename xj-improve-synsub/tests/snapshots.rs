@@ -20,6 +20,101 @@ fn check(rw: &Rewriter, input: &str, expected: Expect) {
 }
 
 #[test]
+fn stat_calls_on_zstring_paths_use_cstat() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
+    check(
+        &rw,
+        r#"fn demo(path: ZString, qualified: xj_zstr::ZString, mut info: libc::stat, mut info64: libc::stat64) {
+            stat(path.as_ptr(), &raw mut info);
+            libc::lstat(qualified.as_ptr(), &mut info);
+            stat(&path, &mut info);
+            stat64(path.as_ptr(), &raw mut info64);
+            libc::lstat64(qualified.as_ptr(), &mut info64);
+            fstat(3, &mut info);
+            fstat64(3, &mut info64);
+        }"#,
+        expect![[r#"
+            fn demo(
+                path: ZString,
+                qualified: xj_zstr::ZString,
+                mut info: libc::stat,
+                mut info64: libc::stat64,
+            ) {
+                xj_cstat::c::stat(&path, &mut info);
+                xj_cstat::c::lstat(&qualified, &mut info);
+                xj_cstat::c::stat(&path, &mut info);
+                xj_cstat::c::stat64(&path, &mut info64);
+                xj_cstat::c::lstat64(&qualified, &mut info64);
+                fstat(3, &mut info);
+                fstat64(3, &mut info64);
+            }
+        "#]],
+    );
+    assert!(rw.deps().contains("xj_cstat"));
+}
+
+#[test]
+fn stat_calls_on_indexed_zstring_paths_use_cstat() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
+    check(
+        &rw,
+        r#"fn demo(paths: Vec<ZString>, slice: &[ZString], array: [xj_zstr::ZString; 2], mut info: libc::stat) {
+            stat(paths[0].as_ptr(), &raw mut info);
+            lstat(slice[1].as_ptr(), &mut info);
+            libc::stat(array[0].as_ptr(), &mut info);
+        }"#,
+        expect![[r#"
+            fn demo(
+                paths: Vec<ZString>,
+                slice: &[ZString],
+                array: [xj_zstr::ZString; 2],
+                mut info: libc::stat,
+            ) {
+                xj_cstat::c::stat(&paths[0], &mut info);
+                xj_cstat::c::lstat(&slice[1], &mut info);
+                xj_cstat::c::stat(&array[0], &mut info);
+            }
+        "#]],
+    );
+    assert!(rw.deps().contains("xj_cstat"));
+}
+
+#[test]
+fn stat_rewrite_requires_zstring_path_and_safe_output_borrow() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
+    check(
+        &rw,
+        r#"fn demo(path: *const i8, owned: ZString, info: *mut libc::stat, info64: *mut libc::stat64) {
+            stat(path, info);
+            lstat(owned.as_ptr(), info);
+            other::stat(owned.as_ptr(), &mut *info);
+            stat64(path, info64);
+            lstat64(owned.as_ptr(), info64);
+            other::stat64(owned.as_ptr(), &mut *info64);
+        }"#,
+        expect![[r#"
+            fn demo(
+                path: *const i8,
+                owned: ZString,
+                info: *mut libc::stat,
+                info64: *mut libc::stat64,
+            ) {
+                stat(path, info);
+                lstat(owned.as_ptr(), info);
+                other::stat(owned.as_ptr(), &mut *info);
+                stat64(path, info64);
+                lstat64(owned.as_ptr(), info64);
+                other::stat64(owned.as_ptr(), &mut *info64);
+            }
+        "#]],
+    );
+    assert!(!rw.deps().contains("xj_cstat"));
+}
+
+#[test]
 fn errno_reads_and_writes() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_errno_access);
