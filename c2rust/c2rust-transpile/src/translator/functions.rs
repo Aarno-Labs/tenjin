@@ -742,98 +742,6 @@ impl<'c> Translation<'c> {
             if n >= 2 {
                 // `argv` and `argc`
 
-                stmts.push(mk().local_stmt(Box::new({
-                    // ty = Vec<Vec<u8>>
-                    let ty = mk().path_ty(vec![mk().path_segment_with_args(
-                        "Vec",
-                        mk().angle_bracketed_args(vec![mk().path_ty(vec![mk()
-                            .path_segment_with_args(
-                                "Vec",
-                                mk().angle_bracketed_args(vec![mk().ident_ty("u8")]),
-                            )])]),
-                    )]);
-                    // map_arg = |arg| {
-                    //     (::std::ffi::CString::new(arg))
-                    //         .expect("Failed to convert argument into CString.")
-                    //         .into_bytes_with_nul()
-                    // }
-                    let cstring_call = mk().call_expr(
-                        // TODO(kkysen) change `"std"` to `"alloc"` after `#![feature(alloc_c_string)]` is stabilized in `1.63.0`
-                        mk().abs_path_expr(vec!["std", "ffi", "CString", "new"]),
-                        vec![mk().path_expr(vec!["arg"])],
-                    );
-                    let expect_arg = mk().lit_expr("Failed to convert argument into CString.");
-                    let map_arg = mk().closure_expr(
-                        CaptureBy::Ref,
-                        Movability::Movable,
-                        vec![mk().ident_pat("arg")],
-                        ReturnType::Default,
-                        mk().method_chain_expr(
-                            cstring_call,
-                            vec![
-                                (mk().path_segment("expect"), vec![expect_arg]),
-                                (mk().path_segment("into_bytes_with_nul"), vec![]),
-                            ],
-                        ),
-                    );
-                    // init = args_fn
-                    //     .map(map_arg)
-                    //     .collect();
-                    let init = mk().method_chain_expr(
-                        mk().call_expr(args_fn, vec![]),
-                        vec![
-                            (mk().path_segment("map"), vec![map_arg]),
-                            (mk().path_segment("collect"), vec![]),
-                        ],
-                    );
-                    mk().local(mk().mutbl().ident_pat("args_strings"), Some(ty), Some(init))
-                })));
-
-                stmts.push(mk().local_stmt(Box::new({
-                    // ty = Vec<*mut ::core::ffi::c_char>
-                    let ty = mk().path_ty(vec![mk().path_segment_with_args(
-                        "Vec",
-                        mk().angle_bracketed_args(vec![mk()
-                            .mutbl()
-                            .ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_char"]))]),
-                    )]);
-                    // map_arg = |arg| arg.as_mut_ptr() as *mut ::core::ffi::c_char
-                    let map_arg = mk().closure_expr(
-                        CaptureBy::Ref,
-                        Movability::Movable,
-                        vec![mk().ident_pat("arg")],
-                        ReturnType::Default,
-                        mk().cast_expr(
-                            mk().method_call_expr(mk().ident_expr("arg"), "as_mut_ptr", vec![]),
-                            mk().mutbl()
-                                .ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_char"])),
-                        ),
-                    );
-                    // chain_arg = ::core::iter::once(::core::ptr::null_mut())
-                    let chain_arg = mk().call_expr(
-                        mk().abs_path_expr(vec!["core", "iter", "once"]),
-                        vec![mk().call_expr(
-                            mk().abs_path_expr(vec!["core", "ptr", "null_mut"]),
-                            vec![],
-                        )],
-                    );
-                    // init = args_strings
-                    //     .iter_mut()
-                    //     .map(map_arg)
-                    //     .chain(chain_arg)
-                    //     .collect()
-                    let init = mk().method_chain_expr(
-                        mk().ident_expr("args_strings"),
-                        vec![
-                            (mk().path_segment("iter_mut"), vec![]),
-                            (mk().path_segment("map"), vec![map_arg]),
-                            (mk().path_segment("chain"), vec![chain_arg]),
-                            (mk().path_segment("collect"), vec![]),
-                        ],
-                    );
-                    mk().local(mk().mutbl().ident_pat("args_ptrs"), Some(ty), Some(init))
-                })));
-
                 let argc_ty: Box<Type> = match self.ast_context.index(parameters[0]).kind {
                     CDeclKind::Variable { ref typ, .. } => self.convert_type(typ.ctype),
                     _ => Err(TranslationError::generic(
@@ -846,25 +754,204 @@ impl<'c> Translation<'c> {
                         "Cannot find type of 'argv' argument in main function",
                     )),
                 }?;
-                let args = mk().ident_expr("args_ptrs");
-                let argc_expr = mk().binary_expr(
-                    BinOp::Sub(Default::default()),
-                    mk().method_call_expr(args.clone(), "len", no_args.clone()),
-                    mk().lit_expr(mk().int_lit(1, "")),
-                );
-                let argv = mk().method_call_expr(args, "as_mut_ptr", no_args.clone());
 
-                stmts.push(mk().local_stmt(Box::new(mk().local(
-                    mk().ident_pat("argc"),
-                    None,
-                    Some(mk().cast_expr(argc_expr, argc_ty)),
-                ))));
+                let guided_argv_type = self
+                    .parsed_guidance
+                    .borrow_mut()
+                    .query_decl_type(self, parameters[1])
+                    .filter(|gt| {
+                        tenjin::try_type_vec_of(gt.strip_refs())
+                            .or_else(|| tenjin::type_of_slice_ref(&gt.parsed))
+                            .and_then(tenjin::type_get_bare_path)
+                            .is_some_and(|path| {
+                                tenjin::is_path_exactly_1(path, "ZString")
+                                    || (path.segments.len() == 2
+                                        && path.segments[0].ident == "xj_zstr"
+                                        && path.segments[1].ident == "ZString")
+                            })
+                    });
 
-                stmts.push(mk().local_stmt(Box::new(mk().local(
-                    mk().ident_pat("argv"),
-                    None,
-                    Some(mk().cast_expr(argv, argv_ty)),
-                ))));
+                if let Some(guided_argv_type) = guided_argv_type {
+                    self.use_crate(ExternCrate::XjZstr);
+                    let element_type = tenjin::try_type_vec_of(guided_argv_type.strip_refs())
+                        .or_else(|| tenjin::type_of_slice_ref(&guided_argv_type.parsed))
+                        .unwrap();
+                    if tenjin::type_is_exactly_1_path(element_type, "ZString") {
+                        self.with_cur_file_item_store(|store| {
+                            store.add_use(true, vec!["xj_zstr".into()], "ZString");
+                        });
+                    }
+
+                    // Keep owned strings alive when argv is a borrowed slice or vector.
+                    let ty = mk().path_ty(vec![mk().path_segment_with_args(
+                        "Vec",
+                        mk().angle_bracketed_args(vec![mk().path_ty(vec!["xj_zstr", "ZString"])]),
+                    )]);
+                    let map_arg = mk().closure_expr(
+                        CaptureBy::Ref,
+                        Movability::Movable,
+                        vec![mk().ident_pat("arg")],
+                        ReturnType::Default,
+                        mk().call_expr(
+                            mk().path_expr(vec!["xj_zstr", "ZString", "new"]),
+                            vec![mk().method_call_expr(
+                                mk().ident_expr("arg"),
+                                "into_encoded_bytes",
+                                vec![],
+                            )],
+                        ),
+                    );
+                    let init = mk().method_chain_expr(
+                        mk().call_expr(mk().abs_path_expr(vec!["std", "env", "args_os"]), vec![]),
+                        vec![
+                            (mk().path_segment("map"), vec![map_arg]),
+                            (mk().path_segment("collect"), vec![]),
+                        ],
+                    );
+                    let mutability = if guided_argv_type.is_exclusive_borrow() {
+                        Mutability::Mutable
+                    } else {
+                        Mutability::Immutable
+                    };
+                    stmts.push(mk().local_stmt(Box::new(mk().local(
+                        mk().set_mutbl(mutability).ident_pat("args_zstrings"),
+                        Some(ty),
+                        Some(init),
+                    ))));
+
+                    // Unlike the raw-pointer argv, this vector has no null sentinel.
+                    let args = mk().ident_expr("args_zstrings");
+                    let argc_expr = mk().method_call_expr(args.clone(), "len", no_args.clone());
+                    let argv = if guided_argv_type.is_borrow() {
+                        mk().set_mutbl(mutability).borrow_expr(args)
+                    } else {
+                        args
+                    };
+
+                    stmts.push(mk().local_stmt(Box::new(mk().local(
+                        mk().ident_pat("argc"),
+                        None,
+                        Some(mk().cast_expr(argc_expr, argc_ty)),
+                    ))));
+
+                    stmts.push(mk().local_stmt(Box::new(mk().local(
+                        mk().ident_pat("argv"),
+                        Some(Box::new(guided_argv_type.parsed)),
+                        Some(argv),
+                    ))));
+                } else {
+                    stmts.push(mk().local_stmt(Box::new({
+                        // ty = Vec<Vec<u8>>
+                        let ty = mk().path_ty(vec![mk().path_segment_with_args(
+                            "Vec",
+                            mk().angle_bracketed_args(vec![mk().path_ty(vec![mk()
+                                .path_segment_with_args(
+                                    "Vec",
+                                    mk().angle_bracketed_args(vec![mk().ident_ty("u8")]),
+                                )])]),
+                        )]);
+                        // map_arg = |arg| {
+                        //     (::std::ffi::CString::new(arg))
+                        //         .expect("Failed to convert argument into CString.")
+                        //         .into_bytes_with_nul()
+                        // }
+                        let cstring_call = mk().call_expr(
+                            // TODO(kkysen) change `"std"` to `"alloc"` after `#![feature(alloc_c_string)]` is stabilized in `1.63.0`
+                            mk().abs_path_expr(vec!["std", "ffi", "CString", "new"]),
+                            vec![mk().path_expr(vec!["arg"])],
+                        );
+                        let expect_arg = mk().lit_expr("Failed to convert argument into CString.");
+                        let map_arg = mk().closure_expr(
+                            CaptureBy::Ref,
+                            Movability::Movable,
+                            vec![mk().ident_pat("arg")],
+                            ReturnType::Default,
+                            mk().method_chain_expr(
+                                cstring_call,
+                                vec![
+                                    (mk().path_segment("expect"), vec![expect_arg]),
+                                    (mk().path_segment("into_bytes_with_nul"), vec![]),
+                                ],
+                            ),
+                        );
+                        // init = args_fn
+                        //     .map(map_arg)
+                        //     .collect();
+                        let init = mk().method_chain_expr(
+                            mk().call_expr(args_fn, vec![]),
+                            vec![
+                                (mk().path_segment("map"), vec![map_arg]),
+                                (mk().path_segment("collect"), vec![]),
+                            ],
+                        );
+                        mk().local(mk().mutbl().ident_pat("args_strings"), Some(ty), Some(init))
+                    })));
+
+                    stmts.push(mk().local_stmt(Box::new({
+                        // ty = Vec<*mut ::core::ffi::c_char>
+                        let ty = mk().path_ty(vec![mk().path_segment_with_args(
+                            "Vec",
+                            mk().angle_bracketed_args(vec![mk()
+                                .mutbl()
+                                .ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_char"]))]),
+                        )]);
+                        // map_arg = |arg| arg.as_mut_ptr() as *mut ::core::ffi::c_char
+                        let map_arg = mk().closure_expr(
+                            CaptureBy::Ref,
+                            Movability::Movable,
+                            vec![mk().ident_pat("arg")],
+                            ReturnType::Default,
+                            mk().cast_expr(
+                                mk().method_call_expr(mk().ident_expr("arg"), "as_mut_ptr", vec![]),
+                                mk().mutbl()
+                                    .ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_char"])),
+                            ),
+                        );
+                        // chain_arg = ::core::iter::once(::core::ptr::null_mut())
+                        let chain_arg = mk().call_expr(
+                            mk().abs_path_expr(vec!["core", "iter", "once"]),
+                            vec![mk().call_expr(
+                                mk().abs_path_expr(vec!["core", "ptr", "null_mut"]),
+                                vec![],
+                            )],
+                        );
+                        // init = args_strings
+                        //     .iter_mut()
+                        //     .map(map_arg)
+                        //     .chain(chain_arg)
+                        //     .collect()
+                        let init = mk().method_chain_expr(
+                            mk().ident_expr("args_strings"),
+                            vec![
+                                (mk().path_segment("iter_mut"), vec![]),
+                                (mk().path_segment("map"), vec![map_arg]),
+                                (mk().path_segment("chain"), vec![chain_arg]),
+                                (mk().path_segment("collect"), vec![]),
+                            ],
+                        );
+                        mk().local(mk().mutbl().ident_pat("args_ptrs"), Some(ty), Some(init))
+                    })));
+
+                    let args = mk().ident_expr("args_ptrs");
+                    let argc_expr = mk().binary_expr(
+                        BinOp::Sub(Default::default()),
+                        mk().method_call_expr(args.clone(), "len", no_args.clone()),
+                        mk().lit_expr(mk().int_lit(1, "")),
+                    );
+                    let argv = mk().method_call_expr(args, "as_mut_ptr", no_args.clone());
+
+                    stmts.push(mk().local_stmt(Box::new(mk().local(
+                        mk().ident_pat("argc"),
+                        None,
+                        Some(mk().cast_expr(argc_expr, argc_ty)),
+                    ))));
+
+                    stmts.push(mk().local_stmt(Box::new(mk().local(
+                        mk().ident_pat("argv"),
+                        None,
+                        Some(mk().cast_expr(argv, argv_ty)),
+                    ))));
+                }
 
                 main_args.push(mk().ident_expr("argc"));
                 main_args.push(mk().ident_expr("argv"));
