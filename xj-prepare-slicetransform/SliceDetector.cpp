@@ -340,7 +340,9 @@ namespace xj
     }
 
     // Source spelling of an expression (used to match subscript bases like
-    // `bs->buf` against the textual base recorded by the pointer pass).
+    // `bs->buf` against the base xj-prepare-baserewrite proved and then
+    // emitted at each access, which is why matching them by text is sound
+    // here: both spellings came from the same proved cell).
     static std::string sourceTextOf(const Expr *E, ASTContext &Ctx)
     {
         const SourceManager &SM = Ctx.getSourceManager();
@@ -366,7 +368,9 @@ namespace xj
                 const VarDecl *IdxVD = findLocalVarNamed(FD->getBody(), P.index_var);
                 if (!IdxVD || !IdxVD->getType()->isIntegerType())
                     continue;
-                // A parameter pointer is its own base (base_text empty).
+                // An empty base_text means the pointer was not
+                // reconstructed and so is still its own base; the
+                // rewriter spells its accesses `p[p_index_xj + k]`.
                 const std::string base =
                     P.base_text.empty() ? P.name : P.base_text;
 
@@ -496,6 +500,12 @@ namespace xj
                 if (!IdxVD || !IdxVD->getType()->isIntegerType())
                     continue;
 
+                // A root anchors a slice on the parameter its base
+                // names, so the base has to *be* a pointer parameter.
+                // `base_text` is xj-prepare-baserewrite's proved answer,
+                // and at Kind::Param it is a parameter's own name — so
+                // matching it against the signature is identity, not a
+                // guess from spellings.
                 const ParmVarDecl *base_pd = nullptr;
                 int base_param_idx = -1;
                 for (unsigned i = 0; i < FD->getNumParams(); i++)
@@ -614,6 +624,9 @@ namespace xj
                 // `base + idx` over this slice's base.
                 if (FD->getReturnType()->isPointerType())
                 {
+                    // Two pointers share a base iff they resolved to the
+                    // same cell, and equal `base_text` is exactly that:
+                    // the strings were both printed from one cell.
                     std::set<std::string> base_idx_vars;
                     for (const PtrIndexPointerRecord &Q : fnRec->pointers)
                     {
@@ -1152,6 +1165,8 @@ namespace xj
                 bool return_changed = false;
                 if (FD->getReturnType()->isPointerType())
                 {
+                    // See detectRoots: equal `base_text` is cell
+                    // identity, printed twice.
                     std::set<std::string> base_idx_vars;
                     if (const PtrIndexFunctionRecord *fnRec = recordFor(FD, SM))
                     {
