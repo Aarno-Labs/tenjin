@@ -294,7 +294,7 @@ def test_rupertwh__bmplib(tenjin_fixtures: TenjinFixtures):
                 f"Failed on {binname} with args {args!r}; got return code: {rs_prog_output.returncode}, expected: {c_prog_output.returncode}"
             )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 708
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 652
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
