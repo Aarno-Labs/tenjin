@@ -8,18 +8,14 @@
 // inside the other; emitting only one silently loses the other, and a
 // lost edit is not a formatting blemish but a miscompilation.
 //
-// Node ranges nest or are disjoint — two of them never partially overlap —
-// so the planned edits form a forest. Everything here follows from that:
+// Composing the rewrites is xj::EditForest's job (EditForest.h): each is
+// rendered with the ones nested inside it already in place, only the
+// outermost are handed to the Rewriter, and one that was never rendered is
+// reported, so a rewrite that copies source text over a live reference is
+// a bug that is named instead of wrong C. What is left to this file is
+// what each rewrite covers and what it says.
 //
-//   - only the *roots* of the forest are handed to the Rewriter, so the
-//     ranges actually applied are disjoint by construction;
-//   - a root's replacement text is rendered by splicing its descendants'
-//     rendered text into its own source text, so nothing is dropped;
-//   - rendering records which descendants it consumed, and verify()
-//     confirms every one of them was, so a rewrite that copies source text
-//     over a live reference is a reported bug instead of wrong C.
-//
-// The alternative to splicing is always available — a reference can always
+// The alternative to nesting is always available — a reference can always
 // be rewritten as the value read `(p + p_index_xj)`, whose extent is the
 // name alone — so a plan that cannot compose is a bug in the classifier
 // rather than a limitation of the input.
@@ -27,6 +23,9 @@
 #pragma once
 
 #include "Common.h"
+#include "EditForest.h"
+
+#include "llvm/ADT/STLFunctionalExtras.h"
 
 // What a pointer's whole access list decides about each of its rewrites.
 // These are questions about the pointer and not about any one access, so
@@ -86,14 +85,8 @@ pointerFacts(const RewrittenPointers &rewritten);
 // EditPlan::pairedRoot.
 const Stmt *editedNode(const PointerAccess &access, const PointerFacts &facts);
 
-// The file offsets `N` spans, or false when the range is unusable: inside
-// a macro expansion, which the Rewriter cannot edit, or split across two
-// files, whose offsets are not comparable.
-bool editRangeOf(const Stmt *N, ASTContext &Ctx, FileID &file, unsigned &begin,
-                 unsigned &end);
-
-// EditPlan — every access rewrite in the translation unit, arranged as a
-// nesting forest and rendered from the leaves up.
+// EditPlan — every access rewrite in the translation unit, composed by an
+// xj::EditForest.
 //
 // The plan is also where two indices are paired. `q = p + 1` can become
 // `q = p` with `q_index_xj = p_index_xj + 1` only if p has an index, and the
@@ -111,10 +104,8 @@ class EditPlan {
     // rendering.
     void add(const VarDecl *ptr, const std::vector<PointerAccess> &accesses);
 
-    // Drop the rewrites that pairing replaces, then arrange the rest into
-    // the nesting forest. Node ranges cannot partially overlap or coincide,
-    // so a hit reports an edit extent that came from somewhere other than
-    // editedNode(). Follows the last add().
+    // Drop the rewrites that pairing replaces, and hand the rest to the
+    // forest. Follows the last add().
     void build();
 
     // Render every root and append it to `edits`, followed by the body of
@@ -132,9 +123,11 @@ class EditPlan {
                               const std::vector<PointerAccess> &accesses);
 
     // The whole guarantee, checked before a single character is written:
-    // every planned edit was either emitted as a root or spliced into one,
-    // the emitted replacements are pairwise disjoint, and no insertion
-    // lands inside a replacement that would swallow it. Follows
+    // the planned edits nest, every one of them was either emitted as a
+    // root or rendered into one, and no insertion lands inside a
+    // replacement that would swallow it. Node ranges cannot partially
+    // overlap or coincide, so a failure to nest reports an edit extent
+    // that came from somewhere other than editedNode(). Follows
     // appendRootEdits(), and takes the complete edit list so the
     // declaration insertions are covered too.
     bool verify(const std::vector<Edit> &edits);
@@ -145,15 +138,8 @@ class EditPlan {
         const VarDecl *ptr = nullptr;
         const PointerAccess *access = nullptr;
         const Stmt *node = nullptr;
-        FileID file;
-        unsigned begin = 0;
-        unsigned end = 0;              // past-the-end offset
-        std::vector<size_t> children;  // edits directly inside this one
-        size_t parent = kNoParent;
-        bool consumed = false;         // emitted as a root, or spliced into one
+        xj::FileRange range;  // the text `node` spans
     };
-
-    static constexpr size_t kNoParent = static_cast<size_t>(-1);
 
     // The pointer value for `ptr`'s index, guarded only where the sentinel
     // can actually reach. A pointer that never holds null keeps the bare
@@ -167,26 +153,34 @@ class EditPlan {
     // is spelled through.
     void needWrapper(const std::string &func_name, const Stmt *use);
 
+    // Where the text of a kept sub-expression comes from, with the rewrites
+    // nested in it rendered: the forest's handle for the edit being
+    // rendered, or the forest itself for text rendered into an insertion
+    // rather than into an edit (an index declaration's terms).
+    using TextOf = llvm::function_ref<std::string(SourceRange)>;
+
     // The text of `term`, an operand spliced into an index sum after a `+`
     // or a `-`, parenthesized where it would otherwise regroup: `p[i & 3]`
-    // is `p[p_index_xj + (i & 3)]`. Rendered within edit `owner`, or copied
-    // from the source when that is kNoParent.
+    // is `p[p_index_xj + (i & 3)]`. Rendered through `text_of`.
     //
     // `as_subscript` says the sum is used as a subscript as it stands. An
     // unsigned term would make it an unsigned sum, and an index that has
     // stepped back past where its pointer was seated would wrap around
     // instead of going negative, so such a term is cast to its signed type.
     // A sum assigned to an index is converted back on the way in.
-    std::string renderTerm(const OffsetTerm &term, size_t owner,
+    std::string renderTerm(const OffsetTerm &term, TextOf text_of,
                            bool as_subscript);
 
-    // The replacement text for edit `i`, with every descendant spliced in.
-    std::string render(size_t i);
+    // The replacement text for edit `i`. The forest calls this with its
+    // handle `in` for the edit, and every sub-expression the text keeps is
+    // fetched through that handle, so that a rewrite nested in one comes
+    // along.
+    std::string render(size_t i, const xj::EditForest::NestedEditRenderer &in);
 
-    // The source text of `S` — a sub-expression of edit `owner`'s node —
-    // with each of `owner`'s children that lies inside `S` replaced by its
-    // own rendered text.
-    std::string renderWithin(const Stmt *S, size_t owner);
+    // The text of `S` through `text_of`: its source with each rewrite
+    // inside it rendered in place. Asked of the very node an edit replaces,
+    // by that edit, it is the node's text with the rewrites nested in it.
+    std::string renderWithin(const Stmt *S, TextOf text_of);
 
     // The rewritten pointer that `access` starts from, or null. `access` is
     // an Init, an Assign or an AssignFromAllowedFunc, and the pointer is the
@@ -206,10 +200,9 @@ class EditPlan {
     // The index an Init or Assign installs. When the root is paired, the
     // index counts from the root's — `p = q + 1` is
     // `p_index_xj = q_index_xj + 1`. Otherwise the root's value is still its
-    // own position, so the offset counts from zero. `owner` is the edit the
-    // terms were lifted out of, or kNoParent when there is none to render
-    // against (an unsplit assignment, which has no terms).
-    std::string renderIndexValue(const PointerAccess &access, size_t owner);
+    // own position, so the offset counts from zero. The terms are rendered
+    // through `text_of`.
+    std::string renderIndexValue(const PointerAccess &access, TextOf text_of);
 
     // Report a broken invariant: a bug in this tool, so it is named loudly
     // and makes the run fail rather than quietly producing different C.
@@ -219,7 +212,9 @@ class EditPlan {
     const SourceManager &SM;
     const LangOptions &LO;
     const std::set<const VarDecl *> &transformed;
+    // Once build() has run, indexed by the forest's edit ids.
     std::vector<PlannedEdit> edits;
+    xj::EditForest forest;
     // The root reference of every paired access. These are the references
     // whose own rewrite build() drops.
     std::set<const Expr *> paired_roots;

@@ -17,6 +17,7 @@ add_executable(xj-prepare-pointertransform
     ValidationMethods.cpp
     TransformationMethods.cpp
     PointerTransformAction.cpp
+    "${XJ_SUPPORT_DIR}/EditForest.cpp"
     "${XJ_SUPPORT_DIR}/PtrIndexMetadata.cpp"
     "${XJ_SUPPORT_DIR}/FunctionKey.cpp"
 )

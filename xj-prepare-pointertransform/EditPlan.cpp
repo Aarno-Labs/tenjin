@@ -137,36 +137,6 @@ const Stmt *editedNode(const PointerAccess &access, const PointerFacts &facts) {
     }
 }
 
-bool editRangeOf(const Stmt *N, ASTContext &Ctx, FileID &file, unsigned &begin,
-                 unsigned &end) {
-    if (!N)
-        return false;
-    const SourceManager &SM = Ctx.getSourceManager();
-
-    // A node can end inside a macro expansion without the pointer's own
-    // reference being anywhere near one: `p = NULL` is ordinary file text
-    // up to the `=`, and only the right-hand side expands. Refusing those
-    // outright would decline every pointer that is ever set to NULL, so
-    // the range is mapped onto the macro *name* token instead — the text a
-    // reader would edit by hand. makeFileCharRange yields the past-the-end
-    // position directly, and reports invalid for the range this cannot be
-    // done to: one whose ends come from different expansions.
-    CharSourceRange R = Lexer::makeFileCharRange(
-        CharSourceRange::getTokenRange(N->getSourceRange()), SM, Ctx.getLangOpts());
-    if (R.isInvalid())
-        return false;
-
-    auto [StartFile, StartOff] = SM.getDecomposedLoc(R.getBegin());
-    auto [StopFile, StopOff] = SM.getDecomposedLoc(R.getEnd());
-    if (StartFile != StopFile || StopOff <= StartOff)
-        return false;
-
-    file = StartFile;
-    begin = StartOff;
-    end = StopOff;
-    return true;
-}
-
 // ============================================================================
 // Planning
 // ============================================================================
@@ -174,8 +144,12 @@ bool editRangeOf(const Stmt *N, ASTContext &Ctx, FileID &file, unsigned &begin,
 EditPlan::EditPlan(ASTContext &Ctx, const std::set<const VarDecl *> &transformed,
                    const std::map<const VarDecl *, PointerFacts> &facts)
     : Ctx(Ctx), SM(Ctx.getSourceManager()), LO(Ctx.getLangOpts()),
-      transformed(transformed), facts(facts),
-      violations_at_start(g_invariant_violations) {}
+      transformed(transformed),
+      forest(SM, LO,
+             [this](size_t i, const xj::EditForest::NestedEditRenderer &in) {
+                 return render(i, in);
+             }),
+      facts(facts), violations_at_start(g_invariant_violations) {}
 
 void EditPlan::reportViolation(const llvm::Twine &what, SourceLocation loc) {
     g_invariant_violations++;
@@ -210,13 +184,16 @@ void EditPlan::add(const VarDecl *ptr,
         // Validation has already refused a pointer with an access it cannot
         // reach, and the classifier leaves none it cannot anchor, so either
         // failing here is a bug.
-        if (!e.node || !editRangeOf(e.node, Ctx, e.file, e.begin, e.end)) {
+        auto range = e.node ? xj::fileRangeOf(e.node->getSourceRange(), SM, LO)
+                            : std::nullopt;
+        if (!range) {
             reportViolation(llvm::Twine("no usable edit range for a ") +
                                 pointerAccessKindToString(access.kind) + " of '" +
                                 ptr->getNameAsString() + "'",
                             access.loc);
             continue;
         }
+        e.range = *range;
 
         edits.push_back(std::move(e));
     }
@@ -232,44 +209,10 @@ void EditPlan::build() {
                                }),
                 edits.end());
 
-    // Sort by (file, start, widest first) so a containing range always
-    // precedes what it contains, then sweep with a stack of open ranges.
-    std::vector<size_t> order(edits.size());
-    for (size_t i = 0; i < edits.size(); i++)
-        order[i] = i;
-    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-        const PlannedEdit &A = edits[a], &B = edits[b];
-        if (A.file != B.file)
-            return A.file < B.file;
-        if (A.begin != B.begin)
-            return A.begin < B.begin;
-        return A.end > B.end;
-    });
-
-    std::vector<size_t> open;
-    for (size_t i : order) {
-        PlannedEdit &e = edits[i];
-        while (!open.empty() && (edits[open.back()].file != e.file ||
-                                 edits[open.back()].end <= e.begin))
-            open.pop_back();
-
-        if (!open.empty()) {
-            // Node ranges nest or are disjoint. Anything else means an
-            // extent came from somewhere other than editedNode().
-            PlannedEdit &parent = edits[open.back()];
-            if (e.end > parent.end ||
-                (e.begin == parent.begin && e.end == parent.end)) {
-                reportViolation("planned edits overlap without nesting",
-                                e.access->loc);
-                continue;
-            }
-            e.parent = open.back();
-            parent.children.push_back(i);
-        }
-        open.push_back(i);
-    }
-    // `order` visits by ascending start, so each child list is already in
-    // source order — which is the order renderWithin splices them in.
+    // Only now, so that an edit's index here is its id in the forest. What
+    // the forest makes of them is reported by verify().
+    for (const PlannedEdit &e : edits)
+        forest.add(e.range);
 }
 
 // ============================================================================
@@ -408,7 +351,8 @@ bool EditPlan::splitStands(const PointerAccess &a) const {
     return a.isSplit() && (a.step == IndexStep::None || pairedRoot(a));
 }
 
-std::string EditPlan::renderIndexValue(const PointerAccess &a, size_t owner) {
+std::string EditPlan::renderIndexValue(const PointerAccess &a,
+                                       TextOf text_of) {
     // A null right-hand side reseats the region, and the index goes to the
     // sentinel with it. The region is what this pass tests; the sentinel is
     // what is left to say null once xj-prepare-slicetransform has moved the
@@ -417,15 +361,15 @@ std::string EditPlan::renderIndexValue(const PointerAccess &a, size_t owner) {
         a.kind == PointerAccessKind::AssignNull)
         return "-1";
 
-    // The terms were lifted out of the right-hand side, so they are
-    // rendered against the edit that removed them — a term reading through
-    // a rewritten pointer carries that rewrite here with it. Where the split
-    // is not used they never left, and the index counts from zero.
+    // The terms were lifted out of the right-hand side, and they are
+    // rendered rather than copied — a term reading through a rewritten
+    // pointer carries that rewrite here with it. Where the split is not
+    // used they never left, and the index counts from zero.
     std::string terms;
     if (splitStands(a))
         for (const OffsetTerm &t : a.index_terms)
             terms += (t.minus ? " - " : " + ") +
-                     renderTerm(t, owner, /*as_subscript=*/false);
+                     renderTerm(t, text_of, /*as_subscript=*/false);
 
     if (const VarDecl *RootVD = pairedRoot(a))
         return applyStep(a.step, indexNameFor(RootVD)) + terms;
@@ -438,18 +382,14 @@ std::string EditPlan::renderIndexValue(const PointerAccess &a, size_t owner) {
 
 std::string EditPlan::indexDeclInit(const VarDecl *ptr,
                                     const std::vector<PointerAccess> &accesses) {
-    for (const PointerAccess &a : accesses) {
-        if (a.kind != PointerAccessKind::Init &&
-            a.kind != PointerAccessKind::InitNull)
-            continue;
-        // A split initializer is a planned edit, and its terms are that
-        // edit's to render. An unsplit one moved nothing, so it has no
-        // terms and nothing to render them against.
-        for (size_t i = 0; i < edits.size(); i++)
-            if (edits[i].access == &a)
-                return renderIndexValue(a, i);
-        return renderIndexValue(a, kNoParent);
-    }
+    // The terms go into an insertion the forest does not own, and no
+    // edit's callback is running, so they are rendered through the forest
+    // itself.
+    for (const PointerAccess &a : accesses)
+        if (a.kind == PointerAccessKind::Init ||
+            a.kind == PointerAccessKind::InitNull)
+            return renderIndexValue(
+                a, [&](SourceRange R) { return forest.text(R); });
     return "0";
 }
 
@@ -487,10 +427,9 @@ static QualType signedCounterpart(const Expr *E, ASTContext &Ctx) {
     return Ctx.getCorrespondingSignedType(T);
 }
 
-std::string EditPlan::renderTerm(const OffsetTerm &term, size_t owner,
+std::string EditPlan::renderTerm(const OffsetTerm &term, TextOf text_of,
                                  bool as_subscript) {
-    std::string text = owner == kNoParent ? getSourceText(term.expr, SM, LO)
-                                          : renderWithin(term.expr, owner);
+    std::string text = renderWithin(term.expr, text_of);
     auto held = [&](Binding at_least) {
         return bindingOf(term.expr) < at_least ? "(" + text + ")" : text;
     };
@@ -504,41 +443,16 @@ std::string EditPlan::renderTerm(const OffsetTerm &term, size_t owner,
     return held(term.minus ? Binding::Multiplicative : Binding::Additive);
 }
 
-std::string EditPlan::renderWithin(const Stmt *S, size_t owner) {
-    FileID file;
-    unsigned begin = 0, end = 0;
-    std::string text;
-    if (S)
-        text = getSourceText(S->getSourceRange(), SM, LO);
-
-    // Without a usable range there is no way to locate a child inside the
-    // text, so nothing can be spliced. Any child that needed to be is left
-    // unconsumed, which verify() reports precisely — more precisely than
-    // this could, since it cannot tell which children were in `S`.
-    if (!S || !editRangeOf(S, Ctx, file, begin, end) || text.size() != end - begin)
-        return text;
-
-    std::string out;
-    unsigned cursor = begin;
-    for (size_t c : edits[owner].children) {
-        const PlannedEdit &child = edits[c];
-        // Siblings in the forest are disjoint, so a child either sits
-        // wholly inside `S` — one of the owner's other sub-expressions
-        // otherwise — or the forest is malformed and verify() will say so.
-        if (child.file != file || child.begin < cursor || child.end > end)
-            continue;
-        out.append(text, cursor - begin, child.begin - cursor);
-        out += render(c);
-        cursor = child.end;
-    }
-    out.append(text, cursor - begin, std::string::npos);
-    return out;
+std::string EditPlan::renderWithin(const Stmt *S, TextOf text_of) {
+    return S ? text_of(S->getSourceRange()) : std::string();
 }
 
-std::string EditPlan::render(size_t i) {
-    PlannedEdit &e = edits[i];
+std::string EditPlan::render(size_t i,
+                             const xj::EditForest::NestedEditRenderer &in) {
+    const PlannedEdit &e = edits[i];
     const PointerAccess &a = *e.access;
-    e.consumed = true;
+    // Named, so that the references below do not outlive what they refer to.
+    auto text_of = [&](SourceRange R) { return in.text(R); };
 
     const std::string ptr = e.ptr->getNameAsString();
     const std::string idx = indexNameFor(e.ptr);
@@ -555,10 +469,10 @@ std::string EditPlan::render(size_t i) {
         // carries that pointer's rewrite along instead of losing it.
         for (const OffsetTerm &t : a.offset_terms)   // *(p + a - b)
             index += (t.minus ? " - " : " + ") +
-                     renderTerm(t, i, /*as_subscript=*/true);
+                     renderTerm(t, text_of, /*as_subscript=*/true);
         if (a.subscript_expr) {                      // p[i]
-            std::string sub = renderTerm({a.subscript_expr, /*minus=*/false}, i,
-                                         /*as_subscript=*/true);
+            std::string sub = renderTerm({a.subscript_expr, /*minus=*/false},
+                                         text_of, /*as_subscript=*/true);
             if (sub != "0")
                 index += " + " + sub;
         }
@@ -589,7 +503,7 @@ std::string EditPlan::render(size_t i) {
         bool wrap = valueIsUsed(cast<Expr>(e.node), Ctx);
         if (const auto *BO = dyn_cast<BinaryOperator>(e.node)) {
             const char *op = BO->getOpcode() == BO_AddAssign ? " += " : " -= ";
-            std::string bare = idx + op + renderWithin(BO->getRHS(), i);
+            std::string bare = idx + op + renderWithin(BO->getRHS(), text_of);
             return wrap ? "(" + ptr + " + (" + bare + "))" : bare;
         }
         std::string bare = applyStep(a.step, idx);
@@ -601,7 +515,7 @@ std::string EditPlan::render(size_t i) {
     case PointerAccessKind::InitNull:
         // A split initializer keeps only its root: `int *q = p + 1;`
         // becomes `int *q = p;` with the `+ 1` moved into q's index.
-        return renderWithin(a.root_expr, i);
+        return renderWithin(a.root_expr, text_of);
 
     case PointerAccessKind::Assign:
     case PointerAccessKind::AssignNull: {
@@ -632,8 +546,8 @@ std::string EditPlan::render(size_t i) {
                     break;
                 }
 
-            std::string index = renderIndexValue(a, i);
-            std::string root = renderWithin(a.root_expr, i);
+            std::string index = renderIndexValue(a, text_of);
+            std::string root = renderWithin(a.root_expr, text_of);
             std::string out = index_first
                                   ? "(" + idx + " = " + index + ", " + ptr + " = " + root
                                   : "(" + ptr + " = " + root + ", " + idx + " = " + index;
@@ -645,8 +559,8 @@ std::string EditPlan::render(size_t i) {
         // Kept whole: the index update comes last, so a right-hand side
         // that reads through this pointer — `p = p->next` — still sees the
         // old position.
-        std::string out = "(" + renderWithin(BO, i) + ", " + idx + " = " +
-                          renderIndexValue(a, i);
+        std::string out = "(" + renderWithin(BO, text_of) + ", " + idx +
+                          " = " + renderIndexValue(a, text_of);
         if (value_used)
             out += ", " + pointerValue(e.ptr);
         return out + ")";
@@ -679,7 +593,7 @@ std::string EditPlan::render(size_t i) {
         // rewritten pointer carries that rewrite with it.
         std::string other_args;
         for (unsigned n = 1; n < CE->getNumArgs(); n++)
-            other_args += ", " + renderWithin(CE->getArg(n), i);
+            other_args += ", " + renderWithin(CE->getArg(n), text_of);
 
         // The search starts wherever the region argument currently points.
         // If that argument is itself a rewritten pointer its position lives
@@ -750,15 +664,13 @@ std::string EditPlan::render(size_t i) {
 }
 
 void EditPlan::appendRootEdits(std::vector<Edit> &out) {
-    for (size_t i = 0; i < edits.size(); i++) {
-        if (edits[i].parent != kNoParent)
-            continue;
+    for (xj::EditForest::Replacement &root : forest.renderRoots()) {
         Edit edit;
         edit.type = Edit::Replace;
-        edit.offset = edits[i].begin;
-        edit.start = edits[i].node->getBeginLoc();
-        edit.end = Lexer::getLocForEndOfToken(edits[i].node->getEndLoc(), 0, SM, LO);
-        edit.text = render(i);
+        edit.offset = root.Range.Begin;
+        edit.start = root.Range.begin(SM);
+        edit.end = edit.start.getLocWithOffset(root.Range.size());
+        edit.text = std::move(root.Text);
         out.push_back(std::move(edit));
     }
 
@@ -774,33 +686,18 @@ void EditPlan::appendRootEdits(std::vector<Edit> &out) {
 }
 
 bool EditPlan::verify(const std::vector<Edit> &out) {
-    for (const PlannedEdit &e : edits) {
-        if (e.consumed)
-            continue;
-        // Neither applied on its own nor spliced into the edit containing
-        // it, so its reference would keep its pre-rewrite meaning inside
-        // text that edit copied.
-        reportViolation(llvm::Twine("a ") + pointerAccessKindToString(e.access->kind) +
-                            " rewrite of '" + e.ptr->getNameAsString() +
-                            "' was neither applied nor folded into the rewrite "
-                            "containing it",
+    // An edit that does not nest has an extent that came from somewhere
+    // other than editedNode(). One that was never rendered was neither
+    // applied on its own nor folded into the edit containing it, so its
+    // reference would keep its pre-rewrite meaning inside text that edit
+    // copied.
+    for (const xj::EditForest::Problem &problem : forest.verify()) {
+        const PlannedEdit &e = edits[problem.Edit];
+        reportViolation(llvm::Twine("the ") +
+                            pointerAccessKindToString(e.access->kind) +
+                            " rewrite of '" + e.ptr->getNameAsString() + "' " +
+                            problem.What,
                         e.access->loc);
-    }
-
-    // Only forest roots are emitted, so this holds by construction — which
-    // is exactly why it is worth stating where it can be checked.
-    std::vector<const Edit *> replaces;
-    for (const Edit &e : out)
-        if (e.type == Edit::Replace)
-            replaces.push_back(&e);
-    std::sort(replaces.begin(), replaces.end(),
-              [](const Edit *a, const Edit *b) { return a->offset < b->offset; });
-    for (size_t i = 1; i < replaces.size(); i++) {
-        const Edit *prev = replaces[i - 1];
-        if (SM.getFileID(prev->start) == SM.getFileID(replaces[i]->start) &&
-            replaces[i]->offset < SM.getFileOffset(prev->end))
-            reportViolation("two replacements cover the same text",
-                            replaces[i]->start);
     }
 
     // An index declaration is a statement-level insertion, so nothing
@@ -808,10 +705,11 @@ bool EditPlan::verify(const std::vector<Edit> &out) {
     for (const Edit &e : out) {
         if (e.type == Edit::Replace)
             continue;
-        for (const Edit *r : replaces) {
-            if (SM.getFileID(r->start) != SM.getFileID(e.start))
+        for (const Edit &r : out) {
+            if (r.type != Edit::Replace ||
+                SM.getFileID(r.start) != SM.getFileID(e.start))
                 continue;
-            if (r->offset < e.offset && e.offset < SM.getFileOffset(r->end)) {
+            if (r.offset < e.offset && e.offset < SM.getFileOffset(r.end)) {
                 reportViolation("an insertion lands inside replaced text", e.start);
                 break;
             }

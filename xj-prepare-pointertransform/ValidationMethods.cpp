@@ -133,9 +133,8 @@ bool FunctionAccessAnalyzer::isEditable(
         // function the planner asks later — is what lets the planner treat
         // a missing extent as a bug rather than as a case to handle: by the
         // time it runs, every access it sees is plannable.
-        FileID file;
-        unsigned begin = 0, end = 0;
-        if (!editRangeOf(node, Ctx, file, begin, end)) {
+        if (!xj::fileRangeOf(node->getSourceRange(), Ctx.getSourceManager(),
+                             Ctx.getLangOpts())) {
             error = std::string("No editable range for a ") +
                     pointerAccessKindToString(access.kind) + " at " +
                     access.loc.printToString(Ctx.getSourceManager());
