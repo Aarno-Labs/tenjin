@@ -199,11 +199,16 @@ static IndexStep stepOf(const UnaryOperator *UO)
 {
     switch (UO->getOpcode())
     {
-    case UO_PostInc: return IndexStep::PostInc;
-    case UO_PreInc: return IndexStep::PreInc;
-    case UO_PostDec: return IndexStep::PostDec;
-    case UO_PreDec: return IndexStep::PreDec;
-    default: return IndexStep::None;
+    case UO_PostInc:
+        return IndexStep::PostInc;
+    case UO_PreInc:
+        return IndexStep::PreInc;
+    case UO_PostDec:
+        return IndexStep::PostDec;
+    case UO_PreDec:
+        return IndexStep::PreDec;
+    default:
+        return IndexStep::None;
     }
 }
 
@@ -222,7 +227,6 @@ bool PointerAccessCollector::decomposePointer(const Expr *E, PointerSplit &out)
         if (!T->isPointerType() && !T->isArrayType())
             return false;
         out.base = DRE;
-        out.ok = true;
         return true;
     }
 
@@ -244,7 +248,6 @@ bool PointerAccessCollector::decomposePointer(const Expr *E, PointerSplit &out)
                 return false;
             out.step = stepOf(UO);
             out.base = OpDRE;
-            out.ok = true;
             return true;
         }
 
@@ -264,7 +267,6 @@ bool PointerAccessCollector::decomposePointer(const Expr *E, PointerSplit &out)
             return false;
         out.base = BaseDRE;
         out.terms.push_back({ASE->getIdx(), /*minus=*/false});
-        out.ok = true;
         return true;
     }
 
@@ -291,8 +293,7 @@ bool PointerAccessCollector::decomposePointer(const Expr *E, PointerSplit &out)
 
 void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
                                                 PointerAccess &pa,
-                                                const VarDecl *Owner,
-                                                bool owner_is_declared_here)
+                                                const VarDecl *Owner)
 {
     pa.rhs_expr = RHS;
     pa.root_expr = nullptr;
@@ -306,6 +307,12 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     if (!decomposePointer(RHS, split))
         return;
 
+    // An assignment sets the index in the same expression as the pointer,
+    // so the offset is evaluated where it was written. An initializer's
+    // index gets a declaration of its own, and the offset moves there with
+    // it. The two checks that follow are about that move.
+    bool rhs_is_initializer = Owner && RHS == Owner->getInit();
+
     // An offset that names another tracked pointer is fine: the term is an
     // expression, and wherever it lands the edit plan rewrites what is
     // inside it. Scope is the one thing rendering cannot fix — an index
@@ -316,7 +323,7 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     // the index starts at zero, which is the same pointer by a different
     // route — and any tracked pointer inside it is rewritten in place as an
     // ordinary value read.
-    if (owner_is_declared_here)
+    if (rhs_is_initializer)
         for (const OffsetTerm &t : split.terms)
             if (escapesForInitScope(t.expr, Owner))
                 return;
@@ -324,7 +331,7 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     // Nor can it fix order: the index is initialized in its own
     // declaration, which is not where the pointer's initializer was
     // evaluated.
-    if (owner_is_declared_here && crossesSibling(split, Owner))
+    if (rhs_is_initializer && crossesSibling(split, Owner))
         return;
 
     // The index counts the owner's elements, and the offset was written in
@@ -368,7 +375,7 @@ bool PointerAccessCollector::VisitVarDecl(VarDecl *VD)
                                             : PointerAccessKind::Init;
         pa.loc = VD->getInit()->getBeginLoc();
         pa.expr = VD->getInit();
-        splitAssignedValue(VD->getInit(), pa, VD, /*owner_is_declared_here=*/true);
+        splitAssignedValue(VD->getInit(), pa, VD);
         access_list.push_back(pa);
     }
 
@@ -377,7 +384,7 @@ bool PointerAccessCollector::VisitVarDecl(VarDecl *VD)
 
     if (VERBOSE)
         llvm::outs() << "[Collect] Tracking pointer: " << VD->getNameAsString()
-                     << (isa<ParmVarDecl>(VD)      ? " (parameter)"
+                     << (isa<ParmVarDecl>(VD)     ? " (parameter)"
                          : VD->hasGlobalStorage() ? " (global)"
                                                   : " (local)")
                      << "\n";

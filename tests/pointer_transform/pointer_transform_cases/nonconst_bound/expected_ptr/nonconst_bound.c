@@ -4,10 +4,11 @@
  * the function keeps its (ptr, len) signature; the iterating pointer is
  * still rewritten to an index. */
 static int adjacent_pairs(const int *buf, int n) {
+    const int *p = buf;
     int p_index_xj = 0;
     int count = 0;
-    while (p_index_xj < (buf + n - 1 - buf)) {
-        if (buf[p_index_xj] < buf[p_index_xj + 1])
+    while ((p + p_index_xj) < buf + n - 1) {
+        if (p[p_index_xj] < p[p_index_xj + 1])
             count++;
         p_index_xj++;
     }

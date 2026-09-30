@@ -1,0 +1,78 @@
+{
+  "functions": {
+    "after_colons@null_follows_pairing.c": {
+      "file": "null_follows_pairing.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "r_index_xj",
+          "name": "r",
+          "param_index": -1
+        },
+        {
+          "base_text": "s",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "s",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "after_comma@null_follows_pairing.c": {
+      "file": "null_follows_pairing.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "s",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "asserted@null_follows_pairing.c": {
+      "file": "null_follows_pairing.c",
+      "pointers": [
+        {
+          "base_text": "p",
+          "index_var": "r_index_xj",
+          "name": "r",
+          "param_index": -1
+        },
+        {
+          "base_text": "s",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "skip_then_next@null_follows_pairing.c": {
+      "file": "null_follows_pairing.c",
+      "pointers": [
+        {
+          "base_text": "q",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

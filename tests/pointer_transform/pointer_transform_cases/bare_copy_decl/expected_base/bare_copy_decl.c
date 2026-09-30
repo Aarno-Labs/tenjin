@@ -1,0 +1,23 @@
+#include <stdio.h>
+
+/* q is declared as a plain copy of p. */
+static int tail_sum(int *a, int n) {
+    int p_index_xj = 0;
+    int s = 0;
+    for (int i = 0; i < n / 2; i++) {
+        s += a[p_index_xj];
+        p_index_xj++;
+    }
+    int q_index_xj = p_index_xj;
+    while (q_index_xj < n) {
+        s += a[q_index_xj] * 2;
+        q_index_xj++;
+    }
+    return s;
+}
+
+int main(void) {
+    int v[6] = {1, 2, 3, 4, 5, 6};
+    printf("%d\n", tail_sum(v, 6));
+    return 0;
+}

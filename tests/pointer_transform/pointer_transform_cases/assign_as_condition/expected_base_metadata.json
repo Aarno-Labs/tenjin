@@ -1,0 +1,37 @@
+{
+  "functions": {
+    "count_fields@assign_as_condition.c": {
+      "file": "assign_as_condition.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "count_up_to@assign_as_condition.c": {
+      "file": "assign_as_condition.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "offset_after_first@assign_as_condition.c": {
+      "file": "assign_as_condition.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

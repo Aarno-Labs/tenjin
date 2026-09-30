@@ -35,7 +35,7 @@ bool PointerTransformAction::BeginSourceFileAction(CompilerInstance &CI) {
 void PointerTransformAction::EndSourceFileAction() {
     SourceManager &SM = TheRewriter.getSourceMgr();
 
-    stampDeclLocations();
+    resolveDeclLocations();
 
     if (auto FE = SM.getFileEntryRefForID(SM.getMainFileID())) {
         std::string summary = "[SUMMARY] " + FE->getName().str() + ": ";
@@ -97,9 +97,10 @@ void PointerTransformAction::EndSourceFileAction() {
     }
 }
 
-// Stamp each recorded pointer with the line:col its declaring identifier
-// occupies in *this pass's output*, which is the file the base rewrite
-// tool will parse. See PendingDeclLoc for why it cannot be done earlier.
+// Set each recorded pointer's decl_line and decl_col to the position its
+// declaring identifier occupies in *this pass's output*, which is the file
+// the base rewrite tool will parse. See PendingDeclLoc for why it cannot be
+// done earlier.
 //
 // Offsets first, then line:col. Rewriter::getRangeSize over the char range
 // [start of file, identifier) is exactly the identifier's offset in the
@@ -110,7 +111,7 @@ void PointerTransformAction::EndSourceFileAction() {
 // The line:col conversion needs the *rewritten* text, so materialize each
 // touched file once and binary-search one newline table per file rather
 // than walking the rope per pointer.
-void PointerTransformAction::stampDeclLocations() {
+void PointerTransformAction::resolveDeclLocations() {
     if (g_pending_decl_locs.empty())
         return;
 

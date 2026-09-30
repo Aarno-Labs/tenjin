@@ -3,30 +3,33 @@
 /* Two int-slice functions must share one RustSlice_int typedef; the char
  * function gets its own RustSlice_char typedef. */
 static int sum_ints(int *buf, int n) {
+    int *p = buf;
     int p_index_xj = 0;
     int s = 0;
-    while (p_index_xj < n) {
-        s += buf[p_index_xj++];
+    while ((p + p_index_xj) < buf + n) {
+        s += p[p_index_xj++];
     }
     return s;
 }
 
 static int max_int(int *buf, int n) {
+    int *p = buf;
     int p_index_xj = 0;
     int best = -1000000;
-    while (p_index_xj < n) {
-        if (buf[p_index_xj] > best)
-            best = buf[p_index_xj];
+    while ((p + p_index_xj) < buf + n) {
+        if (p[p_index_xj] > best)
+            best = p[p_index_xj];
         p_index_xj++;
     }
     return best;
 }
 
 static int count_upper(char *buf, int n) {
+    char *p = buf;
     int p_index_xj = 0;
     int count = 0;
-    while (p_index_xj < n) {
-        if (buf[p_index_xj] >= 'A' && buf[p_index_xj] <= 'Z')
+    while ((p + p_index_xj) < buf + n) {
+        if (p[p_index_xj] >= 'A' && p[p_index_xj] <= 'Z')
             count++;
         p_index_xj++;
     }

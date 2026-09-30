@@ -259,6 +259,19 @@ static bool valueIsUsed(const Expr *E, ASTContext &Ctx) {
     return true;
 }
 
+// True when `E` already fills a whole full-expression slot, so a comma
+// expression put in its place needs no parentheses of its own: an
+// expression statement, a for-loop clause, a condition, a `return`, or
+// the inside of parentheses the source already wrote. Anywhere else,
+// another operator or a declarator's `=` would split the comma apart.
+static bool groupedByContext(const Expr *E, ASTContext &Ctx) {
+    auto Parents = Ctx.getParents(*E);
+    if (Parents.size() != 1)
+        return false;
+    const Stmt *P = Parents[0].get<Stmt>();
+    return P && (isa<ParenExpr>(P) || !isa<Expr>(P));
+}
+
 // True when the assignment *is* a truth test rather than merely having its
 // value read: the condition of an `if` or a loop, or an operand of `&&` or
 // `||`, parenthesized or not. An index update is already an int that is
@@ -361,10 +374,8 @@ std::string EditPlan::renderIndexValue(const PointerAccess &a,
         a.kind == PointerAccessKind::AssignNull)
         return "-1";
 
-    // The terms were lifted out of the right-hand side, and they are
-    // rendered rather than copied — a term reading through a rewritten
-    // pointer carries that rewrite here with it. Where the split is not
-    // used they never left, and the index counts from zero.
+    // Where the split is used, the terms were lifted out of the right-hand
+    // side; otherwise they never left, and the index counts from zero.
     std::string terms;
     if (splitStands(a))
         for (const OffsetTerm &t : a.index_terms)
@@ -464,9 +475,6 @@ std::string EditPlan::render(size_t i,
     // subscript, and only `p->field` has anything after the bracket.
     case PointerAccessKind::Element: {
         std::string index = applyStep(a.step, idx);  // *p++
-        // Each term is rendered rather than copied, so an offset that
-        // reads through a rewritten pointer — `*(p + strlen(p) - 1)` —
-        // carries that pointer's rewrite along instead of losing it.
         for (const OffsetTerm &t : a.offset_terms)   // *(p + a - b)
             index += (t.minus ? " - " : " + ") +
                      renderTerm(t, text_of, /*as_subscript=*/true);
@@ -495,9 +503,7 @@ std::string EditPlan::render(size_t i,
     // index, so both see the old one.
     //
     // `p += n` moves the index by `n` and yields the new pointer, which
-    // `(p + (p_index_xj += n))` rebuilds from the new index. The operand
-    // is rendered rather than copied, so a rewrite inside it is carried
-    // along.
+    // `(p + (p_index_xj += n))` rebuilds from the new index.
     case PointerAccessKind::Move: {
         bool wrap = valueIsUsed(cast<Expr>(e.node), Ctx);
         if (const auto *BO = dyn_cast<BinaryOperator>(e.node)) {
@@ -520,6 +526,12 @@ std::string EditPlan::render(size_t i,
     case PointerAccessKind::AssignNull: {
         const auto *BO = cast<BinaryOperator>(e.node);
         bool value_used = valueIsUsed(BO, Ctx);
+        // `p = q + 1;` becomes `p = q, p_index_xj = 1;`, not a parenthesized
+        // pair: the parentheses would outlive xj-prepare-baserewrite's
+        // deletion of the base store as `(p_index_xj = 1)`.
+        auto group = [&](const std::string &pair) {
+            return groupedByContext(BO, Ctx) ? pair : "(" + pair + ")";
+        };
 
         if (splitStands(a)) {
             // Split: the right-hand side keeps only its root and the rest
@@ -548,21 +560,21 @@ std::string EditPlan::render(size_t i,
             std::string index = renderIndexValue(a, text_of);
             std::string root = renderWithin(a.root_expr, text_of);
             std::string out = index_first
-                                  ? "(" + idx + " = " + index + ", " + ptr + " = " + root
-                                  : "(" + ptr + " = " + root + ", " + idx + " = " + index;
+                                  ? idx + " = " + index + ", " + ptr + " = " + root
+                                  : ptr + " = " + root + ", " + idx + " = " + index;
             if (value_used)
                 out += ", " + pointerValue(e.ptr);
-            return out + ")";
+            return group(out);
         }
 
         // Kept whole: the index update comes last, so a right-hand side
         // that reads through this pointer — `p = p->next` — still sees the
         // old position.
-        std::string out = "(" + renderWithin(BO, text_of) + ", " + idx +
-                          " = " + renderIndexValue(a, text_of);
+        std::string out = renderWithin(BO, text_of) + ", " + idx + " = " +
+                          renderIndexValue(a, text_of);
         if (value_used)
             out += ", " + pointerValue(e.ptr);
-        return out + ")";
+        return group(out);
     }
 
     // ---- Assignment from an allowlisted function ----------------------
@@ -587,9 +599,7 @@ std::string EditPlan::render(size_t i,
         const std::string func_name = Callee->getNameAsString();
 
         // Argument 0 is the region searched; it becomes the wrapper's
-        // `base`, and everything after it is passed through — rendered
-        // rather than copied, so an argument that reads through another
-        // rewritten pointer carries that rewrite with it.
+        // `base`, and everything after it is passed through.
         std::string other_args;
         for (unsigned n = 1; n < CE->getNumArgs(); n++)
             other_args += ", " + renderWithin(CE->getArg(n), text_of);
@@ -685,11 +695,9 @@ void EditPlan::appendRootEdits(std::vector<Edit> &out) {
 }
 
 bool EditPlan::verify(const std::vector<Edit> &out) {
-    // An edit that does not nest has an extent that came from somewhere
-    // other than editedNode(). One that was never rendered was neither
-    // applied on its own nor folded into the edit containing it, so its
-    // reference would keep its pre-rewrite meaning inside text that edit
-    // copied.
+    // Each problem the forest reports is a bug in this plan: an extent that
+    // did not come from editedNode(), or a reference an outer rewrite
+    // copied over.
     for (const xj::EditForest::Problem &problem : forest.verify()) {
         const PlannedEdit &e = edits[problem.Edit];
         reportViolation(llvm::Twine("the ") +

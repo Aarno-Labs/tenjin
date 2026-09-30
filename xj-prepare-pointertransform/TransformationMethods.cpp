@@ -67,7 +67,6 @@ static bool forInitSite(const ForStmt *FS, ASTContext &Ctx, IndexDeclSite &site)
 
     if (!needs_braces)
     {
-        site.valid = true;
         return true;
     }
 
@@ -90,7 +89,6 @@ static bool forInitSite(const ForStmt *FS, ASTContext &Ctx, IndexDeclSite &site)
 
     site.brace_at = End;
     site.brace_text = "\n" + indent + "}";
-    site.valid = true;
     return true;
 }
 
@@ -118,7 +116,6 @@ bool findIndexDeclSite(const FunctionDecl *FD, const VarDecl *PtrVar,
         // declarations back in source order.
         site.at = Lexer::getLocForEndOfToken(lbrace, 0, SM, LO);
         site.prefix = "\n" + getIndentBeforeLoc(lbrace, SM).str() + "    ";
-        site.valid = true;
         return true;
     }
 
@@ -136,7 +133,6 @@ bool findIndexDeclSite(const FunctionDecl *FD, const VarDecl *PtrVar,
         site.at = Lexer::getLocForEndOfToken(semi->getLocation(), 0, SM, LO);
         site.prefix =
             std::string("\n") + (PtrVar->getStorageClass() == SC_Static ? "static " : "");
-        site.valid = true;
         return true;
     }
 
@@ -180,7 +176,6 @@ bool findIndexDeclSite(const FunctionDecl *FD, const VarDecl *PtrVar,
     // two indices sharing this anchor back in source order.
     site.at = Lexer::getLocForEndOfToken(DS->getEndLoc(), 0, SM, LO);
     site.prefix = "\n" + getIndentBeforeLoc(DS->getBeginLoc(), SM).str();
-    site.valid = true;
     return true;
 }
 

@@ -1,0 +1,60 @@
+{
+  "functions": {
+    "address_taken@increment_root_unsplit.c": {
+      "file": "increment_root_unsplit.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    },
+    "offset_through_other@increment_root_unsplit.c": {
+      "file": "increment_root_unsplit.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "buf",
+          "index_var": "r_index_xj",
+          "name": "r",
+          "param_index": -1
+        }
+      ]
+    },
+    "step_is_only_motion@increment_root_unsplit.c": {
+      "file": "increment_root_unsplit.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "s",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "value_read@increment_root_unsplit.c": {
+      "file": "increment_root_unsplit.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "count_fields@assign_in_value_position.c": {
+      "file": "assign_in_value_position.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 12,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

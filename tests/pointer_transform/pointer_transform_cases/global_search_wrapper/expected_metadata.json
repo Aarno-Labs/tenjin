@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "count_pairs@global_search_wrapper.c": {
+      "file": "global_search_wrapper.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 17,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

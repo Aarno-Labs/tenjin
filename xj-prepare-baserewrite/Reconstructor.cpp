@@ -626,7 +626,8 @@ namespace xj
       emit(DeclRange, "", /*WholeLine=*/true);
 
     // 2. Each store's arm goes away, leaving the index assignment beside
-    //    it: `(p = ROOT, p_index_xj = OFF)` becomes `(p_index_xj = OFF)`.
+    //    it: `p = ROOT, p_index_xj = OFF` becomes `p_index_xj = OFF`, inside
+    //    whatever parentheses the pointer pass gave the pair.
     //    `checkSubstitutable` already proved every store has this shape,
     //    so there is nothing left to recognize here.
     for (const BinaryOperator *Comma : P.StoreCommas)

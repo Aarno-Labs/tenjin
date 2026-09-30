@@ -8,12 +8,6 @@
 // side-file identifies each synthesized index variable — its name, and the
 // base the base rewrite tool *proved* it indexes.
 //
-// That base is the one fact this pass takes on trust, and it is worth
-// being exact about why it may be: it is not a spelling somebody wrote,
-// it is a spelling xj-prepare-baserewrite emitted from a cell it proved,
-// substituted at every access itself. Where it proved nothing, `base_text`
-// is empty and the pointer is its own base.
-//
 // This class is the sole author of the per-pointer offset bounds, the
 // per-function PtrIndexSliceRecords, and the global-return map — all
 // tool-private in-memory state (defined below) that SliceRewriter then
