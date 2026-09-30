@@ -2360,3 +2360,132 @@ def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: ~30-50 s, up to the first failure below
+@pytest.mark.xfail(
+    reason="antcc does not yet translate end-to-end; it hits three blockers, in pipeline order. "
+    "(1) hoist_embedded_tag_definitions: for `typedef struct InitParser { struct InitCur {...} "
+    "buf[32], *cur, *sub; ... } InitParser;` (c.c) and `typedef struct PragmaState { struct "
+    "{...} pack, visibility; ... } PragmaState;` (c_lex.h), xj-hoist-embedded-tag-defs inserts "
+    "the hoisted tag at the enclosing record's begin, i.e. between `typedef` and `struct "
+    "InitParser`, so the typedef binds to the hoisted tag and `InitParser` becomes a variable; "
+    "c.c then fails to compile at uniquify_statics. Fix: in insertionLocFor, when the enclosing "
+    "record is not itself nested in a record, insert before the whole enclosing declaration. "
+    "(2) convert_union_bitcasts: for `static const Ref ONE = {.t=RICON, .i=1};` (ir_builder.c), "
+    "where `Ref` is `union { struct { unsigned t : 3; signed i : 29; }; uint bits; }`, the "
+    "brace-elided first initializer is copied as just `.t=RICON`, a syntax error; and even with "
+    "that fixed, the conversion re-declares the struct without its bitfields and memcpy's its "
+    "bytes, silently producing the wrong value. Fix: re-brace the text between the union's "
+    "braces when the first field's init list has no written brace, and reject unions whose "
+    "fields contain bitfields in isValidUnion. "
+    "(3) `pangs analyze --validate` rejects `extern internstr tagtypetags[]` (c.c) vs "
+    "`internstr tagtypetags[1<<10]` (c_type.c) as 'incompatible source declarations', because "
+    "`internstr` is `typedef const struct {char c;} *internstr;` from antcc.h, and the "
+    "anonymous struct gets a distinct per-TU USR (c.nolines.i@6180 vs c_type.nolines.i@6120) "
+    "even though the two types are compatible C types.",
+)
+def test_lsof_antcc(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://codeberg.org/lsof/antcc.git", "d4ff110475cc39b67e6e2c98859e943302a29082"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # `./configure` writes src/hostconfig.h (the host toolchain's include dirs,
+    # linker and crt files, which antcc bakes in to drive `ld` itself). The two
+    # scripts produce the remaining generated sources that the Makefile would.
+    # The Makefile also builds and runs a tool/depgen helper, so we skip it and
+    # compile the sources the Makefile lists (all of src/*.c) in one `cc`.
+    prebuildcmd = (
+        "./configure CC=cc"
+        " && tool/gen-version.sh > src/version.h"
+        " && src/a_embedfilesdir.sh > src/a_embedfilesdir.c"
+    )
+    buildcmd = "cc -std=c11 -g -o antcc src/*.c"
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="lsof_antcc",
+            prebuildcmd=prebuildcmd,
+            buildcmd=buildcmd,
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+    rs_antcc = tmp_resultsdir / "final" / "target" / "debug" / "antcc"
+
+    # antcc's own suites both invoke the compiler as `../../antcc` from their
+    # test subdirectory, and write their build products next to the tests, so
+    # each build gets a pristine checkout of its own with the binary at its root.
+    #  - test/c/run.sh compiles each numbered C program, links it via the host
+    #    `ld`, runs it, and diffs its output against the program's EXPECT comment.
+    #  - test/ir/run.sh feeds snippets to `antcc -d...` via tclsh and checks the
+    #    optimizer's IR dumps.
+    suites = [["test/c/run.sh", "--print"], ["test/ir/run.sh"]]
+
+    def run_suites(tag: str) -> dict:
+        suite_root = tmp_resultsdir / f"xj_suite_{tag}"
+        shutil.copytree(codebase, suite_root, ignore=shutil.ignore_patterns(".git"))
+        if tag == "c":
+            hermetic.run(
+                f"{prebuildcmd} && {buildcmd}",
+                cwd=suite_root,
+                shell=True,
+                check=True,
+                capture_output=True,
+            )
+        else:
+            shutil.copy2(rs_antcc, suite_root / "antcc")
+
+        results = {}
+        for suite in suites:
+            cp = hermetic.run(
+                [str(suite_root / suite[0]), *suite[1:]],
+                cwd=suite_root,
+                check=False,
+                capture_output=True,
+                env_ext={"CFLAGS": "", "QEMU": ""},
+            )
+            results[suite[0]] = (cp.returncode, cp.stdout, cp.stderr)
+        # What each compiled test program printed when run.
+        c_build = suite_root / "test" / "c" / "build"
+        results["actual"] = {p.name: p.read_bytes() for p in sorted(c_build.glob("*.actual"))}
+        return results
+
+    c_results = run_suites("c")
+    rs_results = run_suites("rs")
+
+    # Two identically-wrong builds would agree, so pin the C build's verdicts too.
+    c_rc, c_stdout, _ = c_results["test/c/run.sh"]
+    assert c_rc == 0 and b"TESTS PASSED: 27/27\n" in c_stdout, (
+        f"The C build failed antcc's own test/c suite: {c_stdout[-2000:]!r}"
+    )
+    c_rc, c_stdout, _ = c_results["test/ir/run.sh"]
+    assert c_rc == 0 and c_stdout.endswith(b"OK (3 tests)\n"), (
+        f"The C build failed antcc's own test/ir suite: {c_stdout[-2000:]!r}"
+    )
+
+    problems = []
+    for suite, *_ in suites:
+        (c_rc, c_stdout, c_stderr), (rs_rc, rs_stdout, rs_stderr) = (
+            c_results[suite],
+            rs_results[suite],
+        )
+        if rs_rc != c_rc:
+            problems.append(f"{suite}: exit {rs_rc} (Rust) vs {c_rc} (C)")
+        if rs_stdout != c_stdout:
+            problems.append(f"{suite}: stdout differed; Rust {rs_stdout[-2000:]!r}")
+        if rs_stderr != c_stderr:
+            problems.append(f"{suite}: stderr differed; Rust {rs_stderr[-2000:]!r}")
+    for name in sorted(set(c_results["actual"]) | set(rs_results["actual"])):
+        if rs_results["actual"].get(name) != c_results["actual"].get(name):
+            problems.append(f"test/c/build/{name}: program output differed")
+
+    assert not problems, "The Rust antcc diverged from the C antcc:\n" + "\n".join(problems)
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
