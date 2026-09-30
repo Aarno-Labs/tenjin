@@ -918,6 +918,45 @@ fn null_pointer_offsetof_rejects_mismatched_types_and_nonbyte_offsets() {
 }
 
 #[test]
+fn zstring_local_init_from_byte_arrays() {
+    let mut rw = Rewriter::new();
+    rw.add_stmt_rewrite(Rewriter::rewrite_zstring_local_init);
+    check(
+        &rw,
+        r#"fn demo() {
+            let mut man: xj_zstr::ZString = [0xf0u8, 0x9fu8, 0x91u8, 0xa8u8];
+            let mut listnul: xj_zstr::ZString = ['h' as u8, 'i' as u8, 0u8];
+            let mut unsuffixed: ZString = [0x68, 0x69];
+            let mut zeros: xj_zstr::ZString = [0u8, 0, 0, 0];
+            let mut repeated: xj_zstr::ZString = [0u8; 16];
+            let mut lit: xj_zstr::ZString = *b"\xF0\x9F\x91\xA8\0";
+            let mut exact: xj_zstr::ZString = *b"\xF0\x9F\x91\xA8";
+            let mut partial: xj_zstr::ZString = *b"ab\0\0\0";
+            let mut empty: xj_zstr::ZString = *b"\0\0\0";
+            let mut other: other::ZString = [0u8, 1u8];
+            let mut arr: [u8; 2] = [1u8, 0];
+        }"#,
+        expect![[r#"
+            fn demo() {
+                let mut man: xj_zstr::ZString = xj_zstr::ZString::new([
+                    0xf0u8, 0x9fu8, 0x91u8, 0xa8u8,
+                ]);
+                let mut listnul: xj_zstr::ZString = xj_zstr::ZString::new(['h' as u8, 'i' as u8]);
+                let mut unsuffixed: ZString = ZString::new([0x68u8, 0x69]);
+                let mut zeros: xj_zstr::ZString = xj_zstr::ZString::with_capacity(3);
+                let mut repeated: xj_zstr::ZString = xj_zstr::ZString::with_capacity(15);
+                let mut lit: xj_zstr::ZString = xj_zstr::ZString::new(b"\xF0\x9F\x91\xA8");
+                let mut exact: xj_zstr::ZString = xj_zstr::ZString::new(b"\xF0\x9F\x91\xA8");
+                let mut partial: xj_zstr::ZString = xj_zstr::ZString::new(b"ab\0\0");
+                let mut empty: xj_zstr::ZString = xj_zstr::ZString::with_capacity(2);
+                let mut other: other::ZString = [0u8, 1u8];
+                let mut arr: [u8; 2] = [1u8, 0];
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn string_pop_trailing_nul_on_string() {
     let mut rw = Rewriter::new();
     rw.add_stmt_rewrite(Rewriter::rewrite_string_pop_trailing_nul);

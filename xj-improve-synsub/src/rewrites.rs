@@ -1232,6 +1232,95 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite the `char`-array initializer of a `ZString`-typed local, which c2rust
+    /// emits as a (mistyped) byte array, into a `ZString` constructor:
+    ///   * `let s: ZString = *b"ab\0\0";` => `let s: ZString = ZString::new(b"ab\0");`
+    ///   * `let s: ZString = [0xf0u8, 0x9fu8];` => `let s: ZString = ZString::new([0xf0u8, 0x9fu8]);`
+    ///   * `let s: ZString = [0u8, 0, 0, 0];` or `[0u8; 4]` => `let s: ZString = ZString::with_capacity(3);`
+    ///
+    /// One trailing NUL is dropped because `ZString` supplies its own terminator,
+    /// so the `ZString`'s buffer is the same size as the C array.
+    pub fn rewrite_zstring_local_init(
+        &self,
+        _symbols: &SymbolTable,
+        stmt: &Stmt,
+    ) -> Option<(Stmt, Depth)> {
+        let Stmt::Local(local) = stmt else {
+            return None;
+        };
+        let Pat::Type(pat_type) = &local.pat else {
+            return None;
+        };
+        if !is_zstring_type(&pat_type.ty) {
+            return None;
+        }
+        let localinit = local.init.as_ref()?;
+        if localinit.diverge.is_some() {
+            return None;
+        }
+
+        let ty = &pat_type.ty;
+        let with_capacity = |n: usize| -> Expr {
+            let n = proc_macro2::Literal::usize_unsuffixed(n);
+            syn::parse_quote! { #ty::with_capacity(#n) }
+        };
+        let init: Expr = match expr_strip_parens(&localinit.expr) {
+            Expr::Unary(ExprUnary {
+                op: syn::UnOp::Deref(_),
+                expr: inner,
+                ..
+            }) => {
+                let Expr::Lit(ExprLit {
+                    lit: syn::Lit::ByteStr(byte_str),
+                    ..
+                }) = &**inner
+                else {
+                    return None;
+                };
+                let bytes = bytes_strip_trailing_zero(byte_str.value());
+                if bytes.iter().all(|&b| b == 0) {
+                    with_capacity(bytes.len())
+                } else {
+                    let trimmed = LitByteStr::new(&bytes, byte_str.span());
+                    syn::parse_quote! { #ty::new(#trimmed) }
+                }
+            }
+            Expr::Array(array) => {
+                let mut elems: Vec<Expr> = array.elems.iter().cloned().collect();
+                if elems.last().is_some_and(is_zero_byte_expr) {
+                    elems.pop();
+                }
+                if elems.iter().all(is_zero_byte_expr) {
+                    with_capacity(elems.len())
+                } else {
+                    // c2rust suffixes only the first element; keep the element type
+                    // pinned to `u8` so that `ZString::new`'s generic argument is inferable.
+                    if let Some(Expr::Lit(ExprLit {
+                        lit: syn::Lit::Int(first),
+                        ..
+                    })) = elems.first_mut()
+                    {
+                        if first.suffix().is_empty() {
+                            *first = LitInt::new(&format!("{first}u8"), first.span());
+                        }
+                    }
+                    syn::parse_quote! { #ty::new([#(#elems),*]) }
+                }
+            }
+            Expr::Repeat(repeat) if is_zero_byte_expr(&repeat.expr) => {
+                let n: usize = expr_get_int_literal(&repeat.len)?
+                    .base10_parse()
+                    .ok()?;
+                with_capacity(n.checked_sub(1)?)
+            }
+            _ => return None,
+        };
+
+        let mut replacement = local.clone();
+        replacement.init.as_mut()?.expr = Box::new(init);
+        Some((Stmt::Local(replacement), Depth::Unlimited))
+    }
+
     /// Rewrite `strlen(e1.as_mut_ptr())` into:
     ///   * `(e1.len() - 1) as size_t` when `e1` is a `u8` slice (with the trailing NUL kept)
     ///     and we've determined that e1 will never have its length changed by having
@@ -2704,6 +2793,12 @@ fn same_integer_type(left: &Type, right: &Type) -> bool {
 
 fn is_nul_char_expr(expr: &Expr) -> bool {
     matches!(expr_strip_parens(expr_strip_casts(expr)), Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Char(ch) if ch.value() == '\0'))
+}
+
+/// Matches `0`, `0u8`, `'\0'`, and casts thereof.
+fn is_zero_byte_expr(expr: &Expr) -> bool {
+    is_nul_char_expr(expr)
+        || matches!(expr_strip_parens(expr_strip_casts(expr)), Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Int(int) if int.base10_digits() == "0"))
 }
 
 fn is_one_expr(expr: &Expr) -> bool {
