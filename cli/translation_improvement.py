@@ -94,45 +94,32 @@ def restore_print_macros(dir: Path) -> None:
 
 
 def run_improve_synsub(root: Path, args: list[str], dir: Path) -> CompletedProcess:
-    # Macro arguments are in general token trees, not expressions,
-    # and ast-grep rightly treats them as such. But there are important
-    # special cases, so we temporarily rewrite invocation sites to look like
-    # function calls with expression arguments.
-    #
-    # This produces, as an ephemeral intermediate state, code that does not
-    # type check, but ast-grep can still match on it.
-    try:
-        rewrite_print_macros_as_calls(dir)
+    # Direct indexing of arrays takes an unnecessary detour through unsafe pointers
+    run_ast_grep_rewrite(
+        dir,
+        "(*$BASE.as_mut_ptr().offset($IDX as isize))",
+        "($BASE[$IDX as usize])",
+    )
 
-        # Direct indexing of arrays takes an unnecessary detour through unsafe pointers
-        run_ast_grep_rewrite(
-            dir,
-            "(*$BASE.as_mut_ptr().offset($IDX as isize))",
-            "($BASE[$IDX as usize])",
-        )
-
-        synsub_cp = run_built_workspace_binary(
-            root,
-            "xj-improve-synsub",
-            "xj-improve-synsub",
-            args,
-            dir,
-        )
-    except BaseException:
-        restore_print_macros(dir)
-        raise
-
-    if synsub_cp.returncode != 0:
-        restore_print_macros(dir)
-
-    return synsub_cp
+    return run_built_workspace_binary(
+        root,
+        "xj-improve-synsub",
+        "xj-improve-synsub",
+        args,
+        dir,
+    )
 
 
 def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> CompletedProcess:
-    # rust-analyzer's surface syntax treats macro args as opaque token
-    # trees, so we wait until after this pass to restore the original println! syntax.
-
+    # rust-analyzer's surface syntax treats macro args as opaque token trees,
+    # so calls nested within print macro arguments would be invisible to this
+    # pass. We temporarily rewrite invocation sites to look like function calls
+    # with expression arguments.
+    #
+    # This produces, as an ephemeral intermediate state, code that does not
+    # type check, but the lifted calls within the arguments can still be analyzed.
     try:
+        rewrite_print_macros_as_calls(dir)
         lift_cp = run_built_workspace_binary(
             root,
             "xj-improve-lift-call-args",

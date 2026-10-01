@@ -54,13 +54,13 @@ unsafe fn main_0() -> ::core::ffi::c_int {
         total(
             1,
             2,
-            b"z\0".as_ptr() as *const ::core::ffi::c_char as *mut ::core::ffi::c_char,
+            b"z\0".as_ptr() as *const ::core::ffi::c_char as *mut ::core::ffi::c_char
         ) as core::ffi::c_int,
         first_of(
             b"xyz\0".as_ptr() as *const ::core::ffi::c_char as *mut ::core::ffi::c_char,
-            1,
+            1
         ) as core::ffi::c_int,
-        seven() as core::ffi::c_int,
+        seven() as core::ffi::c_int
     );
     0
 }

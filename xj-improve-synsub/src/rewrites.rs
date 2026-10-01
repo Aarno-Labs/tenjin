@@ -258,26 +258,63 @@ impl Rewriter {
         Some((replacement, Depth::Unlimited))
     }
 
-    /// Rewrite `xj_astgrep_print("{:}", E as char)` into a direct stdout byte write.
+    /// Rewrite `print!("{:}", E as char)` in expression position into a direct
+    /// stdout byte write, wrapped in a block so the expression keeps type `()`.
     pub fn rewrite_print_byte(&self, _symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
-        let Expr::Call(call) = expr else {
+        let Expr::Macro(mac) = expr else {
             return None;
         };
-        let Expr::Path(ref func) = *call.func else {
+        if !mac.attrs.is_empty() {
             return None;
+        }
+        let write = self.print_byte_replacement(&mac.mac)?;
+        Some((syn::parse_quote! { { #write; } }, Depth::Unlimited))
+    }
+
+    /// Rewrite `print!("{:}", E as char);` into a direct stdout byte write.
+    /// A trailing `print!` without a semicolon gains one, so the enclosing
+    /// block keeps type `()`.
+    pub fn rewrite_stmt_print_byte(
+        &self,
+        _symbols: &SymbolTable,
+        stmt: &Stmt,
+    ) -> Option<(Stmt, Depth)> {
+        let (attrs, mac) = match stmt {
+            Stmt::Macro(m) => (&m.attrs, &m.mac),
+            Stmt::Expr(Expr::Macro(m), None) => (&m.attrs, &m.mac),
+            _ => return None,
         };
-        if !func.path.is_ident("xj_astgrep_print") || call.args.len() != 2 {
+        if !attrs.is_empty() {
+            return None;
+        }
+        let write = self.print_byte_replacement(mac)?;
+        Some((
+            Stmt::Expr(write, Some(Default::default())),
+            Depth::Unlimited,
+        ))
+    }
+
+    fn print_byte_replacement(&self, mac: &syn::Macro) -> Option<Expr> {
+        use syn::parse::Parser;
+
+        if !mac.path.is_ident("print") {
+            return None;
+        }
+        let args = Punctuated::<Expr, Comma>::parse_terminated
+            .parse2(mac.tokens.clone())
+            .ok()?;
+        if args.len() != 2 {
             return None;
         }
 
-        let Expr::Lit(fmt_lit) = &call.args[0] else {
+        let Expr::Lit(fmt_lit) = &args[0] else {
             return None;
         };
         if !matches!(&fmt_lit.lit, syn::Lit::Str(s) if s.value() == "{:}") {
             return None;
         }
 
-        let Expr::Cast(char_cast) = expr_strip_parens(&call.args[1]) else {
+        let Expr::Cast(char_cast) = expr_strip_parens(&args[1]) else {
             return None;
         };
         if !matches!(&*char_cast.ty, Type::Path(path) if path.path.is_ident("char")) {
@@ -289,11 +326,9 @@ impl Rewriter {
             item_store.add_use(false, vec!["std".into(), "io".into()], "Write");
         });
 
-        let replacement: Expr = syn::parse_quote! {
+        Some(syn::parse_quote! {
             ::std::io::stdout().write_all(&[#byte_expr as u8])
-        };
-
-        Some((replacement, Depth::Unlimited))
+        })
     }
 
     pub fn rewrite_ctime_time(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {

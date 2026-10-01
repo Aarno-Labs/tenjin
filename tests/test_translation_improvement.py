@@ -9,9 +9,7 @@ import repo_root
 import translation_improvement
 
 
-def test_failed_synsub_restores_temporarily_rewritten_print_macros(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_synsub_leaves_print_macros_alone(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     rewrites: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
@@ -28,9 +26,10 @@ def test_failed_synsub_restores_temporarily_rewritten_print_macros(
     cp = translation_improvement.run_improve_synsub(tmp_path, [], tmp_path)
 
     assert cp.returncode == 1
-    assert rewrites[-4:] == [
-        (call, macro) for macro, call in translation_improvement.PRINT_MACRO_REWRITES
-    ]
+    print_macro_rewrites = set(translation_improvement.PRINT_MACRO_REWRITES)
+    assert not any(
+        (a, b) in print_macro_rewrites or (b, a) in print_macro_rewrites for a, b in rewrites
+    )
 
 
 def test_exceptional_lift_restores_temporarily_rewritten_print_macros(
@@ -53,7 +52,8 @@ def test_exceptional_lift_restores_temporarily_rewritten_print_macros(
         translation_improvement.run_improve_lift_call_args(tmp_path, [], tmp_path)
 
     assert rewrites == [
-        (call, macro) for macro, call in translation_improvement.PRINT_MACRO_REWRITES
+        *translation_improvement.PRINT_MACRO_REWRITES,
+        *((call, macro) for macro, call in translation_improvement.PRINT_MACRO_REWRITES),
     ]
 
 
