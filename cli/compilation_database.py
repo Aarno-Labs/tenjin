@@ -284,9 +284,37 @@ def _is_cc_command(args: list[str]) -> bool:
     return False
 
 
+def _compile_command_defines_ndebug(cc: CompileCommand) -> bool:
+    """Whether NDEBUG is defined by the command line (the last -D/-U wins)."""
+    defined = False
+    for arg in extract_macro_args_affecting_content_from_compile_command(cc):
+        if arg.startswith("-DNDEBUG="):
+            defined = True
+        elif arg == "-UNDEBUG":
+            defined = False
+    return defined
+
+
 def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
     """Modify compile_commands.json to include Tenjin-specific declarations
     and block expansion of macros that Tenjin gives special treatment."""
+
+    macros_file = (
+        repo_root.find_repo_root_dir_Path() / "cli" / "autoblocked_macro_names_in_translation.txt"
+    )
+    # When NDEBUG is defined, assert(e) expands to ((void) 0) and `e` is never
+    # parsed. Earlier stages (e.g. rewrites of globals into XjGlobals) therefore
+    # never see or update `e`, so blocking the expansion at translation time
+    # would expose stale code which may no longer compile---or, indeed, may never
+    # have compiled. Instead, let assert expand as it would in the original build.
+    ndebug_macros_file = compile_commands_path.parent / "autoblocked_macro_names_ndebug.txt"
+    ndebug_macros_file.write_text(
+        "".join(
+            line
+            for line in macros_file.read_text().splitlines(keepends=True)
+            if line.strip() != "assert"
+        )
+    )
 
     ccs_orig = CompileCommands.from_json_file(compile_commands_path)
     ccs: list[CompileCommand] = []
@@ -298,12 +326,10 @@ def munge_compile_commands_for_tenjin_translation(compile_commands_path: Path):
                 str(repo_root.find_repo_root_dir_Path() / "cli" / "autoincluded_tenjin_decls.h")
             )
 
-            macros_file = (
-                repo_root.find_repo_root_dir_Path()
-                / "cli"
-                / "autoblocked_macro_names_in_translation.txt"
+            chosen_macros_file = (
+                ndebug_macros_file if _compile_command_defines_ndebug(cc) else macros_file
             )
-            args.append("--block-macros-file=" + macros_file.as_posix())
+            args.append("--block-macros-file=" + chosen_macros_file.as_posix())
             # See https://github.com/Aarno-Labs/llvm-project/commit/4256d14834810a78a1a61679316441172e0f0dd2
 
         # Output names were already legalized for Rust when the compilation

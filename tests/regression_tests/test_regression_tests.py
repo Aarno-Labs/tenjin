@@ -106,3 +106,26 @@ def test_weak_symbol_override(test_dir, tenjin_fixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+def test_ndebug_assert_not_translated(test_dir, tenjin_fixtures):
+    """With -DNDEBUG, `assert(e)` must expand to nothing during translation,
+    just as it does in the original build, rather than being kept as a call
+    whose (unparsed, possibly stale) argument gets translated."""
+    tmp_resultsdir = tenjin_fixtures.tmp_resultsdir
+    translation.do_translate(
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            test_dir / "ndebug_assert",
+            tmp_resultsdir,
+            cratename="ndebug_assert",
+            buildcmd="make",
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
+    assert rs_prog_output.stdout == b"ok\n"
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
