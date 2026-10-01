@@ -56,6 +56,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
     rw.add_expr_rewrite(Rewriter::rewrite_ctime_time);
     rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
+    rw.add_expr_rewrite(Rewriter::rewrite_str_from_ptr_of_zstr);
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_redundant_borrow);
 

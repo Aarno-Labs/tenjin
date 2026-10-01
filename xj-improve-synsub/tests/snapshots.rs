@@ -1013,6 +1013,48 @@ fn null_pointer_offsetof_rejects_mismatched_types_and_nonbyte_offsets() {
 }
 
 #[test]
+fn str_from_ptr_of_zstr_uses_to_string_lossy() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_str_from_ptr_of_zstr);
+    check(
+        &rw,
+        r#"fn demo(p: &xj_zstr::ZStr, q: &mut ZStr, r: &ZString, raw: *mut u8, mut man: xj_zstr::ZString) {
+            println!("{}", { xj_str_from_ptr(&raw mut man as *mut u8 as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(&raw const man as *const u8 as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(p as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(q as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(r as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(&raw mut p as *mut u8 as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(raw as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr((&raw mut man as *mut u8).offset(0 as isize) as *const core::ffi::c_char) });
+        }"#,
+        expect![[r#"
+            fn demo(
+                p: &xj_zstr::ZStr,
+                q: &mut ZStr,
+                r: &ZString,
+                raw: *mut u8,
+                mut man: xj_zstr::ZString,
+            ) {
+                println!("{}", { man.to_string_lossy() });
+                println!("{}", { man.to_string_lossy() });
+                println!("{}", { p.to_string_lossy() });
+                println!("{}", { q.to_string_lossy() });
+                println!("{}", { r.to_string_lossy() });
+                println!(
+                    "{}", { xj_str_from_ptr(& raw mut p as * mut u8 as * const core::ffi::c_char) }
+                );
+                println!("{}", { xj_str_from_ptr(raw as * const core::ffi::c_char) });
+                println!(
+                    "{}", { xj_str_from_ptr((& raw mut man as * mut u8).offset(0 as isize) as * const
+                    core::ffi::c_char) }
+                );
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn zstring_local_init_from_byte_arrays() {
     let mut rw = Rewriter::new();
     rw.add_stmt_rewrite(Rewriter::rewrite_zstring_local_init);

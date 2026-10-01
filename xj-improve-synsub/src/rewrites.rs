@@ -1302,6 +1302,48 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite `xj_str_from_ptr(&raw mut s as *mut u8 as *const c_char)` (for `s: ZString`)
+    /// or `xj_str_from_ptr(s as *const c_char)` (for `s` a `ZString`, `&ZStr`, or `&mut ZStr`)
+    /// into `s.to_string_lossy()`.
+    pub fn rewrite_str_from_ptr_of_zstr(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        if !func.path.is_ident("xj_str_from_ptr") || call.args.len() != 1 {
+            return None;
+        }
+
+        let arg = expr_strip_parens(expr_strip_casts(expr_strip_parens(&call.args[0])));
+        let (place, owned_only) = match arg {
+            // Taking the address of a reference would point at the reference, not the string.
+            Expr::RawAddr(raw) => (expr_strip_parens(&raw.expr), true),
+            other => (other, false),
+        };
+        // Restrict to places that can be method receivers without parenthesization.
+        if !matches!(place, Expr::Path(_) | Expr::Field(_)) {
+            return None;
+        }
+        let ty = symbols.type_of_expr(place)?;
+        let is_match = if owned_only {
+            is_zstring_type(&ty)
+        } else {
+            is_zstr_like_type(&ty)
+        };
+        if !is_match {
+            return None;
+        }
+
+        let replacement: Expr = syn::parse_quote! { #place.to_string_lossy() };
+        Some((replacement, Depth::Limited(0)))
+    }
+
     /// Rewrite the `char`-array initializer of a `ZString`-typed local, which c2rust
     /// emits as a (mistyped) byte array, into a `ZString` constructor:
     ///   * `let s: ZString = *b"ab\0\0";` => `let s: ZString = ZString::new(b"ab\0");`
@@ -2251,6 +2293,21 @@ fn is_string_type(ty: &syn::Type) -> bool {
 }
 
 fn is_zstring_type(ty: &Type) -> bool {
+    is_xj_zstr_type(ty, "ZString")
+}
+
+/// Returns `true` for `ZString`, `&ZString`, `&ZStr`, and `&mut ZStr` (bare or `xj_zstr::`-qualified).
+fn is_zstr_like_type(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(reference) => {
+            is_xj_zstr_type(&reference.elem, "ZStr") || is_xj_zstr_type(&reference.elem, "ZString")
+        }
+        _ => is_zstring_type(ty),
+    }
+}
+
+/// Returns `true` for `name` or `xj_zstr::name`.
+fn is_xj_zstr_type(ty: &Type, name: &str) -> bool {
     let Type::Path(path) = ty else {
         return false;
     };
@@ -2259,8 +2316,8 @@ fn is_zstring_type(ty: &Type) -> bool {
     }
     let segments = &path.path.segments;
     let correct_name = match segments.len() {
-        1 => segments[0].ident == "ZString",
-        2 => segments[0].ident == "xj_zstr" && segments[1].ident == "ZString",
+        1 => segments[0].ident == name,
+        2 => segments[0].ident == "xj_zstr" && segments[1].ident == name,
         _ => false,
     };
     correct_name
