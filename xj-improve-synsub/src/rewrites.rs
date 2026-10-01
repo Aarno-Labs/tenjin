@@ -1032,7 +1032,8 @@ impl Rewriter {
     ///   * `(e1.len() - 1) as size_t` when `e1` is a `u8` slice (with the trailing NUL kept)
     ///     and we've determined that e1 will never have its length changed by having
     ///     a null byte written into its interior. (NOT YET IMPLEMENTED)
-    ///   * `CStr::from_bytes_until_nul(e1).count_bytes() as size_t` when e1 is a `u8` slice.
+    ///   * `CStr::from_bytes_until_nul(&e1[..]).count_bytes() as size_t` when e1 is a `u8`
+    ///     array, slice, or `Vec`.
     ///   * `CStr::from_bytes_until_nul(e1.as_u8_slice()).count_bytes() as size_t` otherwise.
     pub fn rewrite_strlen_of_slice(
         &self,
@@ -1056,7 +1057,7 @@ impl Rewriter {
         if let Some(decayed) = Self::peek_array_decay_coercion(arg, _symbols) {
             if is_u8_sliceable_expr(decayed, _symbols) {
                 let replacement: Expr = syn::parse_quote! {
-                    (::std::ffi::CStr::from_bytes_until_nul(#decayed).unwrap().count_bytes()) as size_t
+                    (::std::ffi::CStr::from_bytes_until_nul(&#decayed[..]).unwrap().count_bytes()) as size_t
                 };
                 Some((replacement, Depth::Unlimited))
             } else {
