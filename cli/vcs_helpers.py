@@ -14,7 +14,15 @@ def vcs_diff(path: Path) -> bytes:
         raise RuntimeError(f"No containing .jj or .git directory found for path {path}")
     if vcs_path.name == ".jj":
         return hermetic.check_output(
-            ["jj", "diff", "--git", "--no-pager", "--quiet", path.as_posix()],
+            [
+                "jj",
+                "--ignore-working-copy",
+                "diff",
+                "--git",
+                "--no-pager",
+                "--quiet",
+                path.as_posix(),
+            ],
             cwd=vcs_root(vcs_path),
         )
     else:
@@ -65,7 +73,15 @@ def jj_working_copy_status(vcs_root: Path, origin_remote: str = "origin") -> Wor
     - Raises CalledProcessError if a `jj` invocation fails."""
 
     remotes_lines: list[str] = (
-        hermetic.check_output(["jj", "-R", vcs_root, "git", "remote", "list"])
+        hermetic.check_output([
+            "jj",
+            "--ignore-working-copy",
+            "-R",
+            vcs_root,
+            "git",
+            "remote",
+            "list",
+        ])
         .decode("utf-8")
         .splitlines()
     )
@@ -129,7 +145,7 @@ def jj_working_copy_status(vcs_root: Path, origin_remote: str = "origin") -> Wor
     if commit:
         git_dir = (
             hermetic.check_output(
-                ["jj", "-R", vcs_root, "git", "root"],
+                ["jj", "--ignore-working-copy", "-R", vcs_root, "git", "root"],
             )
             .decode("utf-8")
             .strip()
