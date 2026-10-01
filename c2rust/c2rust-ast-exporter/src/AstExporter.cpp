@@ -2271,6 +2271,27 @@ class TranslateASTVisitor final
                     }
                 }
 
+                // The canonical prototype may be in a system header while a
+                // later declaration changes its assembler symbol. Preserve
+                // that symbol on external prototypes, using the existing
+                // alias representation consumed as Rust's link_name. Looking
+                // only at the canonical declaration would also incorrectly
+                // allow the libc substitution pass to retarget this function.
+                if (!def) {
+                    for (const auto *redecl : FD->getMostRecentDecl()->redecls()) {
+                        if (const auto *label = redecl->getAttr<AsmLabelAttr>()) {
+                            CborEncoder label_info;
+                            cbor_encoder_create_array(
+                                &attr_array, &label_info, CborIndefiniteLength);
+                            cbor_encode_text_stringz(&label_info, "alias");
+                            cbor_encode_text_stringz(
+                                &label_info, label->getLabel().str().c_str());
+                            cbor_encoder_close_container(&attr_array, &label_info);
+                            break;
+                        }
+                    }
+                }
+
                 cbor_encoder_close_container(array, &attr_array);
             });
         typeEncoder.VisitQualTypeOf(functionType, paramsFD);

@@ -18,6 +18,11 @@ impl<'c> Translation<'c> {
         span: Span,
         name: &str,
     ) -> TranslationResult<ConvertedDecl> {
+        // Recognized system macros are referenced directly through libc at
+        // each use. Do not also emit a TU-local copy of their expanded value.
+        if self.libc_replacements.constants.contains_key(&decl_id) {
+            return Ok(ConvertedDecl::NoItem);
+        }
         trace!(
             "Expanding macro {:?}: {:?}",
             decl_id,
@@ -175,6 +180,24 @@ impl<'c> Translation<'c> {
             Some(macro_id) => macro_id,
             None => return Ok(None),
         };
+
+        if let Some(name) = self.libc_replacements.constants.get(macro_id) {
+            let ty = override_ty
+                .or_else(|| {
+                    self.ast_context
+                        .index_unwrap_parens(expr_id)
+                        .kind
+                        .get_qual_type()
+                })
+                .ok_or_else(|| format_err!("System constant expansion has no type"))?;
+            self.use_crate(crate::ExternCrate::Libc);
+            // libc declares these as mode_t, while the C macro may have type
+            // int. Preserve C integer promotions at the expansion boundary.
+            return Ok(Some(WithStmts::new_val(mk().cast_expr(
+                mk().abs_path_expr(vec!["libc", name.as_str()]),
+                self.convert_type(ty.ctype)?,
+            ))));
+        }
 
         trace!("  found macro expansion: {macro_id:?}");
         // Ensure that we've converted this macro and that it has a valid definition.

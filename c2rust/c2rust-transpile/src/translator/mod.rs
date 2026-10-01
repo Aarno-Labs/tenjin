@@ -55,6 +55,7 @@ mod builtins;
 mod comments;
 mod enums;
 mod functions;
+pub(crate) mod libc;
 mod literals;
 mod macros;
 mod named_references;
@@ -702,6 +703,7 @@ pub struct Translation<'c> {
     pub tcfg: &'c TranspilerConfig,
     pub parsed_guidance: RefCell<ParsedGuidance>,
     type_overrides: RefCell<HashMap<CTypeId, tenjin::GuidedType>>,
+    libc_replacements: libc::LibcReplacements,
 
     // Accumulated outputs
     pub features: RefCell<IndexSet<&'static str>>,
@@ -1286,6 +1288,20 @@ struct CDeclMapDefinition {
     preprocessed_definition: Option<String>,
 }
 
+/// The driver passes the same pruned AST used by translation, so explicit
+/// guidance and unsupported uses choose a consistent batch-wide fallback.
+pub(crate) fn libc_stat_requires_fallback(
+    ast: TypedAstContext,
+    tcfg: &TranspilerConfig,
+    main_file: &Path,
+) -> bool {
+    let parent_fn_map = parent_fn::compute_parent_fn_map(&ast);
+    let parent_expr_map = parent_expr::compute_parent_expr_map(&ast);
+    let mut t = Translation::new(ast, tcfg, main_file, parent_fn_map, parent_expr_map);
+    t.libc_replacements = libc::LibcReplacements::discover(&t.ast_context, true);
+    t.libc_replacements.requires_stat_fallback || t.libc_guidance_requires_fallback()
+}
+
 pub fn translate(
     ast_context: TypedAstContext,
     tcfg: &TranspilerConfig,
@@ -1328,6 +1344,28 @@ pub fn translate(
         // binary and unary operators' expr types agree with their argument types
         // in the presence of typedefs.
         t.ast_context.bubble_expr_types();
+
+        t.libc_replacements = libc::LibcReplacements::discover(
+            &t.ast_context,
+            tcfg.guidance_json["use_libc"].as_bool() != Some(false),
+        );
+        if t.libc_guidance_requires_fallback() {
+            t.libc_replacements = Default::default();
+        }
+        if !t.libc_replacements.stat_records.is_empty()
+            || !t.libc_replacements.functions.is_empty()
+            || !t.libc_replacements.constants.is_empty()
+        {
+            t.use_crate(ExternCrate::Libc);
+            t.with_cur_file_item_store(|store| {
+                store.add_item_str_once(
+                    r#"#[cfg(not(all(target_arch = "x86_64", target_os = "linux",
+                        target_env = "gnu", target_pointer_width = "64")))]
+                    compile_error!("libc sys/stat.h substitution requires x86_64 Linux GNU; apply `use_libc: false` guidance");"#,
+                );
+            });
+        }
+        t.type_converter.borrow_mut().libc_stat_records = t.libc_replacements.stat_records.clone();
 
         // Used for testing; so that we don't overlap with C function names
         if let Some(ref prefix) = t.tcfg.prefix_function_names {
@@ -2872,6 +2910,7 @@ impl<'c> Translation<'c> {
             tcfg,
             parsed_guidance: RefCell::new(ParsedGuidance::new(tcfg.guidance_json.clone())),
             type_overrides: RefCell::new(HashMap::new()),
+            libc_replacements: Default::default(),
             renamer,
             zero_inits: RefCell::new(IndexMap::new()),
             function_context: RefCell::new(FuncContext::new()),
@@ -6925,6 +6964,10 @@ impl<'c> Translation<'c> {
                     decl_id = *self.ast_context.prenamed_decls.get(&decl_id).unwrap();
                 }
 
+                if self.libc_replacements.stat_records.contains(&decl_id) {
+                    return imports;
+                }
+
                 let ident_name = self
                     .type_converter
                     .borrow()
@@ -6961,6 +7004,9 @@ impl<'c> Translation<'c> {
     }
 
     fn generate_submodule_imports(&self, decl_id: CDeclId, decl_file_id: Option<FileId>) {
+        if self.libc_replacements.stat_records.contains(&decl_id) {
+            return;
+        }
         let decl_file_id = decl_file_id.expect("There should be a decl file path");
         let decl = self.ast_context.get_decl(&decl_id).unwrap();
 

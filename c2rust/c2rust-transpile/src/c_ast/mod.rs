@@ -486,6 +486,10 @@ impl TypedAstContext {
         self.c_decls.iter()
     }
 
+    pub(crate) fn iter_exprs(&self) -> impl Iterator<Item = (&CExprId, &CExpr)> {
+        self.c_exprs.iter()
+    }
+
     pub fn iter_mut_decls(&mut self) -> indexmap::map::IterMut<'_, CDeclId, CDecl> {
         self.c_decls.iter_mut()
     }

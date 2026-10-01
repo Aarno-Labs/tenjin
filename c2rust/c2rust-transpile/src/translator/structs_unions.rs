@@ -39,6 +39,34 @@ impl<'a> Translation<'a> {
         manual_alignment: Option<u64>,
         max_field_alignment: Option<u64>,
     ) -> TranslationResult<ConvertedDecl> {
+        if self.libc_replacements.stat_records.contains(&decl_id) {
+            self.use_crate(ExternCrate::Libc);
+            let abi = syn::parse_quote! {
+                #[cfg(all(target_arch = "x86_64", target_os = "linux",
+                    target_env = "gnu", target_pointer_width = "64"))]
+                const _: () = {
+                    assert!(::core::mem::size_of::<::libc::stat>() == 144);
+                    assert!(::core::mem::align_of::<::libc::stat>() == 8);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_dev) == 0);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_ino) == 8);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_nlink) == 16);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_mode) == 24);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_uid) == 28);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_gid) == 32);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_rdev) == 40);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_size) == 48);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_blksize) == 56);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_blocks) == 64);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_atime) == 72);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_atime_nsec) == 80);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_mtime) == 88);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_mtime_nsec) == 96);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_ctime) == 104);
+                    assert!(::core::mem::offset_of!(::libc::stat, st_ctime_nsec) == 112);
+                };
+            };
+            return Ok(ConvertedDecl::Item(Box::new(abi)));
+        }
         let name = self
             .type_converter
             .borrow()
@@ -411,12 +439,84 @@ impl<'a> Translation<'a> {
     /// }
     /// # ;
     /// ```
+    fn convert_libc_stat_literal(
+        &self,
+        ctx: ExprContext,
+        struct_id: CRecordId,
+        values: &[CExprId],
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        self.use_crate(ExternCrate::Libc);
+        let CDeclKind::Struct {
+            fields: Some(fields),
+            ..
+        } = &self.ast_context[struct_id].kind
+        else {
+            unreachable!()
+        };
+        let name = self
+            .renamer
+            .borrow_mut()
+            .pick_name("c2rust_stat_init", Namespaces::values());
+        let mut stmts = vec![mk().local_stmt(Box::new(mk().local(
+            mk().mutbl().ident_pat(&name),
+            None,
+            Some(libc_stat_zero()),
+        )))];
+        for (&field, &value) in fields.iter().zip(values) {
+            if matches!(
+                self.ast_context[value].kind,
+                CExprKind::ImplicitValueInit(_)
+            ) {
+                continue;
+            }
+            let CDeclKind::Field {
+                name: field_name,
+                typ,
+                ..
+            } = &self.ast_context[field].kind
+            else {
+                unreachable!()
+            };
+            // Preflight excluded explicit initializers of private fields.
+            assert!(!field_name.starts_with("__"));
+            let expr = self.convert_expr(ctx.used(), value, Some(*typ))?.to_expr();
+            if let Some(prefix) = super::libc::timestamp_prefix(field_name) {
+                // Evaluate an aggregate-valued initializer once before
+                // flattening its two fields into libc's representation.
+                let timestamp = self
+                    .renamer
+                    .borrow_mut()
+                    .pick_name("c2rust_timestamp", Namespaces::values());
+                stmts.push(mk().local_stmt(Box::new(mk().local(
+                    mk().ident_pat(&timestamp),
+                    None,
+                    Some(expr),
+                ))));
+                for (source, suffix) in [("tv_sec", ""), ("tv_nsec", "_nsec")] {
+                    stmts.push(mk().semi_stmt(mk().assign_expr(
+                        mk().field_expr(mk().ident_expr(&name), format!("{prefix}{suffix}")),
+                        mk().field_expr(mk().ident_expr(&timestamp), source),
+                    )));
+                }
+            } else {
+                stmts.push(mk().semi_stmt(
+                    mk().assign_expr(mk().field_expr(mk().ident_expr(&name), field_name), expr),
+                ));
+            }
+        }
+        stmts.push(mk().expr_stmt(mk().ident_expr(&name)));
+        Ok(WithStmts::new_val(mk().unsafe_block_expr(stmts)))
+    }
+
     pub fn convert_struct_literal(
         &self,
         ctx: ExprContext,
         struct_id: CRecordId,
         field_expr_ids: &[CExprId],
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        if self.libc_replacements.stat_records.contains(&struct_id) {
+            return self.convert_libc_stat_literal(ctx, struct_id, field_expr_ids);
+        }
         let name = self.resolve_decl_inner_name(struct_id);
         log::debug!("importing struct {name}, id {struct_id:?}");
         self.add_import(struct_id, &name);
@@ -669,6 +769,10 @@ impl<'a> Translation<'a> {
         field_ids: &[CDeclId],
         platform_byte_size: u64,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        if self.libc_replacements.stat_records.contains(&decl_id) {
+            self.use_crate(ExternCrate::Libc);
+            return Ok(WithStmts::new_val(libc_stat_zero()));
+        }
         let name = self.resolve_decl_inner_name(name_decl_id);
         let reorganized_fields = self.get_field_types(decl_id, field_ids, platform_byte_size)?;
         let mut fields = Vec::with_capacity(reorganized_fields.len());
@@ -1097,6 +1201,60 @@ impl<'a> Translation<'a> {
             return self.convert_expr(ctx, expr, None);
         }
 
+        let record_id = self.ast_context.parents[&decl];
+        let (base, base_kind, libc_field) =
+            if self.libc_replacements.stat_records.contains(&record_id) {
+                (
+                    expr,
+                    kind,
+                    self.ast_context[decl].kind.get_name().unwrap().clone(),
+                )
+            } else if let CExprKind::Member(_, stat_base, timestamp, stat_kind, _) =
+                self.ast_context.index_unwrap_parens(expr).kind
+            {
+                if self
+                    .libc_replacements
+                    .stat_records
+                    .contains(&self.ast_context.parents[&timestamp])
+                {
+                    let prefix = super::libc::timestamp_prefix(
+                        self.ast_context[timestamp].kind.get_name().unwrap(),
+                    )
+                    .expect("preflight requires a timestamp field");
+                    let suffix = match self.ast_context[decl].kind.get_name().unwrap().as_str() {
+                        "tv_sec" => "",
+                        "tv_nsec" => "_nsec",
+                        _ => unreachable!(),
+                    };
+                    (stat_base, stat_kind, format!("{prefix}{suffix}"))
+                } else {
+                    (expr, kind, String::new())
+                }
+            } else {
+                (expr, kind, String::new())
+            };
+        if !libc_field.is_empty() {
+            let skip_ptr_deref = self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, base)
+                .is_some_and(|guided| !guided.pretty.starts_with('*'));
+            let val = self.convert_expr(ctx, base, None)?;
+            let val = val.map(|v| {
+                let base = if matches!(base_kind, MemberKind::Arrow) && !skip_ptr_deref {
+                    mk().unary_expr(UnOp::Deref(Default::default()), v)
+                } else {
+                    v
+                };
+                mk().field_expr(base, libc_field)
+            });
+            return if lrvalue.is_rvalue() {
+                self.make_cast(ctx, qual_ty, override_ty.unwrap_or(qual_ty), val, &None)
+            } else {
+                Ok(val)
+            };
+        }
+
         // The guided type here is the type of the struct/union whose member
         // is being accessed, not the type of the field.
         let guided_type = self
@@ -1201,6 +1359,14 @@ impl<'a> Translation<'a> {
             mk().struct_expr(mk().path(vec![union_name]), vec![mk().field(field_name, x)])
         }))
     }
+}
+
+/// Zeroing the entire object includes libc's private reserved fields and
+/// padding. All fields of this verified stat layout admit the zero bit pattern.
+fn libc_stat_zero() -> Box<Expr> {
+    Box::new(syn::parse_quote! {
+        unsafe { ::core::mem::MaybeUninit::<::libc::stat>::zeroed().assume_init() }
+    })
 }
 
 #[allow(clippy::large_enum_variant)]

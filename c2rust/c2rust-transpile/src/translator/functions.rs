@@ -6,6 +6,49 @@ use failure::format_err;
 use proc_macro2::{TokenStream, TokenTree};
 
 impl<'c> Translation<'c> {
+    /// Explicit guidance takes precedence over automatic system bindings.
+    pub(crate) fn libc_guidance_requires_fallback(&self) -> bool {
+        let mut guidance = self.parsed_guidance.borrow_mut();
+        for (&id, name) in &self.libc_replacements.functions {
+            let CDeclKind::Function { parameters, .. } = &self.ast_context[id].kind else {
+                continue;
+            };
+            if guidance.query_fn_return_type(name).is_some()
+                || guidance.ffi_conversions.contains_key(name)
+                || parameters
+                    .iter()
+                    .any(|&id| guidance.query_decl_type(self, id).is_some())
+            {
+                return true;
+            }
+        }
+        for &id in &self.libc_replacements.stat_records {
+            let CDeclKind::Struct {
+                name: Some(name),
+                fields: Some(fields),
+                ..
+            } = &self.ast_context[id].kind
+            else {
+                continue;
+            };
+            for &field in fields {
+                let CDeclKind::Field {
+                    name: field_name, ..
+                } = &self.ast_context[field].kind
+                else {
+                    continue;
+                };
+                if guidance
+                    .query_field_type(self, name, field, field_name)
+                    .is_some()
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn convert_function(
         &self,
         ctx: ExprContext,
@@ -26,6 +69,10 @@ impl<'c> Translation<'c> {
             .borrow()
             .get(&decl_id)
             .expect("Functions should already be renamed");
+
+        if let Some(libc_name) = self.libc_replacements.functions.get(&decl_id) {
+            return self.convert_libc_stat_function(span, typ, new_name, libc_name, parameters);
+        }
 
         if self.import_simd_function(new_name)? {
             return Ok(ConvertedDecl::NoItem);
@@ -97,6 +144,47 @@ impl<'c> Translation<'c> {
             ),
             _ => Err(e),
         })
+    }
+
+    /// Keep the translated C signature, including unsigned `char`, while
+    /// forwarding to libc. Keeping the original name also lets later Tenjin
+    /// passes recognize stat calls. C function references point at this adapter
+    /// and therefore have exactly the same type as direct calls.
+    fn convert_libc_stat_function(
+        &self,
+        span: Span,
+        typ: CTypeId,
+        name: &str,
+        libc_name: &str,
+        parameters: &[CDeclId],
+    ) -> TranslationResult<ConvertedDecl> {
+        let CTypeKind::Function(return_type, _, false, false, _) =
+            self.ast_context.resolve_type(typ).kind
+        else {
+            return Err(TranslationError::generic("Invalid libc adapter signature"));
+        };
+        let return_type = self.convert_type(return_type.ctype)?;
+        let name = Ident::new(name, span);
+        let libc_name = Ident::new(libc_name, span);
+        let mut arguments = Vec::new();
+        let mut values = Vec::new();
+        for (i, id) in parameters.iter().enumerate() {
+            let CDeclKind::Variable { typ, .. } = self.ast_context[*id].kind else {
+                return Err(TranslationError::generic("Invalid libc adapter parameter"));
+            };
+            let ty = self.convert_type(typ.ctype)?;
+            let argument = Ident::new(&format!("arg{i}"), span);
+            arguments.push(quote::quote!(#argument: #ty));
+            values.push(quote::quote!(#argument as _));
+        }
+        let item: Item = syn::parse2(quote::quote! {
+            pub unsafe extern "C" fn #name(#(#arguments),*) -> #return_type {
+                unsafe { ::libc::#libc_name(#(#values),*) as #return_type }
+            }
+        })
+        .map_err(|error| format_err!("Invalid libc adapter: {}", error))?;
+        self.use_crate(ExternCrate::Libc);
+        Ok(ConvertedDecl::Item(Box::new(item)))
     }
 
     fn convert_function_inner(

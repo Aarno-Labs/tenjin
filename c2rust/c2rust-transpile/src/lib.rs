@@ -12,7 +12,7 @@ pub mod rust_ast;
 pub mod translator;
 pub mod with_stmts;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -400,7 +400,7 @@ pub fn create_temp_compile_commands(sources: &[PathBuf]) -> (TempDir, PathBuf) {
 
 /// Main entry point to transpiler. Called from CLI tools with the result of
 /// clap::App::get_matches().
-pub fn transpile(tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&str]) {
+pub fn transpile(mut tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&str]) {
     diagnostics::init(tcfg.enabled_warnings.clone(), tcfg.log_level);
 
     let build_dir = get_build_dir(&tcfg, cc_db);
@@ -420,6 +420,44 @@ pub fn transpile(tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&str]
     // `char` is unsigned (affects constant evaluation, `CHAR_MIN`/`CHAR_MAX`, etc.).
     // This comes last so that it overrides any `-fsigned-char` from the build.
     clang_args.push("-funsigned-char");
+
+    // A C record shared by translation units must get the same Rust type in
+    // every module. Preflight the whole input batch before emitting any module,
+    // falling back everywhere if any TU uses stat in an unsupported way. Keep
+    // the exported ASTs so this does not invoke Clang twice per input.
+    let inputs: indexmap::IndexSet<PathBuf> = lcmds
+        .iter()
+        .flat_map(|lcmd| &lcmd.cmd_inputs)
+        .map(|cmd| cmd.abs_file())
+        .filter(|path| !path.starts_with("/c2rust/link/"))
+        .collect();
+    let mut prepared_inputs = HashMap::new();
+    if inputs.len() > 1
+        && tcfg.guidance_json.get("use_libc").and_then(|v| v.as_bool()) != Some(false)
+    {
+        let mut fallback = false;
+        for input in inputs {
+            let prepared = prepare_translation(&tcfg, &input, cc_db, &clang_args);
+            match &prepared {
+                Ok(prepared) => {
+                    let mut ast = prepared.ast.clone();
+                    ast.bypass_typedefs();
+                    ast.prune_unwanted_items(tcfg.preserve_unused_functions);
+                    ast.bubble_expr_types();
+                    fallback |= translator::libc_stat_requires_fallback(ast, &tcfg, &input);
+                }
+                Err(()) => fallback = true,
+            }
+            prepared_inputs.insert(input, prepared);
+        }
+        if fallback {
+            warn!("Keeping generated sys/stat.h bindings for this batch: a translation unit cannot use libc::stat");
+            if !tcfg.guidance_json.is_object() {
+                tcfg.guidance_json = serde_json::json!({});
+            }
+            tcfg.guidance_json["use_libc"] = serde_json::json!(false);
+        }
+    }
 
     let mut top_level_ccfg = None;
     let mut workspace_members = vec![];
@@ -490,6 +528,7 @@ pub fn transpile(tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&str]
                     &build_dir,
                     cc_db,
                     &clang_args,
+                    prepared_inputs.remove(&cmd.abs_file()),
                 )
             })
             .collect::<Vec<TranspileResult>>();
@@ -735,22 +774,17 @@ fn run_postprocess(
     Ok(())
 }
 
-/// Transpiles one input C file, writing transpilation output to the filesystem.
-fn transpile_single(
+struct PreparedTranslation {
+    ast: TypedAstContext,
+    preprocessed_definitions: indexmap::IndexMap<CDeclId, String>,
+}
+
+fn prepare_translation(
     tcfg: &TranspilerConfig,
     input_path: &Path,
-    ancestor_path: &Path,
-    build_dir: &Path,
     cc_db: &Path,
     extra_clang_args: &[&str],
-) -> TranspileResult {
-    let output_path = get_output_path(tcfg, input_path, ancestor_path, build_dir);
-    if output_path.exists() && !tcfg.overwrite_existing {
-        warn!("Skipping existing file {}", output_path.display());
-        return Err(());
-    }
-
-    let file = input_path.file_name().unwrap().to_str().unwrap();
+) -> Result<PreparedTranslation, ()> {
     if !input_path.exists() {
         warn!(
             "Input C file {} does not exist, skipping!",
@@ -781,8 +815,6 @@ fn transpile_single(
         }
         Ok(cxt) => cxt,
     };
-
-    println!("Transpiling {file}");
 
     if tcfg.dump_untyped_context {
         println!("CBOR Clang AST");
@@ -815,6 +847,35 @@ fn transpile_single(
             translator::collect_preprocessed_definitions(&typed_context, input_path, &source)
         })
         .unwrap_or_default();
+
+    Ok(PreparedTranslation {
+        ast: typed_context,
+        preprocessed_definitions,
+    })
+}
+
+/// Transpiles one input C file, writing transpilation output to the filesystem.
+fn transpile_single(
+    tcfg: &TranspilerConfig,
+    input_path: &Path,
+    ancestor_path: &Path,
+    build_dir: &Path,
+    cc_db: &Path,
+    extra_clang_args: &[&str],
+    prepared: Option<Result<PreparedTranslation, ()>>,
+) -> TranspileResult {
+    let output_path = get_output_path(tcfg, input_path, ancestor_path, build_dir);
+    if output_path.exists() && !tcfg.overwrite_existing {
+        warn!("Skipping existing file {}", output_path.display());
+        return Err(());
+    }
+    let PreparedTranslation {
+        ast: typed_context,
+        preprocessed_definitions,
+    } = prepared
+        .unwrap_or_else(|| prepare_translation(tcfg, input_path, cc_db, extra_clang_args))?;
+    let file = input_path.file_name().unwrap().to_str().unwrap();
+    println!("Transpiling {file}");
 
     // Perform the translation
     let parent_fn_map = translator::parent_fn::compute_parent_fn_map(&typed_context);
