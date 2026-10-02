@@ -12,8 +12,8 @@
 // rendered with the ones nested inside it already in place, only the
 // outermost are handed to the Rewriter, and one that was never rendered is
 // reported, so a rewrite that copies source text over a live reference is
-// a bug that is named instead of wrong C. What is left to this file is
-// what each rewrite covers and what it says.
+// a bug that is named instead of wrong C. This file decides what each
+// rewrite covers and what it says.
 //
 // The alternative to nesting is always available — a reference can always
 // be rewritten as the value read `(p + p_index_xj)`, whose extent is the

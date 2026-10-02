@@ -48,8 +48,12 @@ inline constexpr bool VERBOSE = false;
 // Each DeclRefExpr to a tracked pointer is classified into exactly one of
 // these kinds by walking the AST parent chain (see
 // PointerAccessCollector::classifyAccess). The rewrite is *total*: the
-// pointer variable is its own base and is never deleted, so there is no
-// syntactic context that has to be rejected except `&p`.
+// pointer variable is its own base and is never deleted, so `&p` is the one
+// context the classifier rejects. What else declines a pointer is not about
+// any one access — it never moves, a reference sits where the Rewriter
+// cannot edit, its index has nowhere to be declared, or it is a file-scope
+// pointer other translation units can see — and is decided in
+// FunctionAccessAnalyzer (collectGlobalPointers and collectCandidates).
 //
 // Four buckets, and each bucket has one rule:
 //
@@ -102,12 +106,13 @@ enum class PointerAccessKind {
     // --- Reads of the pointer's value -------------------------------------
     ValueUse,           // f(p), return p, p < end, p - buf, (char *)p, ...
                         //                           -> (p + p_index_xj)
-    NullTest,           // if (p), !p, p == NULL, p && q — the retained
-                        // pointer is null exactly when it was before, so
-                        // these are left alone.
+    NullTest,           // if (p), !p, p == NULL, p && q — left as written,
+                        // since the region is null exactly when the pointer
+                        // is, unless the sentinel can sit over a live
+                        // region; see PointerFacts::null_in_index.
     NoEdit,             // sizeof p — the value is never read.
 
-    // --- The only rejection ------------------------------------------------
+    // --- Rejected ------------------------------------------------------------
     AddressOf,          // &p — the pointer's storage is observable, so it
                         // cannot carry a base while an index carries the
                         // position.
@@ -119,9 +124,7 @@ enum class PointerAccessKind {
 //
 // The terms are kept as expressions rather than as one string because a
 // term may itself contain a reference this pass has to rewrite, and only
-// a node can be addressed by the edit plan. Slicing the offset out of the
-// chain's source text — the shape this replaced — could neither do that
-// nor survive a chain whose pointer is not its leftmost leaf.
+// a node can be addressed by the edit plan.
 struct OffsetTerm {
     const Expr *expr = nullptr;
     bool minus = false;
@@ -218,7 +221,7 @@ struct PointerAccess {
 // Logging and per-pointer status
 // ============================================================================
 
-// One-pointer-per-file rollup used to print the per-file [SUMMARY] line.
+// Per-file rollup behind the [SUMMARY] line.
 struct TransformationLog {
     bool foundPointer = false;
     bool replacedPointer = false;
@@ -296,7 +299,7 @@ extern std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
 
 // Metadata accumulated across every TU in this run, written to
 // g_metadata_out (if set) after the last file is processed. Consumed by
-// xj-prepare-slicetransform.
+// xj-prepare-baserewrite, then by xj-prepare-slicetransform.
 extern xj::PtrIndexMetadata g_metadata;
 extern std::string g_metadata_out; // --metadata-out CLI flag ("" = don't write)
 
@@ -324,8 +327,8 @@ extern std::vector<PendingDeclLoc> g_pending_decl_locs;
 // Edit — one pending source-text rewrite
 // ============================================================================
 //
-// Transformation methods build a vector<Edit> per pointer (or per
-// function) and applyEdits() applies them in reverse-offset order so
+// emitIndexDecl and EditPlan::appendRootEdits build one vector<Edit> per
+// translation unit, and applyEdits() applies it in reverse-offset order so
 // earlier offsets stay stable. `offset` is the file offset used purely
 // for sorting; `start`/`end` are the actual SourceLocations passed to
 // the Rewriter.
@@ -357,8 +360,8 @@ struct IndexDeclSite {
     std::string brace_text;    //   closes the block after this token
 };
 
-// Locate a home for `PtrVar`'s index. False when there is none, which is
-// the one remaining reason a validated pointer is left alone.
+// Locate a home for `PtrVar`'s index. False when there is none; such a
+// pointer is not rewritten.
 bool findIndexDeclSite(const FunctionDecl *FD, const VarDecl *PtrVar,
                        ASTContext &Ctx, IndexDeclSite &site);
 
@@ -482,7 +485,7 @@ const ForStmt *forStmtInitializedBy(const DeclStmt *DS, ASTContext &Ctx);
 bool isMultiDeclarator(const DeclStmt *DS);
 
 // Return the leading whitespace (spaces/tabs) on the line containing
-// `Loc`. Used to indent emitted code (wrappers, typedefs) consistently.
+// `Loc`, so that an emitted index declaration lines up with its anchor.
 llvm::StringRef getIndentBeforeLoc(SourceLocation Loc, const SourceManager &SM);
 
 // Lex back the original source text for a range / expression. Cheaper
@@ -510,8 +513,8 @@ std::string applyStep(IndexStep step, const std::string &name);
 //
 // assignIndexNames() takes one function's pointers in source order and
 // hands out `p_index_xj`, then `p_index_xj_1`, `p_index_xj_2`, ... on
-// collision. The first pointer of a given name keeps the plain form, so
-// the common case reads exactly as before. The file-scope pointers in
+// collision. The first pointer of a given name keeps the plain form. The
+// file-scope pointers in
 // g_global_pointer_map have their names first, so a local that shares a
 // name with one of them starts at `p_index_xj_1`.
 void assignIndexNames(const std::vector<const VarDecl *> &ptrs);

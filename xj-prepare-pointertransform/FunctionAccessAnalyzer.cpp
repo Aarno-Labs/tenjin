@@ -377,14 +377,12 @@ void FunctionAccessAnalyzer::recordTransformed(const PointerPlan &P, ASTContext 
 
     // Record the transformed pointer in the metadata side-file so the
     // downstream tools know which index variables exist. Identity only:
-    // nothing about a base crosses this boundary, because this pass no
-    // longer has an opinion about one — xj-prepare-baserewrite fills in
-    // base_text once it has proved a base.
+    // nothing about a base crosses this boundary, because this pass has
+    // no opinion about one — xj-prepare-baserewrite fills in base_text
+    // once it has proved a base.
     if (!P.FD)
         return;
     xj::PtrIndexFunctionRecord *fnRec = metadataRecordFor(P.FD, Ctx);
-    if (!fnRec)
-        return;
 
     xj::PtrIndexPointerRecord rec;
     rec.name = P.ptr->getNameAsString();
@@ -503,11 +501,9 @@ FunctionAccessAnalyzer::metadataRecordFor(const FunctionDecl *FD, ASTContext &Ct
 // Push a vector<Edit> through the Rewriter, highest offset first so the
 // offsets of the edits still to come stay valid.
 //
-// Nothing is dropped here. Overlap used to be discovered at this point and
-// resolved by skipping the later edit, which is silent and — once every
-// pointer reference has to be rewritten — wrong: the skipped rewrite is a
-// reference left with its old meaning. EditPlan now settles overlap before
-// anything reaches the Rewriter, so an edit that arrives here is applied.
+// Every edit is applied. EditPlan has settled overlap before anything
+// reaches the Rewriter, and a skipped edit would be a reference left with
+// its old meaning.
 //
 // The sort is stable because insertions at one location stack in the order
 // they are applied, and that order is how two index declarations sharing an

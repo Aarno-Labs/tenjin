@@ -22,8 +22,8 @@
 //   3. Apply, then record each rewritten pointer in the metadata side-file.
 //
 // This tool performs NO RustSlice-related work: candidate detection and
-// all signature-level reshaping live in xj-prepare-slicetransform, which
-// runs on this tool's output (valid, index-rewritten C) plus the
+// all signature-level reshaping live in xj-prepare-slicetransform, two
+// tools downstream, which runs on xj-prepare-baserewrite's output plus the
 // per-pointer metadata records.
 
 class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
@@ -55,7 +55,7 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // Run PointerAccessCollector over the body of one function.
     void traverseFunctionBody(Stmt *Body, PointerAccessCollector &V);
 
-    // Emit a [FAILED] log entry plus update gLog/per-file state.
+    // Append a [FAILED] log entry for `VD` with `error` as the reason.
     void logFailedPointer(const VarDecl *VD, ASTContext &Ctx, const std::string &error);
 
     // Decide which pointers in the TU are rewritten and where each index
@@ -95,9 +95,10 @@ class FunctionAccessAnalyzer : public MatchFinder::MatchCallback {
     // EditPlan has already settled which ones there are.
     void applyEdits(std::vector<Edit> &edits, SourceManager &SM);
 
-    // ---- Metadata export for xj-prepare-slicetransform ----------------
-    // Look up (or create) the metadata record for FD; nullptr when a
-    // same-named function from another file already owns the record.
+    // ---- Metadata export for the tools downstream ---------------------
+    // Look up (or create) the metadata record for FD, keyed by
+    // xj::functionKey so that same-named statics in different files get
+    // records of their own.
     xj::PtrIndexFunctionRecord *metadataRecordFor(const FunctionDecl *FD,
                                                   ASTContext &Ctx);
 };

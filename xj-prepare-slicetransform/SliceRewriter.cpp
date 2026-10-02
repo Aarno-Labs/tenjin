@@ -32,9 +32,10 @@ namespace xj
 
     // xj-prepare-pointertransform represents a NULL-able pointer as the
     // out-of-range index -1, and spells the pointer value it hands to an
-    // untransformed callee as
+    // untransformed callee as a conditional with a null arm:
     //
     //     (idx < 0 ? (void *)0 : base + idx)
+    //     (base ? base + idx : (void *)0)
     //
     // Wherever *this* pass moves a function into index space the guard is
     // redundant — -1 means null again there — and it would otherwise stop

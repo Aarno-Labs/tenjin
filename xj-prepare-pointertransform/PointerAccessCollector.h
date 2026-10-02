@@ -12,8 +12,8 @@
 // The classification is *syntactic and local*. It never asks what a
 // pointer's base is — the pointer variable is its own base — so it has no
 // notion of a base being stable, consistent, or reachable. Every question
-// of that kind belongs to base resolution, which runs on this tool's
-// output.
+// of that kind belongs to xj-prepare-baserewrite, which runs on this
+// tool's output.
 class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector> {
   public:
     explicit PointerAccessCollector(ASTContext &Ctx);
@@ -57,7 +57,7 @@ class PointerAccessCollector : public RecursiveASTVisitor<PointerAccessCollector
     // expression is its own base at offset 0, which is always sound.
     bool decomposePointer(const Expr *E, PointerSplit &out);
 
-    // True if `VD` is one of the pointers this collector tracks.
+    // True if `D` is one of the pointers this collector tracks.
     bool isTracked(const Decl *D) const;
 
     // True if `S` names something `Owner`'s own for-init binds. Such an

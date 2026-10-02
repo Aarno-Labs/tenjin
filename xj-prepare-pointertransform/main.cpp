@@ -28,10 +28,10 @@ static cl::opt<bool> VerboseOpt(
 
 // --metadata-out: path where the pointer/index metadata side-file is
 // written (accumulated over every processed TU). Consumed by
-// xj-prepare-slicetransform (--metadata-in).
+// xj-prepare-baserewrite and xj-prepare-slicetransform (--metadata-in).
 static cl::opt<std::string> MetadataOutOpt(
     "metadata-out",
-    cl::desc("Path to write pointer/index metadata JSON for xj-prepare-slicetransform"),
+    cl::desc("Path to write pointer/index metadata JSON for the base rewrite and slice tools"),
     cl::init(""),
     cl::cat(MyToolCategory));
 
@@ -54,14 +54,13 @@ int main(int argc, const char **argv) {
     // A single ClangTool shares one FileManager across every file in the run,
     // and that FileManager caches each header's stat (size) on first read. In
     // --inplace mode, EndSourceFileAction calls overwriteChangedFiles(), which
-    // rewrites shared headers on disk mid-run (e.g. util.h, which holds the
-    // GIT_INLINE functions that get index-transformed while processing the
-    // first .c file). A later translation unit that re-reads such a header then
-    // reads it against the stale cached size, violating MemoryBuffer's
-    // null-terminator invariant ("Buffer is not null terminated!") and aborting
-    // the whole process with SIGABRT. A per-file FileManager re-stats every
-    // header from its current on-disk contents, so no stale size leaks across
-    // files. (Per-file analyzer state is already reset in BeginSourceFileAction.)
+    // rewrites shared headers on disk mid-run: a static inline function in a
+    // header is index-transformed while the first .c file including it is
+    // processed. A later translation unit that re-reads such a header would
+    // read it against the stale cached size, which violates MemoryBuffer's
+    // null-terminator invariant. A per-file FileManager re-stats every header
+    // from its current on-disk contents, so no stale size leaks across files.
+    // (Per-file analyzer state is reset in BeginSourceFileAction.)
     int rc = 0;
     for (const std::string &Source : OptionsParser.getSourcePathList()) {
         ClangTool Tool(OptionsParser.getCompilations(), {Source});

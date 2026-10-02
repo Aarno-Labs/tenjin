@@ -81,8 +81,8 @@ bool isMultiDeclarator(const DeclStmt *DS)
 }
 
 // Return the run of spaces/tabs at the start of the line containing
-// `Loc`, so emitted code (typedefs, wrappers) lines up with the
-// surrounding source.
+// `Loc`, so an emitted index declaration lines up with the surrounding
+// source.
 llvm::StringRef getIndentBeforeLoc(SourceLocation Loc, const SourceManager &SM)
 {
     SourceLocation spellingLoc = SM.getSpellingLoc(Loc);

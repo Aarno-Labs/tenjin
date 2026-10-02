@@ -2381,7 +2381,8 @@ def run_preparation_passes(
         return cp
 
     def prep_pointertransform(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        """Pointer arithmetic reduction + RustSlice signature reshaping."""
+        """Pointer arithmetic reduction, base reconstruction and RustSlice
+        signature reshaping: three tools over one metadata side-file."""
         ptr_builddir = hermetic.xj_prepare_pointertransform_build_dir(repo_root.localdir())
         base_builddir = hermetic.xj_prepare_baserewrite_build_dir(repo_root.localdir())
         slice_builddir = hermetic.xj_prepare_slicetransform_build_dir(repo_root.localdir())
@@ -2440,7 +2441,7 @@ def run_preparation_passes(
                 return b""
             return f"--- {tool_name} stderr ---\n".encode() + stderr
 
-        def run_both():
+        def run_pipeline():
             cp = hermetic.run(
                 [
                     ptr_binary.as_posix(),
@@ -2489,7 +2490,7 @@ def run_preparation_passes(
                 prev,
                 current_codebase,
                 pass_name,
-                run_both,
+                run_pipeline,
             )
         finally:
             metadata_path.unlink(missing_ok=True)

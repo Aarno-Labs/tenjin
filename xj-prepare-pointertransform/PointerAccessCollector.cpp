@@ -37,12 +37,6 @@ bool PointerAccessCollector::isNullExpr(const Expr *E)
     return false;
 }
 
-// True when one of `CE`'s arguments is a bare reference to `PtrVar`.
-//
-// The wrapper passes the retained pointer as its `base` and the index as
-// its `start`, so the result is only an offset from `p`'s own region when
-// `p` is what the call searched. `p = strchr(q, c)` lands in q's region and
-// falls through to an ordinary assignment, which reseats as before.
 // The region an allowlisted search runs over: argument 0 for every function
 // in the allowlist, and what the wrapper takes as its `base`.
 //
@@ -338,19 +332,6 @@ void PointerAccessCollector::splitAssignedValue(const Expr *RHS,
     if (Owner && !stepsAlike(Owner, split.base, Ctx))
         return;
 
-    // Pairing two indices only works when both pointers are rewritten in
-    // the same batch: each batch decides which of its members transformed,
-    // and a root belonging to the other one would be edited by that batch
-    // while this one replaces the text around it. File-scope pointers are
-    // their own batch, so a split never straddles the two.
-    if (const auto *RootDRE = dyn_cast<DeclRefExpr>(split.base))
-    {
-        const auto *RootVD = dyn_cast<VarDecl>(RootDRE->getDecl());
-        if (RootVD && isTracked(RootVD) && Owner &&
-            RootVD->hasGlobalStorage() != Owner->hasGlobalStorage())
-            return;
-    }
-
     pa.root_expr = split.base;
     if (pa.isSplit())
     {
@@ -450,9 +431,9 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
         return access_list.back();
     };
 
-    // The value read, and the reason this pass has no rejections beyond
-    // &p: whatever the surrounding expression is, `(p + p_index_xj)` is
-    // the pointer it used to see.
+    // The value read, and what makes the classification total: whatever
+    // the surrounding expression is, `(p + p_index_xj)` is the pointer it
+    // saw before.
     auto emitValueUse = [&]()
     { emit(PointerAccessKind::ValueUse, DRE->getLocation()); };
 
@@ -549,8 +530,8 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
             // base is the tracked pointer — whose member is the anonymous
             // aggregate itself (an unnamed FieldDecl), and one outer node
             // per enclosing anonymous level, ending at the real field.
-            // Without walking out to that last node, field_name comes back
-            // empty and the rewrite leaves a dangling "gce_index_xj].".
+            // The name to emit is the last node's; the inner ones have
+            // none.
             const MemberExpr *RealME = ME;
             const Stmt *Outer = skipTransparentParents(ME, Ctx);
             while (true)
@@ -675,9 +656,9 @@ void PointerAccessCollector::classifyAccess(DeclRefExpr *DRE,
             return;
         }
 
-        // p == NULL / p != NULL — the retained pointer is null exactly when
-        // it was before, so the test is left alone. Every other comparison
-        // is a value read.
+        // p == NULL / p != NULL — a null test, which is left as written or
+        // rewritten by the pointer's facts (see PointerFacts). Every other
+        // comparison is a value read.
         if (BO->isComparisonOp())
         {
             const Expr *Other = isSelf(BO->getLHS()) ? BO->getRHS() : BO->getLHS();

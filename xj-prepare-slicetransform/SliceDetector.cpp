@@ -504,8 +504,8 @@ namespace xj
                 // names, so the base has to *be* a pointer parameter.
                 // `base_text` is xj-prepare-baserewrite's proved answer,
                 // and at Kind::Param it is a parameter's own name — so
-                // matching it against the signature is identity, not the
-                // spelling guess this used to be.
+                // matching it against the signature is identity, not a
+                // guess from spellings.
                 const ParmVarDecl *base_pd = nullptr;
                 int base_param_idx = -1;
                 for (unsigned i = 0; i < FD->getNumParams(); i++)

@@ -3,11 +3,12 @@
 ## Where
 
 - [xj-prepare-pointertransform](/xj-prepare-pointertransform)
+- [xj-prepare-baserewrite](/xj-prepare-baserewrite)
 - [xj-prepare-slicetransform](/xj-prepare-slicetransform)
 
 ## What
 
-This pass includes two transformations:
+This pass runs three tools in sequence, over one metadata side-file:
 
 ### Pointer Arithmetic Reduction
 
@@ -31,22 +32,42 @@ every use:
 | anything else that reads `p` | `(p + p_index_xj)` |
 
 The last rule is the fallback, and it is what makes the rewrite total. The
-only use that still declines a pointer is `&p`, where the pointer's storage
-is observable and cannot hold a base while an index holds the position.
+only use that declines a pointer is `&p`, where the pointer's storage is
+observable and cannot hold a base while an index holds the position. A
+pointer is also left alone when it never moves, when a reference sits
+where the Rewriter cannot edit (a macro expansion), when its index has
+nowhere to be declared, or when it is a file-scope pointer that other
+translation units can see or that is declared more than once.
 
 For each pointer rewritten by the tool, it records identifying facts — the
 pointer's name, its companion index variable, and whether it is a parameter
 — in a metadata side-file (`xj-ptrindex.json`, see
 `xj-prepare-support/PtrIndexMetadata.h`). Identity only: nothing about a
-base crosses the boundary. The (`xj-prepare-slicetransform`) tool runs
-immediately afterwards, performs both the candidate *detection* and the
-reshaping, from this tool's output plus those records. This tool's output
-is always valid, compilable C with the original signatures intact.
+base crosses the boundary. This tool's output is always valid, compilable
+C with the original signatures intact.
 
-**What a base equals is a separate question**, owned by base resolution
-(`pointer_transform_base_resolution.md`) rather than by either rewriter.
-Until that analysis is wired in, the slice pass cannot show that a local
-pointer aliases a parameter, so it detects no roots and reshapes nothing.
+### Base Reconstruction
+
+What a base equals is a separate question, and `xj-prepare-baserewrite`
+answers it. For each pointer the side-file names, it asks
+`xj::analysis::MustEqualAnalysis` (in `xj-analysis`) whether the pointer
+equals one nameable cell — a parameter, a local, or a field path such as
+`t->storage` — at every one of its reachable uses. Where it does, the
+pointer is deleted and that cell's spelling takes its place:
+
+| Pointer form | Reconstructed |
+|---|---|
+| `T *p = <anything>;` | deleted |
+| `p[E]` | `B[E]` |
+| `(p = ROOT, p_index_xj = OFF)` | `p_index_xj = OFF` |
+| `(p + p_index_xj)` | `(B + p_index_xj)` |
+| `(p + p_index_xj) OP B + e` | `p_index_xj OP e` |
+
+Declining is always safe: the retained form is what the pointer tool
+emitted, and it already compiles. The side-file is read and written on the
+same path, and comes back out with `base_text` filled in for every pointer
+that was reconstructed. That is the fact the slice pass groups and anchors
+on.
 
 ### Slice Reshaping
 
@@ -57,14 +78,11 @@ parameter pairs into C struct "slices":
 typedef struct { int *ptr; size_t len; } RustSlice_int;
 ```
 
-It runs immediately after
-[pointer arithmetic reduction](pointer_arithmetic_reduction.md)
-(`xj-prepare-pointertransform`) — within the same preparation pass — and
-consumes the metadata side-file that tool wrote
-(`xj-ptrindex.json`, schema in
-`xj-prepare-support/PtrIndexMetadata.h`), which identifies each
-synthesized index variable. The side-file is internal to the
-pass: it is deleted before the pass finishes.
+It runs last, on the output of base reconstruction, and consumes the
+metadata side-file as that tool re-emitted it (`xj-ptrindex.json`, schema
+in `xj-prepare-support/PtrIndexMetadata.h`): each synthesized index
+variable, and the base proved for it where one was. The side-file is
+internal to the pass: it is deleted before the pass finishes.
 
 The tool works in two sweeps over the sources:
 

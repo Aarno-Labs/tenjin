@@ -12,8 +12,8 @@
 // The base rewrite tool is the one that answers that, by running the
 // must-equality analysis over the pointer pass's output. When it proves a
 // base and substitutes it, it fills in `base_text` and re-emits the
-// side-file, and the slice pass consumes a base that was *proved* rather
-// than one that was guessed from spellings.
+// side-file, and the slice pass consumes a base that was *proved*, never
+// one guessed from spellings.
 
 #ifndef XJ_PREPARE_SUPPORT_PTR_INDEX_METADATA_H
 #define XJ_PREPARE_SUPPORT_PTR_INDEX_METADATA_H

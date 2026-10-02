@@ -484,11 +484,10 @@ std::string EditPlan::render(size_t i,
 
     // ---- Position: the index moves, the base stays put ----------------
     //
-    // `p++` moves the index. If the expression's value is consumed as a
-    // pointer, the result is rebuilt so the type stays a pointer:
-    // `unhex(++in)` becoming `unhex(++in_index_xj)` once passed an int
-    // where a `char *` was expected, and c2rust turned the int into
-    // literal addresses like 0x4.
+    // `p++` moves the index. Where the expression's value is consumed it
+    // is consumed as a pointer, so the result is rebuilt to keep the type:
+    // `unhex(++in)` becomes `unhex((in + ++in_index_xj))`, never
+    // `unhex(++in_index_xj)`.
     //
     // Pre-increment returns the new pointer and `(p + ++p_index_xj)`
     // increments first, so both see the new position; post-increment

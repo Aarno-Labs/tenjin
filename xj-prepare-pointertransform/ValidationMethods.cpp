@@ -1,9 +1,8 @@
-// ValidationMethods.cpp — what is left of the gatekeeper.
+// ValidationMethods.cpp — which pointers are rewritten.
 //
 // The rewrite is total: the pointer variable is its own base and is never
-// deleted, so there is no base to be unstable, punned, const, or reseated
-// out from under an access. Nothing here judges a base. Two questions
-// remain, and neither is about what a pointer points at:
+// deleted, so nothing here judges a base. Two questions are asked, and
+// neither is about what a pointer points at:
 //
 //   1. Is this pointer worth rewriting at all?
 //   2. Can every access be edited?
