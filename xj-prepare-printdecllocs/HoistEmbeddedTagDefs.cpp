@@ -348,7 +348,24 @@ public:
     const DeclContext *DC = TD->getLexicalDeclContext();
     if (const auto *RD = dyn_cast_or_null<RecordDecl>(DC)) {
       if (RD->isThisDeclarationADefinition() && RD->getBeginLoc().isValid()) {
-        return RD->getBeginLoc();
+        SourceLocation Begin = RD->getBeginLoc();
+        if (!isa<RecordDecl>(RD->getLexicalDeclContext())) {
+          // A record's range starts at `struct`/`union`, excluding declaration
+          // specifiers such as `typedef` or `static`. Keep those attached to
+          // the enclosing declaration by inserting before its full range.
+          for (const Decl *D : RD->getLexicalDeclContext()->decls()) {
+            SourceRange Range = D->getSourceRange();
+            if (D->isImplicit() || Range.isInvalid() ||
+                !SM->isWrittenInSameFile(Range.getBegin(), Begin)) {
+              continue;
+            }
+            if (SM->isBeforeInTranslationUnit(Range.getBegin(), Begin) &&
+                !SM->isBeforeInTranslationUnit(Range.getEnd(), RD->getEndLoc())) {
+              Begin = Range.getBegin();
+            }
+          }
+        }
+        return Begin;
       }
     }
     return ContainingDecl->getSourceRange().getBegin();
