@@ -122,7 +122,7 @@ def test_cmatsuoka_figlet(tenjin_fixtures: TenjinFixtures):
         b"                ",
         b"",
     ], f"Got: {rs_prog_output.stdout!r}"
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 65
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 66
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
@@ -1168,7 +1168,7 @@ def test_lsof_exe(tenjin_fixtures: TenjinFixtures):
     revision: 4.99.7
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 652
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 662
 
 
 @pytest.mark.slow  # expected runtime: 25 seconds

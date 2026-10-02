@@ -1,0 +1,43 @@
+{
+  "functions": {
+    "back@index_below_base.c": {
+      "file": "index_below_base.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 17,
+          "decl_line": 23,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "back_subscript@index_below_base.c": {
+      "file": "index_below_base.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 17,
+          "decl_line": 33,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "count_back@index_below_base.c": {
+      "file": "index_below_base.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "decl_col": 11,
+          "decl_line": 9,
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

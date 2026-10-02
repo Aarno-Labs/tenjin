@@ -8,12 +8,13 @@
  * Each initializer is self-contained (`buf`, `buf + 1`), so neither has
  * to stay inside the statement and the order they land in is free. */
 static int pairwise(int *buf, int n) {
-    int *end = buf + n;
+    int *end = buf;
+    int end_index_xj = n;
     int s = 0;
-    int q_index_xj = 1;
     int p_index_xj = 0;
-    for (int *p = buf, *q = buf + 1; p_index_xj < (end - buf); p_index_xj++, q_index_xj++)
-        s += buf[p_index_xj] * 2 + buf[q_index_xj];
+    int q_index_xj = 1;
+    for (int *p = buf, *q = buf; (p + p_index_xj) < (end + end_index_xj); p_index_xj++, q_index_xj++)
+        s += p[p_index_xj] * 2 + q[q_index_xj];
     return s;
 }
 
@@ -21,11 +22,11 @@ static int pairwise(int *buf, int n) {
  * there is a position after the declaration, so the indices go there. */
 static int statement_level(int *buf, int n) {
     int s = 0;
-    int *p = buf, *q = buf + 1;
+    int *p = buf, *q = buf;
     int p_index_xj = 0;
     int q_index_xj = 1;
     while (n-- > 1) {
-        s += buf[p_index_xj] + buf[q_index_xj] * 3;
+        s += p[p_index_xj] + q[q_index_xj] * 3;
         p_index_xj++;
         q_index_xj++;
     }
@@ -37,13 +38,13 @@ static int statement_level(int *buf, int n) {
 static int reinit_each_pass(int *buf, int n) {
     int s = 0;
     for (int i = 0; i < n; i++) {
-        int *p = buf + i, *q = buf;
+        int *p = buf, *q = buf;
         int p_index_xj = i;
         int q_index_xj = 0;
-        s += buf[p_index_xj] - buf[q_index_xj];
+        s += p[p_index_xj] - q[q_index_xj];
         p_index_xj++;
         q_index_xj++;
-        s += buf[p_index_xj] - buf[q_index_xj];
+        s += p[p_index_xj] - q[q_index_xj];
     }
     return s;
 }

@@ -1,0 +1,38 @@
+{
+  "functions": {
+    "paired@increment_root_for_init.c": {
+      "file": "increment_root_for_init.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "paired_second@increment_root_for_init.c": {
+      "file": "increment_root_for_init.c",
+      "pointers": [
+        {
+          "base_text": "",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}
