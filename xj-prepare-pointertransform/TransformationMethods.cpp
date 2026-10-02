@@ -628,10 +628,12 @@ bool FunctionAccessAnalyzer::generateTransformation(
 
         // ---- Standalone increment: p++ -> p_index++ ----
         // If the increment expression's value is consumed as a pointer
-        // (passed to a function, returned, assigned to a pointer var),
+        // (passed to a function, returned, assigned to a pointer var,
+        // or used as the base of an arrow member access),
         // wrap the rewrite so the result type stays a pointer:
         //   func(++p) -> func(base + ++p_index)
         //   func(p++) -> func(base + p_index++)
+        //   p++->field -> (base + p_index++)->field
         // Otherwise (statement context, e.g. just `p++;`) keep the
         // integer-only form. Same logic applies to Decrement below.
         //
@@ -657,7 +659,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
             const Stmt *GP = findGrandParent(UO);
             if (GP)
             {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP) || isa<MemberExpr>(GP))
                 {
                     wrap = true;
                 }
@@ -709,7 +711,7 @@ bool FunctionAccessAnalyzer::generateTransformation(
             const Stmt *GP = findGrandParent(UO);
             if (GP)
             {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP) || isa<MemberExpr>(GP))
                 {
                     wrap = true;
                 }
@@ -1432,13 +1434,13 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             // See the longer comment on the Increment case in the
             // earlier transformer pass: when the result of `++p`/`p++`
             // is consumed as a pointer (call arg, return, assignment
-            // to pointer var), wrap the rewrite as `(base + ...)` so
+            // to pointer var, arrow member access), wrap as `(base + ...)` so
             // the value type stays a pointer.
             bool wrap = false;
             const Stmt *GP = findGrandParent(UO);
             if (GP)
             {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP) || isa<MemberExpr>(GP))
                 {
                     wrap = true;
                 }
@@ -1478,7 +1480,7 @@ bool FunctionAccessAnalyzer::generateGlobalTransformation(
             const Stmt *GP = findGrandParent(UO);
             if (GP)
             {
-                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP))
+                if (isa<CallExpr>(GP) || isa<ReturnStmt>(GP) || isa<MemberExpr>(GP))
                 {
                     wrap = true;
                 }

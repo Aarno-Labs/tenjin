@@ -55,7 +55,7 @@ def _write_compdb(workdir: Path, sources: list[Path]) -> None:
     (workdir / "compile_commands.json").write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
 
-def _compile_and_run(workdir: Path, sources: list[Path], exe_name: str):
+def compile_and_run(workdir: Path, sources: list[Path], exe_name: str):
     exe = workdir / exe_name
     hermetic.run(
         ["clang", "-std=c11", "-o", exe, *sources],
@@ -162,14 +162,14 @@ def run_case(tmp_path: Path, case_dir: Path) -> None:
     sources = [workdir / n for n in input_files if n.endswith(".c")]
     _write_compdb(workdir, sources)
 
-    baseline = _compile_and_run(workdir, sources, "orig")
+    baseline = compile_and_run(workdir, sources, "orig")
 
     # Pass 1: pointer transform (plain index rewriting + metadata side-file).
     metadata_path = workdir / "metadata.json"
     _run_tool(ptr_tool, workdir, sources, [f"--metadata-out={metadata_path}"])
 
     _check_syntax(sources)
-    intermediate = _compile_and_run(workdir, sources, "mid")
+    intermediate = compile_and_run(workdir, sources, "mid")
     assert intermediate == baseline, (
         f"intermediate output behaves differently: {intermediate} vs {baseline}"
     )
@@ -182,5 +182,5 @@ def run_case(tmp_path: Path, case_dir: Path) -> None:
     _check_syntax(sources)
     _compare_with_golden(case_dir, "expected", workdir, input_files)
 
-    final = _compile_and_run(workdir, sources, "final")
+    final = compile_and_run(workdir, sources, "final")
     assert final == baseline, f"final output behaves differently: {final} vs {baseline}"
