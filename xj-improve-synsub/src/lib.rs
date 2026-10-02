@@ -720,6 +720,35 @@ impl VisitMut for RewriteVisitor<'_> {
         visit_mut::visit_trait_item_fn_mut(self, item);
         self.symbols = saved;
     }
+
+    /// Rewrite the arguments of formatting macros, whose bodies are otherwise
+    /// opaque token streams. The tokens are replaced only if a rewrite applied.
+    fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+        use quote::ToTokens;
+        use syn::parse::Parser;
+
+        let is_format_macro = mac.path.segments.last().is_some_and(|seg| {
+            matches!(
+                seg.ident.to_string().as_str(),
+                "print" | "println" | "eprint" | "eprintln" | "format" | "write" | "writeln"
+            )
+        });
+        if !is_format_macro {
+            return;
+        }
+        let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+        let Ok(mut args) = parser.parse2(mac.tokens.clone()) else {
+            return;
+        };
+        let before = args.to_token_stream().to_string();
+        for arg in args.iter_mut() {
+            self.visit_expr_mut(arg);
+        }
+        let after = args.to_token_stream();
+        if after.to_string() != before {
+            mac.tokens = after;
+        }
+    }
 }
 
 // ── Binding extraction helpers ───────────────────────────────────────
@@ -1066,19 +1095,35 @@ mod tests {
     }
 
     #[test]
-    fn expression_replacement_rewrites_through_generated_wrappers() {
+    fn print_byte_rewrites_statement_and_expression_macros() {
         let mut rw = Rewriter::new();
         rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
         rw.add_expr_rewrite(Rewriter::rewrite_print_byte);
+        rw.add_stmt_rewrite(Rewriter::rewrite_stmt_print_byte);
 
-        let mut file =
-            syn::parse_file(r#"fn demo() { xj_astgrep_print("{:}", getchar() as char); }"#)
-                .expect("valid test input");
+        let mut file = syn::parse_file(
+            r#"fn demo(b: bool, c: u8) {
+                print!("{:}", getchar() as char);
+                if b { print!("{:}", c as char) }
+                match c { 0 => print!("{:}", (c as char)), _ => {} }
+                print!("{}", c as char);
+            }"#,
+        )
+        .expect("valid test input");
 
         rw.rewrite_file(&mut file, Depth::Unlimited);
 
         let rewritten = prettyplease::unparse(&file);
         assert!(rewritten.contains("xj_getchar_i() as u8"));
+        assert!(
+            rewritten.contains("if b {\n        ::std::io::stdout().write_all(&[c as u8]);\n    }")
+        );
+        assert!(
+            rewritten.contains(
+                "0 => {\n            ::std::io::stdout().write_all(&[c as u8]);\n        }"
+            )
+        );
+        assert!(rewritten.contains(r#"print!("{}", c as char);"#));
         assert!(!rewritten.contains("getchar()"));
     }
 
