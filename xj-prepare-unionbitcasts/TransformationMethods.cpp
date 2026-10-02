@@ -1,5 +1,28 @@
 #include "FunctionAccessAnalyzer.h"
 
+static std::string getFirstFieldInitializerText(const InitListExpr *ILE,
+                                               SourceManager &SM,
+                                               const LangOptions &LO) {
+    const Expr *Init = ILE->getInit(0);
+    SourceRange Range = Init->getSourceRange();
+    if (Range.isInvalid())
+        return "";
+    StringRef Text = Lexer::getSourceText(CharSourceRange::getTokenRange(Range), SM, LO);
+    if (isa<InitListExpr>(Init) && !Text.ltrim().starts_with("{")) {
+        // A semantic init list for a brace-elided aggregate can cover only its
+        // first designator, with a nominal brace location at that designator.
+        // Re-brace all the text inside the union's written initializer instead.
+        SourceLocation Begin = Lexer::getLocForEndOfToken(ILE->getLBraceLoc(), 0, SM, LO);
+        SourceLocation End = ILE->getRBraceLoc();
+        if (Begin.isInvalid() || End.isInvalid())
+            return "";
+        StringRef Contents = Lexer::getSourceText(CharSourceRange::getCharRange(Begin, End),
+                                                 SM, LO);
+        return "{" + Contents.str() + "}";
+    }
+    return Text.str();
+}
+
 // ============================================================================
 // Modular Transformation Methods
 // ============================================================================
@@ -297,19 +320,13 @@ bool FunctionAccessAnalyzer::tryDeleteUnionDecl(TransformContext &ctx, const Dec
     if (ctx.VD->hasInit()) {
         if (const InitListExpr *ILE = dyn_cast<InitListExpr>(ctx.VD->getInit())) {
             if (ILE->getNumInits() > 0) {
-                const Expr *initExpr = ILE->getInit(0);
-                SourceRange initRange = initExpr->getSourceRange();
-                SourceLocation initStart = initRange.getBegin();
-                SourceLocation initEnd =
-                    Lexer::getLocForEndOfToken(initRange.getEnd(), 0, ctx.SM, ctx.LO);
-                if (initStart.isValid() && initEnd.isValid()) {
-                    StringRef initText = Lexer::getSourceText(
-                        CharSourceRange::getCharRange(initStart, initEnd), ctx.SM, ctx.LO);
+                std::string initText = getFirstFieldInitializerText(ILE, ctx.SM, ctx.LO);
+                if (!initText.empty()) {
                     size_t pos = src_and_dst_tmp_decls.find(ctx.tmp_in_name);
                     if (pos != std::string::npos) {
                         size_t semi = src_and_dst_tmp_decls.find(";\n", pos);
                         if (semi != std::string::npos) {
-                            src_and_dst_tmp_decls.insert(semi, " = " + initText.str());
+                            src_and_dst_tmp_decls.insert(semi, " = " + initText);
                         }
                     }
                 }
@@ -356,15 +373,8 @@ bool FunctionAccessAnalyzer::handleInitOnlyCase(TransformContext &ctx) {
     if (ctx.VD->hasInit()) {
         if (const InitListExpr *ILE = dyn_cast<InitListExpr>(ctx.VD->getInit())) {
             if (ILE->getNumInits() > 0) {
-                const Expr *initExpr = ILE->getInit(0);
-                SourceRange initRange = initExpr->getSourceRange();
-                SourceLocation initStart = initRange.getBegin();
-                SourceLocation initEnd =
-                    Lexer::getLocForEndOfToken(initRange.getEnd(), 0, ctx.SM, ctx.LO);
-
-                if (initStart.isValid() && initEnd.isValid()) {
-                    StringRef initText = Lexer::getSourceText(
-                        CharSourceRange::getCharRange(initStart, initEnd), ctx.SM, ctx.LO);
+                std::string initText = getFirstFieldInitializerText(ILE, ctx.SM, ctx.LO);
+                if (!initText.empty()) {
 
                     // Patch the declaration edit to include the initializer directly
                     // e.g. "int __tenjin_tmp_in_d3[2];\n" -> "int __tenjin_tmp_in_d3[2] = {0x55555555, (int)flt};\n"
@@ -375,7 +385,7 @@ bool FunctionAccessAnalyzer::handleInitOnlyCase(TransformContext &ctx) {
                         if (pos != std::string::npos) {
                             size_t semi = edit.text.find(";\n", pos);
                             if (semi != std::string::npos) {
-                                edit.text.insert(semi, " = " + initText.str());
+                                edit.text.insert(semi, " = " + initText);
                                 break;
                             }
                         }

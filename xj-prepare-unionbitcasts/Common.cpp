@@ -61,6 +61,17 @@ llvm::StringRef getIndentBeforeLoc(SourceLocation Loc, const SourceManager &SM) 
     return prefix.take_while([](char c) { return c == ' ' || c == '\t'; });
 }
 
+static bool containsBitFields(QualType QT, ASTContext &Ctx) {
+    QT = Ctx.getBaseElementType(QT);
+    if (const RecordDecl *RD = QT->getAsRecordDecl()) {
+        for (const FieldDecl *FD : RD->fields()) {
+            if (FD->isBitField() || containsBitFields(FD->getType(), Ctx))
+                return true;
+        }
+    }
+    return false;
+}
+
 bool isValidUnion(const RecordDecl *RD, ASTContext &Ctx, const FieldDecl *&out_a_field,
                   const FieldDecl *&out_b_field, int &num_bytes, const VarDecl *VD) {
     gLog.foundUnion = true;
@@ -89,6 +100,14 @@ bool isValidUnion(const RecordDecl *RD, ASTContext &Ctx, const FieldDecl *&out_a
     int num_fields = 0;
 
     for (const FieldDecl *FD : RD->fields()) {
+        // The generated aggregate typedefs do not preserve bitfield layout.
+        // Check nested records and array elements as well as direct fields.
+        if (FD->isBitField() || containsBitFields(FD->getType(), Ctx)) {
+            gLog.error = "Union fields contain bitfields";
+            if (VERBOSE)
+                llvm::outs() << "[Error] " + gLog.error + "\n";
+            return false;
+        }
         ++num_fields;
         QualType QT = FD->getType();
         QualType canon = Ctx.getCanonicalType(QT.getUnqualifiedType());
