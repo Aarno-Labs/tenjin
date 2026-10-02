@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,30 @@ _CASES = sorted(p.name for p in _CASES_DIR.iterdir() if p.is_dir())
 def test_pointer_transform_case(root, test_tmp_dir, case):
     # `root` is requested for its side effect of building the tool.
     run_case(test_tmp_dir, _CASES_DIR / case)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=subprocess.CalledProcessError,
+    reason="pointertransform rewrites dst++->u to dst_index_xj++->u (antcc bscopy)",
+)
+def test_postincrement_arrow_remains_valid_c(root, tmp_codebase):
+    tmp_codebase.mkdir()
+    source = tmp_codebase / "postincrement_arrow.c"
+    source.write_text(
+        (Path(__file__).parent / "repros" / source.name).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    clang = root / "_local" / "xj-llvm" / "bin" / "clang"
+    hermetic.run([clang, "-std=c11", "-fsyntax-only", source], check=True, capture_output=True)
+
+    pointer_transform = root / "_local" / "_build_pointertransform" / "xj-prepare-pointertransform"
+    result = hermetic.run(
+        [pointer_transform, source, "--", "-std=c11"], check=True, capture_output=True
+    )
+    transformed = tmp_codebase / "transformed.c"
+    transformed.write_text(result.stdout.decode("utf-8"), encoding="utf-8")
+    hermetic.run([clang, "-std=c11", "-fsyntax-only", transformed], check=True, capture_output=True)
 
 
 def test_rewritten_pointer_return_type_is_separated_from_function_name(root, tmp_codebase):
