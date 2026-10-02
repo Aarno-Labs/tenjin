@@ -1,4 +1,5 @@
 import os
+import re
 import json
 
 import time
@@ -552,7 +553,8 @@ def run_trivial_numeric_casts_improvement(root: Path, dir: Path) -> None:
                     preceding_text = content[span["byte_start"] - 60 : span["byte_start"]]
                     if ";" in preceding_text:
                         preceding_text = preceding_text.split(";")[-1]
-                    if " let " in preceding_text or "const " in preceding_text:
+                    # (`const` items, not `*const` pointer types.)
+                    if " let " in preceding_text or re.search(r"(?<!\*)\bconst ", preceding_text):
                         let_idx = preceding_text.rfind(" let ")
                         col_idx = preceding_text.rfind(": ")
                         eql_idx = preceding_text.rfind("=")
