@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 import platform
 import re
+import shlex
 import subprocess
 
 import pytest
@@ -2362,5 +2363,247 @@ def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
         "#" * 80,
     ]
 
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 30 s
+@pytest.mark.skip(
+    reason="Version skew between the vendored c2rust transpiler and the crates.io "
+    "c2rust-bitfields it makes generated crates depend on. pickle.c has bitfields named `type` "
+    "(in `pickle_var` and `pickle_regex_t`). Upstream c2rust commit def67f8e0d, which reached "
+    "Tenjin via #425, renames keywords to raw identifiers instead of the old `type_0`, so "
+    'xj-c2rust emits `#[bitfield(name = "r#type", ...)]`; that commit also taught the '
+    "BitfieldStruct derive to accept raw identifiers. The change is not yet released: the "
+    "generated Cargo.toml asks for c2rust-bitfields 0.22.1 (c2rust's own version; Tenjin does "
+    "not pass --c2rust-dir), and the published 0.22.1 derive calls `Ident::new` on that name "
+    'and panics ("`\\"r#type\\"` is not a valid identifier"). No accessors are generated, so '
+    "`cargo check` after improvement_pass_02_lift-call-args fails with E0599. Released c2rust "
+    "0.22.1 is self-consistent (`type_0`), and with the vendored c2rust-bitfields patched in, "
+    "the translation succeeds and everything below passes."
+)
+def test_howerj_pickle(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/howerj/pickle.git", "7d84a6a0ccf6933bd21199e50f3cbaabdc0c0d22"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="howerj_pickle",
+            buildcmd="make pickle CC=cc",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    # pickle is a small TCL-like interpreter. Its `main` runs the library's built-in
+    # C unit tests (`pickle_tests`) on every startup, then evaluates each argument
+    # as a script file (or stdin, when there are no arguments). We run a range of
+    # scripts under the C and Rust builds and require identical behavior.
+    c_pickle = tmp_resultsdir / "_build_1" / "pickle"
+    rs_pickle = tmp_resultsdir / "final" / "target" / "debug" / "main"
+
+    scripts = {
+        # The examples given in the readme's "The Picol Language" and
+        # "Internally Defined Commands" sections.
+        "readme_examples.tcl": """\
+puts "Hello, World"
+"puts" "Hello, World"
+
+set cmd puts
+$cmd "Hello, World"
+
+set a pu
+set b ts
+$a$b "Hello, World"
+
+puts [+ 2 2]
+puts [- 4 5]
+if {bool 4} { puts "TRUE"}
+
+proc x {a b} { + $a $b }
+puts "x(3, 9) == [x 3 9]"
+
+set z 3
+while {< $z 10} { set z [+ $z 1]; puts $z }
+
+puts [apply {{x} {* $x $x}} 2]
+puts [apply {{x y} {+ $x $y}} 3 4]
+puts [join {a b c} ,]
+puts [conjoin , a b c]
+puts [lrepeat 3 abc]
+puts [lrepeat 2 {x x}]
+
+proc lowercase {x} {
+	string tr r abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ $x
+}
+puts [lowercase "hello, pickle"]
+""",
+        # A broader sweep over the built-in list, string, regex, math, and
+        # control-flow commands.
+        "commands.tcl": """\
+proc fib {n} { if {< $n 2} { return $n } ; + [fib [- $n 1]] [fib [- $n 2]] }
+set l {}
+for {set i 0} {< $i 15} {incr i} { lappend l [fib $i] }
+puts "fib: $l"
+puts "rev: [lreverse $l]"
+puts "sorted desc: [lsort -decreasing -integer $l]"
+puts "sorted ascii: [lsort {pear apple fig banana}]"
+puts "range: [lrange $l 3 7]"
+puts "search: [lsearch -integer $l 89] [lsearch -inline {apple banana cherry} b*]"
+puts "insert: [linsert {a b d} 2 c]"
+puts "replace: [lreplace {a b c d e} 1 2 X Y Z]"
+puts "split: [split a,b,,c ,] / [split abc {}]"
+puts "list: [list a {b c} "d e f" {}]"
+set v {1 2 3}; lset v 1 two; puts "lset: $v"
+puts "llength: [llength {a {b c} d}] lindex: [lindex {a {b c} d} 1]"
+puts "string: [string length pickle] [string toupper pickle] [string reverse pickle]"
+puts "string: [string first kl pickle] [string index pickle -1] [string range pickle 1 3]"
+puts "string: [string repeat ab 3] [string trim {  xx  }] [string match p*e pickle]"
+puts "string: [string is digit 1234] [string is alpha a1] [string is integer -42]"
+puts "string: [string hex2dec ff] [string dec2hex 255] [string ordinal A] [string char 66]"
+puts "string: [string compare abc abd] [string equal abc abc] [string replace pickle 1 3 ___]"
+puts "string tr: [string tr d aeiou pickled-onion] [string tr rs a-z x {aaa---bbb}]"
+puts "reg: [reg {b+} aabbbcc] [reg -nocase {P.*E} xpicklex] [reg -lazy {a+} baaa]"
+puts "math: [* 6 7] [/ 100 7] [mod 100 7] [min 3 1 2] [max 3 1 2] [pow 2 10] [abs -5]"
+puts "bits: [lshift 1 8] [rshift 256 4] [and 12 10] [or 12 10] [xor 12 10] [~ 0] [! 0]"
+puts "cmp: [< 1 2] [<= 2 2] [> 1 2] [>= 3 2] [== 4 4] [!= 4 4] [eq a a] [ne a a]"
+set r [catch {expr 1 + 1} msg]
+puts "catch: $r {$msg}"
+proc unknown {args} { return "unknown called with: $args" }
+puts [this-does-not-exist 1 2 3]
+rename unknown ""
+proc counter {} { upvar #0 count c; incr c 10 }
+set count 5; counter; counter; puts "upvar: $count"
+proc g {} { uplevel 1 {set fromg 1} }
+g; puts "uplevel: $fromg"
+proc variadic {a args} { return "$a | $args" }
+puts [variadic 1 2 3 4]
+set s 0; set i 0
+while {bool 1} { incr i; if {> $i 10} { break }; if {mod $i 2} { continue }; incr s $i }
+puts "loop sum of evens: $s"
+puts "subst: [subst -nocommands {$s [x]}] [subst -novariables {$s [+ 1 1]}]"
+puts "eval: [eval + 1 2 3]"
+puts "info: [info exists s] [info exists nope] [info level]"
+puts "hash: [string hash pickle]"
+puts -nonewline "no newline"
+puts ""
+""",
+        # The "incredibly minimal shell" from the readme's RUNNING section,
+        # which reads commands from stdin via `gets`.
+        "minishell.tcl": r"""#!./pickle
+
+set r 0
+while { } {
+	puts -nonewline "pickle> "
+	set r [catch [list eval [gets]] v]
+	puts "\[$r\] $v"
+}
+""",
+        "error.tcl": """\
+puts before
+nonexistent-cmd 1
+puts after
+""",
+    }
+    for name, text in scripts.items():
+        (tmp_codebase / name).write_text(text, encoding="utf-8")
+
+    # (args, stdin) for each invocation.
+    cases: list[tuple[list[str], bytes]] = [
+        (["readme_examples.tcl"], b""),
+        (["commands.tcl"], b""),
+        (["minishell.tcl"], b"set a 6\n* $a 7\nnope 1 2\nstring toupper hello\n"),
+        ([], b"puts [+ 40 2]; exit 3\n"),
+        (["error.tcl"], b""),
+        (["no-such-file.tcl"], b""),
+        # The bundled `shell` script: its unit tests (with a fixed PRNG seed),
+        # an `-e` one-liner, and its help text.
+        (["shell", "-t", "-S", "1"], b""),
+        (["shell", "-e", "puts [lsort {c a b}]"], b""),
+        (["shell", "-h"], b""),
+    ]
+
+    def run_pickle(binary: Path, args: list[str], stdin: bytes) -> subprocess.CompletedProcess:
+        # `main` stores its whole argv in an interpreter variable, and `shell -t`
+        # reports heap usage, so give both builds the same argv[0].
+        return hermetic.run(
+            ["pickle", *args],
+            executable=str(binary),
+            cwd=str(tmp_codebase),
+            input=stdin,
+            check=False,
+            capture_output=True,
+            # `shell` colorizes its output when COLOR=on.
+            env_ext={"COLOR": "off"},
+        )
+
+    def mask_date(stdout: bytes) -> bytes:
+        # `shell -t` prints the current date and time.
+        return re.sub(rb"(?m)^Date: .*$", b"Date: <masked>", stdout)
+
+    c_results = {}
+    for args, stdin in cases:
+        label = shlex.join(["pickle", *args])
+        c_proc = run_pickle(c_pickle, args, stdin)
+        rs_proc = run_pickle(rs_pickle, args, stdin)
+        assert rs_proc.returncode == c_proc.returncode, (
+            f"{label}: exit code {rs_proc.returncode} from Rust, {c_proc.returncode} from C"
+        )
+        assert mask_date(rs_proc.stdout) == mask_date(c_proc.stdout), (
+            f"{label}: stdout differs; Rust: {rs_proc.stdout!r}, C: {c_proc.stdout!r}"
+        )
+        assert rs_proc.stderr == c_proc.stderr, (
+            f"{label}: stderr differs; Rust: {rs_proc.stderr!r}, C: {c_proc.stderr!r}"
+        )
+        c_results[label] = c_proc
+
+    # Two identically-wrong builds would agree, so pin some of the expected output too.
+    readme = c_results["pickle readme_examples.tcl"]
+    assert readme.returncode == 0
+    assert readme.stdout.decode("utf-8").splitlines() == [
+        *["Hello, World"] * 4,
+        "4",
+        "-1",
+        "TRUE",
+        "x(3, 9) == 12",
+        *[str(n) for n in range(4, 11)],
+        "4",
+        "7",
+        "a,b,c",
+        "a,b,c",
+        "abc abc abc",
+        "{x x} {x x}",
+        "HELLO, PICKLE",
+    ]
+
+    minishell = c_results["pickle minishell.tcl"]
+    assert minishell.returncode == 0
+    assert minishell.stdout == (
+        b"pickle> [0] 6\n"
+        b"pickle> [0] 42\n"
+        b"pickle> [-1] Error unknown command nope\n"
+        b"pickle> [0] HELLO\n"
+        b"pickle> [0] \n"
+        b"pickle> "
+    )
+
+    from_stdin = c_results["pickle"]
+    assert from_stdin.returncode == 3
+    assert from_stdin.stdout == b"42\n"
+
+    error = c_results["pickle error.tcl"]
+    assert error.returncode == 1
+    assert error.stdout == b"before\nError unknown command nonexistent-cmd\n"
+
+    unit_tests = c_results["pickle shell -t -S 1"]
+    assert unit_tests.returncode == 0
+    assert "   pass/total 838/838" in unit_tests.stdout.decode("utf-8").splitlines()
+
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 186
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
