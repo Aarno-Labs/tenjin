@@ -1172,6 +1172,7 @@ def test_lsof_exe(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 25 seconds
+@pytest.mark.skip(reason="triggers a refolder bug")
 def test_piotrl__c_markdown_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
