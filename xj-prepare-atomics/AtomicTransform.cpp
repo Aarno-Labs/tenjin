@@ -1,10 +1,11 @@
+#include "EditForest.h"
+
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
-#include "clang/Lex/Lexer.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
@@ -13,7 +14,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Signals.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -48,8 +48,7 @@ struct AccessEdit {
   const Expr *WholeExpr;
   const Expr *Rhs;
   const VarDecl *Variable;
-  unsigned Begin;
-  unsigned End;
+  xj::FileRange Range;
 };
 
 struct Candidate {
@@ -66,7 +65,12 @@ class AtomicCollector {
 public:
   explicit AtomicCollector(ASTContext &Context)
       : Ctx(Context), SM(Context.getSourceManager()),
-        LangOpts(Context.getLangOpts()) {}
+        LangOpts(Context.getLangOpts()),
+        Forest(SM, LangOpts,
+               [this](xj::EditForest::EditId Id,
+                      const xj::EditForest::NestedEditRenderer &In) {
+                 return renderEdit(*Planned[Id], In);
+               }) {}
 
   void collectAndRewrite(Rewriter &R) {
     DeclarationVisitor DeclVisitor(*this);
@@ -112,6 +116,11 @@ private:
   llvm::DenseMap<const VarDecl *, Candidate> Candidates;
   llvm::DenseSet<const Stmt *> RecordedOperations;
   unsigned PromotedCount = 0;
+  // The access edits of the eligible candidates, which nest: the right-hand
+  // side of a store can load another promoted global. `Planned` is indexed
+  // by the forest's edit ids.
+  xj::EditForest Forest;
+  std::vector<const AccessEdit *> Planned;
 
   static const VarDecl *canonical(const VarDecl *VD) {
     return VD->getCanonicalDecl();
@@ -121,15 +130,11 @@ private:
     return Loc.isValid() && !Loc.isMacroID() && SM.isWrittenInMainFile(Loc);
   }
 
-  std::optional<std::pair<unsigned, unsigned>>
-  offsetsFor(SourceRange Range) const {
-    CharSourceRange FileRange = Lexer::makeFileCharRange(
-        CharSourceRange::getTokenRange(Range), SM, LangOpts);
-    if (FileRange.isInvalid() || !isMainFileLocation(FileRange.getBegin()) ||
-        !isMainFileLocation(FileRange.getEnd()))
+  std::optional<xj::FileRange> mainFileRange(SourceRange Range) const {
+    auto FileRange = xj::fileRangeOf(Range, SM, LangOpts);
+    if (!FileRange || FileRange->File != SM.getMainFileID())
       return std::nullopt;
-    return std::make_pair(SM.getFileOffset(FileRange.getBegin()),
-                          SM.getFileOffset(FileRange.getEnd()));
+    return FileRange;
   }
 
   bool hasEligibleType(const VarDecl *VD) const {
@@ -232,7 +237,7 @@ private:
         if (!C.Eligible)
           break;
         TypeSourceInfo *TSI = VD->getTypeSourceInfo();
-        if (!TSI || !offsetsFor(TSI->getTypeLoc().getSourceRange()))
+        if (!TSI || !mainFileRange(TSI->getTypeLoc().getSourceRange()))
           reject(C, "type spelling cannot be rewritten");
       }
     }
@@ -289,15 +294,14 @@ private:
                const Expr *Rhs, const VarDecl *VD) {
     if (!RecordedOperations.insert(WholeExpr).second)
       return;
-    auto Offsets = offsetsFor(WholeExpr->getSourceRange());
-    if (!Offsets) {
+    auto Range = mainFileRange(WholeExpr->getSourceRange());
+    if (!Range) {
       reject(C, "access cannot be rewritten");
       return;
     }
     if (Kind != EditKind::Load)
       C.HasModification = true;
-    C.Edits.push_back(
-        {Kind, WholeExpr, Rhs, VD, Offsets->first, Offsets->second});
+    C.Edits.push_back({Kind, WholeExpr, Rhs, VD, *Range});
   }
 
   void considerAccess(DeclRefExpr *DRE) {
@@ -396,57 +400,10 @@ private:
            "use is not an atomic load, store, or supported read-modify-write");
   }
 
-  std::string sourceSlice(unsigned Begin, unsigned End) const {
-    llvm::StringRef Buffer = SM.getBufferData(SM.getMainFileID());
-    return Buffer.slice(Begin, End).str();
-  }
-
-  std::vector<const AccessEdit *> eligibleEditsWithin(unsigned Begin,
-                                                      unsigned End) const {
-    std::vector<const AccessEdit *> Result;
-    for (const auto &Entry : Candidates) {
-      const Candidate &C = Entry.second;
-      if (!C.Eligible)
-        continue;
-      for (const AccessEdit &Edit : C.Edits) {
-        if (Edit.Begin >= Begin && Edit.End <= End)
-          Result.push_back(&Edit);
-      }
-    }
-    std::sort(Result.begin(), Result.end(),
-              [](const AccessEdit *A, const AccessEdit *B) {
-                if (A->Begin != B->Begin)
-                  return A->Begin < B->Begin;
-                return A->End > B->End;
-              });
-    return Result;
-  }
-
-  std::string renderRange(unsigned Begin, unsigned End) const {
-    std::vector<const AccessEdit *> Contained = eligibleEditsWithin(Begin, End);
-    std::vector<const AccessEdit *> Outermost;
-    unsigned CoveredUntil = Begin;
-    for (const AccessEdit *Edit : Contained) {
-      if (Edit->Begin >= CoveredUntil) {
-        Outermost.push_back(Edit);
-        CoveredUntil = Edit->End;
-      }
-    }
-
-    std::string Result;
-    unsigned Cursor = Begin;
-    for (const AccessEdit *Edit : Outermost) {
-      Result += sourceSlice(Cursor, Edit->Begin);
-      Result += renderEdit(*Edit);
-      Cursor = Edit->End;
-    }
-    Result += sourceSlice(Cursor, End);
-    return Result;
-  }
-
-  std::string renderExpr(const Expr *E) const {
-    auto Range = offsetsFor(E->getSourceRange());
-    return Range ? renderRange(Range->first, Range->second) : std::string();
+  // The source text of `E`, with the accesses inside it rewritten.
+  static std::string renderExpr(const xj::EditForest::NestedEditRenderer &In,
+                                const Expr *E) {
+    return In.text(E->getSourceRange());
   }
 
   static llvm::StringRef primitiveName(EditKind Kind) {
@@ -469,7 +426,8 @@ private:
     llvm_unreachable("unknown atomic edit kind");
   }
 
-  std::string renderEdit(const AccessEdit &Edit) const {
+  std::string renderEdit(const AccessEdit &Edit,
+                         const xj::EditForest::NestedEditRenderer &In) {
     // The pipeline operates on already-preprocessed .i files, so a newly
     // inserted <stdatomic.h> include cannot be resolved by later tools.
     // Clang's __c11 builtins are the header-free lowering of C11's generic
@@ -479,32 +437,37 @@ private:
     if (Edit.Kind == EditKind::Load)
       return Result + ", __ATOMIC_SEQ_CST)";
     if (Edit.Kind == EditKind::Store)
-      return Result + ", " + renderExpr(Edit.Rhs) + ", __ATOMIC_SEQ_CST)";
+      return Result + ", " + renderExpr(In, Edit.Rhs) + ", __ATOMIC_SEQ_CST)";
     if (Edit.Rhs)
-      return Result + ", " + renderExpr(Edit.Rhs) + ", __ATOMIC_SEQ_CST)";
+      return Result + ", " + renderExpr(In, Edit.Rhs) + ", __ATOMIC_SEQ_CST)";
     return Result + ", 1, __ATOMIC_SEQ_CST)";
   }
 
   void rewrite(Rewriter &R) {
-    std::vector<const AccessEdit *> AllEdits =
-        eligibleEditsWithin(0, UINT32_MAX);
-    std::vector<const AccessEdit *> Outermost;
-    unsigned CoveredUntil = 0;
-    for (const AccessEdit *Edit : AllEdits) {
-      if (Edit->Begin >= CoveredUntil) {
-        Outermost.push_back(Edit);
-        CoveredUntil = Edit->End;
+    for (const auto &Entry : Candidates) {
+      const Candidate &C = Entry.second;
+      if (!C.Eligible)
+        continue;
+      for (const AccessEdit &Edit : C.Edits) {
+        Forest.add(Edit.Range);
+        Planned.push_back(&Edit);
       }
     }
-    std::sort(Outermost.begin(), Outermost.end(),
-              [](const AccessEdit *A, const AccessEdit *B) {
-                return A->Begin > B->Begin;
-              });
-    for (const AccessEdit *Edit : Outermost) {
-      SourceLocation Begin = SM.getLocForStartOfFile(SM.getMainFileID())
-                                 .getLocWithOffset(Edit->Begin);
-      R.ReplaceText(Begin, Edit->End - Edit->Begin, renderEdit(*Edit));
+    std::vector<xj::EditForest::Replacement> Roots = Forest.renderRoots();
+    std::vector<xj::EditForest::Problem> Problems = Forest.verify();
+    if (!Problems.empty()) {
+      // A bug in this tool, not in the input: writing the edits out anyway
+      // would drop one of them. Reported as an error so the run fails.
+      DiagnosticsEngine &Diags = Ctx.getDiagnostics();
+      unsigned ID = Diags.getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "xj-prepare-atomics: a planned edit %0; file left unchanged");
+      for (const xj::EditForest::Problem &P : Problems)
+        Diags.Report(Forest.rangeOf(P.Edit).begin(SM), ID) << P.What;
+      return;
     }
+    for (const xj::EditForest::Replacement &Root : Roots)
+      R.ReplaceText(Root.Range.begin(SM), Root.Range.size(), Root.Text);
 
     std::set<std::pair<unsigned, unsigned>> RewrittenTypes;
     struct TypedefInsertion {
@@ -520,8 +483,9 @@ private:
       for (const VarDecl *VD : C.Declarations) {
         SourceRange TypeRange =
             VD->getTypeSourceInfo()->getTypeLoc().getSourceRange();
-        auto Offsets = offsetsFor(TypeRange);
-        if (!Offsets || !RewrittenTypes.insert(*Offsets).second)
+        auto Range = mainFileRange(TypeRange);
+        if (!Range ||
+            !RewrittenTypes.insert({Range->Begin, Range->End}).second)
           continue;
         std::string TypeText = VD->getType().getUnqualifiedType().getAsString();
         unsigned DeclarationOffset = SM.getFileOffset(VD->getBeginLoc());
@@ -529,10 +493,7 @@ private:
             C.AtomicTypeName, TypedefInsertion{DeclarationOffset, TypeText});
         if (!Inserted && DeclarationOffset < It->second.Offset)
           It->second = {DeclarationOffset, TypeText};
-        SourceLocation Begin = SM.getLocForStartOfFile(SM.getMainFileID())
-                                   .getLocWithOffset(Offsets->first);
-        R.ReplaceText(Begin, Offsets->second - Offsets->first,
-                      C.AtomicTypeName);
+        R.ReplaceText(Range->begin(SM), Range->size(), C.AtomicTypeName);
       }
     }
 
