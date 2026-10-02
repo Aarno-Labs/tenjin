@@ -1253,7 +1253,6 @@ def test_itsjustme27__dns_tool_exe(tenjin_fixtures: TenjinFixtures):
     assert get_final_unsafe_fns_count(tmp_resultsdir) == 7
 
 
-@pytest.mark.skip("triggers a refolder bug")
 @pytest.mark.slow  # expected runtime: 15 minutes
 def test_lemon_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
@@ -1307,7 +1306,7 @@ Valid command line options for "target/debug/lemon" are:
   -W<string>   Ignored.  (Placeholder for '-W' compiler options.)
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 125
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 121
 
 
 @pytest.mark.slow  # expected runtime: 220 seconds

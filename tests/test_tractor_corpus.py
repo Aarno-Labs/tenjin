@@ -1726,7 +1726,6 @@ def test_tractor_b2_synthetic_hashmap_tree_app(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
-@pytest.mark.skip("triggers a refolder bug")
 def test_tractor_b2_synthetic_macrodepth_add_5_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/macrodepth_add_5"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
@@ -1734,7 +1733,6 @@ def test_tractor_b2_synthetic_macrodepth_add_5_app(tenjin_fixtures: TenjinFixtur
 
 
 @pytest.mark.slow
-@pytest.mark.skip("triggers a refolder bug")
 def test_tractor_b2_synthetic_macrodepth_mul_4_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/macrodepth_mul_4"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
@@ -1742,7 +1740,6 @@ def test_tractor_b2_synthetic_macrodepth_mul_4_app(tenjin_fixtures: TenjinFixtur
 
 
 @pytest.mark.slow
-@pytest.mark.skip("triggers a refolder bug")
 def test_tractor_b2_synthetic_macrodepth_sub_6_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/macrodepth_sub_6"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
