@@ -4,6 +4,7 @@ import shutil
 import platform
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -2361,6 +2362,211 @@ def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
         "Tests passed: 349",
         "#" * 80,
     ]
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+def brotli_run_upstream_tests(brotli_bin: Path, codebase: Path, workdir: Path) -> dict[str, bytes]:
+    """Run brotli's own tests against the CLI binary `brotli_bin`, reading inputs
+    from the pristine clone `codebase` and writing only under `workdir`.
+    Returns the compressed output of each roundtrip test, keyed by test name."""
+    workdir.mkdir()
+
+    def brotli(*args, cwd: Path = workdir, ok: bool = True) -> subprocess.CompletedProcess:
+        cp = hermetic.run(
+            [str(brotli_bin), *[str(arg) for arg in args]],
+            cwd=str(cwd),
+            check=False,
+            capture_output=True,
+        )
+        assert (cp.returncode == 0) == ok, (
+            f"{brotli_bin}: `brotli {hermetic.shellize(args)}` exited {cp.returncode}, "
+            f"expected {'success' if ok else 'failure'}; stderr {cp.stderr!r}"
+        )
+        return cp
+
+    # The `compatibility/*` tests: each tests/testdata/*.compressed* file decompresses
+    # to the file it was made from (tests/run-compatibility-test.cmake).
+    testdata = codebase / "tests" / "testdata"
+    compressed_inputs = sorted(testdata.glob("*.compressed*"))
+    assert len(compressed_inputs) == 45, f"unexpected testdata: {compressed_inputs!r}"
+    for compressed in compressed_inputs:
+        reference = testdata / re.sub(r"\.compressed(\.[0-9]+)?$", "", compressed.name)
+        out = workdir / f"{compressed.name}.unbr"
+        brotli("--force", "--decompress", compressed, f"--output={out}")
+        assert out.read_bytes() == reference.read_bytes(), (
+            f"{brotli_bin}: compatibility/{compressed.name} did not decompress to {reference.name}"
+        )
+
+    # The `roundtrip/*` tests (tests/run-roundtrip-test.cmake).
+    roundtrip_outputs = {}
+    # Inputs for the `roundtrip/*` tests in brotli's CMakeLists.txt, relative to
+    # the repo root; each one is compressed at each of BROTLI_ROUNDTRIP_QUALITIES.
+    brotli_roundtrip_inputs = [
+        "tests/testdata/alice29.txt",
+        "tests/testdata/asyoulik.txt",
+        "tests/testdata/lcet10.txt",
+        "tests/testdata/plrabn12.txt",
+        "c/enc/encode.c",
+        "c/common/dictionary.h",
+        "c/dec/decode.c",
+    ]
+    brotli_roundtrip_qualities = [1, 6, 9, 11]
+    for input_relpath in brotli_roundtrip_inputs:
+        src = codebase / input_relpath
+        for quality in brotli_roundtrip_qualities:
+            name = f"roundtrip/{input_relpath}/{quality}"
+            out = workdir / f"{src.name}.{quality}"
+            brotli("--force", f"--quality={quality}", src, f"--output={out}.br")
+            brotli("--force", "--decompress", f"{out}.br", f"--output={out}.unbr")
+            assert Path(f"{out}.unbr").read_bytes() == src.read_bytes(), (
+                f"{brotli_bin}: {name} did not round-trip"
+            )
+            roundtrip_outputs[name] = Path(f"{out}.br").read_bytes()
+
+    # A port of tests/cli_test.sh, which needs Google's internal gbash harness.
+    # As there, each case starts from a fresh directory.
+    text, ipsum = b"Kot lomom kolol slona\n", b"Lorem ipsum dolor sit amet. \n"
+
+    def cli_case(name: str) -> Path:
+        case_dir = workdir / "cli_test" / name
+        case_dir.mkdir(parents=True)
+        (case_dir / "text.orig").write_bytes(text)
+        (case_dir / "ipsum.orig").write_bytes(ipsum)
+        return case_dir
+
+    d = cli_case("roundtrip")
+    brotli("-Zfk", "text.orig", "-o", "text.br", cwd=d)
+    brotli("-d", "text.br", "-o", "text.unbr", cwd=d)
+    assert (d / "text.unbr").read_bytes() == text
+
+    # 'SGVsbG8=' == $(echo -n "Hello" | base64)
+    for name, enc_comment, dec_comment in [
+        ("comment_ok", "SGVsbG8=", "SGVsbG8="),
+        ("comment_no_padding", "SGVsbG8", "SGVsbG8="),
+        ("comment_extra_padding", "SGVsbG8", "SGVsbG8=="),
+    ]:
+        d = cli_case(name)
+        brotli("-Zfk", "-C", enc_comment, "text.orig", "-o", "text.br", cwd=d)
+        brotli("-d", f"--comment={dec_comment}", "text.br", "-o", "text.unbr", cwd=d)
+        assert (d / "text.unbr").read_bytes() == text, f"{brotli_bin}: cli_test {name}"
+
+    d = cli_case("comment_ignored")
+    brotli("-Zfk", "-C", "SGVsbG8=", "text.orig", "-o", "text.br", cwd=d)
+    brotli("-d", "text.br", "-o", "text.unbr", cwd=d)
+
+    d = cli_case("comment_mismatch_content")
+    brotli("-Zfk", "--comment=SGVsbG8=", "text.orig", "-o", "text.br", cwd=d)
+    brotli("-dC", "SGVsbG7=", "text.br", "-o", "text.unbr", cwd=d, ok=False)
+    brotli("-tC", "SGVsbG7=", "text.br", cwd=d, ok=False)
+
+    d = cli_case("comment_mismatch_length")
+    brotli("-Zfk", "--comment=SGVsbG8=", "text.orig", "-o", "text.br", cwd=d)
+    brotli("-tC", "SGVsbA==", "text.br", cwd=d, ok=False)
+
+    for name, comment, ok in [
+        ("comment_too_much_padding", "SGVsbG8===", False),
+        ("comment_padding_in_the_middle", "SGVsbG=8", False),
+        ("comment_ignore_tab_cr_lf_sp", "S\tG\rV\ns bG8=", True),
+        ("comment_invalid_chars", "S.GVsbG8=", False),
+    ]:
+        d = cli_case(name)
+        brotli("-Zfk", "-C", comment, "text.orig", "-o", "text.br", cwd=d, ok=ok)
+
+    d = cli_case("concatenated")
+    brotli("-Zfk", "ipsum.orig", "-o", "one.br", cwd=d)
+    brotli("-Zfk", "text.orig", "-o", "two.br", cwd=d)
+    (d / "full.br").write_bytes((d / "one.br").read_bytes() + (d / "two.br").read_bytes())
+    brotli("-dc", "full.br", cwd=d, ok=False)
+    assert brotli("-dKc", "full.br", cwd=d).stdout == ipsum + text
+    assert brotli("-dc", "--concatenated", "full.br", cwd=d).stdout == ipsum + text
+
+    # tests/regression/t01 is a unittest suite that takes the CLI binary as its argument.
+    # It works in its own temporary directories.
+    cp = hermetic.run(
+        [
+            sys.executable,
+            str(codebase / "tests" / "regression" / "t01" / "copystat_regression_test.py"),
+            str(brotli_bin),
+        ],
+        check=False,
+        capture_output=True,
+    )
+    # A skipped test also exits 0, but reports "OK (skipped=N)".
+    assert cp.returncode == 0 and cp.stderr.endswith(b"\n\nOK\n"), (
+        f"{brotli_bin}: tests/regression/t01 failed: {cp.stderr.decode('utf-8', 'replace')}"
+    )
+
+    return roundtrip_outputs
+
+
+@pytest.mark.slow  # expected runtime: ~280 s, up to the xfail below
+@pytest.mark.xfail(
+    reason="localize_mutable_globals (PANGS) fails its own Clang validation on "
+    "enc/brotli_bit_stream.c. common/transform.c's mutable global kBrotliTransforms has type "
+    "BrotliTransforms, whose field `int16_t cutOffTransforms[BROTLI_TRANSFORMS_MAX_CUT_OFF + 1]` "
+    "is materialized into that TU as `cutOffTransforms[BROTLI_TRANSFORM_OMIT_LAST_9 + 1]`. That "
+    "enum constant comes from common/transform.h, which brotli_bit_stream.c never includes, so "
+    "Clang reports an undeclared identifier and raises pangs_source.ContractViolation."
+)
+def test_google_brotli(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/google/brotli.git", "42a2ed4355bc6287da6bb6319f090b499cba4550"
+    )
+    # Only the C implementation is translated; brotli's tests and their inputs
+    # are read straight from the (pristine) clone.
+    translation_preparation.copy_codebase(codebase / "c", tmp_codebase)
+
+    # The sources of CMakeLists.txt's brotlicommon, brotlidec, brotlienc and brotli
+    # targets. `make` would build three libraries plus the CLI, and a multi-target
+    # codebase disables the non-trivial refactoring passes, so link everything into
+    # one executable instead.
+    lib_srcs = sorted(
+        p.relative_to(tmp_codebase).as_posix()
+        for subdir in ("common", "dec", "enc")
+        for p in (tmp_codebase / subdir).glob("*.c")
+    )
+    # With __SSE2__ defined (always, on x86-64), enc/matching_tag_mask.h includes
+    # <immintrin.h>, whose ~5000 static inline intrinsics land in most encoder TUs and
+    # make uniquify_statics take minutes per TU. Undefining it selects brotli's
+    # portable fallback, which produces the same compressed output.
+    buildcmd_args = [
+        "cc",
+        "-U__SSE2__",
+        "-Iinclude",
+        *lib_srcs,
+        "tools/brotli.c",
+        "-lm",
+        "-o",
+        "brotli",
+    ]
+
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="google_brotli",
+            buildcmd=hermetic.shellize(buildcmd_args),
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    c_brotli = tmp_resultsdir / "_build_1" / "brotli"
+    rs_brotli = tmp_resultsdir / "final" / "target" / "debug" / "brotli"
+
+    # The C binary must pass first, which also validates the single-`cc` build.
+    c_outputs = brotli_run_upstream_tests(c_brotli, codebase, tmp_resultsdir / "xj_upstream_c")
+    rs_outputs = brotli_run_upstream_tests(rs_brotli, codebase, tmp_resultsdir / "xj_upstream_rs")
+
+    # The encoder is deterministic, so beyond round-tripping through itself,
+    # the Rust build should produce exactly the bytes the C build does.
+    assert rs_outputs.keys() == c_outputs.keys()
+    for name in c_outputs:
+        assert rs_outputs[name] == c_outputs[name], f"{name}: compressed output differs from C"
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
