@@ -1,10 +1,15 @@
 import os
 import json
+import re
 from pathlib import Path
 
 import c_refact
+import cindex_helpers
+import compilation_database
 import targets
+import translation
 import translation_preparation
+from translation_types import TranslationFlags
 import pangs_source
 import pytest
 
@@ -65,6 +70,116 @@ def test_static_uniquification_avoids_occupied_names_and_preserves_source_suffix
         "static-duplicate-2": "duplicate_xjtr_2",
         "static-natural": "natural_xjtr_0",
     }
+
+
+@pytest.mark.parametrize(
+    "other_function",
+    [
+        "int second(void) { int shared = 2; return shared; }\n",
+        "int second(int shared) { return shared; }\n",
+    ],
+    ids=["local", "parameter"],
+)
+def test_static_uniquification_reserves_local_names(other_function):
+    source = (
+        "int first(void) { static int shared = 1; return ++shared; }\n"
+        + other_function
+        + (
+            "int third(void) { int shared_xjtr_0 = 3; return shared_xjtr_0; }\n"
+            "int fourth(void) { static int singleton = 4; return singleton; }\n"
+        )
+    )
+    tu = cindex_helpers.create_xj_clang_index().parse(
+        "locals.c", args=["-xc"], unsaved_files=[("locals.c", source)]
+    )
+    assert not list(tu.diagnostics)
+    statics = [
+        c_refact.mk_NamedDeclInfo(c)
+        for c in c_refact.compute_globals_and_statics_for_translation_units([tu], statics_only=True)
+    ]
+    project_symbols = [
+        c_refact.mk_NamedDeclInfo(c)
+        for c in c_refact.compute_global_symbol_inventory_for_translation_units([tu])
+    ]
+    plan = translation_preparation._plan_static_uniquification(statics, project_symbols)
+
+    assert {static.spelling: plan[static.usr] for static in statics} == {
+        "shared": "shared_xjtr_1",
+        "singleton": "singleton",
+    }
+    static_usrs = {static.usr for static in statics}
+    locals = [
+        symbol
+        for symbol in project_symbols
+        if symbol.spelling in {"shared", "shared_xjtr_0"} and symbol.usr not in static_usrs
+    ]
+    assert {symbol.spelling for symbol in locals} == {"shared", "shared_xjtr_0"}
+    assert all(symbol.usr not in plan for symbol in locals)
+
+
+def test_collect_decls_distinguishes_extern_from_tentative_definition(tmp_path):
+    header = tmp_path / "file.h"
+    header.write_text("extern const char *file_names[];\n", encoding="utf-8")
+    source = tmp_path / "apprentice.c"
+    source.write_text('#include "file.h"\nconst char *file_names[62];\n', encoding="utf-8")
+    compdb = compilation_database.synthetic_compile_commands_for_c_file(source, tmp_path)
+
+    declarations = translation_preparation.collect_decls_by_rel_tu(tmp_path, compdb)
+    names = declarations["apprentice.c"]["file_names"]
+    assert [(path, text, is_defn) for path, _, _, text, is_defn in names] == [
+        ("file.h", "extern const char *file_names[]", False),
+        ("apprentice.c", "const char *file_names[62]", True),
+    ]
+
+
+@pytest.mark.parametrize(
+    "sources, expected",
+    [
+        ({"a.i": "extern long value", "b.i": "extern long value"}, "extern long value"),
+        ({"a.i": "extern long value", "b.i": "extern int value"}, None),
+        ({"a.i": "extern long value"}, None),
+        ({"a.i": "extern long value", "b.i": "extern short value"}, None),
+    ],
+    ids=["all-modified", "one-unchanged", "one-missing", "different-modifications"],
+)
+def test_header_consolidation_requires_every_tu_to_agree(sources, expected):
+    assert translation_preparation._common_header_source(sources, {"a.i", "b.i"}) == expected
+
+
+def test_refolding_preserves_extern_array_declaration(root, tmp_codebase, tmp_resultsdir):
+    tmp_codebase.mkdir()
+    (tmp_codebase / "file.h").write_text("extern const int file_names[];\n", encoding="utf-8")
+    (tmp_codebase / "apprentice.c").write_text(
+        '#include "file.h"\nconst int file_names[2];\n', encoding="utf-8"
+    )
+    (tmp_codebase / "consumer.c").write_text(
+        '#include "file.h"\nint main(void) { return file_names[0] != 0; }\n',
+        encoding="utf-8",
+    )
+    (tmp_codebase / "Makefile").write_text(
+        "program: apprentice.c consumer.c file.h\n"
+        "\t$(CC) -c apprentice.c -o apprentice.o\n"
+        "\t$(CC) -c consumer.c -o consumer.o\n"
+        "\t$(CC) apprentice.o consumer.o -o program\n",
+        encoding="utf-8",
+    )
+    translation.do_translate(
+        TranslationFlags.simple(
+            root, tmp_codebase, tmp_resultsdir, cratename="tentative_array", buildcmd="make"
+        ),
+        guidance_path_or_literal="{}",
+    )
+
+    prepared = next(tmp_resultsdir.glob("c_*_refold_preprocessor"))
+    assert (prepared / "file.h").read_text(encoding="utf-8") == ("extern const int file_names[];\n")
+    initial_rust = tmp_resultsdir / "00_out" / "program" / "src"
+    apprentice = (initial_rust / "apprentice.rs").read_text(encoding="utf-8")
+    consumer = (initial_rust / "consumer.rs").read_text(encoding="utf-8")
+    assert "file_names:" in apprentice
+    assert "file_names:" in consumer
+    definition = r"\bstatic(?: mut)? file_names:\s*\[[^\]]+\]\s*="
+    assert re.search(definition, apprentice)
+    assert not re.search(definition, consumer)
 
 
 def _immutable_global(name, declaration=None):

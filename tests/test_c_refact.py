@@ -9,6 +9,7 @@ import c_refact
 import c_refact_decl_splitter
 import c_refact_tag_hoister
 import compilation_database
+import hermetic
 import pangs_source
 import targets
 from cindex_helpers import create_xj_clang_index
@@ -349,3 +350,91 @@ def test_hoist_embedded_tag_definitions_supported_and_skipped_cases(root, tmp_co
     assert "struct Macro { int x; } name##_1, name##_2" in rewritten
     assert re.search(r"struct xj_Local_[0-9a-f]+ \{ int x; \};", rewritten)
     assert re.search(r"struct xj_Local_[0-9a-f]+ l1, l2;", rewritten)
+
+
+@pytest.mark.parametrize("in_header", [False, True], ids=["source", "header"])
+@pytest.mark.parametrize(
+    ("declaration", "use"),
+    [
+        (
+            "typedef struct InitParser {\n"
+            "    struct InitCur { int value; struct InitCur *next; } buf[32], *cur, *sub;\n"
+            "    int depth;\n"
+            "} InitParser;\n",
+            "InitParser parser;\n"
+            "int read_value(void) { return parser.buf[0].value + parser.depth; }\n",
+        ),
+        (
+            "typedef struct PragmaState {\n"
+            "    struct { int value; } pack, visibility;\n"
+            "    int depth;\n"
+            "} PragmaState;\n",
+            "PragmaState state;\n"
+            "int read_value(void) { return state.pack.value + state.visibility.value; }\n",
+        ),
+        (
+            "typedef struct { struct { int value; } first, second; } Alias;\n",
+            "Alias value;\n"
+            "int read_value(void) { return value.first.value + value.second.value; }\n",
+        ),
+        (
+            "static struct Holder { struct Node { int value; } first, second; } holder;\n",
+            "int read_value(void) { return holder.first.value + holder.second.value; }\n",
+        ),
+    ],
+    ids=["initparser", "pragmastate", "anonymous-typedef", "static-variable"],
+)
+def test_hoist_embedded_tag_definitions_preserves_enclosing_declaration(
+    root, tmp_codebase, declaration, use, in_header
+):
+    tmp_codebase.mkdir()
+    sample_c = tmp_codebase / "c.c"
+    if in_header:
+        declaration_file = tmp_codebase / "c_lex.h"
+        declaration_file.write_text(declaration, encoding="utf-8")
+        sample_c.write_text('#include "c_lex.h"\n' + use, encoding="utf-8")
+    else:
+        declaration_file = sample_c
+        sample_c.write_text(declaration + use, encoding="utf-8")
+    hermetic.run(["clang", "-fsyntax-only", str(sample_c)], check=True, capture_output=True)
+
+    build_info = build_info_for_single_source(tmp_codebase, sample_c)
+    hoist = c_refact.run_xj_hoist_embedded_tag_defs(tmp_codebase, build_info)
+    assert len(hoist["edits"]) == 1
+    c_refact_tag_hoister.apply_tag_hoisting_rewrites(tmp_codebase, hoist)
+
+    hermetic.run(["clang", "-fsyntax-only", str(sample_c)], check=True, capture_output=True)
+    insert = hoist["edits"][0]["insert"]
+    assert insert is not None
+    assert insert["b"] == 0
+    assert declaration.split("struct", 1)[0] + "struct" in declaration_file.read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["local-typedef", "nested-record"])
+def test_hoist_embedded_tag_definitions_preserves_record_scope(root, tmp_codebase, nested):
+    tmp_codebase.mkdir()
+    sample_c = tmp_codebase / "sample.c"
+    if nested:
+        prefix = "typedef struct Outer {\n    int before;\n    "
+        declaration = "struct Inner { struct Node { int value; } first, second; } inner;\n"
+        suffix = (
+            "} Outer;\nOuter value;\nint read_value(void) { return value.inner.first.value; }\n"
+        )
+    else:
+        prefix = "int read_value(void) {\n    int before = 1;\n    "
+        declaration = "typedef struct Local { struct Node { int value; } first, second; } Local;\n"
+        suffix = "Local value = {0};\n    return before + value.first.value;\n}\n"
+    sample_c.write_text(prefix + declaration + suffix, encoding="utf-8")
+    hermetic.run(["clang", "-fsyntax-only", str(sample_c)], check=True, capture_output=True)
+
+    build_info = build_info_for_single_source(tmp_codebase, sample_c)
+    hoist = c_refact.run_xj_hoist_embedded_tag_defs(tmp_codebase, build_info)
+    assert len(hoist["edits"]) == 1
+    c_refact_tag_hoister.apply_tag_hoisting_rewrites(tmp_codebase, hoist)
+
+    hermetic.run(["clang", "-fsyntax-only", str(sample_c)], check=True, capture_output=True)
+    insert = hoist["edits"][0]["insert"]
+    assert insert is not None
+    assert insert["b"] == len(prefix)

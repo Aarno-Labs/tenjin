@@ -569,6 +569,17 @@ type QUSS_is_defn = bool
 type QUSS_and_defn = tuple[QUSS, QUSS_is_defn]
 
 
+def _common_header_source(
+    sources_by_tu: dict[FilePathStr, FileContentsStr],
+    expected_tus: set[FilePathStr],
+) -> FileContentsStr | None:
+    """Return common source only if every original TU still has it and agrees."""
+    if sources_by_tu.keys() != expected_tus:
+        return None
+    versions = set(sources_by_tu.values())
+    return next(iter(versions)) if len(versions) == 1 else None
+
+
 class FnDefHandling(Enum):
     EXCLUDE = 1
     INCLUDE_BODY = 2
@@ -696,7 +707,7 @@ def collect_decls_by_rel_tu(
                     header_contents.get_bytes(cursor.location.file.name)[
                         cursor.extent.start.offset : cursor_end_offset
                     ].decode("utf-8"),
-                    cursor.is_definition(),
+                    cindex_helpers.is_definition_including_tentative(cursor),
                 ))
     return decls_by_rel_tu
 
@@ -1320,10 +1331,10 @@ def run_preparation_passes(
         )
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        """The purpose of this pass is to rename static globals to have unique names,
-        so that subsequent analysis and refactorings can rely on the property that different
-        declarations have different names (that is: a name refers to at most one declaration,
-        across the whole project).
+        """The purpose of this pass is to rename static globals and function-scoped
+        statics to have unique names, including avoiding ordinary locals and parameters,
+        so that subsequent analysis and refactorings can identify static entities by name
+        across the whole project.
         """
         # For now, we restrict analysis to single-target projects,
         # although this is not a fundamental limitation.
@@ -1715,10 +1726,12 @@ def run_preparation_passes(
 
         remove_expanded_src_for: set[QUSS_and_defn] = set()
         quss_to_expanded_src: dict[QUSS_and_defn, FileContentsStr] = {}
-        for expanded_decls in store.items_defined_after_pp.values():
+        tus_containing_decls: dict[QUSS_and_defn, set[FilePathStr]] = defaultdict(set)
+        for rel_tu_path, expanded_decls in store.items_defined_after_pp.items():
             for q, exp_details in expanded_decls.items():
                 for rel_path, start_offset, end_offset, source_text, _is_defn in exp_details:
                     qd = (q, _is_defn)
+                    tus_containing_decls[qd].add((current_codebase / rel_tu_path).as_posix())
 
                     if q in quss_to_expanded_src and qd not in remove_expanded_src_for:
                         # Already recorded from another TU
@@ -1777,7 +1790,7 @@ def run_preparation_passes(
                     if q in nested_children:
                         continue
 
-                    qd = (q, cursor.is_definition())
+                    qd = (q, cindex_helpers.is_definition_including_tentative(cursor))
                     if qd in qd_to_header_src:
                         start_offset = cursor.extent.start.offset
                         end_offset = cursor.extent.end.offset
@@ -1859,20 +1872,21 @@ def run_preparation_passes(
             # Find declarations that are modified identically in all TUs
             for qd, modifying_tus in tus_modifying_decls.items():
                 q = qd[0]
-                # Check if all TUs modify it in the same way
-                modified_versions_for_qd = set()
-                for tu_path in modifying_tus:
-                    if qd in items_src_by_tu[tu_path]:
-                        modified_versions_for_qd.add(items_src_by_tu[tu_path][qd])
-
-                if len(modified_versions_for_qd) != 1:
+                # Include unchanged TUs and reject missing declarations. Agreement
+                # among only the modifying TUs is not enough to change a header.
+                sources_by_tu = {
+                    tu_path: sources[qd]
+                    for tu_path, sources in items_src_by_tu.items()
+                    if qd in sources
+                }
+                modified_version = _common_header_source(sources_by_tu, tus_containing_decls[qd])
+                if modified_version is None:
                     print("PPRC: Declaration modified differently between TUs for QUSS:", q)
                     continue  # TUs modify it in different ways
 
                 # All TUs modify this declaration identically
                 # Apply the consolidation: replace TU versions with header version,
                 # and update header with the modified version
-                modified_version = modified_versions_for_qd.pop()
                 # original_header_version = qd_to_header_src[q]
                 expanded_header_version = quss_to_expanded_src[qd]
 

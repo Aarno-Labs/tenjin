@@ -1,7 +1,7 @@
 # Note: the keys in this dict are not command names, or file names,
 # just arbitrary labels for the things we are tracking.
 WANT = {
-    "10j-llvm": "21.1.8+refold@rev-b34f2ca1b",
+    "10j-llvm": "21.1.8+refold@rev-7b8447c5d",
     "10j-llvm14": "14.0.6@llvmorg-14.0.6",
     "10j-opam": "2.3.0",
     "10j-dune": "3.19.1",
@@ -25,7 +25,7 @@ WANT = {
     "10j-find_unsafe2-rust-toolchain": "nightly-2026-05-11",
     "10j-ast-grep": "0.40.5",
     "10j-crat": "crat-f598249c3",
-    "10j-pangs": "rev-ac41d24e3",
+    "10j-pangs": "rev-b455854fc",
 }
 
 XJ_GUIDANCE_FILENAME = "xj-guidance.json"

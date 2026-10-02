@@ -6,6 +6,7 @@ from clang.cindex import (  # type: ignore
     TypeKind,
     Cursor,
     CursorKind,
+    StorageClass,
     TranslationUnit,
 )
 import clang.cindex as cindex  # type: ignore
@@ -15,6 +16,21 @@ import hermetic
 
 
 type QuasiUniformSymbolSpecifier = str
+
+
+def is_definition_including_tentative(cursor: Cursor) -> bool:
+    """Distinguish variable definitions, including tentative ones, from externs.
+
+    Libclang's ``is_definition()`` returns false for a file-scope variable
+    without an initializer. Such a declaration still defines storage in C
+    unless it uses ``extern``.
+    """
+    return cursor.is_definition() or (
+        cursor.kind == CursorKind.VAR_DECL
+        and cursor.storage_class != StorageClass.EXTERN
+        and cursor.semantic_parent is not None
+        and cursor.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+    )
 
 
 def quss(cursor: Cursor, ancestor: Cursor | None) -> QuasiUniformSymbolSpecifier:
