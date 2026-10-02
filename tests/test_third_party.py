@@ -2364,3 +2364,354 @@ def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+@pytest.mark.slow  # expected runtime: 20 s
+@pytest.mark.skip(
+    raises=subprocess.CalledProcessError,
+    reason="xj-c2rust drops the `va_list ap;` local of lisp_make_object. A `goto end` ahead of "
+    "the declaration makes the relooper hoist the function's locals, which emits each one's "
+    "`decl` part up top (relooper.rs) and its `assign` part in place (cfg/mod.rs). But "
+    "convert_decl_stmt_info in translator/mod.rs gives a va_list local only a "
+    "`decl_and_assign` part, with both of those empty, so no `let ap` survives and "
+    "`ap = c2rust_args.clone()` fails with E0425 at the `cargo check` after "
+    "improvement_pass_02_lift-call-args. The code predates Tenjin's fork of c2rust. With the "
+    "`let mut ap: ::core::ffi::VaListImpl;` restored by hand, all seven programs below give "
+    "the same output as the C build.",
+)
+def test_howerj_lisp(tenjin_fixtures: TenjinFixtures):
+    """Translate howerj/lisp and require the Rust interpreter to answer a range of
+    lisp programs exactly as the C one does.
+
+    The interpreter is the header-only lisp.h; lisp.c defines LISP_DEFINE_MAIN, so
+    its `main` reads s-expressions from stdin until EOF and prints the value of
+    each. We build only the `lisp` target: the makefile's default also compiles
+    the same header as C++ (`lispcc`), and a second build target would skip
+    preprocessor refolding and PANGS-driven globals localization. lisp.lsp is the
+    repo's own library and ends in a built-in self test; programs that use its
+    functions get it prepended on stdin, the way `make test` runs it.
+    """
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/howerj/lisp.git", "b9b27ce630184344e11df9538e0d2587442f498f"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="howerj_lisp",
+            buildcmd="make lisp CC=cc",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    c_lisp = tmp_resultsdir / "_build_1" / "lisp"
+    rs_lisp = tmp_resultsdir / "final" / "target" / "debug" / "lisp"
+    library = (tmp_codebase / "lisp.lsp").read_bytes()
+
+    # The programs never print a primitive, which is written as its address
+    # (PRIMITIVE:<address>:<param>), so the output is the same from run to run.
+    # That rules out printing what `defun` returns: it `expand`s the body, which
+    # replaces the names of primitives with the primitives themselves.
+    #
+    # They also stay clear of signed overflow on intptr_t, which is UB in the C
+    # and panics in the debug Rust build. That covers arithmetic past #min/#max
+    # and reading the literal -9223372036854775808, which lisp_string_to_number
+    # negates after it has already become INTPTR_MIN.
+
+    # The special forms and primitives listed in readme.md, without lisp.lsp.
+    core = """
+        (if t 'yes 'no)
+        (if nil 'yes 'no)
+        (if 0 'zero-is-true 'zero-is-false)
+        (pgn 1 2 3)
+        (pgn)
+        (def n 0)
+        (do (less n 5) (set n (add n 1)))
+        (do nil 'never)
+        ((fn (a b) add a b) 3 4)
+        ((fn args pgn args) 1 2 3)
+        (def sq (fn (x) mul x x))
+        (sq 12)
+        (quote (a b c))
+        '(1 . 2)
+        '(a b . c)
+        (set y 10)
+        (set y)
+        (set y 11)
+        y
+        (set never-defined)
+        (cons 'x 'y)
+        (cons 1 nil)
+        (car '(x y))
+        (cdr '(x y))
+        (car nil)
+        (type 1)
+        (type 'a)
+        (type '(a))
+        (type car)
+        (type sq)
+        (type (fexpr (x) x))
+        (add)
+        (add 1 2 3 4)
+        (sub 100 1 2 3)
+        (mul 2 3 7)
+        (div 100 7)
+        (mod 100 7)
+        (div -7 2)
+        (mod -7 2)
+        (band 12 10)
+        (bor 12 10)
+        (bxor 12 10)
+        (lls 1 10)
+        (lrs 1024 3)
+        (lrs -1 60)
+        (min 5 3 9)
+        (max 5 3 9)
+        (eq 1 1 1)
+        (eq 1 1 2)
+        (neq 1 2)
+        (less 1 2 3)
+        (less 1 3 2)
+        (leq 1 1 2)
+        (more 3 2 1)
+        (meq 3 3 1)
+        (eq 'a 'a)
+        (eq '(a) '(a))
+        (def q (fexpr (x) pgn x))
+        (q (add 1 2))
+        (eval '(add 1 2))
+        (assoc 'b '((a . 1) (b . 2)))
+        (assoc 'z '((a . 1) (b . 2)))
+        (evlis '((add 1 1) (mul 2 2)))
+        (expand '(foo (bar baz)))
+        (gensym)
+        (gensym)
+        (def x 1)
+        @(x ,x)
+        (def l '(1 2 3))
+        @(a ,@l b)
+        @(nested (x ,x) ,(add x 1))
+        (def pair (cons 1 2))
+        (setcar pair 'one)
+        (setcdr pair 'two)
+        pair
+        (eq ! (div 1 0))
+        (eq ! (car '(1)))
+        (div 1 0)
+        (mod 1 0)
+        (undefined-function 1 2)
+        !
+        %
+    """
+
+    # Numbers at the edges of intptr_t and just past them (where they read as
+    # unbound symbols), comments, dotted pairs, a symbol that grows the token
+    # buffer several times over, malformed input the reader must recover from,
+    # and a final expression cut off by EOF.
+    reader = (
+        """
+        +5
+        -0
+        -17
+        007
+        9223372036854775807
+        -9223372036854775807
+        9223372036854775808
+        -9223372036854775809
+        '99999999999999999999999
+        'abc123
+        'hello-world
+        '(a . (b . (c . nil)))
+        '((a . 1) (b . 2))
+        ; a comment line
+        '(1 ; an inline comment
+          2)
+        )
+        '(a . )
+        '(a b c)'(d e f)
+        """
+        + "'"
+        + "a" * 300
+        + """
+        (add 1 2
+        """
+    )
+
+    # `in` reads the next expression from stdin, and `out` writes one to stdout.
+    io = """
+        (out '(a b . c))
+        (in)
+        (this is data)
+        (car (in))
+        (x y z)
+        (eval (in))
+        (add 40 2)
+        (cons (in) (in)) left right
+        (in)
+    """
+
+    # Library functions from lisp.lsp, plus a few recursive benchmarks.
+    library_fns = """
+        (mapcar square '(1 2 3 4))
+        (mapcar (fn (x) cons x x) '(1 2 3))
+        (fold add '(1 2 3 4 5))
+        (fold max '(3 9 2 7))
+        (sum-of-squares 3 4)
+        (+ 1 2 3)
+        (* 2 3 4)
+        (- 10 1 2)
+        (= 4 4 4)
+        (reverse '(1 2 3))
+        (append '(1 2) '(3 4))
+        (copy '(a (b) c))
+        (flatten '(1 (2 (3 (4))) 5))
+        (sort '(5 3 9 1 7 2 8 -4 0))
+        (length '(a b c d))
+        (nth 2 '(a b c d))
+        (subst 'z 'a '(a (b a) c))
+        (gcd 1071 462)
+        (lcm 21 6)
+        (date 1000000000)
+        (unix '(2001 9 9 1 46 40))
+        (date 0)
+        (day-of-week '(2024 2 29))
+        (union '(a b c) '(b d))
+        (intersection '(a b c) '(b c d))
+        (symmetric-difference '(a b c) '(b c d))
+        (eqset '(a b) '(b a))
+        (unique? '(a b a))
+        (remove-member 'a '(a b a c))
+        (def c (counter 10 5))
+        (c)
+        (c)
+        (popcnt 255)
+        (log 12345 10)
+        (abs -42)
+        (signum -9)
+        (odd? 7)
+        (equal '(a (b c)) '(a (b c)))
+        (memb 'c '(a b c d))
+        (sublist '(a b c d e) 1 3)
+        (assoc 3 *months*)
+        #bits
+        (popcnt #max)
+        (eq #min (lls 1 (sub #bits 1)))
+        (history-push '(add 1 2))
+        (history-push '(mul 3 4))
+        (history? 1)
+        (facl 10)
+        (fac 12)
+        (pgn
+          (defun ack (m n)
+            if (eq m 0) (add n 1)
+            (if (eq n 0) (ack (sub m 1) 1) (ack (sub m 1) (ack m (sub n 1)))))
+          (ack 2 3))
+        (pgn
+          (defun tak (x y z)
+            if (not (less y x)) z
+            (tak (tak (sub x 1) y z) (tak (sub y 1) z x) (tak (sub z 1) x y)))
+          (tak 12 8 4))
+        (pgn
+          (defun fib (n) if (less n 2) n (add (fib (sub n 1)) (fib (sub n 2))))
+          (fib 15))
+    """
+
+    # Enough live cells to exhaust main()'s 4096-node arena (so allocation falls
+    # back to realloc) and to run the collector, which fires every 8192
+    # allocations, many times over.
+    gc = """
+        (def churn
+          (fn (n)
+            pgn
+            (def acc nil)
+            (do (more n 0) (set acc (cons n (cons n nil))) (set n (sub n 1)))
+            acc))
+        (churn 20000)
+        (def big nil)
+        (def i 0)
+        (do (less i 10000) (set big (cons i big)) (set i (add i 1)))
+        (length big)
+        (nth 1234 big)
+        (fold add big)
+    """
+
+    # LISP_MAX_DEPTH (512) bounds the evaluator, the reader and the writer, but
+    # tail calls run in constant depth. A writer that runs out of depth makes
+    # main() give up and exit 1, part way through printing.
+    depth = (
+        """
+        (def down (fn (n) if (eq n 0) 'bottom (down (sub n 1))))
+        (down 5000)
+        (def nontail (fn (n) if (eq n 0) 0 (add 1 (nontail (sub n 1)))))
+        (nontail 50)
+        (nontail 1000)
+        """
+        + "(" * 520
+        + ")" * 520
+        + """
+        'reader-recovered
+        (def nest (fn (n) pgn (def r 'leaf) (do (more n 0) (set r (cons r nil)) (set n (sub n 1))) r))
+        (nest 5)
+        (pgn (def deep (nest 600)) 'built)
+        deep
+        'unreached
+        """
+    )
+
+    # (name, whether lisp.lsp goes first, program, exit status, last lines of stdout)
+    # The C build has to produce the pinned exit status and final lines, since
+    # two identically-wrong builds would otherwise agree.
+    cases = [
+        ("core", False, core, 0, ["t", "()", "!", "!", "!", "!", "%"]),
+        ("reader", False, reader, 0, ["(a b c )", "(d e f )", "a" * 300]),
+        (
+            "io",
+            False,
+            io,
+            0,
+            ["(a b . c ) 0", "(this is data )", "x", "42", "(left . right )", "%"],
+        ),
+        (
+            "library_self_test",
+            True,
+            "",
+            0,
+            ["(Loading Lush Lisp Library... )", "ok", "BIST", "ok", "ok"],
+        ),
+        ("library_fns", True, library_fns, 0, ["3628800", "479001600", "9", "5", "610"]),
+        ("gc", True, gc, 0, ["(1 1 )", "()", "0", "10000", "10000", "8765", "49995000"]),
+        ("depth", True, depth, 1, ["(((((leaf ) ) ) ) )", "built", "(" * 513]),
+    ]
+
+    problems = []
+    for name, with_library, program, expected_rc, expected_tail in cases:
+        stdin = (library if with_library else b"") + program.encode("utf-8")
+        c_cp = hermetic.run([str(c_lisp)], input=stdin, check=False, capture_output=True)
+        c_lines = [line.rstrip() for line in c_cp.stdout.decode("utf-8").splitlines()]
+        assert c_cp.returncode == expected_rc and c_lines[-len(expected_tail) :] == expected_tail, (
+            f"{name}: unexpected output from the C build: exit {c_cp.returncode}, "
+            f"stdout ends {c_cp.stdout[-500:]!r}, stderr {c_cp.stderr[-500:]!r}"
+        )
+
+        rs_cp = hermetic.run([str(rs_lisp)], input=stdin, check=False, capture_output=True)
+        if rs_cp.returncode != c_cp.returncode:
+            problems.append(
+                f"{name}: exit {rs_cp.returncode} (Rust) vs {c_cp.returncode} (C); "
+                f"Rust stdout ends {rs_cp.stdout[-1000:]!r}, stderr {rs_cp.stderr[-1000:]!r}"
+            )
+        elif rs_cp.stdout != c_cp.stdout:
+            problems.append(
+                f"{name}: stdout differed; Rust {rs_cp.stdout[-1000:]!r} "
+                f"vs C {c_cp.stdout[-1000:]!r}"
+            )
+        elif rs_cp.stderr != c_cp.stderr:
+            problems.append(f"{name}: stderr differed; Rust {rs_cp.stderr!r} vs C {c_cp.stderr!r}")
+
+    assert not problems, "The Rust lisp diverged from the C lisp:\n" + "\n".join(problems)
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
