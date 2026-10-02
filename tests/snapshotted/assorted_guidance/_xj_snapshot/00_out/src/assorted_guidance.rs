@@ -80,7 +80,7 @@ pub unsafe fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
 pub unsafe fn guided_str_init_lit() {
     let ostr: String = String::from("owned String");
     print_owned_String(String::from("ddedd"));
-    let mut uptr = b"unguided pointer\0".as_ptr() as *const u8;
+    let mut uptr = b"unguided pointer\0".as_ptr();
 }
 #[no_mangle]
 pub unsafe fn guided_str_init_empty_lit() {
@@ -284,7 +284,7 @@ pub unsafe fn use_pod_structs(mut png: PodNotGuided, mut pg: PodGuided) -> ::cor
 }
 #[no_mangle]
 pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
-    if printf(b"%s\n\0".as_ptr() as *const u8, ostr) < 0 as ::core::ffi::c_int {
+    if printf(b"%s\n\0".as_ptr(), ostr) < 0 as ::core::ffi::c_int {
         return 42 as ::core::ffi::c_int;
     }
     return 0 as ::core::ffi::c_int;

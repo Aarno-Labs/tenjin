@@ -25,7 +25,7 @@ pub unsafe extern "C" fn numbers_demo() -> ::core::ffi::c_int {
             .as_mut()
             .unwrap(),
     );
-    total += first_byte(b"world\0".as_ptr() as *const u8) as ::core::ffi::c_int;
+    total += first_byte(b"world\0".as_ptr()) as ::core::ffi::c_int;
     total + strings_demo()
 }
 pub mod xj_ffi {

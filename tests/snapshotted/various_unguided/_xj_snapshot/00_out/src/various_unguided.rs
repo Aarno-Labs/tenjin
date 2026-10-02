@@ -23,9 +23,9 @@ pub unsafe extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
     println!("{:>}", {
         xj_str_from_ptr(
             (if cond != 0 {
-                b"true\0".as_ptr() as *const u8
+                b"true\0".as_ptr()
             } else {
-                b"false\0".as_ptr() as *const u8
+                b"false\0".as_ptr()
             }) as *const u8,
         )
     });

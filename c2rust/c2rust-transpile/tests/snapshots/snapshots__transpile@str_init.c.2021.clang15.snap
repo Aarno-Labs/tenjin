@@ -24,7 +24,7 @@ pub struct alpn_spec {
 }
 #[no_mangle]
 pub unsafe extern "C" fn ptr() {
-    let mut _s: *const u8 = b"hello\0".as_ptr() as *const u8;
+    let mut _s: *const u8 = b"hello\0".as_ptr();
 }
 #[no_mangle]
 pub unsafe extern "C" fn array_deduced_length() {
@@ -55,7 +55,7 @@ pub unsafe extern "C" fn int_array_extra_braces() {
 }
 #[no_mangle]
 pub unsafe extern "C" fn ptr_extra_braces() {
-    let mut _s: *const u8 = b"hello\0".as_ptr() as *const u8;
+    let mut _s: *const u8 = b"hello\0".as_ptr();
 }
 #[no_mangle]
 pub unsafe extern "C" fn array_extra_braces() {
@@ -64,7 +64,7 @@ pub unsafe extern "C" fn array_extra_braces() {
 #[no_mangle]
 pub unsafe extern "C" fn array_of_ptrs() {
     let mut _s: [*const u8; 3] = [
-        b"hello\0".as_ptr() as *const u8,
+        b"hello\0".as_ptr(),
         ::core::ptr::null::<u8>(),
         ::core::ptr::null::<u8>(),
     ];

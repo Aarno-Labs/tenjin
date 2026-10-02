@@ -47,7 +47,7 @@ pub struct C2Rust_Unnamed_2 {
 #[unsafe(no_mangle)]
 pub static mut static_char_array: [u8; 9] = *b"mystring\0";
 #[unsafe(no_mangle)]
-pub static mut static_char_ptr: *mut u8 = b"mystring\0".as_ptr() as *const u8 as *mut u8;
+pub static mut static_char_ptr: *mut u8 = b"mystring\0".as_ptr() as *mut u8;
 #[unsafe(no_mangle)]
 pub static mut static_void_ptr: *mut ::core::ffi::c_void =
     &raw const static_char_array as *mut u8 as *mut ::core::ffi::c_void;
@@ -85,9 +85,9 @@ pub unsafe extern "C" fn entry() {
         &raw mut int_empty_init as *mut [::core::ffi::c_int; 16];
     let mut char_var_ptr: *mut u8 = &raw mut char_with_string as *mut u8;
     let mut char_var_array_ptr: *mut [u8; 4] = &raw mut char_with_string as *mut [u8; 4];
-    let mut const_char_lit_ptr: *const u8 = b"abc\0".as_ptr() as *const u8;
+    let mut const_char_lit_ptr: *const u8 = b"abc\0".as_ptr();
     let mut const_char_lit_array_ptr: *const [u8; 4] = b"abc\0" as *const [u8; 4];
-    let mut char_lit_ptr: *mut u8 = b"abc\0".as_ptr() as *const u8 as *mut u8;
+    let mut char_lit_ptr: *mut u8 = b"abc\0".as_ptr() as *mut u8;
     let mut char_lit_array_ptr: *mut [u8; 4] = b"abc\0" as *const [u8; 4] as *mut [u8; 4];
     let mut past_end: *mut u8 = (&raw mut static_char_array as *mut u8).offset(9);
     past_end = static_char_ptr.offset(8 as isize);

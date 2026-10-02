@@ -51,8 +51,8 @@ unsafe fn main_0() -> ::core::ffi::c_int {
         "{:} {:} {:} {:} {:}",
         scale(6, 7) as core::ffi::c_int,
         blend('A' as ::core::ffi::c_int, 2.0f64) as core::ffi::c_int,
-        total(1, 2, b"z\0".as_ptr() as *const u8 as *mut u8) as core::ffi::c_int,
-        first_of(b"xyz\0".as_ptr() as *const u8 as *mut u8, 1) as core::ffi::c_int,
+        total(1, 2, b"z\0".as_ptr() as *mut u8) as core::ffi::c_int,
+        first_of(b"xyz\0".as_ptr() as *mut u8, 1) as core::ffi::c_int,
         seven() as core::ffi::c_int
     );
     0

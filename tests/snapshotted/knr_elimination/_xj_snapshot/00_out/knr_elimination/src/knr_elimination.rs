@@ -56,12 +56,9 @@ unsafe fn main_0() -> ::core::ffi::c_int {
         total(
             1 as ::core::ffi::c_int,
             2 as ::core::ffi::c_int,
-            b"z\0".as_ptr() as *const u8 as *mut u8
+            b"z\0".as_ptr() as *mut u8
         ) as core::ffi::c_int,
-        first_of(
-            b"xyz\0".as_ptr() as *const u8 as *mut u8,
-            1 as ::core::ffi::c_int
-        ) as core::ffi::c_int,
+        first_of(b"xyz\0".as_ptr() as *mut u8, 1 as ::core::ffi::c_int) as core::ffi::c_int,
         seven() as core::ffi::c_int
     );
     return 0 as ::core::ffi::c_int;
