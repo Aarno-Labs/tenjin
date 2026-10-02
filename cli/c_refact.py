@@ -694,7 +694,9 @@ def compute_global_symbol_inventory_for_translation_units(
     """Collect declarations which can collide with a project static's name.
 
     Unlike ``compute_globals_and_statics_for_translation_units``, this includes
-    declarations as well as definitions and includes externally linked functions.
+    declarations as well as definitions and includes externally linked functions,
+    ordinary local variables, and parameters. Locals reserve names but are never
+    candidates for static renaming.
     The result is intended as a name-occupancy inventory, not as a list of
     entities eligible for a source rewrite.
     """
@@ -702,8 +704,9 @@ def compute_global_symbol_inventory_for_translation_units(
     combined: list[Cursor] = []
 
     def visit(node: Cursor):
-        if node.kind in (CursorKind.VAR_DECL, CursorKind.FUNCTION_DECL) and (
-            node.storage_class == StorageClass.STATIC or node.linkage == LinkageKind.EXTERNAL
+        if node.kind in (CursorKind.VAR_DECL, CursorKind.PARM_DECL) or (
+            node.kind == CursorKind.FUNCTION_DECL
+            and (node.storage_class == StorageClass.STATIC or node.linkage == LinkageKind.EXTERNAL)
         ):
             combined.append(node)
         for child in node.get_children():

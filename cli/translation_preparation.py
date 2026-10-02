@@ -1320,10 +1320,10 @@ def run_preparation_passes(
         )
 
     def prep_uniquify_statics(prev: Path, current_codebase: Path, store: PrepPassResultStore):
-        """The purpose of this pass is to rename static globals to have unique names,
-        so that subsequent analysis and refactorings can rely on the property that different
-        declarations have different names (that is: a name refers to at most one declaration,
-        across the whole project).
+        """The purpose of this pass is to rename static globals and function-scoped
+        statics to have unique names, including avoiding ordinary locals and parameters,
+        so that subsequent analysis and refactorings can identify static entities by name
+        across the whole project.
         """
         # For now, we restrict analysis to single-target projects,
         # although this is not a fundamental limitation.
