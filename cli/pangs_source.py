@@ -196,19 +196,25 @@ def validate_cross_tu(manifest: dict, original: Path, staged: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="pangs-validation-") as temp:
         database = Path(temp) / "commands.json"
         commands.to_json_file(database)
-        hermetic.run(
-            [
-                hermetic.xj_pangs_exe(repo_root.localdir()),
-                "validate-source",
-                "--source-compdb",
-                database,
-                *[
-                    arg
-                    for field in manifest["context_rewrite"]["selected"]["fields"]
-                    for arg in ("--removed-global", field["llvm_name"].rsplit(".", 1)[-1])
+        try:
+            hermetic.run(
+                [
+                    hermetic.xj_pangs_exe(repo_root.localdir()),
+                    "validate-source",
+                    "--source-compdb",
+                    database,
+                    *[
+                        arg
+                        for field in manifest["context_rewrite"]["selected"]["fields"]
+                        for arg in ("--removed-global", field["llvm_name"].rsplit(".", 1)[-1])
+                    ],
                 ],
-            ],
-            check=True,
-            capture_output=True,
-            env_ext={"XJ_USE_LLVM14": "1"},
-        )
+                check=True,
+                capture_output=True,
+                env_ext={"XJ_USE_LLVM14": "1"},
+            )
+        except CalledProcessError as exc:
+            diagnostics = (exc.stderr or b"").decode("utf-8", errors="replace")
+            raise ValueError(
+                f"PANGS rejected rewritten source declarations:\n{diagnostics}"
+            ) from exc

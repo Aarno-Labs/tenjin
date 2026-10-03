@@ -9,6 +9,7 @@ import pprint
 from os import environ
 import os
 import tempfile
+import hashlib
 
 from clang.cindex import (  # type: ignore
     Index,
@@ -18,6 +19,7 @@ from clang.cindex import (  # type: ignore
     TranslationUnit,
     CompilationDatabase,
     TypeKind,
+    Type,
     Cursor,
 )
 
@@ -991,6 +993,16 @@ def cursor_extent_contains(outer: Cursor, inner: Cursor) -> bool:
     )
 
 
+def type_declaration_is_file_scoped(cursor: Cursor) -> bool:
+    parent = cursor.semantic_parent
+    while parent is not None and parent.kind in (
+        CursorKind.STRUCT_DECL,
+        CursorKind.UNION_DECL,
+    ):
+        parent = parent.semantic_parent
+    return parent is not None and parent.kind == CursorKind.TRANSLATION_UNIT
+
+
 def type_names_declared_before_offset(tu: TranslationUnit, offset: int) -> set[str]:
     """Return named type declarations that are visible before ``offset``.
 
@@ -1010,7 +1022,7 @@ def type_names_declared_before_offset(tu: TranslationUnit, offset: int) -> set[s
         for cursor in tu.cursor.walk_preorder()  # type: ignore[attr-defined]
         if cursor.kind in type_declaration_kinds
         and cursor.spelling
-        and cursor.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+        and type_declaration_is_file_scoped(cursor)
         and cursor.extent.end.offset <= offset
     }
 
@@ -1036,11 +1048,18 @@ def order_context_type_declarations(declarations: list[Cursor]) -> list[Cursor]:
             for child in cursor.get_children():
                 if child.kind == CursorKind.TYPE_REF and child.referenced:
                     referenced = child.referenced
-                    if (
-                        referenced.kind in tag_kinds
-                        and cursor.type.get_canonical().kind == TypeKind.POINTER
+                    if referenced.kind in (CursorKind.STRUCT_DECL, CursorKind.UNION_DECL) and (
+                        cursor.type.get_canonical().kind == TypeKind.POINTER
+                        or (
+                            cursor.kind == CursorKind.TYPEDEF_DECL
+                            and not cursor_extent_contains(
+                                cursor, referenced.get_definition() or referenced
+                            )
+                        )
                     ):
-                        # Tag forward declarations suffice for pointer fields.
+                        # Forward tags suffice for pointers and tag aliases.
+                        # Requiring the full definition before an alias would
+                        # invert a self-referential record's declaration order.
                         continue
                     owner = owners.get((referenced.kind, referenced.spelling))
                     if owner is not None:
@@ -1105,6 +1124,312 @@ def render_source_backed_declaration(cursor: Cursor, rewriter) -> str:
         cursor.spelling,
         base_type_spelling=base_type_spelling,
     )
+
+
+def render_source_initializer(cursor: Cursor, rewriter) -> str:
+    expressions = [child for child in cursor.get_children() if child.kind.is_expression()]
+    if not expressions:
+        return (
+            "{0}"
+            if cursor.type.get_canonical().kind in (TypeKind.RECORD, TypeKind.CONSTANTARRAY)
+            else "0"
+        )
+    initializer = expressions[-1]
+    start = initializer.extent.start.offset
+    end = initializer.extent.end.offset
+    content = rewriter.get_content(cursor.location.file.name)[start:end]
+    replacements = {}
+    for reference in initializer.walk_preorder():
+        if reference.kind != CursorKind.DECL_REF_EXPR or reference.referenced is None:
+            continue
+        constant = reference.referenced
+        if constant.kind == CursorKind.ENUM_CONSTANT_DECL:
+            type_obj = reference.type.get_canonical()
+            if type_obj.kind == TypeKind.ENUM:
+                type_obj = type_obj.get_declaration().enum_type
+            replacements[reference.extent.start.offset - start] = (
+                reference.extent.end.offset - start,
+                f"(({type_obj.spelling}){constant.enum_value})".encode(),
+            )
+    # Enum names are TU-local too. Reuse each occurrence's value and type
+    # instead of importing potentially conflicting names into main's TU.
+    for begin, (finish, replacement) in sorted(replacements.items(), reverse=True):
+        content = content[:begin] + replacement + content[finish:]
+    return content.decode("utf-8").strip()
+
+
+def fold_context_type_traits(tus: dict[str, TranslationUnit], global_names: set[str]) -> bool:
+    """Keep constant sizeof/alignof uses independent of relocated storage."""
+    changed = False
+    with batching_rewriter.BatchingRewriter() as rewriter:
+        for path, tu in tus.items():
+            content = rewriter.get_content(path)
+
+            def visit(cursor: Cursor):
+                nonlocal changed
+                children = list(cursor.get_children())
+                if cursor.kind == CursorKind.CXX_UNARY_EXPR and len(children) == 1:
+                    operand = children[0]
+                    # A type operand containing VLA bounds exposes only the
+                    # bound expressions as children. Those must still run.
+                    prefix = content[
+                        cursor.extent.start.offset : operand.extent.start.offset
+                    ].strip()
+                    if prefix in (b"sizeof", b"_Alignof", b"__alignof", b"__alignof__") and any(
+                        ref.kind == CursorKind.DECL_REF_EXPR
+                        and ref.spelling in global_names
+                        and ref.referenced is not None
+                        and (
+                            ref.referenced.storage_class == StorageClass.STATIC
+                            or ref.referenced.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+                        )
+                        for ref in operand.walk_preorder()
+                    ):
+                        value = (
+                            operand.type.get_size()
+                            if prefix == b"sizeof"
+                            else operand.type.get_align()
+                        )
+                        if value >= 0:
+                            start = cursor.extent.start.offset
+                            rewriter.add_rewrite(
+                                path,
+                                start,
+                                cursor.extent.end.offset - start,
+                                f"(({cursor.type.spelling}){value})",
+                            )
+                            changed = True
+                            return
+                for child in children:
+                    visit(child)
+
+            visit(tu.cursor)  # type: ignore[arg-type]
+    return changed
+
+
+def tag_has_written_name(declaration: Cursor) -> bool:
+    # Libclang gives a tagless `typedef struct {...} Alias` the typedef's
+    # spelling and reports is_anonymous() as false. Its location still points
+    # at the struct/union/enum keyword rather than a written tag identifier.
+    return (
+        not declaration.is_anonymous()
+        and declaration.location.offset != declaration.extent.start.offset
+    )
+
+
+def context_type_signature(type_obj: Type) -> tuple:
+    """Compare typedef copies without Clang's anonymous-type source locations.
+
+    Named types retain their canonical spelling, as before. Anonymous types
+    instead include their members and layout; stripping a location from the
+    spelling alone would conflate incompatible anonymous definitions.
+    """
+    canonical = type_obj.get_canonical()
+    kind = canonical.kind
+    qualifiers = (
+        canonical.is_const_qualified(),
+        canonical.is_volatile_qualified(),
+        canonical.is_restrict_qualified(),
+    )
+    if kind == TypeKind.POINTER:
+        detail = context_type_signature(canonical.get_pointee())
+    elif kind in (TypeKind.CONSTANTARRAY, TypeKind.INCOMPLETEARRAY, TypeKind.VARIABLEARRAY):
+        detail = (
+            canonical.get_array_size(),
+            context_type_signature(canonical.get_array_element_type()),
+        )
+    elif kind in (TypeKind.FUNCTIONPROTO, TypeKind.FUNCTIONNOPROTO):
+        detail = (
+            context_type_signature(canonical.get_result()),
+            tuple(context_type_signature(arg) for arg in canonical.argument_types())
+            if kind == TypeKind.FUNCTIONPROTO
+            else (),
+            canonical.is_function_variadic() if kind == TypeKind.FUNCTIONPROTO else False,
+        )
+    elif kind in (TypeKind.RECORD, TypeKind.ENUM) and not tag_has_written_name(
+        canonical.get_declaration()
+    ):
+        declaration = canonical.get_declaration()
+        members: tuple
+        if kind == TypeKind.RECORD:
+            members = tuple(
+                (
+                    child.spelling,
+                    child.get_field_offsetof(),
+                    child.get_bitfield_width() if child.is_bitfield() else -1,
+                    context_type_signature(child.type),
+                )
+                if child.kind == CursorKind.FIELD_DECL
+                else ("anonymous", context_type_signature(child.type))
+                for child in declaration.get_children()
+                if child.kind == CursorKind.FIELD_DECL
+                or (
+                    child.kind in (CursorKind.STRUCT_DECL, CursorKind.UNION_DECL)
+                    and child.is_anonymous()
+                )
+            )
+        else:
+            members = (
+                context_type_signature(declaration.enum_type),
+                tuple(
+                    (constant.spelling, constant.enum_value)
+                    for constant in declaration.get_children()
+                    if constant.kind == CursorKind.ENUM_CONSTANT_DECL
+                ),
+            )
+        detail = (declaration.kind, canonical.get_size(), canonical.get_align(), members)
+    else:
+        detail = canonical.spelling
+    return kind, qualifiers, detail
+
+
+def uniquify_context_record_tags(
+    index: Index,
+    compdb: compilation_database.CompileCommands,
+    current_codebase: Path,
+    tus: dict[str, TranslationUnit],
+    localized_global_names: set[str],
+) -> dict[str, TranslationUnit]:
+    """Keep incompatible private tags distinct when combining TU-local storage.
+
+    PANGS has already checked externally shared types. Private tags can still
+    have the same name and different layouts, and must not collide when their
+    globals become fields of the common XjGlobals definition. Apply this after
+    consuming the plan's byte offsets, then reparse before copying declarations.
+    """
+    tag_kinds = (CursorKind.STRUCT_DECL, CursorKind.UNION_DECL)
+    renamed_tags: set[str] = set()
+    while True:
+        needed_tags: set[str] = set()
+        visited_records: set[tuple[str, str]] = set()
+
+        def collect_tags(path: str, type_obj: Type):
+            canonical = type_obj.get_canonical()
+            if canonical.kind == TypeKind.POINTER:
+                collect_tags(path, canonical.get_pointee())
+            elif canonical.kind in (
+                TypeKind.CONSTANTARRAY,
+                TypeKind.INCOMPLETEARRAY,
+                TypeKind.VARIABLEARRAY,
+            ):
+                collect_tags(path, canonical.get_array_element_type())
+            elif canonical.kind == TypeKind.FUNCTIONPROTO:
+                collect_tags(path, canonical.get_result())
+                for parameter in canonical.argument_types():
+                    collect_tags(path, parameter)
+            elif canonical.kind == TypeKind.RECORD:
+                declaration = canonical.get_declaration()
+                declaration = declaration.get_definition() or declaration
+                key = path, declaration.get_usr()
+                if key in visited_records:
+                    return
+                visited_records.add(key)
+                needed_tags.add(declaration.spelling)
+                for child in declaration.get_children():
+                    if child.kind == CursorKind.FIELD_DECL or (
+                        child.kind in tag_kinds and child.is_anonymous()
+                    ):
+                        collect_tags(path, child.type)
+
+        groups: dict[tuple[CursorKind, str], list[tuple[str, Cursor, tuple]]] = {}
+        for path, tu in tus.items():
+            for declaration in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
+                if (
+                    declaration.kind == CursorKind.VAR_DECL
+                    and declaration.spelling in localized_global_names
+                    and (
+                        declaration.storage_class == StorageClass.STATIC
+                        or declaration.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+                    )
+                ):
+                    collect_tags(path, declaration.type)
+                if not type_declaration_is_file_scoped(declaration):
+                    continue
+                if declaration.kind in tag_kinds:
+                    if not tag_has_written_name(declaration) or not declaration.is_definition():
+                        continue
+                    # Match PANGS's ABI checks: member spelling can vary with
+                    # feature macros without changing the layout (glibc tm).
+                    signature = (
+                        declaration.type.get_size(),
+                        declaration.type.get_align(),
+                        tuple(
+                            (
+                                field.get_field_offsetof(),
+                                field.get_bitfield_width() if field.is_bitfield() else -1,
+                                context_type_signature(field.type),
+                            )
+                            for field in declaration.get_children()
+                            if field.kind == CursorKind.FIELD_DECL
+                        ),
+                        tuple(
+                            context_type_signature(child.type)
+                            for child in declaration.get_children()
+                            if child.kind in tag_kinds and child.is_anonymous()
+                        ),
+                    )
+                elif declaration.kind == CursorKind.TYPEDEF_DECL:
+                    signature = context_type_signature(declaration.underlying_typedef_type)
+                else:
+                    continue
+                groups.setdefault((declaration.kind, declaration.spelling), []).append((
+                    path,
+                    declaration,
+                    signature,
+                ))
+
+        renames: dict[tuple[str, str], str] = {}
+        used_names = {name for _, name in groups}
+        for (kind, name), declarations in groups.items():
+            if kind in tag_kinds and name not in needed_tags:
+                continue
+            if len({path for path, _, _ in declarations}) < 2:
+                continue
+            if len({signature for _, _, signature in declarations}) < 2:
+                continue
+            if kind == CursorKind.TYPEDEF_DECL and not any(
+                tag in repr(signature) for _, _, signature in declarations for tag in renamed_tags
+            ):
+                # Keep rejecting incompatible ordinary typedefs. Only rename
+                # aliases whose signatures changed with a private record tag.
+                continue
+            for path, declaration, _ in declarations:
+                scope = Path(path).relative_to(current_codebase).as_posix()
+                suffix = hashlib.sha256(scope.encode()).hexdigest()[:12]
+                replacement = f"{name}__xj_{suffix}"
+                while replacement in used_names:
+                    replacement += "_"
+                used_names.add(replacement)
+                renames[path, declaration.get_usr()] = replacement
+                if kind in tag_kinds:
+                    renamed_tags.add(replacement)
+        if not renames:
+            return tus
+
+        with batching_rewriter.BatchingRewriter() as rewriter:
+            edited: set[tuple[str, int]] = set()
+            for path, tu in tus.items():
+                for cursor in tu.cursor.walk_preorder():  # type: ignore[attr-defined]
+                    if cursor.kind in (*tag_kinds, CursorKind.TYPEDEF_DECL):
+                        declaration = cursor
+                    elif cursor.kind == CursorKind.TYPE_REF and cursor.referenced:
+                        declaration = cursor.referenced
+                    else:
+                        continue
+                    new_name = renames.get((path, declaration.get_usr()))
+                    if new_name is None:
+                        continue
+                    offset = cursor.location.offset
+                    if (path, offset) in edited:
+                        continue
+                    name = declaration.spelling
+                    content = rewriter.get_content(path)
+                    assert content[offset : offset + len(name)] == name.encode(), (
+                        f"Cannot locate type name {name} at {path}:{offset}"
+                    )
+                    rewriter.add_rewrite(path, offset, len(name), new_name)
+                    edited.add((path, offset))
+        tus = parse_project(index, compdb)
 
 
 def localize_mutable_globals(
@@ -1217,6 +1542,9 @@ def _localize_mutable_globals_in_place(
 
     index = create_xj_clang_index()
     tus = parse_project(index, compdb)
+    if fold_context_type_traits(tus, localized_global_names):
+        tus = parse_project(index, compdb)
+    tus = uniquify_context_record_tags(index, compdb, current_codebase, tus, localized_global_names)
 
     globals_and_statics = compute_globals_and_statics_for_translation_units(
         list(tus.values()), elide_functions=True
@@ -1266,9 +1594,28 @@ def _localize_mutable_globals_in_place(
     print("=" * 80)
 
     needed_struct_defs = {}
-    needed_typedefs: dict[str, tuple[Cursor, str]] = {}
+    needed_typedefs: dict[str, tuple[Cursor, tuple]] = {}
     forward_declarable_types: dict[str, str] = {}
     visited_anonymous_type_defs: set[tuple[CursorKind, str, int, int]] = set()
+
+    def collect_typedef(decl: Cursor):
+        name = decl.spelling
+        assert name, "Typedef without a name?"
+        previous = needed_typedefs.get(name)
+        if previous is not None and previous[0] == decl:
+            return
+        signature = context_type_signature(decl.underlying_typedef_type)
+        if previous is not None and previous[1] != signature:
+            raise ValueError(f"Typedef {name} already recorded, but different declaration!")
+        needed_typedefs.setdefault(name, (decl, signature))
+        underlying = decl.underlying_typedef_type.get_canonical().get_declaration()
+        if underlying.kind in (
+            CursorKind.STRUCT_DECL,
+            CursorKind.UNION_DECL,
+        ) and tag_has_written_name(underlying):
+            forward_declarable_types[underlying.spelling] = (
+                "union" if underlying.kind == CursorKind.UNION_DECL else "struct"
+            )
 
     def collect_type_dependencies(type_obj_noncanonical, depth=0):
         """Recursively collect struct/union types needed to define this type."""
@@ -1288,27 +1635,7 @@ def _localize_mutable_globals_in_place(
         if type_obj_noncanonical.kind == TypeKind.ELABORATED:
             decl = type_obj_noncanonical.get_declaration()
             if decl.kind == CursorKind.TYPEDEF_DECL:
-                type_name = decl.spelling
-                assert type_name, "Typedef without a name?"
-                if type_name not in needed_typedefs:
-                    # print(f"{indent}  -> Need typedef: {type_name}")
-                    needed_typedefs[type_name] = (
-                        decl,
-                        decl.underlying_typedef_type.get_canonical().spelling,
-                    )
-                elif needed_typedefs[type_name][0] == decl:
-                    pass
-                elif (
-                    needed_typedefs[type_name][1]
-                    == decl.underlying_typedef_type.get_canonical().spelling
-                ):
-                    # Typedefs in preprocessed code can be duplicated between translation units,
-                    # as long as the associated types are identical, it's all good.
-                    pass
-                elif needed_typedefs[type_name][0] != decl:
-                    raise ValueError(
-                        f"Typedef {type_name} already recorded, but different declaration!"
-                    )
+                collect_typedef(decl)
 
             # Continue with the underlying type
             decl_def = decl.get_definition()
@@ -1326,10 +1653,7 @@ def _localize_mutable_globals_in_place(
 
         if type_obj_noncanonical.kind == TypeKind.TYPEDEF:
             typedef_decl = type_obj_noncanonical.get_declaration()
-            needed_typedefs.setdefault(
-                typedef_decl.spelling,
-                (typedef_decl, typedef_decl.underlying_typedef_type.get_canonical().spelling),
-            )
+            collect_typedef(typedef_decl)
             # print(f"{indent}  Saw typedef...")
             # print(f"{indent}    typedef cursor: {typedef_decl.kind}")
             # print(f"{indent}    typedef cursor: {typedef_decl.extent}")
@@ -1415,19 +1739,52 @@ def _localize_mutable_globals_in_place(
                 if field.kind == CursorKind.FIELD_DECL:
                     # print(f"{indent}    Field: {field.spelling} : {field.type.spelling}")
                     collect_type_dependencies(field.type, depth + 2)
+                elif field.kind in (CursorKind.STRUCT_DECL, CursorKind.UNION_DECL):
+                    if field.is_anonymous():
+                        collect_type_dependencies(field.type, depth + 2)
 
     for cursor in localized_globals_and_statics:
         # print(f"\nAnalyzing dependencies for {cursor.spelling}:")
         collect_type_dependencies(cursor.type, depth=1)
 
     initializer_functions: dict[str, Cursor] = {}
-    for var_cursor in localized_globals_and_statics:
+    initializer_externals: dict[str, Cursor] = {}
+    globals_and_statics_by_name = {c.spelling: c for c in globals_and_statics}
+    global_dependencies: dict[str, set[str]] = {}
+    globals_to_copy_to_main: set[str] = set()
+    visited_initializers: set[str] = set()
+
+    def collect_initializer_dependencies(var_cursor: Cursor):
+        if var_cursor.spelling in visited_initializers:
+            return
+        visited_initializers.add(var_cursor.spelling)
+        collect_type_dependencies(var_cursor.type)
+        dependencies = global_dependencies.setdefault(var_cursor.spelling, set())
         for child in var_cursor.walk_preorder():
             if child.kind == CursorKind.DECL_REF_EXPR:
                 referenced = child.referenced
-                if referenced and referenced.kind == CursorKind.FUNCTION_DECL:
+                if referenced is None:
+                    continue
+                if referenced.kind == CursorKind.FUNCTION_DECL:
                     initializer_functions[referenced.get_usr()] = referenced
                     collect_type_dependencies(referenced.type)
+                elif (
+                    referenced.kind == CursorKind.VAR_DECL
+                    and referenced.spelling not in localized_global_names
+                ):
+                    definition = globals_and_statics_by_name.get(referenced.spelling, referenced)
+                    collect_type_dependencies(definition.type)
+                    if definition.linkage == LinkageKind.EXTERNAL:
+                        # Reuse the original object, preserving pointer identity
+                        # and avoiding unnecessary copies of its initializer.
+                        initializer_externals[definition.spelling] = definition
+                    else:
+                        dependencies.add(definition.spelling)
+                        globals_to_copy_to_main.add(definition.spelling)
+                        collect_initializer_dependencies(definition)
+
+    for var_cursor in localized_globals_and_statics:
+        collect_initializer_dependencies(var_cursor)
 
     print("\n" + "=" * 80)
     print("SUMMARY")
@@ -1644,41 +2001,6 @@ def _localize_mutable_globals_in_place(
         # Step 4: Initialize xjgv in main()
         print("\n  --- Step 4: Initializing xjgv in main() ---")
 
-        # First, we need to detect which globals reference other globals
-        # and build a dependency graph
-        print("\n  Analyzing global dependencies for initializers...")
-
-        global_dependencies: dict[str, set[str]] = {}  # global_name -> set of referenced globals
-
-        for var_cursor in localized_globals_and_statics:
-            dependencies = set()
-
-            # Walk through the initializer expression to find DECL_REF_EXPR nodes
-            for child in var_cursor.walk_preorder():
-                if (
-                    child.kind == CursorKind.DECL_REF_EXPR
-                    and child.spelling not in localized_global_names
-                ):
-                    dependencies.add(child.spelling)
-                    print(f"    {var_cursor.spelling} references {child.spelling}")
-
-            global_dependencies[var_cursor.spelling] = dependencies
-
-        # Compute transitive closure of dependencies for all globals
-        # We need to copy (not move) any global that is referenced by another
-        globals_to_copy_to_main = set()
-
-        def collect_transitive_deps(global_name: str, visited: set[str]) -> None:
-            if global_name in visited:
-                return
-            visited.add(global_name)
-            for dep in global_dependencies.get(global_name, set()):
-                globals_to_copy_to_main.add(dep)
-                collect_transitive_deps(dep, visited)
-
-        for global_name in localized_global_names:
-            collect_transitive_deps(global_name, set())
-
         print(f"\n  Globals to copy into main before xjgv: {globals_to_copy_to_main}")
 
         # Find main() function and insert initialization at the beginning
@@ -1731,7 +2053,19 @@ def _localize_mutable_globals_in_place(
                         )
                         initializer_prototypes.setdefault(tu_path, []).append(declaration + ";")
 
-                    globals_and_statics_by_name = {c.spelling: c for c in globals_and_statics}
+                    visible_globals = {
+                        decl.spelling
+                        for decl in tu.cursor.get_children()
+                        if decl.kind == CursorKind.VAR_DECL
+                        and decl.extent.start.offset < cursor.extent.start.offset
+                    }
+                    for name, declaration in sorted(initializer_externals.items()):
+                        if name not in visible_globals:
+                            initializer_prototypes.setdefault(tu_path, []).append(
+                                "extern "
+                                + render_source_backed_declaration(declaration, rewriter)
+                                + ";"
+                            )
 
                     # Find the opening brace of main's body
                     # The compound statement is a child of the function
@@ -1768,6 +2102,8 @@ def _localize_mutable_globals_in_place(
 
                                 # Generate local variable definitions
                                 for global_name in sorted_globals:
+                                    if global_name in visible_globals:
+                                        continue
                                     var_cursor = globals_and_statics_by_name.get(global_name)
                                     if var_cursor is None:
                                         # We want to copy immutable globals, but function that
@@ -1776,19 +2112,7 @@ def _localize_mutable_globals_in_place(
                                         # within main().
                                         continue
 
-                                    # Get the initializer value
-                                    initializer = "0"  # Default
-                                    for child_node in var_cursor.get_children():
-                                        if child_node.kind != CursorKind.TYPE_REF:
-                                            init_start = child_node.extent.start.offset
-                                            init_end = child_node.extent.end.offset
-                                            content = rewriter.get_content(
-                                                var_cursor.location.file.name  # type:ignore[attr-defined]
-                                            )
-                                            initializer = (
-                                                content[init_start:init_end].decode("utf-8").strip()
-                                            )
-                                            break
+                                    initializer = render_source_initializer(var_cursor, rewriter)
 
                                     init_lines.append(
                                         f"  static {render_source_backed_declaration(var_cursor, rewriter)} = {initializer};"
@@ -1824,16 +2148,7 @@ def _localize_mutable_globals_in_place(
                                     except:  # noqa: E722
                                         pass
                                 elif var_cursor.is_definition():
-                                    child_node = list(var_cursor.get_children())[-1]
-                                    if child_node.kind == CursorKind.TYPE_REF:
-                                        # No initializer
-                                        initializer = "0"
-                                    else:
-                                        init_start = child_node.extent.start.offset
-                                        init_end = child_node.extent.end.offset
-                                        initializer = (
-                                            content[init_start:init_end].decode("utf-8").strip()
-                                        )
+                                    initializer = render_source_initializer(var_cursor, rewriter)
                                 else:
                                     initializer = "0"
 
@@ -1878,7 +2193,7 @@ def _localize_mutable_globals_in_place(
                         CursorKind.TYPEDEF_DECL,
                     )
                     and cursor.spelling
-                    and cursor.semantic_parent.kind == CursorKind.TRANSLATION_UNIT
+                    and type_declaration_is_file_scoped(cursor)
                     and (cursor.kind == CursorKind.TYPEDEF_DECL or cursor.is_definition())
                 ):
                     local_type_definitions[cursor.kind, cursor.spelling] = cursor
@@ -1919,15 +2234,18 @@ def _localize_mutable_globals_in_place(
                 # else:
                 #     print(f"    Skipping typedef (already in scope): {type_name}")
 
-            # Avoid emitting duplicate struct/union definitions for things
-            # appearing within typedefs.
-            typedef_cursors_to_emit = tuple(types_to_emit_typedefs.values())
+            # Nested tags are already written inside their enclosing record
+            # or typedef. Emit the enclosing declaration just once.
+            enclosing_cursors_to_emit = (
+                *types_to_emit_typedefs.values(),
+                *types_to_emit_structs.values(),
+            )
             types_to_emit_structs = {
                 type_name: decl_cursor
                 for type_name, decl_cursor in types_to_emit_structs.items()
                 if not any(
-                    cursor_extent_contains(typedef_cursor, decl_cursor)
-                    for typedef_cursor in typedef_cursors_to_emit
+                    outer != decl_cursor and cursor_extent_contains(outer, decl_cursor)
+                    for outer in enclosing_cursors_to_emit
                 )
             }
 

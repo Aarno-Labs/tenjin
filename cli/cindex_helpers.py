@@ -96,15 +96,25 @@ def render_declaration_sans_qualifiers(
 
         if kind == TypeKind.POINTER:
             pointee = ty.get_pointee()
+            qualifiers = " ".join(
+                name
+                for name, present in (
+                    ("const", ty.is_const_qualified()),
+                    ("volatile", ty.is_volatile_qualified()),
+                    ("restrict", ty.is_restrict_qualified()),
+                )
+                if present
+            )
+            pointer = "*" + (qualifiers + " " if qualifiers else "")
             # Need parentheses if inner_text contains array or function syntax
             if pointee.kind in (
                 TypeKind.CONSTANTARRAY,
                 TypeKind.FUNCTIONPROTO,
                 TypeKind.FUNCTIONNOPROTO,
             ):
-                return render_inner(pointee, f"(*{inner_text})")
+                return render_inner(pointee, f"({pointer}{inner_text})")
             else:
-                return render_inner(pointee, f"*{inner_text}")
+                return render_inner(pointee, f"{pointer}{inner_text}")
 
         elif kind == TypeKind.CONSTANTARRAY:
             size = ty.get_array_size()
@@ -127,7 +137,16 @@ def render_declaration_sans_qualifiers(
         elif kind == TypeKind.ELABORATED:
             # Unwrap elaborated types
             named_type = ty.get_named_type()
-            return render_inner(named_type, inner_text)
+            qualifiers = " ".join(
+                name
+                for name, present, retained in (
+                    ("const", ty.is_const_qualified(), named_type.is_const_qualified()),
+                    ("volatile", ty.is_volatile_qualified(), named_type.is_volatile_qualified()),
+                    ("restrict", ty.is_restrict_qualified(), named_type.is_restrict_qualified()),
+                )
+                if present and not retained
+            )
+            return (qualifiers + " " if qualifiers else "") + render_inner(named_type, inner_text)
 
         else:
             # Base case: simple type
