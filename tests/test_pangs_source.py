@@ -406,6 +406,64 @@ def materialize_sources(source_pangs, tmp_path, sources, *, leave_globals=()):
     return manifest, rewritten
 
 
+def test_localization_accepts_anonymous_typedef_copies(tmp_path, source_pangs):
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "a.nolines.i": "typedef const struct {char c;} *internstr;\n"
+            "internstr g[2];\nvoid update(void);\n"
+            "int main(void){update(); return g[0] != 0;}\n",
+            "b.nolines.i": "\n\n typedef const struct {char c;} *internstr;\n"
+            "internstr second[2];\nextern internstr g[2];\n"
+            "void update(void){second[0]=0; g[0]=second[0];}\n",
+        },
+    )
+    assert "xjg->g" in rewritten["a.nolines.i"]
+    assert "xjg->second" in rewritten["b.nolines.i"]
+
+
+@pytest.mark.parametrize(
+    "first_type,second_type",
+    [
+        ("const struct {char c;} *", "const struct {unsigned char c;} *"),
+        ("const struct {char c;} *", "struct {char c;} *"),
+        ("const struct {char c;} *", "const struct {char renamed;} *"),
+        ("const struct {char c[2];} *", "const struct {char c[3];} *"),
+        ("const struct {char c;} *", "const union {char c;} *"),
+        ("const struct {unsigned c:1;} *", "const struct {unsigned c:2;} *"),
+        (
+            "const struct {union {struct {char c;};};} *",
+            "const struct {union {struct {unsigned char c;};};} *",
+        ),
+    ],
+    ids=[
+        "field-type",
+        "qualifier",
+        "field-name",
+        "array-size",
+        "record-kind",
+        "bit-width",
+        "anonymous-member-type",
+    ],
+)
+def test_localization_rejects_incompatible_typedef_copies(
+    tmp_path, source_pangs, first_type, second_type
+):
+    root = tmp_path / "project"
+    sources = {
+        "a.nolines.i": f"typedef {first_type} internstr;\n"
+        "internstr g[2];\nint update(void);\n"
+        "int main(void){return update() + (g[0] != 0);}\n",
+        "b.nolines.i": f"typedef {second_type} internstr;\n"
+        "internstr second[2];\nint update(void){second[0]=0; return second[0] != 0;}\n",
+    }
+    compdb, path = analyze_sources(source_pangs, root, sources)
+    with pytest.raises(pangs_source.ContractViolation, match="Typedef internstr already recorded"):
+        c_refact.localize_mutable_globals(path, compdb, root)
+    assert {name: (root / name).read_text() for name in sources} == sources
+
+
 def test_callback_global_declaration_and_definition_change_together(tmp_path, source_pangs):
     _, rewritten = materialize_sources(
         source_pangs,
@@ -732,6 +790,19 @@ def test_localizing_callback_container_storage(tmp_path, source_pangs, sources):
             "struct Tail {struct Holder holder;};",
             "struct Holder",
         ),
+        (
+            "typedef struct Node Node;\nstruct Node {Node *next;};\n"
+            "struct Holder {int (*cb)(int); Node node;};",
+            "struct Holder",
+        ),
+        (
+            "typedef int Expr;\nstruct Holder {int (*cb)(int); union {struct {Expr value;};};};",
+            "struct Holder",
+        ),
+        (
+            "struct Holder {int (*cb)(int); struct Nested {int value;} child;};",
+            "struct Holder",
+        ),
     ],
     ids=[
         "forward-tag",
@@ -740,6 +811,9 @@ def test_localizing_callback_container_storage(tmp_path, source_pangs, sources):
         "enum-field",
         "union-field",
         "pointer-cycle",
+        "self-referential-typedef",
+        "anonymous-member-dependency",
+        "nested-tag",
     ],
 )
 def test_context_storage_hoists_late_type_dependencies(
@@ -760,6 +834,77 @@ def test_context_storage_hoists_late_type_dependencies(
     assert text.count("struct Holder {") == 1
     assert text.index("struct Holder {") < text.index('#include "xj_globals.h"')
     assert "static int foo(struct XjGlobals *xjg, int x)" in text
+
+
+@pytest.mark.parametrize("typedef_alias", [False, True], ids=["tag", "typedef"])
+def test_localization_preserves_distinct_private_record_types(
+    tmp_path, source_pangs, typedef_alias
+):
+    x86_type = (
+        "typedef struct Frame {int size;} Frame;\nstatic Frame h;\n"
+        if typedef_alias
+        else "static struct Frame {int size;} h;\n"
+    )
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "main.nolines.i": "int arm(void); int x86(void);\n"
+            "int main(void){return arm()+x86();}\n",
+            "arm.nolines.i": "typedef struct Frame {long saved; int size;} Frame;\n"
+            "static Frame g;\nint arm(void){return ++g.size;}\n",
+            "x86.nolines.i": x86_type + "int x86(void){return ++h.size;}\n",
+        },
+    )
+    assert "xjg->g.size" in rewritten["arm.nolines.i"]
+    assert "xjg->h.size" in rewritten["x86.nolines.i"]
+
+
+@pytest.mark.parametrize("private", [False, True], ids=["external", "private"])
+def test_localization_preserves_retained_initializer_dependencies(tmp_path, source_pangs, private):
+    storage = "static " if private else ""
+    comparison = "g->reg != R0" if private else "g != &saved"
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "main.nolines.i": "int verify(void);\nint main(void){return verify();}\n",
+            "data.nolines.i": "typedef struct Meta {int reg;} Meta;\nenum {R0=3};\n"
+            + storage
+            + "const Meta saved={R0};\nconst Meta *g=&saved;\n"
+            + f"int verify(void){{return {comparison};}}\n",
+        },
+    )
+    if not private:
+        assert "extern const Meta saved;" in rewritten["main.nolines.i"]
+
+
+def test_localization_preserves_private_enum_initializer_values(tmp_path, source_pangs):
+    materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "main.nolines.i": "int arm(void); int x86(void);\n"
+            "int main(void){return arm()+x86();}\n",
+            "arm.nolines.i": "enum {VALUE=3}; static int g=VALUE;\nint arm(void){return ++g;}\n",
+            "x86.nolines.i": "enum {VALUE=5}; static int h=VALUE;\nint x86(void){return ++h;}\n",
+        },
+    )
+
+
+def test_localization_preserves_file_scope_sizeof_and_alignof(tmp_path, source_pangs):
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "test.nolines.i": "static int g[3];\n"
+            '_Static_assert(sizeof(g)/sizeof 0[g] == 3, "length");\n'
+            '_Static_assert(__alignof__(g) == __alignof__(int), "alignment");\n'
+            "int main(void){g[0]=1; return sizeof(g) != 3*sizeof(int);}\n",
+        },
+    )
+    assert "sizeof(g)" not in rewritten["test.nolines.i"]
+    assert "xjg->g[0]=1" in rewritten["test.nolines.i"]
 
 
 def test_callback_initializer_prototype_preserves_qualifiers_and_typedefs(tmp_path, source_pangs):

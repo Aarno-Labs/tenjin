@@ -25,7 +25,7 @@ WANT = {
     "10j-find_unsafe2-rust-toolchain": "nightly-2026-05-11",
     "10j-ast-grep": "0.40.5",
     "10j-crat": "crat-f598249c3",
-    "10j-pangs": "rev-b455854fc",
+    "10j-pangs": "rev-320dd0ac2",
 }
 
 XJ_GUIDANCE_FILENAME = "xj-guidance.json"
