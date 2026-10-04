@@ -221,11 +221,14 @@ impl Translation<'_> {
                 mk().ident_ty("u8"),
                 mk().lit_expr(bytes_padded.len() as u128),
             );
-            let val = transmute_expr(
-                array_ty,
-                self.convert_type(ty.ctype)?,
-                mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(bytes_padded)),
-            );
+            let target_ty = self.convert_type(ty.ctype)?;
+            let bytes_val =
+                mk().unary_expr(UnOp::Deref(Default::default()), mk().lit_expr(bytes_padded));
+            if target_ty == array_ty {
+                // `char` arrays are `[u8; size]`, so no transmute is needed.
+                return Ok(WithStmts::new_val(bytes_val));
+            }
+            let val = transmute_expr(array_ty, target_ty, bytes_val);
 
             // A transmute creates a temporary, which cannot have its address taken without
             // creating dangling pointers. Wrap it inside an inline `const` block, so that

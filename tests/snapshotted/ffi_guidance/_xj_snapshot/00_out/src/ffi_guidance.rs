@@ -39,10 +39,11 @@ pub mod xj_ffi {
     #[allow(unused_imports)]
     use super::*;
     #[no_mangle]
-    pub unsafe extern "C" fn ffi_via_cstr_first_byte(
-        s: *const ::core::ffi::c_char,
-    ) -> ::core::ffi::c_uchar {
-        super::ffi_via_cstr_first_byte(std::slice::from_raw_parts(s.cast(), libc::strlen(s) + 1))
+    pub unsafe extern "C" fn ffi_via_cstr_first_byte(s: *const u8) -> ::core::ffi::c_uchar {
+        super::ffi_via_cstr_first_byte(std::slice::from_raw_parts(
+            s.cast(),
+            libc::strlen(s as *const ::core::ffi::c_char) + 1,
+        ))
     }
     #[no_mangle]
     pub unsafe extern "C" fn ffi_slice_literal_len(
@@ -91,11 +92,9 @@ pub mod xj_ffi {
             .map_or(std::ptr::null(), |x| x as *const _)
     }
     #[no_mangle]
-    pub unsafe extern "C" fn ffi_via_cstr_empty_if_null(
-        s: *const ::core::ffi::c_char,
-    ) -> ::core::ffi::c_int {
+    pub unsafe extern "C" fn ffi_via_cstr_empty_if_null(s: *const u8) -> ::core::ffi::c_int {
         let s = if !s.is_null() {
-            std::slice::from_raw_parts(s.cast(), libc::strlen(s) + 1)
+            std::slice::from_raw_parts(s.cast(), libc::strlen(s as *const ::core::ffi::c_char) + 1)
         } else {
             &[]
         };

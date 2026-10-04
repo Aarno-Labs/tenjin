@@ -221,7 +221,10 @@ impl TypeConverter {
             CTypeKind::ULongLong => Ok(mk().abs_path_ty(vec!["core", "ffi", "c_ulonglong"])),
             CTypeKind::SChar => Ok(mk().abs_path_ty(vec!["core", "ffi", "c_schar"])),
             CTypeKind::UChar => Ok(mk().abs_path_ty(vec!["core", "ffi", "c_uchar"])),
-            CTypeKind::Char => Ok(mk().abs_path_ty(vec!["core", "ffi", "c_char"])),
+            // Plain `char` is always translated as `u8`, rather than the platform-dependent
+            // `c_char`, so that translated code behaves identically on every target.
+            // We pass `-funsigned-char` to clang so that its view of `char` matches.
+            CTypeKind::Char => Ok(mk().path_ty(vec!["u8"])),
             CTypeKind::Double => Ok(mk().abs_path_ty(vec!["core", "ffi", "c_double"])),
             CTypeKind::LongDouble | CTypeKind::Float128 => {
                 self.use_crate(ExternCrate::F128);

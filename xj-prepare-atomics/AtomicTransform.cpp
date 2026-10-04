@@ -166,7 +166,12 @@ private:
       return "__tenjin_atomic_bool_t";
 
     llvm::StringRef Sign;
-    if (T->isSignedIntegerType())
+    // c2rust translates plain char as u8 on every target, including through
+    // typedefs. Keep explicit signed char distinct from plain char here.
+    if (T->isSpecificBuiltinType(BuiltinType::Char_S) ||
+        T->isSpecificBuiltinType(BuiltinType::Char_U))
+      Sign = "u";
+    else if (T->isSignedIntegerType())
       Sign = "i";
     else if (T->isUnsignedIntegerType())
       Sign = "u";

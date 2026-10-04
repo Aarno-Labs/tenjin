@@ -1,10 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import hermetic
 
 
-def run_atomics(root: Path, tmp_codebase: Path, source_text: str) -> str:
+def run_atomics(
+    root: Path, tmp_codebase: Path, source_text: str, *, clang_args: tuple[str, ...] = ()
+) -> str:
     tmp_codebase.mkdir()
     source = tmp_codebase / "atomics.c"
     source.write_text(source_text, encoding="utf-8")
@@ -22,6 +26,7 @@ def run_atomics(root: Path, tmp_codebase: Path, source_text: str) -> str:
                 "arguments": [
                     clang.as_posix(),
                     "-std=c11",
+                    *clang_args,
                     f"-resource-dir={resource_dir}",
                     "-c",
                     source.as_posix(),
@@ -38,11 +43,45 @@ def run_atomics(root: Path, tmp_codebase: Path, source_text: str) -> str:
         capture_output=True,
     )
     hermetic.run(
-        [clang, "-std=c11", "-fsyntax-only", source],
+        [clang, "-std=c11", *clang_args, "-fsyntax-only", source],
         check=True,
         capture_output=True,
     )
     return source.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("char_flag", ["-fsigned-char", "-funsigned-char"])
+@pytest.mark.parametrize("signed_first", [False, True])
+def test_plain_char_uses_unsigned_atomics(root, tmp_codebase, char_flag, signed_first):
+    declarations = [
+        "static char plain = 127;",
+        "static byte alias = 127;",
+        "static unsigned char unsigned_byte = 127;",
+        "static signed char signed_byte = -1;",
+    ]
+    if signed_first:
+        declarations.reverse()
+    transformed = run_atomics(
+        root,
+        tmp_codebase,
+        "typedef char byte;\n" + "\n".join(declarations) + "\n"
+        "int update(void) {\n"
+        "    plain++;\n"
+        "    alias++;\n"
+        "    unsigned_byte++;\n"
+        "    signed_byte++;\n"
+        "    return plain + alias + unsigned_byte + signed_byte;\n"
+        "}\n",
+        clang_args=(char_flag,),
+    )
+
+    for name in ("plain", "alias", "unsigned_byte"):
+        assert f"static __tenjin_atomic_u8_t {name} = 127;" in transformed
+    assert "static __tenjin_atomic_i8_t signed_byte = -1;" in transformed
+    assert "typedef _Atomic(signed char) __tenjin_atomic_i8_t;" in transformed
+    for name in ("plain", "alias", "unsigned_byte", "signed_byte"):
+        assert f"__c11_atomic_fetch_add(&{name}, 1, __ATOMIC_SEQ_CST);" in transformed
+        assert f"__c11_atomic_load(&{name}, __ATOMIC_SEQ_CST)" in transformed
 
 
 def test_promotes_supported_scalar_globals_and_rewrites_accesses(root, tmp_codebase):

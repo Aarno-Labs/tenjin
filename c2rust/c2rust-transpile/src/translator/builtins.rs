@@ -870,15 +870,36 @@ impl<'c> Translation<'c> {
                 .into_iter()
                 .zip(arg_types)
                 .map(|(arg, &ty)| {
-                    if ty == LibcFnArgType::Size {
-                        self.use_crate(ExternCrate::Libc);
-                        mk().cast_expr(arg, mk().abs_path_ty(vec!["libc", "size_t"]))
-                    } else {
-                        arg
+                    match ty {
+                        LibcFnArgType::Size => {
+                            self.use_crate(ExternCrate::Libc);
+                            mk().cast_expr(arg, mk().abs_path_ty(vec!["libc", "size_t"]))
+                        }
+                        // `char*` is translated as `*mut u8`, but `libc` uses `*mut c_char`.
+                        LibcFnArgType::Mem => {
+                            mk().method_call_expr(arg, mk().path_segment("cast"), vec![])
+                        }
+                        LibcFnArgType::Int => arg,
                     }
                 })
                 .collect::<Vec<_>>();
-            let mem_expr = mk().call_expr(mem, args_casted);
+            let mut mem_expr = mk().call_expr(mem, args_casted);
+            if matches!(
+                name,
+                "strchr"
+                    | "strrchr"
+                    | "strdup"
+                    | "strndup"
+                    | "strcat"
+                    | "strcpy"
+                    | "strncat"
+                    | "strncpy"
+                    | "strpbrk"
+                    | "strstr"
+            ) {
+                // These return `*mut c_char`, but `char*` is translated as `*mut u8`.
+                mem_expr = mk().cast_expr(mem_expr, mk().mutbl().ptr_ty(mk().path_ty(vec!["u8"])));
+            }
 
             Ok(self.convert_side_effects_expr(
                 ctx,

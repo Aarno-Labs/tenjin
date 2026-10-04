@@ -12,13 +12,10 @@ expression: cat tests/snapshots/lift_const.2021.clang15.rs
     unused_mut
 )]
 extern "C" {
-    fn printf(format: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
+    fn printf(format: *const u8, ...) -> ::core::ffi::c_int;
 }
 #[no_mangle]
-pub unsafe extern "C" fn lift_const(
-    mut argc: ::core::ffi::c_int,
-    mut argv: *mut *mut ::core::ffi::c_char,
-) {
+pub unsafe extern "C" fn lift_const(mut argc: ::core::ffi::c_int, mut argv: *mut *mut u8) {
     let mut starts_with_a: ::core::ffi::c_int = 0;
     if argc != 3 as ::core::ffi::c_int {
         starts_with_a = (**argv.offset(0 as isize) as ::core::ffi::c_int

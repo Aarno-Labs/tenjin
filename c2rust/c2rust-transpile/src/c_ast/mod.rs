@@ -2980,8 +2980,8 @@ impl CTypeKind {
             // Kind of an integer type, but would definitely need an explicit cast.
             Bool => false,
 
-            // Can be signed or unsigned, so choose the minimum range of each.
-            Char => (u8::MIN as u64..=i8::MAX as u64).contains(&value),
+            // Always translated as `u8`; see `-funsigned-char`.
+            Char => in_range::<u8>(value),
             WChar => in_range::<i32>(value),
 
             // `int` is at least `i16` and `long` is at least `i32`.
@@ -3227,7 +3227,8 @@ impl CTypeKind {
         use CTypeKind::*;
         matches!(
             self,
-            Bool | UChar
+            Bool | Char
+                | UChar
                 | UInt
                 | UShort
                 | ULong
@@ -3246,10 +3247,10 @@ impl CTypeKind {
 
     pub fn is_signed_integral_type(&self) -> bool {
         use CTypeKind::*;
-        // `Char` is true on the platforms we handle
+        // `Char` is always treated as unsigned; see `-funsigned-char`.
         matches!(
             self,
-            Char | SChar
+            SChar
                 | Int
                 | Short
                 | Long

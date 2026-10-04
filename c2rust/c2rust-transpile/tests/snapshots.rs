@@ -700,6 +700,27 @@ fn test_types() {
 }
 
 #[test]
+fn test_byte_string_pointer_casts() {
+    let c_path = Path::new("tests/snapshots/byte_string_pointer_casts.c");
+    for edition in [Edition2021, Edition2024] {
+        let mut cfg = config(edition, Default::default());
+        cfg.disable_refactoring = true;
+        compile_and_transpile_file(c_path, cfg);
+        let rs_path = c_path.with_extension("rs");
+        let rs = fs::read_to_string(&rs_path).unwrap();
+        assert!(rs.contains("b\"shared\\0\".as_ptr()"), "{rs}");
+        assert!(!rs.contains(".as_ptr() as *const u8"), "{rs}");
+        assert!(rs.contains("as *mut u8"), "{rs}");
+        assert!(rs.contains("as *const ::core::ffi::c_schar"), "{rs}");
+        assert!(rs.contains("as *const [u8; 6]"), "{rs}");
+        rustc(&rs_path)
+            .edition(edition)
+            .crate_name("byte_string_pointer_casts")
+            .run();
+    }
+}
+
+#[test]
 fn test_wide_strings() {
     transpile("wide_strings.c")
         .os_specific(true)

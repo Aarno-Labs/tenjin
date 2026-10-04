@@ -14,17 +14,13 @@ expression: cat tests/snapshots/os-specific/call_only_once.2021.linux.clang15.rs
 #![feature(label_break_value)]
 extern "C" {
     fn __assert_fail(
-        __assertion: *const ::core::ffi::c_char,
-        __file: *const ::core::ffi::c_char,
+        __assertion: *const u8,
+        __file: *const u8,
         __line: ::core::ffi::c_uint,
-        __function: *const ::core::ffi::c_char,
+        __function: *const u8,
     ) -> !;
 }
-pub const __ASSERT_FUNCTION: [::core::ffi::c_char; 32] = unsafe {
-    ::core::mem::transmute::<[u8; 32], [::core::ffi::c_char; 32]>(
-        *b"int assert_call_only_once(void)\0",
-    )
-};
+pub const __ASSERT_FUNCTION: [u8; 32] = *b"int assert_call_only_once(void)\0";
 static mut called: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 unsafe extern "C" fn called_only_once() -> ::core::ffi::c_int {
     called += 1;
@@ -36,9 +32,9 @@ pub unsafe extern "C" fn assert_call_only_once() -> ::core::ffi::c_int {
         if called_only_once() != 0 {
         } else {
             __assert_fail(
-                b"called_only_once()\0".as_ptr() as *const ::core::ffi::c_char,
+                b"called_only_once()\0".as_ptr(),
                 b"./tests/snapshots/os-specific/call_only_once.c\0"
-                    .as_ptr() as *const ::core::ffi::c_char,
+                    .as_ptr(),
                 12 as ::core::ffi::c_uint,
                 __ASSERT_FUNCTION.as_ptr(),
             );

@@ -235,12 +235,18 @@ impl<'c> Translation<'c> {
                     return Ok(val);
                 }
                 val = val.map(|val| mk().method_call_expr(val, "as_ptr", vec![]));
+                // A byte literal's as_ptr() already returns *const u8. Retain
+                // casts only when the target changes mutability or pointee type.
+                needs_cast = self.convert_type(pointer_cty.ctype)?
+                    != mk()
+                        .set_mutbl(Mutability::Immutable)
+                        .ptr_ty(mk().ident_ty("u8"));
             } else {
                 let size = self.ast_context.array_len(literal_cty.ctype) * element_size as usize;
                 ref_cast_pointee_ty =
                     Some(mk().array_ty(mk().ident_ty("u8"), mk().lit_expr(size as u128)));
+                needs_cast = true;
             }
-            needs_cast = true;
         }
         // Values that translate into const temporaries can't be raw-borrowed in Rust.
         // They must be regular-borrowed first, which will extend the lifetime to static.

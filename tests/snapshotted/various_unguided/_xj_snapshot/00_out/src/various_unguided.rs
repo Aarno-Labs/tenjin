@@ -1,6 +1,6 @@
 extern "C" {
     fn isatty(_: ::core::ffi::c_int) -> ::core::ffi::c_int;
-    fn puts(_: *const ::core::ffi::c_char) -> ::core::ffi::c_int;
+    fn puts(_: *const u8) -> ::core::ffi::c_int;
     fn assert(_: bool);
 }
 pub const STDIN_FILENO: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
@@ -23,10 +23,10 @@ pub unsafe extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
     println!("{:>}", {
         xj_str_from_ptr(
             (if cond != 0 {
-                b"true\0".as_ptr() as *const ::core::ffi::c_char
+                b"true\0".as_ptr()
             } else {
-                b"false\0".as_ptr() as *const ::core::ffi::c_char
-            }) as *const core::ffi::c_char,
+                b"false\0".as_ptr()
+            }) as *const u8,
         )
     });
 }
@@ -49,10 +49,12 @@ pub unsafe extern "C" fn assert_msg_chained(mut x: ::core::ffi::c_int, mut y: ::
 pub unsafe extern "C" fn assert_msg_braces(mut x: ::core::ffi::c_int) {
     assert!(x > 0 as ::core::ffi::c_int, "x must not be {{0}}");
 }
-unsafe fn xj_str_from_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a str {
+unsafe fn xj_str_from_ptr<'a>(ptr: *const u8) -> &'a str {
     if ptr.is_null() {
         "(null)"
     } else {
-        core::ffi::CStr::from_ptr(ptr).to_str().unwrap()
+        core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char)
+            .to_str()
+            .unwrap()
     }
 }

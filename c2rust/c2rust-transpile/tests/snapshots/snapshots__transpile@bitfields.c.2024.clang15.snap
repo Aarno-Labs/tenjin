@@ -14,7 +14,7 @@ expression: cat tests/snapshots/bitfields.2024.clang15.rs
 )]
 use ::c2rust_bitfields::BitfieldStruct;
 unsafe extern "C" {
-    unsafe fn printf(_: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
+    unsafe fn printf(_: *const u8, ...) -> ::core::ffi::c_int;
 }
 #[derive(Copy, Clone, ::c2rust_bitfields::BitfieldStruct)]
 #[repr(C)]

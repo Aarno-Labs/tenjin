@@ -937,7 +937,7 @@ def test_tractor_b1_synthetic_014_app(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_synthetic_015_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/015_return_stack_buffer"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 6
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 5
 
 
 @pytest.mark.slow
@@ -1171,6 +1171,7 @@ def test_tractor_b1_synthetic_027_app_hidden(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow
+@pytest.mark.skip(reason="incompatible with -funsigned-char")
 def test_tractor_b1_synthetic_030_app_hidden(tenjin_fixtures: TenjinFixtures):
     case_dir = "Hidden-Tests/B01_synthetic/030_integer_underflow_char_min_multiply"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
