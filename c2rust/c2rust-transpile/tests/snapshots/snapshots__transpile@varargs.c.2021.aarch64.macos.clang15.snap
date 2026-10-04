@@ -1,6 +1,6 @@
 ---
 source: c2rust-transpile/tests/snapshots.rs
-expression: cat tests/snapshots/arch-os-specific/varargs.2021.aarch64.macos.rs
+expression: cat tests/snapshots/arch-os-specific/varargs.2021.aarch64.macos.clang15.rs
 ---
 #![allow(
     clippy::missing_safety_doc,
@@ -12,7 +12,7 @@ expression: cat tests/snapshots/arch-os-specific/varargs.2021.aarch64.macos.rs
     unused_mut
 )]
 extern "C" {
-    fn printf(_: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
+    fn printf(_: *const u8, ...) -> ::core::ffi::c_int;
 }
 #[no_mangle]
 pub unsafe extern "C" fn call_printf() {
