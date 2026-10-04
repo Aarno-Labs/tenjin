@@ -28,14 +28,14 @@ def tractor_tests_git_clone_for(case_dir: str) -> Path:
         # Battery 3 lives only on the private repo's `v3` branch.
         return cached_git_clone_at_commit(
             "git@github.com:Aarno-Labs/DARPA-TRACTOR-Program__Test-Corpus.git",
-            "3e3b487366042ee1a37e1c2080f3fd7ec23b598b",
+            "84659555e12e2650a66f40195dc690901abb3064",
         )
     if not tractor_case_released(case_dir):
         # Currently Battery 2 requires authentication to access,
         # so the https URL won't work.
         return cached_git_clone_at_commit(
             "git@github.com:Aarno-Labs/DARPA-TRACTOR-Program__Test-Corpus.git",
-            "e1777ab957f035d40eaf20586c157baca04437f5",
+            "c749580446ef17f88cf93f0ef9e3269776f7bd18",
         )
     return cached_git_clone_at_commit(
         "https://github.com/DARPA-TRACTOR-Program/PUBLIC-Test-Corpus.git",
@@ -406,7 +406,7 @@ def eval_tractor_ta3_corpus_lib(
 
     run_cargo_on_final(
         candidate_resultsdir / "runner",
-        ["build", *cando_runner_flags()] + (["--release"] if profile == "release" else []),
+        ["build"] + (["--release"] if profile == "release" else []),
         capture_output=False,
     )
 
@@ -431,12 +431,6 @@ def eval_tractor_ta3_corpus_lib(
     clean_up_resultsdir(candidate_resultsdir)
 
     annotate_pytest_request_with_translation_notes(fixtures)
-
-
-def cando_runner_flags() -> list[str]:
-    # We pass `--ignore-rust-version` because the cando2 crate has
-    # an artificially high rust-version specified.
-    return ["--ignore-rust-version"]
 
 
 @pytest.mark.slow
