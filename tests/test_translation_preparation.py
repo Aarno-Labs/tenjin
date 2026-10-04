@@ -29,6 +29,54 @@ def _named_decl(name: str, usr: str, offset: int = 0) -> c_refact.NamedDeclInfo:
     )
 
 
+def test_redirect_nexttoward_calls_with_matching_signatures(tmp_path):
+    declared_source = (
+        "typedef long double extended;\n"
+        "extern double nexttoward(double, extended);\n"
+        "extern float nexttowardf(float, extended);\n"
+        "double declared_double(double x, extended y) {\n"
+        "    double (*alias)(double, long double) = nexttoward;\n"
+        "    return nexttoward(x, y) + alias(x, y);\n"
+        "}\n"
+        "float declared_float(float x, extended y) { return nexttowardf(x, y); }\n"
+    )
+    defined_source = (
+        "double nexttoward(double x, long double y) { return x; }\n"
+        "float nexttowardf(float x, long double y) { return x; }\n"
+        "double defined_double(double x, long double y) { return nexttoward(x, y); }\n"
+        "float defined_float(float x, long double y) { return nexttowardf(x, y); }\n"
+    )
+    mismatched_source = (
+        "double nexttoward(double x, double y) { return x; }\n"
+        "float nexttowardf(double x, long double y) { return x; }\n"
+        "double wrong_double(double x, double y) { return nexttoward(x, y); }\n"
+        "float wrong_float(float x, long double y) { return nexttowardf(x, y); }\n"
+    )
+    declared_path = tmp_path / "declared.nolines.i"
+    defined_path = tmp_path / "defined.nolines.i"
+    mismatched_path = tmp_path / "mismatched.nolines.i"
+    declared_path.write_text(declared_source, encoding="utf-8")
+    defined_path.write_text(defined_source, encoding="utf-8")
+    mismatched_path.write_text(mismatched_source, encoding="utf-8")
+    commands = [
+        compilation_database.CompileCommand(
+            directory=tmp_path.as_posix(),
+            file=path.as_posix(),
+            arguments=["clang", "-x", "c", path.as_posix()],
+        )
+        for path in (declared_path, defined_path, mismatched_path)
+    ]
+
+    assert translation_preparation.rewrite_nexttoward_calls(commands) == 4
+    assert declared_path.read_text(encoding="utf-8") == declared_source.replace(
+        "return nexttoward(x, y)", "return nextafter(x, y)"
+    ).replace("return nexttowardf(x, y)", "return nextafterf(x, y)")
+    assert defined_path.read_text(encoding="utf-8") == defined_source.replace(
+        "return nexttoward(x, y)", "return nextafter(x, y)"
+    ).replace("return nexttowardf(x, y)", "return nextafterf(x, y)")
+    assert mismatched_path.read_text(encoding="utf-8") == mismatched_source
+
+
 def test_static_uniquification_only_suffixes_collisions():
     singleton = _named_decl("singleton", "static-singleton")
     singleton_redecl = _named_decl("singleton", "static-singleton", 10)

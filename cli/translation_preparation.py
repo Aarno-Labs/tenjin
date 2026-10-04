@@ -12,7 +12,7 @@ from collections import defaultdict
 import dataclasses
 from enum import Enum
 
-from clang.cindex import Cursor, CursorKind, TranslationUnitLoadError  # type: ignore
+from clang.cindex import Cursor, CursorKind, TranslationUnitLoadError, TypeKind  # type: ignore
 from cmake_file_api import CMakeProject
 import click
 
@@ -146,6 +146,71 @@ def _plan_static_uniquification(
             planned_names[static.usr] = make_unique_name(static.spelling)
 
     return planned_names
+
+
+def rewrite_nexttoward_calls(commands: list[compilation_database.CompileCommand]) -> int:
+    """Replace direct nexttoward calls with equivalent nextafter calls by signature."""
+    replacements = {
+        "nexttoward": (TypeKind.DOUBLE, "nextafter"),
+        "nexttowardf": (TypeKind.FLOAT, "nextafterf"),
+    }
+    index = cindex_helpers.create_xj_clang_index()
+    seen: set[Path] = set()
+    count = 0
+    with batching_rewriter.BatchingRewriter() as rewriter:
+        for cmd in commands:
+            if cmd.is_fake_link_thingy or cmd.file_path.suffix != ".i":
+                continue
+            path = cmd.absolute_file_path.resolve()
+            if path in seen:
+                continue
+            seen.add(path)
+            tu = c_refact.parse_translation_unit_with_args(
+                index,
+                path.as_posix(),
+                cmd.get_command_parts()[1:],
+                in_dir=cmd.directory_path.as_posix(),
+            )
+            contents = rewriter.get_content(path.as_posix())
+            for call, _ in cindex_helpers.yield_matching_cursors(tu.cursor, [CursorKind.CALL_EXPR]):
+                target = replacements.get(call.spelling)
+                if target is None:
+                    continue
+                expected_type, replacement = target
+                callee = next(call.get_children(), None)
+                while callee is not None and callee.kind in (
+                    CursorKind.UNEXPOSED_EXPR,
+                    CursorKind.PAREN_EXPR,
+                ):
+                    children = list(callee.get_children())
+                    callee = children[0] if len(children) == 1 else None
+                if callee is None or callee.kind != CursorKind.DECL_REF_EXPR:
+                    continue
+                declaration = callee.referenced
+                if (
+                    declaration is None
+                    or declaration.kind != CursorKind.FUNCTION_DECL
+                    or declaration.spelling != call.spelling
+                ):
+                    continue
+                signature = declaration.type.get_canonical()
+                if signature.kind != TypeKind.FUNCTIONPROTO or signature.is_function_variadic():
+                    continue
+                parameters = list(signature.argument_types())
+                if (
+                    signature.get_result().get_canonical().kind != expected_type
+                    or len(parameters) != 2
+                    or parameters[0].get_canonical().kind != expected_type
+                    or parameters[1].get_canonical().kind != TypeKind.LONGDOUBLE
+                ):
+                    continue
+                start = callee.extent.start.offset
+                end = callee.extent.end.offset
+                if contents[start:end] != call.spelling.encode("ascii"):
+                    continue
+                rewriter.add_rewrite(path.as_posix(), start, end - start, replacement)
+                count += 1
+    return count
 
 
 def run_modifying_subprocess_or_restore_prev(
@@ -2148,6 +2213,11 @@ def run_preparation_passes(
 
         c_refact_knr.eliminate_knr_syntax(commands)
 
+    def prep_redirect_nexttoward(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        compdb = store.build_info.compdb_for_all_targets_within(current_codebase)
+        count = rewrite_nexttoward_calls(compdb.commands)
+        print(f"Redirected {count} nexttoward calls to nextafter")
+
     def prep_analyze_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         all_build_targets = store.build_info.get_all_targets()
         if platform.system() != "Linux":
@@ -2515,6 +2585,7 @@ def run_preparation_passes(
         ("analyze_errno", prep_analyze_errno),
         ("expand_preprocessor", prep_expand_preprocessor),
         ("eliminate_knr", prep_eliminate_knr),
+        ("redirect_nexttoward", prep_redirect_nexttoward),
         ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
         ("promote_atomics", prep_promote_atomics),
