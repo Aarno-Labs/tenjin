@@ -19,6 +19,30 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    /// Use the pure-Rust implementations of C's nextafter functions.
+    pub fn rewrite_nextafter_call(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(function) = &*call.func else {
+            return None;
+        };
+        if function.qself.is_some()
+            || !(function.path.is_ident("nextafter") || function.path.is_ident("nextafterf"))
+            || call.args.len() != 2
+        {
+            return None;
+        }
+        let name = &function.path.segments[0].ident;
+        let args = &call.args;
+        self.add_dep("libm");
+        Some((syn::parse_quote! { ::libm::#name(#args) }, Depth::Unlimited))
+    }
+
     /// Compare complete float or double representations without calling C's `memcmp`.
     /// Bit equality preserves distinctions between signed zeros and NaN payloads.
     pub fn rewrite_memcmp_float_comparison(

@@ -20,6 +20,34 @@ fn check(rw: &Rewriter, input: &str, expected: Expect) {
 }
 
 #[test]
+fn nextafter_calls_use_libm() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_nextafter_call);
+    check(
+        &rw,
+        r#"fn demo(a: f64, b: f64, x: f32, y: f32) {
+            let _ = nextafter(a, b);
+            let _ = nextafterf(x, y);
+            let _ = nextafter(nextafter(a, b), b);
+            let _ = other::nextafter(a, b);
+            let _ = nextafterl(a, b);
+            let _ = nextafter(a);
+        }"#,
+        expect![[r#"
+            fn demo(a: f64, b: f64, x: f32, y: f32) {
+                let _ = ::libm::nextafter(a, b);
+                let _ = ::libm::nextafterf(x, y);
+                let _ = ::libm::nextafter(::libm::nextafter(a, b), b);
+                let _ = other::nextafter(a, b);
+                let _ = nextafterl(a, b);
+                let _ = nextafter(a);
+            }
+        "#]],
+    );
+    assert_eq!(rw.take_deps(), ["libm".to_owned()].into());
+}
+
+#[test]
 fn memcmp_float_comparisons_use_bits() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_memcmp_float_comparison);
