@@ -19,6 +19,52 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    /// Compare complete float or double representations without calling C's `memcmp`.
+    /// Bit equality preserves distinctions between signed zeros and NaN payloads.
+    pub fn rewrite_memcmp_float_comparison(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(binary) = expr else {
+            return None;
+        };
+        if !matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
+            return None;
+        }
+        let call = if is_zero_integer_expr(&binary.right) {
+            expr_strip_parens(&binary.left)
+        } else if is_zero_integer_expr(&binary.left) {
+            expr_strip_parens(&binary.right)
+        } else {
+            return None;
+        };
+        let Expr::Call(call) = call else {
+            return None;
+        };
+        let Expr::Path(function) = expr_strip_parens(&call.func) else {
+            return None;
+        };
+        if function.qself.is_some() || !function.path.is_ident("memcmp") || call.args.len() != 3 {
+            return None;
+        }
+        let width = float_size_of(&call.args[2])?;
+        let bits = |place: &Expr| {
+            let place = expr_strip_parens(place);
+            // Parenthesize dereferences before applying the method.
+            if matches!(place, Expr::Unary(_)) {
+                syn::parse_quote! { (#place).to_bits() }
+            } else {
+                syn::parse_quote! { #place.to_bits() }
+            }
+        };
+        let left: Expr = bits(memcmp_float_operand(&call.args[0], symbols, width)?);
+        let right: Expr = bits(memcmp_float_operand(&call.args[1], symbols, width)?);
+        let op = &binary.op;
+        let replacement = syn::parse_quote! { #left #op #right };
+        Some((replacement, Depth::Unlimited))
+    }
+
     /// Turn writes to existing atomic places into sequentially consistent
     /// stores, and construct atomic values in aggregate initializers.
     pub fn rewrite_atomic_initialization(
@@ -1926,6 +1972,102 @@ fn is_string_type(ty: &syn::Type) -> bool {
 
 fn is_c_float_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "c_float"))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FloatWidth {
+    F32,
+    F64,
+}
+
+fn float_width(ty: &Type) -> Option<FloatWidth> {
+    match ty {
+        Type::Paren(paren) => float_width(&paren.elem),
+        Type::Group(group) => float_width(&group.elem),
+        Type::Path(path) if path.qself.is_none() => {
+            if path.path.is_ident("f32") {
+                return Some(FloatWidth::F32);
+            }
+            if path.path.is_ident("f64") {
+                return Some(FloatWidth::F64);
+            }
+            let segment = path.path.segments.last()?;
+            if !matches!(segment.arguments, syn::PathArguments::None) {
+                return None;
+            }
+            match segment.ident.to_string().as_str() {
+                "c_float" => Some(FloatWidth::F32),
+                "c_double" => Some(FloatWidth::F64),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn is_zero_integer_expr(expr: &Expr) -> bool {
+    match expr_strip_parens(expr) {
+        Expr::Cast(cast) if is_integer_cast_type(&cast.ty) => is_zero_integer_expr(&cast.expr),
+        Expr::Lit(lit) => {
+            matches!(&lit.lit, syn::Lit::Int(int) if int.base10_parse::<u64>().ok() == Some(0))
+        }
+        _ => false,
+    }
+}
+
+fn memcmp_float_operand<'a>(
+    expr: &'a Expr,
+    symbols: &SymbolTable,
+    width: FloatWidth,
+) -> Option<&'a Expr> {
+    let Expr::Cast(cast) = expr_strip_parens(expr) else {
+        return None;
+    };
+    let Type::Ptr(pointer) = &*cast.ty else {
+        return None;
+    };
+    if !matches!(&*pointer.elem, Type::Path(path)
+        if path.qself.is_none() && path.path.segments.last().is_some_and(|segment|
+            segment.ident == "c_void" && matches!(segment.arguments, syn::PathArguments::None)))
+    {
+        return None;
+    }
+    let Expr::RawAddr(address) = expr_strip_parens(&cast.expr) else {
+        return None;
+    };
+    (float_width(&symbols.type_of_expr(&address.expr)?) == Some(width)).then_some(&address.expr)
+}
+
+fn float_size_of(expr: &Expr) -> Option<FloatWidth> {
+    let Expr::Call(call) = expr_strip_parens(expr) else {
+        return None;
+    };
+    let Expr::Path(function) = expr_strip_parens(&call.func) else {
+        return None;
+    };
+    if !call.args.is_empty()
+        || function.qself.is_some()
+        || !(is_path_exactly_3(&function.path, "core", "mem", "size_of")
+            || is_path_exactly_3(&function.path, "std", "mem", "size_of"))
+        || !function
+            .path
+            .segments
+            .iter()
+            .take(2)
+            .all(|segment| matches!(segment.arguments, syn::PathArguments::None))
+    {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &function.path.segments[2].arguments else {
+        return None;
+    };
+    if arguments.args.len() != 1 {
+        return None;
+    }
+    match &arguments.args[0] {
+        syn::GenericArgument::Type(ty) => float_width(ty),
+        _ => None,
+    }
 }
 
 fn type_of_slice_ref(ty: &Type) -> Option<&Type> {

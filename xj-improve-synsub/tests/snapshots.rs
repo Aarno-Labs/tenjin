@@ -20,6 +20,131 @@ fn check(rw: &Rewriter, input: &str, expected: Expect) {
 }
 
 #[test]
+fn memcmp_float_comparisons_use_bits() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_memcmp_float_comparison);
+    check(
+        &rw,
+        r#"struct Pair {
+            first: f64, second: ::core::ffi::c_double,
+            ffirst: f32, fsecond: ::core::ffi::c_float,
+        }
+        fn demo(mut e1: f64, mut e2: ::core::ffi::c_double,
+                mut f1: f32, mut f2: ::core::ffi::c_float, pair: &Pair, ptr: *mut f64) {
+            let _ = memcmp(&raw mut e1 as *const ::core::ffi::c_void,
+                &raw mut e2 as *const ::core::ffi::c_void,
+                ::core::mem::size_of::<::core::ffi::c_double>()) != 0 as ::core::ffi::c_int;
+            let _ = memcmp(&raw const e1 as *const ::core::ffi::c_void,
+                &raw const e2 as *const ::core::ffi::c_void,
+                ::core::mem::size_of::<f64>()) == 0;
+            let _ = 0 == memcmp(&raw const pair.first as *const ::core::ffi::c_void,
+                &raw const pair.second as *const ::core::ffi::c_void,
+                std::mem::size_of::<f64>());
+            let _ = 0i32 != (memcmp((&raw mut *ptr) as *const ::core::ffi::c_void,
+                (&raw mut e1) as *const ::core::ffi::c_void,
+                (::core::mem::size_of::<f64>())));
+            let local: c_double = e2;
+            let _ = memcmp((&raw const (local)) as *const c_void,
+                &raw const e1 as *const c_void, core::mem::size_of::<c_double>()) != 0;
+            let _ = memcmp(&raw mut f1 as *const ::core::ffi::c_void,
+                &raw mut f2 as *const ::core::ffi::c_void,
+                ::core::mem::size_of::<::core::ffi::c_float>()) != 0 as ::core::ffi::c_int;
+            let _ = memcmp(&raw const pair.ffirst as *const c_void,
+                &raw const pair.fsecond as *const c_void,
+                core::mem::size_of::<f32>()) == 0;
+        }
+        unsafe extern "C" fn translated(mut got: ::core::ffi::c_double,
+            mut want: ::core::ffi::c_double) {
+            if memcmp(&raw mut got as *const ::core::ffi::c_void,
+                &raw mut want as *const ::core::ffi::c_void,
+                ::core::mem::size_of::<::core::ffi::c_double>()) != 0 as ::core::ffi::c_int
+                && !(got.is_nan() && want.is_nan()) {}
+        }"#,
+        expect![[r#"
+            struct Pair {
+                first: f64,
+                second: ::core::ffi::c_double,
+                ffirst: f32,
+                fsecond: ::core::ffi::c_float,
+            }
+            fn demo(
+                mut e1: f64,
+                mut e2: ::core::ffi::c_double,
+                mut f1: f32,
+                mut f2: ::core::ffi::c_float,
+                pair: &Pair,
+                ptr: *mut f64,
+            ) {
+                let _ = e1.to_bits() != e2.to_bits();
+                let _ = e1.to_bits() == e2.to_bits();
+                let _ = pair.first.to_bits() == pair.second.to_bits();
+                let _ = (*ptr).to_bits() != e1.to_bits();
+                let local: c_double = e2;
+                let _ = local.to_bits() != e1.to_bits();
+                let _ = f1.to_bits() != f2.to_bits();
+                let _ = pair.ffirst.to_bits() == pair.fsecond.to_bits();
+            }
+            unsafe extern "C" fn translated(
+                mut got: ::core::ffi::c_double,
+                mut want: ::core::ffi::c_double,
+            ) {
+                if got.to_bits() != want.to_bits() && !(got.is_nan() && want.is_nan()) {}
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn memcmp_float_comparisons_leave_other_operations_unchanged() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_memcmp_float_comparison);
+    let left = "&raw mut e1 as *const ::core::ffi::c_void";
+    let right = "&raw mut e2 as *const ::core::ffi::c_void";
+    let size = "::core::mem::size_of::<::core::ffi::c_double>()";
+    let comparisons = [
+        format!("memcmp({left}, {right}, {size}) < 0"),
+        format!("memcmp({left}, {right}, {size}) > 0"),
+        format!("memcmp({left}, {right}, {size}) <= 0"),
+        format!("memcmp({left}, {right}, {size}) >= 0"),
+        format!("memcmp({left}, {right}, {size}) != 1"),
+        format!("memcmp({left}, {right}, {size}) == -1"),
+        format!("memcmp({left}, {right}, {size})"),
+        format!("memcmp({left}, {right}, 4) != 0"),
+        format!("memcmp({left}, {right}, {size} / 2) != 0"),
+        format!("memcmp({left}, {right}, core::mem::size_of::<f32>()) != 0"),
+        format!(
+            "memcmp(&raw mut small as *const c_void, &raw mut small as *const c_void, {size}) != 0"
+        ),
+        format!("memcmp({left}, {right}, core::mem::size_of::<u64>()) != 0"),
+        format!("memcmp({left}, {right}, other::mem::size_of::<f64>()) != 0"),
+        format!("memcmp({left}, {right}, core::mem::size_of::<f64>(1)) != 0"),
+        format!("memcmp({left}, {right}) != 0"),
+        format!("memcmp({left}, {right}, {size}, 1) != 0"),
+        format!("other_function({left}, {right}, {size}) != 0"),
+        format!("memcmp(pointer, {right}, {size}) != 0"),
+        format!("memcmp(&raw mut e1 as *const u8, {right}, {size}) != 0"),
+        format!("memcmp({left}, &raw mut small as *const c_void, {size}) != 0"),
+        format!(
+            "memcmp(&raw mut small as *const c_void, {right}, core::mem::size_of::<f32>()) != 0"
+        ),
+        format!("memcmp({left}, {right}, {size}) != 0 as f64"),
+        format!("memcmp(&raw mut integer as *const c_void, {right}, {size}) != 0"),
+        format!("memcmp({left}, &raw mut unknown as *const c_void, {size}) != 0"),
+        format!("{{ let e1 = unknown; memcmp({left}, {right}, {size}) != 0 }}"),
+    ];
+    for comparison in comparisons {
+        let input = format!(
+            "fn demo(mut e1: f64, mut e2: f64, mut small: f32, mut integer: u64, \
+                pointer: *const core::ffi::c_void) {{ let _ = {comparison}; }}"
+        );
+        let mut file = syn::parse_file(&input).unwrap();
+        let original = prettyplease::unparse(&file);
+        rw.rewrite_file(&mut file, Depth::Unlimited);
+        assert_eq!(prettyplease::unparse(&file), original, "{comparison}");
+    }
+}
+
+#[test]
 fn atomic_local_initialization_and_intrinsics() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
