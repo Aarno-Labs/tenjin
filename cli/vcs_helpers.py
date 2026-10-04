@@ -101,7 +101,19 @@ def jj_working_copy_status(vcs_root: Path, origin_remote: str = "origin") -> Wor
 
     lines = (
         hermetic.check_output(
-            ["jj", "-R", vcs_root, "log", "--no-graph", "-n2", "--color", "never", "-T", template],
+            [
+                "jj",
+                "--ignore-working-copy",
+                "-R",
+                vcs_root,
+                "log",
+                "--no-graph",
+                "-n2",
+                "--color",
+                "never",
+                "-T",
+                template,
+            ],
         )
         .decode("utf-8")
         .splitlines()
