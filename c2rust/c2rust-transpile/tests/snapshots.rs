@@ -450,6 +450,11 @@ fn test_fn_attrs() {
 }
 
 #[test]
+fn test_inline_external_definition() {
+    transpile("inline_external_definition.c").run();
+}
+
+#[test]
 fn test_fpclassify() {
     transpile("fpclassify.c").run();
 }

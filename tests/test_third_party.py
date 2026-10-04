@@ -499,7 +499,8 @@ def test_url_h_aka_urlparser(
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 27
+    # url.c's two extern inline declarations export the definitions from url.h.
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 29
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
