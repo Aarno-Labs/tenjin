@@ -6,6 +6,8 @@ from pathlib import Path
 import c_refact
 import cindex_helpers
 import compilation_database
+import hermetic
+import ingest_tracking
 import targets
 import translation
 import translation_preparation
@@ -228,6 +230,44 @@ def test_refolding_preserves_extern_array_declaration(root, tmp_codebase, tmp_re
     definition = r"\bstatic(?: mut)? file_names:\s*\[[^\]]+\]\s*="
     assert re.search(definition, apprentice)
     assert not re.search(definition, consumer)
+
+
+def test_refolding_keeps_macro_header_used_for_functions_and_array(
+    root, tmp_codebase, tmp_resultsdir
+):
+    tmp_codebase.mkdir()
+    header_text = "LIBM_DDD(nextafter)\nLIBM_DDD(nexttoward)\n"
+    (tmp_codebase / "libm.h").write_text(header_text, encoding="utf-8")
+    (tmp_codebase / "main.c").write_text(
+        "#include <math.h>\n"
+        "#define LIBM_DDD(name) static double f_##name(double x, long double y) "
+        "{ return name(x, y); }\n"
+        '#include "libm.h"\n'
+        "#undef LIBM_DDD\n"
+        "struct entry { const char *name; double (*fn)(double, long double); };\n"
+        "#define LIBM_DDD(name) { #name, f_##name },\n"
+        "static const struct entry functions[] = {\n"
+        '#include "libm.h"\n'
+        "};\n"
+        "int main(void) { return functions[1].fn(1.0, 2.0L) != 1.0; }\n",
+        encoding="utf-8",
+    )
+    flags = TranslationFlags.simple(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="reused_macro_header",
+        buildcmd="cc main.c -o main.exe -lm",
+    )
+    tracker = ingest_tracking.TimingRepo(translation.stub_ingestion_record(tmp_codebase, {}, []))
+    translation_preparation.run_preparation_passes(flags, {}, tracker)
+
+    prepared = next(tmp_resultsdir.glob("c_*_refold_preprocessor"))
+    assert (prepared / "libm.h").read_text(encoding="utf-8") == header_text
+    refolded = (prepared / "main.c").read_text(encoding="utf-8")
+    assert "nextafter(x, y)" in refolded
+    assert '#include "libm.h"' in refolded
+    hermetic.run(["cc", "main.c", "-o", "main.exe", "-lm"], cwd=prepared, check=True)
 
 
 def _immutable_global(name, declaration=None):
