@@ -418,9 +418,15 @@ impl RelooperState {
         &mut self,
         strict_reachable_from: &AdjacencyList,
         blocks: BasicBlocks,
-        entries: IndexSet<Label>,
+        mut entries: IndexSet<Label>,
         result: &mut Vec<Structure<StmtOrDecl>>,
     ) {
+        // Entries can include exits from the current subgraph (for example, a
+        // label after a C loop when a goto enters its body). Such labels must
+        // remain exits, not become entries to the loop we build here. Otherwise
+        // the generated loop dispatches to a block that is outside its body.
+        entries.retain(|entry| blocks.contains_key(entry));
+
         // Gather the set of current blocks that can reach one of our entries, not
         // including the entries themselves unless they are the successor of some
         // block (including itself, if the entry explicitly branches to itself).
