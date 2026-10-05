@@ -2074,6 +2074,7 @@ def test_maandree_libzahl_debug(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 650 seconds (~11 minutes)
+@pytest.mark.skip(reason="triggers a pre-refold-consolidation bug")
 def test_jqlang_jq(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(

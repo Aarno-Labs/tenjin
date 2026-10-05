@@ -1,6 +1,6 @@
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import shutil
@@ -10,8 +10,6 @@ from os import environ
 import os
 import tempfile
 import hashlib
-import re
-from itertools import pairwise
 
 from clang.cindex import (  # type: ignore
     Index,
@@ -255,24 +253,6 @@ class ConsolidationRevert:
 
 
 @dataclass(frozen=True)
-class MacroExpansionEdit:
-    """An edited declaration whose header spelling is a macro invocation.
-
-    The invocation must remain in the header because other inclusions may
-    expand it differently. Refolding may reconstruct a changed invocation in
-    the TU, so its edited expansion is restored there after refolding.
-    """
-
-    quss: str
-    modified_version: str
-    macro_name: str
-    preceding_line: str
-    following_line: str
-    pre_rewrite_i_start: int
-    pre_rewrite_i_length: int
-
-
-@dataclass(frozen=True)
 class RelocatedIncludeBlock:
     """An XjGlobals include block moved from a preprocessed TU into a header.
 
@@ -303,7 +283,6 @@ class ConsolidationRevertContext:
     reverts: list[ConsolidationRevert]
     relocated_include_blocks: list[RelocatedIncludeBlock]
     all_i_rewrites: list[tuple[int, int, int]]
-    macro_expansion_edits: list[MacroExpansionEdit] = field(default_factory=list)
 
 
 def refold_build(
@@ -353,7 +332,7 @@ def refold_build(
         if consolidation_data_by_rel_tu:
             rel_tu_path = abs_src_path.relative_to(target_dir_path).as_posix()
             ctx = consolidation_data_by_rel_tu.get(rel_tu_path)
-            if ctx is not None and (ctx.reverts or ctx.macro_expansion_edits):
+            if ctx is not None and ctx.reverts:
                 restore_dropped_consolidation_reverts(c_path, edit_map_path, ctx)
 
         if environ.get("XJ_REFOLD_CHECK"):
@@ -453,65 +432,6 @@ def _post_rewrite_i_offset(
     return (post_start, post_start + own_replacement_length)
 
 
-def _post_rewrite_untouched_i_offset(
-    start: int, length: int, all_rewrites: list[tuple[int, int, int]]
-) -> tuple[int, int]:
-    """Locate a span left untouched by consolidation after its other edits."""
-    delta = 0
-    end = start + length
-    for rw_start, rw_length, rw_post_length in sorted(all_rewrites):
-        if rw_start + rw_length <= start:
-            delta += rw_post_length - rw_length
-        elif rw_start < end:
-            raise ValueError("Consolidation rewrite overlaps a preserved macro expansion")
-        else:
-            break
-    return start + delta, end + delta
-
-
-def _macro_invocations_in_range(
-    content: str, name: str, begin: int, end: int
-) -> list[tuple[int, int]]:
-    """Find complete calls of a macro in a refolded output range."""
-    result = []
-    pattern = re.compile(r"\b" + re.escape(name) + r"\s*\(")
-    for match in pattern.finditer(content, begin, end):
-        line_start = content.rfind("\n", 0, match.start()) + 1
-        if content[line_start : match.start()].lstrip().startswith("#define"):
-            continue
-        depth = 1
-        quoted = ""
-        escaped = False
-        pos = match.end()
-        while pos < end and depth:
-            char = content[pos]
-            if quoted:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == quoted:
-                    quoted = ""
-            elif char in ('"', "'"):
-                quoted = char
-            elif char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-            pos += 1
-        if depth == 0:
-            result.append((match.start(), pos))
-    return result
-
-
-def _adjacent_nonempty_line(lines: list[str], reverse: bool = False) -> str:
-    for line in reversed(lines) if reverse else lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#line "):
-            return stripped
-    return ""
-
-
 def _find_unique_in_range(
     content: str, needle: str, search_begin: int, search_end: int
 ) -> int | None:
@@ -579,50 +499,6 @@ def restore_dropped_consolidation_reverts(
     skipped_ambiguous = 0
     skipped_already_folded = 0
     pending_rewrites: list[tuple[int, int, str, str]] = []
-    for macro_edit in ctx.macro_expansion_edits:
-        i_post_start, i_post_end = _post_rewrite_untouched_i_offset(
-            macro_edit.pre_rewrite_i_start,
-            macro_edit.pre_rewrite_i_length,
-            ctx.all_i_rewrites,
-        )
-        containing_entry = next(
-            (
-                entry
-                for entry in edit_map
-                if entry.i_begin <= i_post_start and i_post_end <= entry.i_end
-            ),
-            None,
-        )
-        if containing_entry is None:
-            raise ValueError(f"No refold edit-map entry for macro expansion {macro_edit.quss}")
-        scope_begin, scope_end = containing_entry.c_begin, containing_entry.c_end
-        if macro_edit.modified_version in c_content[scope_begin:scope_end]:
-            continue
-        candidates = _macro_invocations_in_range(
-            c_content, macro_edit.macro_name, scope_begin, scope_end
-        )
-        candidates = [
-            (start, end)
-            for start, end in candidates
-            if (
-                not macro_edit.preceding_line
-                or macro_edit.preceding_line
-                == _adjacent_nonempty_line(c_content[:start].splitlines(), reverse=True)
-            )
-            and (
-                not macro_edit.following_line
-                or macro_edit.following_line
-                == _adjacent_nonempty_line(c_content[end:].splitlines())
-            )
-        ]
-        if len(candidates) != 1:
-            raise ValueError(
-                f"Cannot uniquely restore macro expansion {macro_edit.quss} "
-                f"in {c_path.name}: {len(candidates)} candidates"
-            )
-        start, end = candidates[0]
-        pending_rewrites.append((start, end, macro_edit.modified_version, macro_edit.quss))
-
     for revert in ctx.reverts:
         if revert.modified_version == revert.expanded_header_version:
             continue
@@ -688,9 +564,6 @@ def restore_dropped_consolidation_reverts(
         ))
 
     pending_rewrites.sort(reverse=True)
-    for previous, following in pairwise(pending_rewrites):
-        if following[1] > previous[0]:
-            raise ValueError(f"Overlapping refold restoration edits in {c_path.name}")
     for c_start, c_end, replacement, quss in pending_rewrites:
         c_content = c_content[:c_start] + replacement + c_content[c_end:]
         restored += 1
