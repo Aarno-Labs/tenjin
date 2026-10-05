@@ -892,6 +892,38 @@ def test_localization_preserves_private_enum_initializer_values(tmp_path, source
     )
 
 
+@pytest.mark.parametrize(
+    "conflicting_enum", [False, True], ids=["missing-enum", "conflicting-enum"]
+)
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "struct Transforms {short cuts[LAST + 1];}; static struct Transforms g;",
+        "typedef short Cuts[LAST + 1]; struct Transforms {Cuts cuts;}; static struct Transforms g;",
+        "static struct {short cuts[LAST + 1];} g;",
+    ],
+    ids=["record", "array-typedef", "anonymous-record"],
+)
+def test_localization_preserves_enum_bounds_in_copied_types(
+    tmp_path, source_pangs, declaration, conflicting_enum
+):
+    main_enum = "enum Bounds {LAST=3}; " if conflicting_enum else ""
+    _, rewritten = materialize_sources(
+        source_pangs,
+        tmp_path,
+        {
+            "main.nolines.i": main_enum + "int verify(void);\nint main(void){return verify();}\n",
+            "data.nolines.i": "enum Bounds {LAST=9};\n"
+            + declaration
+            + "\nint verify(void){return ++g.cuts[9] != 1 "
+            "|| sizeof(g.cuts) != 10 * sizeof(short);}\n",
+        },
+    )
+    if conflicting_enum:
+        assert "enum Bounds {LAST=3}" in rewritten["main.nolines.i"]
+    assert "LAST + 1" not in rewritten["main.nolines.i"]
+
+
 def test_localization_preserves_file_scope_sizeof_and_alignof(tmp_path, source_pangs):
     _, rewritten = materialize_sources(
         source_pangs,
