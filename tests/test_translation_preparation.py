@@ -196,6 +196,54 @@ def test_header_consolidation_requires_every_tu_to_agree(sources, expected):
     assert translation_preparation._common_header_source(sources, {"a.i", "b.i"}) == expected
 
 
+@pytest.mark.parametrize("indexed_word", [False, True], ids=["both-modified", "one-modified"])
+def test_refolding_preserves_header_used_for_distinct_function_variants(
+    root, tmp_codebase, tmp_resultsdir, indexed_word
+):
+    tmp_codebase.mkdir()
+    header = (
+        "static inline void FN(copy)(DataType *dst, const DataType *src, int n) {\n"
+        "#ifdef USE_INDICES\n"
+        "    for (int i = 0; i < n; i++) dst[i] = src[i];\n"
+        "#else\n"
+        "    while (n--) *dst++ = *src++;\n"
+        "#endif\n"
+        "}\n"
+    )
+    (tmp_codebase / "template.h").write_text(header, encoding="utf-8")
+    (tmp_codebase / "main.c").write_text(
+        "#define FN(name) name##Byte\n#define DataType unsigned char\n"
+        '#include "template.h"\n'
+        "#undef FN\n#undef DataType\n"
+        "#define FN(name) name##Word\n#define DataType unsigned short\n"
+        + ("#define USE_INDICES\n" if indexed_word else "")
+        + '#include "template.h"\n'
+        "int main(void) {\n"
+        "    unsigned char a[3] = {0}, b[3] = {1, 2, 3};\n"
+        "    unsigned short c[3] = {0}, d[3] = {256, 512, 768};\n"
+        "    copyByte(a, b, 3); copyWord(c, d, 3);\n"
+        "    return a[2] != 3 || c[2] != 768;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    flags = TranslationFlags.simple(
+        root,
+        tmp_codebase,
+        tmp_resultsdir,
+        cratename="header_variants",
+        buildcmd="cc main.c -o main",
+    )
+    tracker = ingest_tracking.TimingRepo(translation.stub_ingestion_record(tmp_codebase, {}, []))
+    translation_preparation.run_preparation_passes(flags, {}, tracker)
+
+    prepared = next(tmp_resultsdir.glob("c_*_refold_preprocessor"))
+    assert (prepared / "template.h").read_text(encoding="utf-8") == header
+    transformed = next(tmp_resultsdir.glob("c_*_pointertransform"))
+    assert "dst_index_xj" in (transformed / "main.nolines.i").read_text(encoding="utf-8")
+    hermetic.run(["cc", "main.c", "-o", "main"], cwd=prepared, check=True)
+    assert hermetic.run([prepared / "main"], check=False).returncode == 0
+
+
 def test_refolding_preserves_extern_array_declaration(root, tmp_codebase, tmp_resultsdir):
     tmp_codebase.mkdir()
     (tmp_codebase / "file.h").write_text("extern const int file_names[];\n", encoding="utf-8")

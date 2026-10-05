@@ -1720,12 +1720,27 @@ def run_preparation_passes(
         qd_to_header_src: dict[tuple[QUSS, bool], FileContentsStr] = {}
         # Track the header that defines each QUSS, for post-refold restoration.
         q_to_header_rel_path: dict[QUSS, RelativeFilePathStr] = {}
+        declarations_by_header_range: dict[
+            tuple[RelativeFilePathStr, int, int], set[QUSS_and_defn]
+        ] = defaultdict(set)
         for rel_header_path_str, header_items in store.items_defined_by_headers.items():
             for q, hdr_details in header_items.items():
                 q_to_header_rel_path.setdefault(q, rel_header_path_str)
                 for start_offset, end_offset, source_text, _is_defn in hdr_details:
                     qd = (q, _is_defn)
                     qd_to_header_src[qd] = source_text
+                    declarations_by_header_range[rel_header_path_str, start_offset, end_offset].add(
+                        qd
+                    )
+        # A template header can expand the same source range into distinct
+        # declarations. Keep their edits in the TUs instead of replacing the
+        # shared template with one expanded variant.
+        shared_header_declarations = {
+            qd
+            for declarations in declarations_by_header_range.values()
+            if len(declarations) > 1
+            for qd in declarations
+        }
 
         def combine_source_texts_for_header(t1: str, t2: str) -> str | None:
             if t1 == t2:
@@ -1937,6 +1952,8 @@ def run_preparation_passes(
             # Find declarations that are modified identically in all TUs
             for qd, modifying_tus in tus_modifying_decls.items():
                 q = qd[0]
+                if qd in shared_header_declarations:
+                    continue
                 # Include unchanged TUs and reject missing declarations. Agreement
                 # among only the modifying TUs is not enough to change a header.
                 sources_by_tu = {
