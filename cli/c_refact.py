@@ -1114,11 +1114,7 @@ def render_source_backed_declaration(cursor: Cursor, rewriter) -> str:
     declaration = anonymous_tag_definition(cursor.type)
     base_type_spelling = None
     if declaration is not None:
-        source_path = declaration.location.file.name
-        content = rewriter.get_content(source_path)
-        base_type_spelling = content[
-            declaration.extent.start.offset : declaration.extent.end.offset
-        ].decode("utf-8")
+        base_type_spelling = render_source_with_enum_values(declaration, rewriter)
     return render_declaration_sans_qualifiers(
         cursor.type,
         cursor.spelling,
@@ -1126,20 +1122,13 @@ def render_source_backed_declaration(cursor: Cursor, rewriter) -> str:
     )
 
 
-def render_source_initializer(cursor: Cursor, rewriter) -> str:
-    expressions = [child for child in cursor.get_children() if child.kind.is_expression()]
-    if not expressions:
-        return (
-            "{0}"
-            if cursor.type.get_canonical().kind in (TypeKind.RECORD, TypeKind.CONSTANTARRAY)
-            else "0"
-        )
-    initializer = expressions[-1]
-    start = initializer.extent.start.offset
-    end = initializer.extent.end.offset
+def render_source_with_enum_values(cursor: Cursor, rewriter) -> str:
+    """Copy source without depending on enum names from its original translation unit."""
+    start = cursor.extent.start.offset
+    end = cursor.extent.end.offset
     content = rewriter.get_content(cursor.location.file.name)[start:end]
     replacements = {}
-    for reference in initializer.walk_preorder():
+    for reference in cursor.walk_preorder():
         if reference.kind != CursorKind.DECL_REF_EXPR or reference.referenced is None:
             continue
         constant = reference.referenced
@@ -1151,11 +1140,22 @@ def render_source_initializer(cursor: Cursor, rewriter) -> str:
                 reference.extent.end.offset - start,
                 f"(({type_obj.spelling}){constant.enum_value})".encode(),
             )
-    # Enum names are TU-local too. Reuse each occurrence's value and type
-    # instead of importing potentially conflicting names into main's TU.
+    # Preserve each occurrence's value and type even if the destination has
+    # an unrelated enum constant with the same name.
     for begin, (finish, replacement) in sorted(replacements.items(), reverse=True):
         content = content[:begin] + replacement + content[finish:]
-    return content.decode("utf-8").strip()
+    return content.decode("utf-8")
+
+
+def render_source_initializer(cursor: Cursor, rewriter) -> str:
+    expressions = [child for child in cursor.get_children() if child.kind.is_expression()]
+    if not expressions:
+        return (
+            "{0}"
+            if cursor.type.get_canonical().kind in (TypeKind.RECORD, TypeKind.CONSTANTARRAY)
+            else "0"
+        )
+    return render_source_with_enum_values(expressions[-1], rewriter).strip()
 
 
 def fold_context_type_traits(tus: dict[str, TranslationUnit], global_names: set[str]) -> bool:
@@ -2270,7 +2270,7 @@ def _localize_mutable_globals_in_place(
                 end_offset = decl_cursor.extent.end.offset
                 source_path = decl_cursor.location.file.name
                 content = rewriter.get_content(source_path)
-                type_defs_lines.append(content[start_offset:end_offset].decode("utf-8") + ";")
+                type_defs_lines.append(render_source_with_enum_values(decl_cursor, rewriter) + ";")
                 if source_path == tu_path and not any(
                     start <= start_offset and end_offset <= end
                     for start, end in global_definition_ranges.get(tu_path, [])
