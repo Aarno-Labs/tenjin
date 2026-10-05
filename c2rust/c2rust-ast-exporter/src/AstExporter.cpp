@@ -1252,22 +1252,30 @@ class TranslateASTVisitor final
 
     bool VisitCaseStmt(CaseStmt *CS) {
         auto expr = CS->getLHS();
+        auto end = CS->getRHS();
 
-        APSInt value;
-        if (!evaluateConstantInt(expr, value)) {
+        APSInt value, endValue;
+        if (!evaluateConstantInt(expr, value) ||
+            (end && !evaluateConstantInt(end, endValue))) {
             std::string msg =
                 "Expression in case statement is not an integer. Aborting.";
             printDiag(Context, DiagnosticsEngine::Error, msg, CS);
             abort();
         }
 
-        std::vector<void *> childIds{expr, CS->getSubStmt()};
-        encode_entry(CS, TagCaseStmt, childIds, [value](CborEncoder *extra) {
-            cbor_encode_boolean(extra, value.isSigned());
-            if (value.isSigned()) {
-                cbor_encode_int(extra, value.getSExtValue());
-            } else {
-                cbor_encode_uint(extra, value.getZExtValue());
+        std::vector<void *> childIds{expr, CS->getSubStmt(), end};
+        encode_entry(CS, TagCaseStmt, childIds, [value, end, endValue](CborEncoder *extra) {
+            auto encodeValue = [extra](const APSInt &v) {
+                cbor_encode_boolean(extra, v.isSigned());
+                if (v.isSigned()) {
+                    cbor_encode_int(extra, v.getSExtValue());
+                } else {
+                    cbor_encode_uint(extra, v.getZExtValue());
+                }
+            };
+            encodeValue(value);
+            if (end) {
+                encodeValue(endValue);
             }
         });
         return true;

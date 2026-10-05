@@ -1203,7 +1203,11 @@ impl TypedAstContext {
 
         use CStmtKind::*;
         match self[stmt].kind {
-            Case(expr, stmt, _const_expr) => is_const_expr(expr) && is_const(stmt),
+            Case(expr, stmt, _, end) => {
+                is_const_expr(expr)
+                    && end.is_none_or(|(expr, _)| is_const_expr(expr))
+                    && is_const(stmt)
+            }
             Default(stmt) => is_const(stmt),
             Compound(ref stmts) => stmts.iter().copied().all(is_const),
             Expr(expr) => is_const_expr(expr),
@@ -2613,7 +2617,13 @@ pub enum CStmtKind {
     //
     // All of these have a `CStmtId` to represent the substatement that comes after them
     Label(CStmtId),
-    Case(CExprId, CStmtId, ConstIntExpr),
+    // The optional endpoint represents GNU's inclusive `case low ... high`.
+    Case(
+        CExprId,
+        CStmtId,
+        ConstIntExpr,
+        Option<(CExprId, ConstIntExpr)>,
+    ),
     Default(CStmtId),
 
     // Compound statements (6.8.2)
