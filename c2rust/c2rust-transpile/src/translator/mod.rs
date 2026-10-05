@@ -4344,11 +4344,13 @@ impl<'c> Translation<'c> {
                     let pat_mut = mk().mutbl().ident_pat(rust_name);
                     let ty = mk_va_list_ty(self.tcfg.edition, None);
                     let local_mut = mk().local(pat_mut, Some(ty), None);
+                    let decl = vec![mk().local_stmt(Box::new(local_mut))];
 
+                    // The relooper may hoist this declaration; va_start initializes it later.
                     return Ok(cfg::DeclStmtInfo::new(
-                        vec![],                                     // decl
-                        vec![],                                     // assign
-                        vec![mk().local_stmt(Box::new(local_mut))], // decl_and_assign
+                        decl.clone(), // decl
+                        vec![],       // assign
+                        decl,         // decl_and_assign
                     ));
                 }
 
