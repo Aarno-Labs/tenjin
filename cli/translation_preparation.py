@@ -12,7 +12,7 @@ from collections import defaultdict
 import dataclasses
 from enum import Enum
 
-from clang.cindex import Cursor, CursorKind, TranslationUnitLoadError  # type: ignore
+from clang.cindex import Cursor, CursorKind, TranslationUnitLoadError, TypeKind  # type: ignore
 from cmake_file_api import CMakeProject
 import click
 
@@ -146,6 +146,71 @@ def _plan_static_uniquification(
             planned_names[static.usr] = make_unique_name(static.spelling)
 
     return planned_names
+
+
+def rewrite_nexttoward_calls(commands: list[compilation_database.CompileCommand]) -> int:
+    """Replace direct nexttoward calls with equivalent nextafter calls by signature."""
+    replacements = {
+        "nexttoward": (TypeKind.DOUBLE, "nextafter"),
+        "nexttowardf": (TypeKind.FLOAT, "nextafterf"),
+    }
+    index = cindex_helpers.create_xj_clang_index()
+    seen: set[Path] = set()
+    count = 0
+    with batching_rewriter.BatchingRewriter() as rewriter:
+        for cmd in commands:
+            if cmd.is_fake_link_thingy or cmd.file_path.suffix != ".i":
+                continue
+            path = cmd.absolute_file_path.resolve()
+            if path in seen:
+                continue
+            seen.add(path)
+            tu = c_refact.parse_translation_unit_with_args(
+                index,
+                path.as_posix(),
+                cmd.get_command_parts()[1:],
+                in_dir=cmd.directory_path.as_posix(),
+            )
+            contents = rewriter.get_content(path.as_posix())
+            for call, _ in cindex_helpers.yield_matching_cursors(tu.cursor, [CursorKind.CALL_EXPR]):
+                target = replacements.get(call.spelling)
+                if target is None:
+                    continue
+                expected_type, replacement = target
+                callee = next(call.get_children(), None)
+                while callee is not None and callee.kind in (
+                    CursorKind.UNEXPOSED_EXPR,
+                    CursorKind.PAREN_EXPR,
+                ):
+                    children = list(callee.get_children())
+                    callee = children[0] if len(children) == 1 else None
+                if callee is None or callee.kind != CursorKind.DECL_REF_EXPR:
+                    continue
+                declaration = callee.referenced
+                if (
+                    declaration is None
+                    or declaration.kind != CursorKind.FUNCTION_DECL
+                    or declaration.spelling != call.spelling
+                ):
+                    continue
+                signature = declaration.type.get_canonical()
+                if signature.kind != TypeKind.FUNCTIONPROTO or signature.is_function_variadic():
+                    continue
+                parameters = list(signature.argument_types())
+                if (
+                    signature.get_result().get_canonical().kind != expected_type
+                    or len(parameters) != 2
+                    or parameters[0].get_canonical().kind != expected_type
+                    or parameters[1].get_canonical().kind != TypeKind.LONGDOUBLE
+                ):
+                    continue
+                start = callee.extent.start.offset
+                end = callee.extent.end.offset
+                if contents[start:end] != call.spelling.encode("ascii"):
+                    continue
+                rewriter.add_rewrite(path.as_posix(), start, end - start, replacement)
+                count += 1
+    return count
 
 
 def run_modifying_subprocess_or_restore_prev(
@@ -617,6 +682,7 @@ def collect_decls_by_rel_tu(
     compdb: compilation_database.CompileCommands,
     restricted_to_files: set[FilePathStr] | None = None,
     fn_def_handling: FnDefHandling = FnDefHandling.EXCLUDE,
+    macro_invocation_ranges: set[tuple[RelativeFilePathStr, int, int]] | None = None,
 ) -> dict[
     RelativeFilePathStr,
     dict[QUSS, list[tuple[RelativeFilePathStr, int, int, FileContentsStr, QUSS_is_defn]]],
@@ -660,6 +726,13 @@ def collect_decls_by_rel_tu(
             if cursor.kind == CursorKind.MACRO_INSTANTIATION:
                 inst_loc = (cursor.extent.start.offset, cursor.location.file.name)
                 macro_inst_ranges[inst_loc] = cursor.extent.end.offset
+                if macro_invocation_ranges is not None and path_of_interest(inst_loc[1]):
+                    rel_path = Path(inst_loc[1]).relative_to(current_codebase).as_posix()
+                    macro_invocation_ranges.add((
+                        rel_path,
+                        cursor.extent.start.offset,
+                        cursor.extent.end.offset,
+                    ))
                 continue
 
             # print(
@@ -873,6 +946,9 @@ class PrepPassResultStore:
         dict[QUSS, list[tuple[FilePathStr, int, int, FileContentsStr, QUSS_is_defn]]],
     ]
     build_info: BuildInfo
+    header_macro_invocation_ranges: set[tuple[RelativeFilePathStr, int, int]] = dataclasses.field(
+        default_factory=set
+    )
     consolidation_data_by_rel_tu: dict[RelativeFilePathStr, c_refact.ConsolidationRevertContext] = (
         dataclasses.field(default_factory=dict)
     )
@@ -1655,6 +1731,9 @@ def run_preparation_passes(
         qd_to_header_src: dict[tuple[QUSS, bool], FileContentsStr] = {}
         # Track the header that defines each QUSS, for post-refold restoration.
         q_to_header_rel_path: dict[QUSS, RelativeFilePathStr] = {}
+        macro_ranges_by_header: dict[RelativeFilePathStr, list[tuple[int, int]]] = defaultdict(list)
+        for path, start, end in store.header_macro_invocation_ranges:
+            macro_ranges_by_header[path].append((start, end))
         for rel_header_path_str, header_items in store.items_defined_by_headers.items():
             for q, hdr_details in header_items.items():
                 q_to_header_rel_path.setdefault(q, rel_header_path_str)
@@ -1836,6 +1915,9 @@ def run_preparation_passes(
         consolidation_reverts_collected: dict[
             RelativeFilePathStr, list[c_refact.ConsolidationRevert]
         ] = {}
+        macro_expansion_edits_collected: dict[
+            RelativeFilePathStr, list[c_refact.MacroExpansionEdit]
+        ] = {}
         relocated_include_blocks_collected: dict[
             RelativeFilePathStr, list[c_refact.RelocatedIncludeBlock]
         ] = {}
@@ -1872,6 +1954,65 @@ def run_preparation_passes(
             # Find declarations that are modified identically in all TUs
             for qd, modifying_tus in tus_modifying_decls.items():
                 q = qd[0]
+                # A declaration expanded from a macro cannot replace the source
+                # invocation: the same header may be included with a different
+                # definition of that macro elsewhere (for example, once for
+                # function definitions and once for an array initializer).
+                macro_header_entries = [
+                    (rel_header_path, start_offset, end_offset, source)
+                    for rel_header_path, header_items in store.items_defined_by_headers.items()
+                    for start_offset, end_offset, source, is_defn in header_items.get(q, [])
+                    if is_defn == qd[1]
+                    if any(
+                        macro_start < end_offset and start_offset < macro_end
+                        for macro_start, macro_end in macro_ranges_by_header.get(
+                            rel_header_path, []
+                        )
+                    )
+                ]
+                if macro_header_entries:
+                    if len(macro_header_entries) != 1:
+                        raise ValueError(f"Cannot safely refold multiple macro origins for {q}")
+                    macro_header_path, header_start, header_end, source = macro_header_entries[0]
+                    macro_match = re.fullmatch(r"\s*([A-Za-z_]\w*)\s*\(.*\)\s*", source, re.S)
+                    if macro_match is None:
+                        raise ValueError(f"Cannot safely refold macro-generated declaration {q}")
+                    header_contents = rewriter.get_content(
+                        (current_codebase / macro_header_path).as_posix()
+                    )
+                    preceding_line = next(
+                        (
+                            line.strip()
+                            for line in reversed(
+                                header_contents[:header_start].decode("utf-8").splitlines()
+                            )
+                            if line.strip()
+                        ),
+                        "",
+                    )
+                    following_line = next(
+                        (
+                            line.strip()
+                            for line in header_contents[header_end:].decode("utf-8").splitlines()
+                            if line.strip()
+                        ),
+                        "",
+                    )
+                    for tu_path in modifying_tus:
+                        start_offset, end_offset = defn_offsets_by_tu[tu_path][qd]
+                        rel_tu_path = Path(tu_path).relative_to(current_codebase).as_posix()
+                        macro_expansion_edits_collected.setdefault(rel_tu_path, []).append(
+                            c_refact.MacroExpansionEdit(
+                                quss=q,
+                                modified_version=items_src_by_tu[tu_path][qd],
+                                macro_name=macro_match.group(1),
+                                preceding_line=preceding_line,
+                                following_line=following_line,
+                                pre_rewrite_i_start=start_offset,
+                                pre_rewrite_i_length=end_offset - start_offset,
+                            )
+                        )
+                    continue
                 # Include unchanged TUs and reject missing declarations. Agreement
                 # among only the modifying TUs is not enough to change a header.
                 sources_by_tu = {
@@ -2045,7 +2186,9 @@ def run_preparation_passes(
             rel: abs_ for abs_, rel in rel_tu_path_by_abs.items()
         }
         affected_rel_tus = (
-            consolidation_reverts_collected.keys() | relocated_include_blocks_collected.keys()
+            consolidation_reverts_collected.keys()
+            | relocated_include_blocks_collected.keys()
+            | macro_expansion_edits_collected.keys()
         )
         for rel_tu_path in affected_rel_tus:
             abs_tu_path = abs_by_rel.get(rel_tu_path)
@@ -2059,6 +2202,7 @@ def run_preparation_passes(
                 reverts=consolidation_reverts_collected.get(rel_tu_path, []),
                 relocated_include_blocks=relocated_include_blocks_collected.get(rel_tu_path, []),
                 all_i_rewrites=all_i_rewrites,
+                macro_expansion_edits=macro_expansion_edits_collected.get(rel_tu_path, []),
             )
 
     def prep_expand_preprocessor(prev: Path, current_codebase: Path, store: PrepPassResultStore):
@@ -2084,6 +2228,7 @@ def run_preparation_passes(
                 compdb,
                 restricted_to_files=local_header_paths,
                 fn_def_handling=FnDefHandling.INCLUDE_BODY,
+                macro_invocation_ranges=store.header_macro_invocation_ranges,
             )
         )
 
@@ -2147,6 +2292,11 @@ def run_preparation_passes(
             return
 
         c_refact_knr.eliminate_knr_syntax(commands)
+
+    def prep_redirect_nexttoward(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        compdb = store.build_info.compdb_for_all_targets_within(current_codebase)
+        count = rewrite_nexttoward_calls(compdb.commands)
+        print(f"Redirected {count} nexttoward calls to nextafter")
 
     def prep_analyze_errno(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         all_build_targets = store.build_info.get_all_targets()
@@ -2515,6 +2665,7 @@ def run_preparation_passes(
         ("analyze_errno", prep_analyze_errno),
         ("expand_preprocessor", prep_expand_preprocessor),
         ("eliminate_knr", prep_eliminate_knr),
+        ("redirect_nexttoward", prep_redirect_nexttoward),
         ("localize_errno", prep_localize_errno),
         ("convert_union_bitcasts", prep_convert_union_bitcasts),
         ("promote_atomics", prep_promote_atomics),

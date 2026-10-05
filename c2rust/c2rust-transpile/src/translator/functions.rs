@@ -13,6 +13,7 @@ impl<'c> Translation<'c> {
         span: Span,
         is_global: bool,
         is_inline: bool,
+        is_inline_externally_visible: bool,
         is_extern: bool,
         typ: CTypeId,
         name: &str,
@@ -65,6 +66,7 @@ impl<'c> Translation<'c> {
             span,
             is_global,
             is_inline,
+            is_inline_externally_visible,
             is_main,
             is_variadic,
             is_extern,
@@ -81,6 +83,7 @@ impl<'c> Translation<'c> {
                 ctx,
                 span,
                 is_global,
+                false,
                 false,
                 is_main,
                 is_variadic,
@@ -102,6 +105,7 @@ impl<'c> Translation<'c> {
         span: Span,
         is_global: bool,
         is_inline: bool,
+        is_inline_externally_visible: bool,
         is_main: bool,
         is_variadic: bool,
         is_extern: bool,
@@ -243,17 +247,13 @@ impl<'c> Translation<'c> {
                     block.set_span(span);
                 }
 
-                // c99 extern inline functions should be pub, but not gnu_inline attributed
-                // extern inlines, which become subject to their gnu89 visibility (private)
-                let is_extern_inline =
-                    is_inline && is_extern && !attrs.contains(&c_ast::Attribute::GnuInline);
-
                 let is_builtin_wrapper = name.starts_with("_xj_wrap");
 
                 // Functions that produce an externally-visible, unmangled symbol;
                 // these are the ones that would otherwise carry `#[no_mangle]` /
                 // `#[export_name]` (see `mk_linkage`).
-                let is_exported_symbol = (is_global && !is_inline) || is_extern_inline;
+                let is_exported_symbol =
+                    is_global && (!is_inline || is_inline_externally_visible);
 
                 // If we've been given guidance about what constitutes the public API of the
                 // code we're translating, we can use it to refine what functions are marked `extern`.
