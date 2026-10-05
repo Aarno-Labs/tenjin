@@ -1,9 +1,12 @@
 import hashlib
+import io
 from pathlib import Path
 import shutil
 import platform
 import re
+import struct
 import subprocess
+import zipfile
 
 import pytest
 
@@ -2347,6 +2350,233 @@ def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
         "Tests passed: 349",
         "#" * 80,
     ]
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+def physfs_make_fixtures(workdir: Path):
+    """Populate `workdir` with the directories and archives that physfs_session mounts."""
+    (workdir / "data" / "sub").mkdir(parents=True)
+    (workdir / "data" / "hello.txt").write_bytes(b"Hello from a plain directory.\n")
+    (workdir / "data" / "sub" / "nested.txt").write_bytes(b"nested line 1\nnested line 2\n")
+    (workdir / "data" / "link.txt").symlink_to("hello.txt")
+    (workdir / "out").mkdir()
+
+    def add(zf: zipfile.ZipFile, name: str, data: bytes, method: int):
+        # A fixed timestamp keeps the archive bytes, and `stat`'s output, stable.
+        zi = zipfile.ZipInfo(name, date_time=(2020, 1, 2, 3, 4, 6))
+        zi.compress_type = method
+        zf.writestr(zi, data)
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        add(zf, "deep/inside.txt", b"found inside a zip inside a zip\n", zipfile.ZIP_DEFLATED)
+
+    # Large enough that inflating it spans many reads through PhysicsFS's buffers.
+    big = bytes((i * 7 + (i >> 5)) & 0xFF for i in range(70000))
+    text = b"".join(
+        b"line %04d: the quick brown fox jumps over the lazy dog\n" % i for i in range(300)
+    )
+    with zipfile.ZipFile(workdir / "bundle.zip", "w") as zf:
+        add(zf, "docs/", b"", zipfile.ZIP_STORED)
+        add(zf, "docs/readme.txt", text, zipfile.ZIP_DEFLATED)
+        add(zf, "docs/stored.txt", b"stored, not deflated\n", zipfile.ZIP_STORED)
+        add(zf, "big.bin", big, zipfile.ZIP_DEFLATED)
+        add(zf, "inner.zip", inner.getvalue(), zipfile.ZIP_STORED)
+    # PhysicsFS identifies a mount by its name, so the in-memory mount needs its own.
+    shutil.copyfile(workdir / "bundle.zip", workdir / "copy.zip")
+
+    # Build engine GRP: signature, entry count, then 12-byte names and sizes, then data.
+    grp_files = [(b"MAP01.MAP", b"map data " * 20), (b"README.TXT", b"Build engine says hi\n")]
+    grp = b"KenSilverman" + struct.pack("<I", len(grp_files))
+    grp += b"".join(n.ljust(12, b" ") + struct.pack("<I", len(c)) for n, c in grp_files)
+    grp += b"".join(c for _, c in grp_files)
+    (workdir / "game.grp").write_bytes(grp)
+
+
+@pytest.mark.slow  # expected runtime: 25 s, up to the xfail below
+@pytest.mark.xfail(
+   reason="physfs does not translate yet: the 7z archiver's MyCPUID (LZMA SDK, "
+    "src/physfs_lzmasdk.h) is x86-64 inline asm with a tied in/out operand. xj-c2rust passes it "
+    "as a `&raw mut` local (*mut u32), matching the vendored c2rust/c2rust-asm-casts, whose "
+    "cast_in/cast_out take `*mut Out`. But Tenjin runs xj-c2rust without --c2rust-dir, so the "
+    "generated Cargo.toml depends on c2rust-asm-casts 0.22.1 from crates.io, whose "
+    "cast_in/cast_out take `&mut Out` -> 2x E0308 in physfs_archiver_7z.rs (the same errors as "
+    "test_file_file), and the `cargo check` gate after improvement_pass_02_lift-call-args "
+    "raises CalledProcessError. With PHYSFS_ARCHIVE_7Z=OFF, the session below matches C exactly."
+)
+def test_icculus_physfs(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/icculus/physfs.git", "c30aa9086d4caf7548ee76655376aa7aa9098ffc"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    translation.do_translate(
+        translation_types.TranslationFlags(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="icculus_physfs",
+            # Let Tenjin drive the CMake build itself, which also routes CMake's
+            # absolute-path archiver through the interceptor so that libphysfs.a
+            # becomes its own crate. test_physfs links against the static library.
+            cmake_defines=[
+                "PHYSFS_BUILD_SHARED=OFF",
+                "PHYSFS_BUILD_DOCS=OFF",
+                # Without Curses, test_physfs does not link readline, so the shell
+                # reads plain lines from stdin.
+                "CMAKE_DISABLE_FIND_PACKAGE_Curses=ON",
+                # CMake's find_library() searches the host rather than Tenjin's sysroot,
+                # and finds the host glibc's libpthread.a (an empty stub since glibc
+                # 2.34), while everything else compiles and links against the sysroot's
+                # glibc. `-lpthread` resolves it within the sysroot instead. The host
+                # path would also be taken for one of the project's own libraries, since
+                # cli/targets_from_intercept.py checks only `.so` inputs with
+                # is_system_lib.
+                "PTHREAD_LIBRARY=-lpthread",
+                # NOTE: Uncomment the line below as a hack to pass this test.
+                #"PHYSFS_ARCHIVE_7Z=OFF",
+            ],
+            do_not_refactor_headers_within=[],
+            prebuildcmd=None,
+            buildcmd=None,
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    c_bin = tmp_resultsdir / "_build_1" / "test_physfs"
+    rs_bin = tmp_resultsdir / "final" / "target" / "debug" / "test_physfs"
+
+    # Commands fed on stdin to test/test_physfs.c, PhysicsFS's interactive test shell.
+    # Every path is relative to the working directory, so the output does not depend
+    # on where the fixtures live.
+    physfs_session = [
+        "getdirsep",
+        "mount data / 1",
+        "mount bundle.zip /zip 1",
+        "mountmem copy.zip /zipmem 1",
+        "mounthandle /zip/inner.zip /nested 1",
+        "mount game.grp /grp 0",
+        "mount missing.zip /nowhere 1",
+        "getsearchpath",
+        "getmountpoint bundle.zip",
+        "getmountpoint /zip/inner.zip",
+        "ls /",
+        "tree /",
+        "cat hello.txt",
+        "cat sub/nested.txt",
+        "cat /zip/docs/stored.txt",
+        "cat /nested/deep/inside.txt",
+        "cat /grp/README.TXT",
+        "crc32 /zip/docs/readme.txt",
+        "crc32 /zipmem/docs/readme.txt",
+        "crc32 /zip/big.bin",
+        "crc32 /grp/MAP01.MAP",
+        "filelength /zip/big.bin",
+        "filelength /grp/MAP01.MAP",
+        "stat /zip/docs/readme.txt",
+        "stat /zip/docs",
+        "getlastmodtime /zip/big.bin",
+        "exists /zip/docs/readme.txt",
+        "exists /zip/nope.txt",
+        "isdir /zip/docs",
+        "isdir /zip/big.bin",
+        "isdir /zip/nope",
+        "getlasterror",
+        "getrealdir /zip/docs/readme.txt",
+        "getrealdir /zipmem/big.bin",
+        "getrealdir /grp/README.TXT",
+        "getrealdir hello.txt",
+        "cat2 /zip/docs/stored.txt /grp/README.TXT",
+        "setbuffer 37",
+        "crc32 /zip/big.bin",
+        "cat /zip/docs/stored.txt",
+        "setbuffer 0",
+        "cat /missing.txt",
+        "issymlink link.txt",
+        "cat link.txt",
+        "permitsymlinks 1",
+        "issymlink link.txt",
+        "cat link.txt",
+        "permitsymlinks 0",
+        "setwritedir out",
+        "getwritedir",
+        "mkdir made/here",
+        "write made/here/w.txt",
+        "append made/here/w.txt",
+        "mount out / 0",
+        "cat made/here/w.txt",
+        "filelength made/here/w.txt",
+        # Writes, flushes and reads back ~3.6 MB through a buffered handle; the
+        # contents are random but the output is not.
+        "stressbuffer 1000",
+        "stressbuffer 0",
+        "delete made/here/w.txt",
+        "exists made/here/w.txt",
+        # Fails: /nested is still mounted from a handle opened inside bundle.zip.
+        "unmount bundle.zip",
+        "unmount /zip/inner.zip",
+        "unmount bundle.zip",
+        "getsearchpath",
+        "cat /zip/docs/stored.txt",
+        "setroot copy.zip /docs",
+        "ls /zipmem",
+        "nosuchcommand",
+        "mount onlyonearg",
+        "deinit",
+        "init again",
+        "getsearchpath",
+        "quit",
+    ]
+
+    # Run the same session under each build, each in its own copy of the fixtures,
+    # since the session writes into out/ and the files it leaves are compared too.
+    session = "".join(f"{cmd}\n" for cmd in physfs_session).encode("utf-8")
+    results = {}
+    for tag, binary in (("c", c_bin), ("rs", rs_bin)):
+        workdir = tmp_resultsdir / f"xj_physfs_session_{tag}"
+        workdir.mkdir()
+        physfs_make_fixtures(workdir)
+        cp = hermetic.run(
+            [str(binary)],
+            cwd=str(workdir),
+            input=session,
+            check=False,
+            capture_output=True,
+            # `stat` and `getlastmodtime` print times via ctime(), in local time.
+            env_ext={"TZ": "UTC"},
+        )
+        written = sorted(
+            p.relative_to(workdir / "out").as_posix() for p in (workdir / "out").rglob("*")
+        )
+        results[tag] = (cp.returncode, cp.stdout, cp.stderr, written)
+
+    c_rc, c_stdout, c_stderr, c_written = results["c"]
+    rs_rc, rs_stdout, rs_stderr, rs_written = results["rs"]
+
+    assert rs_rc == c_rc, f"exit code {rs_rc} from Rust, {c_rc} from C"
+    assert rs_stdout == c_stdout, f"session stdout differs; Rust: {rs_stdout!r}, C: {c_stdout!r}"
+    assert rs_stderr == c_stderr, f"session stderr differs; Rust: {rs_stderr!r}, C: {c_stderr!r}"
+    assert rs_written == c_written, f"out/ differs; Rust: {rs_written!r}, C: {c_written!r}"
+
+    # Two identically-wrong builds would agree, so pin some of the session's results too.
+    c_lines = c_stdout.decode("utf-8").splitlines()
+    for expected in [
+        "> CRC32 for /zip/docs/readme.txt: 0xEA0D1B1F",
+        "> CRC32 for /zipmem/docs/readme.txt: 0xEA0D1B1F",
+        "> CRC32 for /zip/big.bin: 0xB5714285",
+        "> CRC32 for /grp/MAP01.MAP: 0x9C21DF62",
+        "> found inside a zip inside a zip",
+        "> Failure. reason: files still open.",
+        "8 directories, 13 files",
+    ]:
+        assert expected in c_lines, f"expected {expected!r} in the C session output"
+    assert c_lines.count("stress test completed successfully.") == 2
+    assert c_rc == 0
+    assert c_written == ["made", "made/here"]
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
