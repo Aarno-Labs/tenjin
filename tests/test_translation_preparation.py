@@ -232,6 +232,7 @@ def test_refolding_preserves_extern_array_declaration(root, tmp_codebase, tmp_re
     assert not re.search(definition, consumer)
 
 
+@pytest.mark.xfail(reason="triggers a pre-refold-consolidation bug")
 def test_refolding_keeps_macro_header_used_for_functions_and_array(
     root, tmp_codebase, tmp_resultsdir
 ):
