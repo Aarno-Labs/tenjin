@@ -40,3 +40,35 @@ fn issue_1821_transpiles_quickly() {
         .join()
         .unwrap();
 }
+
+#[test]
+fn va_list_local_survives_hoisting() {
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/relooper/va_list_goto.c");
+    let (_compile_commands_dir, compile_commands) =
+        c2rust_transpile::create_temp_compile_commands(&[fixture]);
+
+    for incremental in [true, false] {
+        let output_dir = c2rust_transpile::TempDir::new().unwrap();
+        let mut cfg = config(Edition2021, Default::default());
+        cfg.incremental_relooper = incremental;
+        cfg.emit_c_decl_map = false;
+        cfg.emit_build_files = true;
+        cfg.binaries = vec!["va_list_goto".into()];
+        cfg.output_dir = Some(output_dir.path().to_owned());
+        c2rust_transpile::transpile(cfg, &compile_commands, &[]);
+
+        let output = std::process::Command::new("cargo")
+            .args(["run", "--quiet", "--bin", "va_list_goto"])
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env("CARGO_TARGET_DIR", output_dir.path().join("target"))
+            .current_dir(output_dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "translated variadic function should compile and run (incremental={incremental}):\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
