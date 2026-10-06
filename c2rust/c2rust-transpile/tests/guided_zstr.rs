@@ -2,6 +2,254 @@ mod common;
 
 use c2rust_rust_tools::{rustc, RustEdition::Edition2024};
 use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+fn transpile_zstr(
+    dir: &Path,
+    source: &str,
+    guidance: serde_json::Value,
+) -> (std::path::PathBuf, String) {
+    let source_path = dir.join("coercions.c");
+    fs::write(&source_path, source).unwrap();
+    let mut cfg = common::config(Edition2024, guidance);
+    cfg.output_dir = Some(dir.join("translated"));
+    let (_commands_dir, commands) = c2rust_transpile::create_temp_compile_commands(&[source_path]);
+    c2rust_transpile::transpile(cfg, &commands, &[]);
+    let output = dir.join("translated/src/coercions.rs");
+    let translated = fs::read_to_string(&output).unwrap();
+    (output, translated)
+}
+
+fn compile(command: &mut Command) {
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "rustc failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn zstr_library(dir: &Path) -> std::path::PathBuf {
+    let source = dir.join("xj_zstr.rs");
+    let library = dir.join("libxj_zstr.rlib");
+    // Match the methods and borrow mutability without depending on the external crate.
+    fs::write(
+        &source,
+        r#"
+        pub struct ZString(Vec<u8>);
+        pub struct ZStr([u8]);
+        impl ZString {
+            pub fn as_bytes_with_nul(&self) -> &[u8] { &self.0 }
+            pub fn as_bytes_mut(&mut self) -> &mut [u8] { &mut self.0 }
+        }
+        impl ZStr {
+            pub fn as_bytes_with_nul(&self) -> &[u8] { &self.0 }
+        }
+        "#,
+    )
+    .unwrap();
+    compile(
+        Command::new("rustc")
+            .args([
+                "--crate-type=rlib",
+                "--crate-name=xj_zstr",
+                "--edition=2024",
+            ])
+            .arg(source)
+            .arg("-o")
+            .arg(&library),
+    );
+    library
+}
+
+#[test]
+fn guided_zstr_values_coerce_at_argument_initializer_and_assignment_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = zstr_library(dir.path());
+    for (ty, target, methods) in [
+        ("ZString", "const char", "as_bytes_with_nul().as_ptr()"),
+        (
+            "::xj_zstr::ZString",
+            "const char",
+            "as_bytes_with_nul().as_ptr()",
+        ),
+        ("&ZStr", "const char", "as_bytes_with_nul().as_ptr()"),
+        (
+            "&'static ::xj_zstr::ZStr",
+            "const char",
+            "as_bytes_with_nul().as_ptr()",
+        ),
+        (
+            "&mut xj_zstr::ZStr",
+            "const char",
+            "as_bytes_with_nul().as_ptr()",
+        ),
+        (
+            "&xj_zstr::ZString",
+            "const char",
+            "as_bytes_with_nul().as_ptr()",
+        ),
+        ("ZString", "char", "as_bytes_mut().as_mut_ptr()"),
+        ("xj_zstr::ZString", "char", "as_bytes_mut().as_mut_ptr()"),
+    ] {
+        let c_source = format!(
+            "typedef {target} Byte; typedef Byte *Raw;\n\
+             void sink(Raw value) {{}}\n\
+             void consumer(char *value) {{\n\
+                 sink(value);\n\
+                 sink((value));\n\
+                 sink(((Raw)value));\n\
+                 Raw local = value;\n\
+                 local = value;\n\
+             }}"
+        );
+        let (output, translated) = transpile_zstr(
+            dir.path(),
+            &c_source,
+            serde_json::json!({"vars_of_type": {ty: "consumer:value"}}),
+        );
+        assert_eq!(
+            translated.matches(methods).count(),
+            5,
+            "{ty}:\n{translated}"
+        );
+        compile(
+            Command::new("rustc")
+                .args(["--crate-type=lib", "--edition=2024", "--extern"])
+                .arg(format!("xj_zstr={}", library.display()))
+                .arg(output)
+                .arg("-o")
+                .arg(dir.path().join("libcoercions.rlib")),
+        );
+    }
+}
+
+#[test]
+fn guided_zstr_subscripts_and_return_values_coerce_to_pointers() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = zstr_library(dir.path());
+    for (ty, element, target, methods) in [
+        (
+            "&[ZString]",
+            "values[0]",
+            "const char",
+            "as_bytes_with_nul().as_ptr()",
+        ),
+        (
+            "&[&xj_zstr::ZStr]",
+            "values[0]",
+            "const char",
+            "as_bytes_with_nul().as_ptr()",
+        ),
+        (
+            "&mut [xj_zstr::ZString]",
+            "values[0]",
+            "char",
+            "as_bytes_mut().as_mut_ptr()",
+        ),
+        (
+            "::xj_zstr::ZString",
+            "make_value()",
+            "const char",
+            "as_bytes_with_nul().as_ptr()",
+        ),
+        (
+            "::xj_zstr::ZString",
+            "make_value()",
+            "char",
+            "as_bytes_mut().as_mut_ptr()",
+        ),
+    ] {
+        let c_source = format!(
+            "char *make_value(void);\n\
+             void sink({target} *value) {{}}\n\
+             void consumer(char **values) {{ sink({element}); }}"
+        );
+        let guidance = if element == "make_value()" {
+            serde_json::json!({"fn_return_type": {"make_value": ty}})
+        } else {
+            serde_json::json!({"vars_of_type": {ty: "consumer:values"}})
+        };
+        let (output, translated) = transpile_zstr(dir.path(), &c_source, guidance);
+        assert!(translated.contains(methods), "{ty}:\n{translated}");
+        compile(
+            Command::new("rustc")
+                .args(["--crate-type=lib", "--edition=2024", "--extern"])
+                .arg(format!("xj_zstr={}", library.display()))
+                .arg(output)
+                .arg("-o")
+                .arg(dir.path().join("libcoercions.rlib")),
+        );
+    }
+}
+
+#[test]
+fn zstr_pointer_coercions_respect_destination_guidance_and_borrowing() {
+    let dir = tempfile::tempdir().unwrap();
+    for (ty, destination) in [
+        ("ZString", "ZString"),
+        ("&ZStr", "&ZStr"),
+        ("&ZStr", "*mut u8"),
+        ("&mut ZStr", "*mut u8"),
+        ("&ZString", "*mut u8"),
+        ("other::ZString", "*const u8"),
+        ("Vec<ZString>", "*const u8"),
+        ("Option<&ZStr>", "*const u8"),
+    ] {
+        let mut guidance = serde_json::json!({"vars_of_type": {
+            destination: ["sink:value", "consumer:local"]
+        }});
+        if ty == destination {
+            guidance["vars_of_type"][ty] =
+                serde_json::json!(["consumer:value", "sink:value", "consumer:local"]);
+        } else {
+            guidance["vars_of_type"][ty] = serde_json::json!("consumer:value");
+        }
+        let (_, translated) = transpile_zstr(
+            dir.path(),
+            "void sink(char *value) {} void consumer(char *value) {\n\
+                 sink(value); char *local = value; local = value;\n\
+             }",
+            guidance,
+        );
+        assert!(
+            !translated.contains("as_bytes_"),
+            "{ty} -> {destination}:\n{translated}"
+        );
+    }
+}
+
+#[test]
+fn raw_pointer_destination_guidance_overrides_c_pointer_mutability() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = zstr_library(dir.path());
+    for (target, destination, methods) in [
+        ("char", "*const u8", "as_bytes_with_nul().as_ptr()"),
+        ("const char", "*mut u8", "as_bytes_mut().as_mut_ptr()"),
+    ] {
+        let (output, translated) = transpile_zstr(
+            dir.path(),
+            &format!(
+                "void sink({target} *value) {{}} void consumer(char *value) {{\n\
+                     sink(value); {target} *local = value; local = value;\n\
+                 }}"
+            ),
+            serde_json::json!({"vars_of_type": {
+                "ZString": "consumer:value", destination: ["sink:value", "consumer:local"]
+            }}),
+        );
+        assert_eq!(translated.matches(methods).count(), 3, "{translated}");
+        compile(
+            Command::new("rustc")
+                .args(["--crate-type=lib", "--edition=2024", "--extern"])
+                .arg(format!("xj_zstr={}", library.display()))
+                .arg(output)
+                .arg("-o")
+                .arg(dir.path().join("libcoercions.rlib")),
+        );
+    }
+}
 
 fn translated_guidance(ty: &str, local: bool) -> (String, String) {
     let dir = tempfile::tempdir().unwrap();

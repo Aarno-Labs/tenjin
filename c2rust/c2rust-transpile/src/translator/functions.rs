@@ -680,7 +680,7 @@ impl<'c> Translation<'c> {
             val = val.map(|val| mk_va_list_copy(self.tcfg.edition, val));
         } else {
             val = self
-                .convert_expr_guided(ctx, expr_id, override_ty, guided_ty)?
+                .convert_expr_with_guided_coercion(ctx, expr_id, override_ty, guided_ty)?
                 .map(|e| self.try_guided_type_repair(e, guided_ty));
         }
 

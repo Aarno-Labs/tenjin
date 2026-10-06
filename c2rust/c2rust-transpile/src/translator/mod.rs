@@ -636,6 +636,10 @@ impl ParsedGuidance {
             };
             return Some(tenjin::GuidedType::from_type(element_type.clone()));
         }
+        if let CExprKind::Call(_, callee, _) = t.ast_context[id].kind {
+            let function = t.ast_context.fn_declref_decl(callee)?;
+            return self.query_fn_return_type(function.get_name()?);
+        }
         None
     }
 
@@ -4684,7 +4688,9 @@ impl<'c> Translation<'c> {
         guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
-            Some(x) => self.convert_expr_guided(ctx.used(), x, Some(typ), guided_type),
+            Some(x) => {
+                self.convert_expr_with_guided_coercion(ctx.used(), x, Some(typ), guided_type)
+            }
             None => self.implicit_default_expr_guided(guided_type, ctx, typ.ctype),
         };
 
@@ -5023,6 +5029,7 @@ impl<'c> Translation<'c> {
         let mut current = expr;
         loop {
             match self.ast_context[current].kind {
+                CExprKind::Paren(_, target) => current = target,
                 CExprKind::ImplicitCast(_, target, kind, _, _)
                 | CExprKind::ExplicitCast(_, target, kind, _, _)
                     if self.c_cast_kind_effect_free(kind) =>

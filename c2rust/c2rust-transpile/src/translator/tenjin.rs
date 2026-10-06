@@ -435,6 +435,16 @@ pub fn type_is_str_ref(ty: &Type) -> bool {
     type_of_ref(ty).is_some_and(|inner| type_is_exactly_1_path(inner, "str"))
 }
 
+pub fn type_is_zstr_ref(ty: &Type) -> bool {
+    type_of_ref(ty).is_some_and(|inner| type_is_xj_zstr(inner, "ZStr"))
+}
+
+fn type_is_xj_zstr(ty: &Type, name: &str) -> bool {
+    type_get_bare_path(ty).is_some_and(|path| {
+        is_path_exactly_1(path, name) || is_path_exactly_2(path, "xj_zstr", name)
+    })
+}
+
 pub fn try_type_vec_of(ty: &Type) -> Option<&Type> {
     if let Some(path) = type_get_bare_path(ty) {
         if is_path_exactly_1(path, "Vec") {
@@ -2607,6 +2617,71 @@ impl Translation<'_> {
             }
         }
         Ok(None)
+    }
+
+    /// Convert a value flowing into a parameter, initializer, or assignment.
+    /// Guidance can change the Rust representation even when the C types match.
+    pub fn convert_expr_with_guided_coercion(
+        &self,
+        ctx: ExprContext,
+        cexpr: CExprId,
+        target_cty: Option<CQualTypeId>,
+        target_guidance: &Option<GuidedType>,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let source_guidance = self
+            .parsed_guidance
+            .borrow_mut()
+            .query_expr_type(self, cexpr);
+        let methods = source_guidance
+            .as_ref()
+            .zip(target_cty)
+            .and_then(|(source, target_cty)| {
+                let source_is_owned = type_is_xj_zstr(&source.parsed, "ZString");
+                let source_is_zstr = source_is_owned
+                    || type_is_zstr_ref(&source.parsed)
+                    || type_of_ref(&source.parsed)
+                        .is_some_and(|inner| type_is_xj_zstr(inner, "ZString"));
+                if !source_is_zstr {
+                    return None;
+                }
+                let CTypeKind::Pointer(pointee) =
+                    self.ast_context.resolve_type(target_cty.ctype).kind
+                else {
+                    return None;
+                };
+                if !matches!(
+                    self.ast_context.resolve_type(pointee.ctype).kind,
+                    CTypeKind::Char
+                ) {
+                    return None;
+                }
+                let mutable = match target_guidance {
+                    Some(guided) => match &guided.parsed {
+                        Type::Ptr(pointer) if type_is_exactly_1_path(&pointer.elem, "u8") => {
+                            pointer.mutability.is_some()
+                        }
+                        _ => return None,
+                    },
+                    // Resolve C typedefs above, rather than inspecting a Rust alias's name.
+                    None => !pointee.qualifiers.is_const,
+                };
+                if mutable {
+                    source_is_owned.then_some(("as_bytes_mut", "as_mut_ptr"))
+                } else {
+                    Some(("as_bytes_with_nul", "as_ptr"))
+                }
+            });
+        if let Some((bytes_method, pointer_method)) = methods {
+            // Remove the C representation casts before translation;
+            // casting the guided string itself to a raw pointer is invalid.
+            let source_expr = self.c_strip_noop_casts(cexpr);
+            let val = self.convert_expr_guided(ctx, source_expr, None, &source_guidance)?;
+            return Ok(val.map(|expr| {
+                let bytes = mk().method_call_expr(expr, bytes_method, vec![]);
+                mk().method_call_expr(bytes, pointer_method, vec![])
+            }));
+        }
+        self.convert_expr_guided(ctx, cexpr, target_cty, target_guidance)
     }
 
     pub fn coerce_borrow_guided(
