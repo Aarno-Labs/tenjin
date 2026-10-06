@@ -42,6 +42,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
     rw.add_expr_rewrite(Rewriter::rewrite_usize_array_subscript_literal);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_deref);
+    rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_zstr);
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
     rw.add_expr_rewrite(Rewriter::rewrite_atone_of_slice);
     rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);

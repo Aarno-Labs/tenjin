@@ -1397,27 +1397,31 @@ impl Rewriter {
             return None;
         }
 
-        let arg = expr_strip_parens(expr_strip_casts(expr_strip_parens(&call.args[0])));
-        let (place, owned_only) = match arg {
-            // Taking the address of a reference would point at the reference, not the string.
-            Expr::RawAddr(raw) => (expr_strip_parens(&raw.expr), true),
-            other => (other, false),
-        };
-        // Restrict to places that can be method receivers without parenthesization.
-        if !matches!(place, Expr::Path(_) | Expr::Field(_)) {
+        let place = zstr_place_of_c_str_arg(&call.args[0], symbols)?;
+        let replacement: Expr = syn::parse_quote! { #place.to_string_lossy() };
+        Some((replacement, Depth::Limited(0)))
+    }
+
+    /// Rewrite `strlen(s)` into `s.len() as size_t`, for the same forms of `s`
+    /// accepted by [`Rewriter::rewrite_str_from_ptr_of_zstr`].
+    /// The cast keeps the C result type, which may be `c_ulong` rather than `usize`.
+    pub fn rewrite_strlen_of_zstr(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
             return None;
-        }
-        let ty = symbols.type_of_expr(place)?;
-        let is_match = if owned_only {
-            is_zstring_type(&ty)
-        } else {
-            is_zstr_like_type(&ty)
         };
-        if !is_match {
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        if !func.path.is_ident("strlen") || call.args.len() != 1 {
             return None;
         }
 
-        let replacement: Expr = syn::parse_quote! { #place.to_string_lossy() };
+        let place = zstr_place_of_c_str_arg(&call.args[0], symbols)?;
+        let replacement: Expr = syn::parse_quote! { #place.len() as size_t };
         Some((replacement, Depth::Limited(0)))
     }
 
@@ -2449,6 +2453,29 @@ fn is_ref_str_type(ty: &syn::Type) -> bool {
 
 fn is_string_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "String"))
+}
+
+/// Given a C string argument `s` or `&raw mut s` (each perhaps cast to a pointer),
+/// return `s` if it names a `ZString`, `&ZString`, `&ZStr`, or `&mut ZStr`.
+/// Raw addresses are accepted only of an owned `ZString`, because taking the
+/// address of a reference would point at the reference, not the string.
+fn zstr_place_of_c_str_arg<'e>(arg: &'e Expr, symbols: &SymbolTable) -> Option<&'e Expr> {
+    let arg = expr_strip_parens(expr_strip_casts(expr_strip_parens(arg)));
+    let (place, owned_only) = match arg {
+        Expr::RawAddr(raw) => (expr_strip_parens(&raw.expr), true),
+        other => (other, false),
+    };
+    // Restrict to places that can be method receivers without parenthesization.
+    if !matches!(place, Expr::Path(_) | Expr::Field(_)) {
+        return None;
+    }
+    let ty = symbols.type_of_expr(place)?;
+    let is_match = if owned_only {
+        is_zstring_type(&ty)
+    } else {
+        is_zstr_like_type(&ty)
+    };
+    is_match.then_some(place)
 }
 
 fn is_zstring_type(ty: &Type) -> bool {

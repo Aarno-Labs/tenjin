@@ -1236,6 +1236,43 @@ fn str_from_ptr_of_zstr_uses_to_string_lossy() {
 }
 
 #[test]
+fn strlen_of_zstr_uses_len() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_zstr);
+    check(
+        &rw,
+        r#"fn demo(p: &xj_zstr::ZStr, q: &mut ZStr, r: &ZString, mut s: ZString, raw: *const i8) -> size_t {
+            let a = strlen(p);
+            let b = strlen(q as *const ::core::ffi::c_char);
+            let c = strlen(r) + 1;
+            let d = strlen(&raw mut s as *mut u8 as *const ::core::ffi::c_char);
+            let e = strlen(&raw const p as *const ::core::ffi::c_char);
+            let f = strlen(raw);
+            let g = strlen(p).wrapping_add(1);
+            a + b + c + d + e + f + g
+        }"#,
+        expect![[r#"
+            fn demo(
+                p: &xj_zstr::ZStr,
+                q: &mut ZStr,
+                r: &ZString,
+                mut s: ZString,
+                raw: *const i8,
+            ) -> size_t {
+                let a = p.len() as size_t;
+                let b = q.len() as size_t;
+                let c = r.len() as size_t + 1;
+                let d = s.len() as size_t;
+                let e = strlen(&raw const p as *const ::core::ffi::c_char);
+                let f = strlen(raw);
+                let g = (p.len() as size_t).wrapping_add(1);
+                a + b + c + d + e + f + g
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn strcmp_of_zstr_and_literal_compares_bytes() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_strcmp_zstr_eq_literal);
