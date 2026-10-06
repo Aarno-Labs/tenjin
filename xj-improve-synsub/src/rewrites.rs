@@ -1421,6 +1421,64 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Rewrite `strcmp(s, b"lit\0".as_ptr()) == 0` (or `!= 0`, with the operands
+    /// of either the call or the comparison in either order) into
+    /// `s.as_bytes() == b"lit"` when `s` is a `ZString`, `&ZString`, `&ZStr`, or `&mut ZStr`.
+    /// `ZStr::as_bytes` stops at the first NUL, as does `strcmp`.
+    pub fn rewrite_strcmp_zstr_eq_literal(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(binary) = expr else {
+            return None;
+        };
+        if !matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
+            return None;
+        }
+        let call = if is_zero_integer_expr(&binary.right) {
+            expr_strip_parens(&binary.left)
+        } else if is_zero_integer_expr(&binary.left) {
+            expr_strip_parens(&binary.right)
+        } else {
+            return None;
+        };
+        let Expr::Call(call) = call else {
+            return None;
+        };
+        let Expr::Path(function) = expr_strip_parens(&call.func) else {
+            return None;
+        };
+        if function.qself.is_some() || !function.path.is_ident("strcmp") || call.args.len() != 2 {
+            return None;
+        }
+
+        let (place, literal) = match (get_litbytestr(&call.args[0]), get_litbytestr(&call.args[1]))
+        {
+            (None, Some(literal)) => (&call.args[0], literal),
+            (Some(literal), None) => (&call.args[1], literal),
+            _ => return None,
+        };
+        // Restrict to places that can be method receivers without parenthesization.
+        let place = expr_strip_parens(place);
+        if !matches!(place, Expr::Path(_) | Expr::Field(_) | Expr::Index(_)) {
+            return None;
+        }
+        if !is_zstr_like_type(&symbols.type_of_expr(place)?) {
+            return None;
+        }
+
+        // `strcmp` reads the literal only up to its first NUL; without one it
+        // would read out of bounds, so leave that case alone.
+        let bytes = literal.value();
+        let nul = bytes.iter().position(|&b| b == 0)?;
+        let literal = LitByteStr::new(&bytes[..nul], literal.span());
+
+        let op = &binary.op;
+        let replacement: Expr = syn::parse_quote! { #place.as_bytes() #op #literal };
+        Some((replacement, Depth::Unlimited))
+    }
+
     /// Rewrite the `char`-array initializer of a `ZString`-typed local, which c2rust
     /// emits as a (mistyped) byte array, into a `ZString` constructor:
     ///   * `let s: ZString = *b"ab\0\0";` => `let s: ZString = ZString::new(b"ab\0");`

@@ -1236,6 +1236,48 @@ fn str_from_ptr_of_zstr_uses_to_string_lossy() {
 }
 
 #[test]
+fn strcmp_of_zstr_and_literal_compares_bytes() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_strcmp_zstr_eq_literal);
+    check(
+        &rw,
+        r#"fn demo(p: &xj_zstr::ZStr, q: &mut ZStr, r: &ZString, s: ZString, args: Vec<ZString>, raw: *const i8) {
+            if strcmp(p, b"hey\0".as_ptr()) == 0 as ::core::ffi::c_int {}
+            if strcmp(q, b"hey\0".as_ptr()) != 0 as ::core::ffi::c_int {}
+            if 0 == strcmp(b"hey\0".as_ptr(), r) {}
+            if strcmp(s, b"a\0b\0" as *const u8 as *const ::core::ffi::c_char) == 0 {}
+            if strcmp(args[1], b"\0".as_ptr()) == 0 as ::core::ffi::c_int {}
+            if strcmp(raw, b"hey\0".as_ptr()) == 0 as ::core::ffi::c_int {}
+            if strcmp(p, b"hey".as_ptr()) == 0 as ::core::ffi::c_int {}
+            if strcmp(p, q) == 0 as ::core::ffi::c_int {}
+            if strcmp(p, b"hey\0".as_ptr()) < 0 as ::core::ffi::c_int {}
+            if strcmp(p, b"hey\0".as_ptr()) == 1 as ::core::ffi::c_int {}
+        }"#,
+        expect![[r#"
+            fn demo(
+                p: &xj_zstr::ZStr,
+                q: &mut ZStr,
+                r: &ZString,
+                s: ZString,
+                args: Vec<ZString>,
+                raw: *const i8,
+            ) {
+                if p.as_bytes() == b"hey" {}
+                if q.as_bytes() != b"hey" {}
+                if r.as_bytes() == b"hey" {}
+                if s.as_bytes() == b"a" {}
+                if args[1].as_bytes() == b"" {}
+                if strcmp(raw, b"hey\0".as_ptr()) == 0 as ::core::ffi::c_int {}
+                if strcmp(p, b"hey".as_ptr()) == 0 as ::core::ffi::c_int {}
+                if strcmp(p, q) == 0 as ::core::ffi::c_int {}
+                if strcmp(p, b"hey\0".as_ptr()) < 0 as ::core::ffi::c_int {}
+                if strcmp(p, b"hey\0".as_ptr()) == 1 as ::core::ffi::c_int {}
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn zstring_local_init_from_byte_arrays() {
     let mut rw = Rewriter::new();
     rw.add_stmt_rewrite(Rewriter::rewrite_zstring_local_init);
