@@ -95,3 +95,54 @@ fn guided_strings_and_str_slices_have_constant_null_checks() {
         rustc(&output).edition(Edition2024).run();
     }
 }
+
+#[test]
+fn guided_subscripts_use_element_types_for_null_checks() {
+    for (ty, parameter, element) in [
+        ("&[&str]", "char **values", "values[0]"),
+        ("&mut [&str]", "char **values", "values[0]"),
+        ("[&str; 2]", "char *values[2]", "values[0]"),
+        ("&[&str; 2]", "char *values[2]", "values[0]"),
+        ("&mut [&str; 2]", "char *values[2]", "values[0]"),
+        ("&'static [&'static str]", "char **values", "(values)[0]"),
+        ("&[&[&str]]", "char ***values", "values[0][0]"),
+        ("[[&str; 2]; 2]", "char *values[2][2]", "values[0][0]"),
+        ("&[*mut u8]", "char **values", "values[0]"),
+        ("[*mut u8; 2]", "char *values[2]", "values[0]"),
+        ("*mut *mut u8", "char **values", "values[0]"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("element_null_checks.c");
+        fs::write(
+            &source,
+            format!(
+                "int check({parameter}) {{\n\
+                    if ({element} == 0) return 1;\n\
+                    if (0 == {element}) return 2;\n\
+                    if ({element} != 0) {{ if (0 != {element}) return 0; }}\n\
+                    return 3;\n\
+                }}\n"
+            ),
+        )
+        .unwrap();
+        let guidance = serde_json::json!({"vars_of_type": {ty: "check:values"}});
+        let mut cfg = common::config(Edition2024, guidance);
+        cfg.output_dir = Some(dir.path().join("translated"));
+        let (_commands_dir, commands) = c2rust_transpile::create_temp_compile_commands(&[source]);
+        c2rust_transpile::transpile(cfg, &commands, &[]);
+
+        let output = dir.path().join("translated/src/element_null_checks.rs");
+        let translated = fs::read_to_string(&output).unwrap();
+        let constant_checks = ty.contains("str");
+        assert_eq!(
+            translated.contains(".is_null()"),
+            !constant_checks,
+            "{ty}:\n{translated}"
+        );
+        if constant_checks {
+            assert!(translated.contains("if false"), "{ty}:\n{translated}");
+            assert!(translated.contains("if true"), "{ty}:\n{translated}");
+        }
+        rustc(&output).edition(Edition2024).run();
+    }
+}
