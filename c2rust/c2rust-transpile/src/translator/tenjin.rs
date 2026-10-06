@@ -2632,6 +2632,19 @@ impl Translation<'_> {
             .parsed_guidance
             .borrow_mut()
             .query_expr_type(self, cexpr);
+        if source_guidance
+            .as_ref()
+            .is_some_and(|source| type_is_xj_zstr(&source.parsed, "ZString"))
+            && target_guidance
+                .as_ref()
+                .is_some_and(|target| target.is_shared_borrow() && type_is_zstr_ref(&target.parsed))
+        {
+            // Keep the owned representation through C casts, then let Rust's
+            // deref coercion turn the shared ZString borrow into &ZStr.
+            let source_expr = self.c_strip_noop_casts(cexpr);
+            let val = self.convert_expr_guided(ctx, source_expr, None, &source_guidance)?;
+            return Ok(val.map(|expr| mk().borrow_expr(expr)));
+        }
         let coercion = source_guidance
             .as_ref()
             .zip(target_cty)
@@ -2714,7 +2727,10 @@ impl Translation<'_> {
                 .borrow_mut()
                 .query_expr_type(self, cexpr)
             {
-                if target_guided_type.is_shared_borrow() && !expr_guided_type.is_borrow() {
+                if target_guided_type.is_shared_borrow()
+                    && !expr_guided_type.is_borrow()
+                    && !tenjin::expr_is_borrow(&expr)
+                {
                     return mk().borrow_expr(expr);
                 }
 

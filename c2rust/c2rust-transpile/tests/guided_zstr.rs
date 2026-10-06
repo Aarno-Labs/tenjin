@@ -33,12 +33,19 @@ fn compile(command: &mut Command) {
 fn zstr_library(dir: &Path) -> std::path::PathBuf {
     let source = dir.join("xj_zstr.rs");
     let library = dir.join("libxj_zstr.rlib");
-    // Match the methods and borrow mutability without depending on the external crate.
+    // Match the methods, deref coercion, and borrow mutability without the external crate.
     fs::write(
         &source,
         r#"
         pub struct ZString(Vec<u8>);
+        #[repr(transparent)]
         pub struct ZStr([u8]);
+        impl std::ops::Deref for ZString {
+            type Target = ZStr;
+            fn deref(&self) -> &ZStr {
+                unsafe { &*(self.0.as_slice() as *const [u8] as *const ZStr) }
+            }
+        }
         impl ZString {
             pub fn as_bytes_with_nul(&self) -> &[u8] { &self.0 }
             pub fn as_bytes_mut(&mut self) -> &mut [u8] { &mut self.0 }
@@ -61,6 +68,72 @@ fn zstr_library(dir: &Path) -> std::path::PathBuf {
             .arg(&library),
     );
     library
+}
+
+#[test]
+fn owned_zstrings_borrow_into_guided_zstr_arguments_initializers_and_assignments() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = zstr_library(dir.path());
+    for (source, target) in [
+        ("ZString", "&ZStr"),
+        ("xj_zstr::ZString", "&::xj_zstr::ZStr"),
+        ("::xj_zstr::ZString", "&xj_zstr::ZStr"),
+    ] {
+        let (output, translated) = transpile_zstr(
+            dir.path(),
+            "void sink(const char *value) {} void consumer(char *value) {\n\
+                 sink(value); sink((const char *)value);\n\
+                 const char *local = value; local = value; sink(local);\n\
+             }",
+            serde_json::json!({"vars_of_type": {
+                source: "consumer:value", target: ["sink:value", "consumer:local"]
+            }}),
+        );
+        assert_eq!(translated.matches("&value").count(), 4, "{translated}");
+        assert!(!translated.contains("&&value"), "{translated}");
+        assert!(translated.contains("sink(local)"), "{translated}");
+        assert!(!translated.contains("as_bytes_"), "{translated}");
+        compile(
+            Command::new("rustc")
+                .args(["--crate-type=lib", "--edition=2024", "--extern"])
+                .arg(format!("xj_zstr={}", library.display()))
+                .arg(output)
+                .arg("-o")
+                .arg(dir.path().join("libcoercions.rlib")),
+        );
+    }
+}
+
+#[test]
+fn owned_zstring_elements_and_return_values_borrow_into_guided_zstr_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = zstr_library(dir.path());
+    let (output, translated) = transpile_zstr(
+        dir.path(),
+        "char *make_value(void); void sink(const char *value) {}\n\
+         void consumer(char **values) { sink(values[0]); sink(make_value()); }",
+        serde_json::json!({
+            "vars_of_type": {
+                "&[xj_zstr::ZString]": "consumer:values",
+                "&::xj_zstr::ZStr": "sink:value"
+            },
+            "fn_return_type": {"make_value": "::xj_zstr::ZString"}
+        }),
+    );
+    assert!(
+        translated.contains("sink(&values[0 as usize])"),
+        "{translated}"
+    );
+    assert!(translated.contains("sink(&make_value())"), "{translated}");
+    assert!(!translated.contains("&&"), "{translated}");
+    compile(
+        Command::new("rustc")
+            .args(["--crate-type=lib", "--edition=2024", "--extern"])
+            .arg(format!("xj_zstr={}", library.display()))
+            .arg(output)
+            .arg("-o")
+            .arg(dir.path().join("libcoercions.rlib")),
+    );
 }
 
 #[test]
