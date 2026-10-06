@@ -893,8 +893,9 @@ def test_tractor_b1_synthetic_007_app(tenjin_fixtures: TenjinFixtures):
 @pytest.mark.slow
 def test_tractor_b1_synthetic_009_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/009_stack_buffer_overflow"
-    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 7
+    guidance = json.dumps({"vars_of_type": {"&str": ["printLine:line"]}})
+    eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir, guidance)
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 0
 
 
 @pytest.mark.slow
