@@ -115,6 +115,99 @@ fn stat_rewrite_requires_zstring_path_and_safe_output_borrow() {
 }
 
 #[test]
+fn bool_cast_nonzero_uses_boolean_expression() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_bool_cast_nonzero);
+    check(
+        &rw,
+        r#"struct Flags { enabled: bool }
+        fn demo(b: bool, other: bool, n: i32, flags: Flags, ptr: *const bool, values: [bool; 2]) {
+            let local: bool = true;
+            let _ = b as ::core::ffi::c_int != 0;
+            let _ = (b as core::ffi::c_int) != (0 as ::core::ffi::c_int);
+            let _ = (n > 0) as ::core::ffi::c_int != 0;
+            let _ = (b && other) as ::core::ffi::c_int != 0;
+            let _ = (!b) as ::core::ffi::c_int != 0;
+            let _ = (b ^ other) as ::core::ffi::c_int != 0;
+            let _ = true as ::core::ffi::c_int != 0;
+            let _ = flags.enabled as ::core::ffi::c_int != 0;
+            let _ = (*ptr) as ::core::ffi::c_int != 0;
+            let _ = values[0] as ::core::ffi::c_int != 0;
+            let _ = local as ::core::ffi::c_int != 0;
+            let _ = ((n > 0) as ::core::ffi::c_int != 0) && other;
+            let _ = (read() > 0) as ::core::ffi::c_int != 0;
+        }"#,
+        expect![[r#"
+            struct Flags {
+                enabled: bool,
+            }
+            fn demo(
+                b: bool,
+                other: bool,
+                n: i32,
+                flags: Flags,
+                ptr: *const bool,
+                values: [bool; 2],
+            ) {
+                let local: bool = true;
+                let _ = b;
+                let _ = b;
+                let _ = (n > 0);
+                let _ = (b && other);
+                let _ = (!b);
+                let _ = (b ^ other);
+                let _ = true;
+                let _ = flags.enabled;
+                let _ = (*ptr);
+                let _ = values[0];
+                let _ = local;
+                let _ = ((n > 0)) && other;
+                let _ = (read() > 0);
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn bool_cast_nonzero_requires_bool_and_matching_comparison() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_bool_cast_nonzero);
+    check(
+        &rw,
+        r#"fn demo(b: bool, n: i32) {
+            let _ = n as ::core::ffi::c_int != 0;
+            let _ = (!n) as ::core::ffi::c_int != 0;
+            let _ = (b as u8) as ::core::ffi::c_int != 0;
+            let _ = unknown() as ::core::ffi::c_int != 0;
+            let _ = b as ::core::ffi::c_int == 0;
+            let _ = b as ::core::ffi::c_int != 1;
+            let _ = b as i8 != 0;
+            {
+                let b = n;
+                let _ = b as ::core::ffi::c_int != 0;
+            }
+            let _ = b as ::core::ffi::c_int != 0;
+        }"#,
+        expect![[r#"
+            fn demo(b: bool, n: i32) {
+                let _ = n as ::core::ffi::c_int != 0;
+                let _ = (!n) as ::core::ffi::c_int != 0;
+                let _ = (b as u8) as ::core::ffi::c_int != 0;
+                let _ = unknown() as ::core::ffi::c_int != 0;
+                let _ = b as ::core::ffi::c_int == 0;
+                let _ = b as ::core::ffi::c_int != 1;
+                let _ = b as i8 != 0;
+                {
+                    let b = n;
+                    let _ = b as ::core::ffi::c_int != 0;
+                }
+                let _ = b;
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn errno_reads_and_writes() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_errno_access);

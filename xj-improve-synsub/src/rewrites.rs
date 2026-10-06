@@ -19,6 +19,30 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    /// Remove the C integer round trip from a known boolean condition.
+    pub fn rewrite_bool_cast_nonzero(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(binary) = expr else {
+            return None;
+        };
+        if !matches!(binary.op, syn::BinOp::Ne(_)) || !is_zero_integer_expr(&binary.right) {
+            return None;
+        }
+        let Expr::Cast(cast) = expr_strip_parens(&binary.left) else {
+            return None;
+        };
+        if !matches!(&*cast.ty, Type::Path(path)
+            if path.qself.is_none() && is_path_exactly_3(&path.path, "core", "ffi", "c_int"))
+            || !is_bool_expr(&cast.expr, symbols)
+        {
+            return None;
+        }
+        Some(((*cast.expr).clone(), Depth::Unlimited))
+    }
+
     /// Replace accesses to glibc's errno storage with the errno crate's API.
     pub fn rewrite_errno_access(
         &self,
@@ -2196,6 +2220,30 @@ fn is_comparison_op(op: &syn::BinOp) -> bool {
             | syn::BinOp::Gt(_)
             | syn::BinOp::Ge(_)
     )
+}
+
+fn is_bool_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
+    let is_bool_type = |ty: &Type| matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("bool"));
+    match expr_strip_parens(expr) {
+        Expr::Lit(lit) => matches!(lit.lit, syn::Lit::Bool(_)),
+        Expr::Binary(binary) => {
+            is_comparison_op(&binary.op)
+                || matches!(binary.op, syn::BinOp::And(_) | syn::BinOp::Or(_))
+                || (matches!(
+                    binary.op,
+                    syn::BinOp::BitAnd(_) | syn::BinOp::BitOr(_) | syn::BinOp::BitXor(_)
+                ) && is_bool_expr(&binary.left, symbols)
+                    && is_bool_expr(&binary.right, symbols))
+        }
+        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Not(_)) => {
+            is_bool_expr(&unary.expr, symbols)
+        }
+        Expr::Cast(cast) => is_bool_type(&cast.ty),
+        expr => symbols
+            .type_of_expr(expr)
+            .as_ref()
+            .is_some_and(is_bool_type),
+    }
 }
 
 fn expr_ident(expr: &Expr) -> Option<&syn::Ident> {
