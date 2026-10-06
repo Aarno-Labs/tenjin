@@ -2632,7 +2632,7 @@ impl Translation<'_> {
             .parsed_guidance
             .borrow_mut()
             .query_expr_type(self, cexpr);
-        let methods = source_guidance
+        let coercion = source_guidance
             .as_ref()
             .zip(target_cty)
             .and_then(|(source, target_cty)| {
@@ -2649,36 +2649,53 @@ impl Translation<'_> {
                 else {
                     return None;
                 };
-                if !matches!(
-                    self.ast_context.resolve_type(pointee.ctype).kind,
-                    CTypeKind::Char
-                ) {
+                let pointee_kind = &self.ast_context.resolve_type(pointee.ctype).kind;
+                if !matches!(pointee_kind, CTypeKind::Char | CTypeKind::Void) {
                     return None;
                 }
-                let mutable = match target_guidance {
+                let (mutable, to_void) = match target_guidance {
                     Some(guided) => match &guided.parsed {
                         Type::Ptr(pointer) if type_is_exactly_1_path(&pointer.elem, "u8") => {
-                            pointer.mutability.is_some()
+                            (pointer.mutability.is_some(), false)
+                        }
+                        Type::Ptr(pointer)
+                            if pointer.mutability.is_none()
+                                && type_get_bare_path(&pointer.elem).is_some_and(|path| {
+                                    is_path_exactly_3(path, "core", "ffi", "c_void")
+                                }) =>
+                        {
+                            (false, true)
                         }
                         _ => return None,
                     },
                     // Resolve C typedefs above, rather than inspecting a Rust alias's name.
-                    None => !pointee.qualifiers.is_const,
+                    None => (
+                        !pointee.qualifiers.is_const,
+                        matches!(pointee_kind, CTypeKind::Void),
+                    ),
                 };
                 if mutable {
-                    source_is_owned.then_some(("as_bytes_mut", "as_mut_ptr"))
+                    (source_is_owned && !to_void).then_some(("as_bytes_mut", "as_mut_ptr", false))
                 } else {
-                    Some(("as_bytes_with_nul", "as_ptr"))
+                    Some(("as_bytes_with_nul", "as_ptr", to_void))
                 }
             });
-        if let Some((bytes_method, pointer_method)) = methods {
+        if let Some((bytes_method, pointer_method, to_void)) = coercion {
             // Remove the C representation casts before translation;
             // casting the guided string itself to a raw pointer is invalid.
             let source_expr = self.c_strip_noop_casts(cexpr);
             let val = self.convert_expr_guided(ctx, source_expr, None, &source_guidance)?;
             return Ok(val.map(|expr| {
                 let bytes = mk().method_call_expr(expr, bytes_method, vec![]);
-                mk().method_call_expr(bytes, pointer_method, vec![])
+                let pointer = mk().method_call_expr(bytes, pointer_method, vec![]);
+                if to_void {
+                    mk().cast_expr(
+                        pointer,
+                        mk().ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_void"])),
+                    )
+                } else {
+                    pointer
+                }
             }));
         }
         self.convert_expr_guided(ctx, cexpr, target_cty, target_guidance)

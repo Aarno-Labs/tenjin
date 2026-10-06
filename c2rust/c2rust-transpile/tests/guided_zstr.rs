@@ -92,6 +92,12 @@ fn guided_zstr_values_coerce_at_argument_initializer_and_assignment_boundaries()
         ),
         ("ZString", "char", "as_bytes_mut().as_mut_ptr()"),
         ("xj_zstr::ZString", "char", "as_bytes_mut().as_mut_ptr()"),
+        ("ZString", "const void", "as_bytes_with_nul().as_ptr()"),
+        (
+            "&xj_zstr::ZStr",
+            "const void",
+            "as_bytes_with_nul().as_ptr()",
+        ),
     ] {
         let c_source = format!(
             "typedef {target} Byte; typedef Byte *Raw;\n\
@@ -114,6 +120,14 @@ fn guided_zstr_values_coerce_at_argument_initializer_and_assignment_boundaries()
             5,
             "{ty}:\n{translated}"
         );
+        if target == "const void" {
+            assert_eq!(
+                translated.matches("as *const ::core::ffi::c_void").count(),
+                5,
+                "{translated}"
+            );
+            assert!(!translated.contains("as_bytes_mut"), "{translated}");
+        }
         compile(
             Command::new("rustc")
                 .args(["--crate-type=lib", "--edition=2024", "--extern"])
@@ -160,6 +174,18 @@ fn guided_zstr_subscripts_and_return_values_coerce_to_pointers() {
             "char",
             "as_bytes_mut().as_mut_ptr()",
         ),
+        (
+            "&[&xj_zstr::ZStr]",
+            "values[0]",
+            "const void",
+            "as_bytes_with_nul().as_ptr()",
+        ),
+        (
+            "::xj_zstr::ZString",
+            "make_value()",
+            "const void",
+            "as_bytes_with_nul().as_ptr()",
+        ),
     ] {
         let c_source = format!(
             "char *make_value(void);\n\
@@ -193,6 +219,8 @@ fn zstr_pointer_coercions_respect_destination_guidance_and_borrowing() {
         ("&ZStr", "*mut u8"),
         ("&mut ZStr", "*mut u8"),
         ("&ZString", "*mut u8"),
+        ("ZString", "*mut ::core::ffi::c_void"),
+        ("&ZStr", "*mut ::core::ffi::c_void"),
         ("other::ZString", "*const u8"),
         ("Vec<ZString>", "*const u8"),
         ("Option<&ZStr>", "*const u8"),
@@ -221,12 +249,37 @@ fn zstr_pointer_coercions_respect_destination_guidance_and_borrowing() {
 }
 
 #[test]
+fn mutable_void_pointers_do_not_trigger_zstr_decay() {
+    let dir = tempfile::tempdir().unwrap();
+    for ty in ["ZString", "&ZStr"] {
+        let (_, translated) = transpile_zstr(
+            dir.path(),
+            "void sink(void *value) {} void consumer(void *value) {\n\
+                 sink(value); void *local = value; local = value;\n\
+             }",
+            serde_json::json!({"vars_of_type": {ty: "consumer:value"}}),
+        );
+        assert!(!translated.contains("as_bytes_"), "{ty}:\n{translated}");
+    }
+}
+
+#[test]
 fn raw_pointer_destination_guidance_overrides_c_pointer_mutability() {
     let dir = tempfile::tempdir().unwrap();
     let library = zstr_library(dir.path());
     for (target, destination, methods) in [
         ("char", "*const u8", "as_bytes_with_nul().as_ptr()"),
         ("const char", "*mut u8", "as_bytes_mut().as_mut_ptr()"),
+        (
+            "char",
+            "*const ::core::ffi::c_void",
+            "as_bytes_with_nul().as_ptr()",
+        ),
+        (
+            "void",
+            "*const core::ffi::c_void",
+            "as_bytes_with_nul().as_ptr()",
+        ),
     ] {
         let (output, translated) = transpile_zstr(
             dir.path(),
