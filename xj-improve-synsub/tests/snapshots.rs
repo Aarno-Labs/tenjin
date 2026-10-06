@@ -115,6 +115,94 @@ fn stat_rewrite_requires_zstring_path_and_safe_output_borrow() {
 }
 
 #[test]
+fn u8_char_comparisons_remove_c_int_casts() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_u8_char_comparison);
+    check(
+        &rw,
+        r#"struct Byte { value: u8 }
+        fn demo(byte: u8, values: &[u8], ptr: *const u8, record: Byte, n: i32) {
+            let local: u8 = byte;
+            let _ = byte as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int != 'z' as ::core::ffi::c_int;
+            let _ = (byte as ::core::ffi::c_int) < '0' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int <= '9' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int > '\0' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int >= '\u{ff}' as ::core::ffi::c_int;
+            let _ = ((values[0]) as core::ffi::c_int) == (('b') as core::ffi::c_int);
+            let _ = (*ptr) as ::core::ffi::c_int == 'c' as ::core::ffi::c_int;
+            let _ = record.value as ::core::ffi::c_int == 'd' as ::core::ffi::c_int;
+            let _ = local as ::core::ffi::c_int == '\n' as ::core::ffi::c_int;
+            let _ = (n as u8) as ::core::ffi::c_int == 'e' as ::core::ffi::c_int;
+            let _ = ((n as u8) as ::core::ffi::c_int) < 'f' as ::core::ffi::c_int;
+        }"#,
+        expect![[r#"
+            struct Byte {
+                value: u8,
+            }
+            fn demo(byte: u8, values: &[u8], ptr: *const u8, record: Byte, n: i32) {
+                let local: u8 = byte;
+                let _ = byte == 'a' as u8;
+                let _ = byte != 'z' as u8;
+                let _ = byte < '0' as u8;
+                let _ = byte <= '9' as u8;
+                let _ = byte > '\0' as u8;
+                let _ = byte >= '\u{ff}' as u8;
+                let _ = values[0] == 'b' as u8;
+                let _ = *ptr == 'c' as u8;
+                let _ = record.value == 'd' as u8;
+                let _ = local == '\n' as u8;
+                let _ = (n as u8) == 'e' as u8;
+                let _ = (n as u8) < 'f' as u8;
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn u8_char_comparison_rejects_unsafe_or_unknown_cases() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_u8_char_comparison);
+    check(
+        &rw,
+        r#"fn demo(byte: u8, signed: i8, n: i32) {
+            let _ = byte as ::core::ffi::c_int + 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int - 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int | 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int == '\u{100}' as ::core::ffi::c_int;
+            let _ = signed as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            let _ = n as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            let _ = unknown() as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            let _ = byte as i32 == 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int == 'a' as i32;
+            let _ = byte as ::core::ffi::c_int == 97 as ::core::ffi::c_int;
+            {
+                let byte = n;
+                let _ = byte as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            }
+        }"#,
+        expect![[r#"
+            fn demo(byte: u8, signed: i8, n: i32) {
+                let _ = byte as ::core::ffi::c_int + 'a' as ::core::ffi::c_int;
+                let _ = byte as ::core::ffi::c_int - 'a' as ::core::ffi::c_int;
+                let _ = byte as ::core::ffi::c_int | 'a' as ::core::ffi::c_int;
+                let _ = byte as ::core::ffi::c_int == '\u{100}' as ::core::ffi::c_int;
+                let _ = signed as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+                let _ = n as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+                let _ = unknown() as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+                let _ = byte as i32 == 'a' as ::core::ffi::c_int;
+                let _ = byte as ::core::ffi::c_int == 'a' as i32;
+                let _ = byte as ::core::ffi::c_int == 97 as ::core::ffi::c_int;
+                {
+                    let byte = n;
+                    let _ = byte as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+                }
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn bool_cast_nonzero_uses_boolean_expression() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_bool_cast_nonzero);

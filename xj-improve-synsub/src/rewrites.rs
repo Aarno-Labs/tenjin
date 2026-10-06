@@ -19,6 +19,59 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    /// Compare a byte and a byte-sized character without promoting them to C integers.
+    pub fn rewrite_u8_char_comparison(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(binary) = expr else {
+            return None;
+        };
+        // Other operators can change the result type or overflow behavior.
+        if !is_comparison_op(&binary.op) {
+            return None;
+        }
+        let (Expr::Cast(left), Expr::Cast(right)) = (
+            expr_strip_parens(&binary.left),
+            expr_strip_parens(&binary.right),
+        ) else {
+            return None;
+        };
+        let is_c_int = |ty: &Type| {
+            matches!(ty, Type::Path(path)
+                if path.qself.is_none() && is_path_exactly_3(&path.path, "core", "ffi", "c_int"))
+        };
+        if !is_c_int(&left.ty) || !is_c_int(&right.ty) {
+            return None;
+        }
+        let byte = expr_strip_parens(&left.expr);
+        let byte_ty = match byte {
+            Expr::Cast(cast) => (*cast.ty).clone(),
+            _ => symbols.type_of_expr(byte)?,
+        };
+        if !matches!(&byte_ty, Type::Path(path) if path.qself.is_none()) || !is_u8_type(&byte_ty) {
+            return None;
+        }
+        let Expr::Lit(ExprLit {
+            lit: syn::Lit::Char(character),
+            ..
+        }) = expr_strip_parens(&right.expr)
+        else {
+            return None;
+        };
+        // A wider Unicode character would be truncated by the replacement cast.
+        if u32::from(character.value()) > u32::from(u8::MAX) {
+            return None;
+        }
+        let op = &binary.op;
+        let byte = paren_if_cast(byte);
+        Some((
+            syn::parse_quote! { #byte #op #character as u8 },
+            Depth::Unlimited,
+        ))
+    }
+
     /// Remove the C integer round trip from a known boolean condition.
     pub fn rewrite_bool_cast_nonzero(
         &self,

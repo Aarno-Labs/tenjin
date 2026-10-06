@@ -59,6 +59,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_str_from_ptr_of_zstr);
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
     rw.add_expr_rewrite(Rewriter::rewrite_bool_cast_nonzero);
+    rw.add_expr_rewrite(Rewriter::rewrite_u8_char_comparison);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_redundant_borrow);
 
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
