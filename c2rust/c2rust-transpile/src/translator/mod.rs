@@ -625,8 +625,18 @@ impl ParsedGuidance {
     }
 
     pub fn query_expr_type(&mut self, t: &Translation, id: CExprId) -> Option<tenjin::GuidedType> {
+        let id = t.ast_context.unwrap_parens(t.c_strip_noop_casts(id));
         if let Some(decl_id) = t.c_expr_get_var_decl_id(id) {
             return self.query_decl_type(t, decl_id);
+        }
+        if let CExprKind::ArraySubscript(_, base, _, _) = t.ast_context[id].kind {
+            let base_type = self.query_expr_type(t, base)?;
+            let element_type = match base_type.strip_refs() {
+                Type::Slice(slice) => slice.elem.as_ref(),
+                Type::Array(array) => array.elem.as_ref(),
+                ty => tenjin::try_type_vec_of(ty)?,
+            };
+            return Some(tenjin::GuidedType::from_type(element_type.clone()));
         }
         None
     }

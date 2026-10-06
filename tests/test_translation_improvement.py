@@ -57,6 +57,67 @@ def test_exceptional_lift_restores_temporarily_rewritten_print_macros(
     ]
 
 
+@pytest.mark.parametrize("symlink_root", [False, True])
+def test_lift_call_args_only_rewrites_files_inside_source_directory(
+    tmp_path: Path, symlink_root: bool, capfd: pytest.CaptureFixture[str]
+):
+    (tmp_path / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["selected", "selected-other"]\nresolver = "2"\n',
+        encoding="utf-8",
+    )
+    original = (
+        "fn consume(_: &mut i32, _: i32) {}\n"
+        "pub fn needs_lift(value: &mut i32) { consume(value, *value); }\n"
+    )
+    for name in ("selected", "selected-other"):
+        crate = tmp_path / name
+        (crate / "src").mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(
+            f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n',
+            encoding="utf-8",
+        )
+        (crate / "src" / "lib.rs").write_text(original, encoding="utf-8")
+
+    crate = tmp_path / "selected"
+    source = crate / "src" / "lib.rs"
+    source.write_text(original + "mod external;\n", encoding="utf-8")
+    outside = tmp_path / "outside.rs"
+    outside.write_text(original, encoding="utf-8")
+    (crate / "src" / "external.rs").symlink_to(outside)
+    if symlink_root:
+        alias = tmp_path / "alias"
+        alias.symlink_to(crate, target_is_directory=True)
+        crate = alias
+
+    root = repo_root.find_repo_root_dir_Path()
+    cp = translation_improvement.run_built_workspace_binary(
+        root, "xj-improve-lift-call-args", "xj-improve-lift-call-args", [], tmp_path
+    )
+    cp.check_returncode()
+    output = capfd.readouterr().out
+    assert "selected-other/src/lib.rs" in output
+    assert "selected/src/external.rs" in output or "outside.rs" in output
+
+    for args in ([], ["--modify-in-place"]):
+        cp = translation_improvement.run_built_workspace_binary(
+            root, "xj-improve-lift-call-args", "xj-improve-lift-call-args", args, crate
+        )
+        cp.check_returncode()
+        output = capfd.readouterr().out
+        if not args:
+            assert "__lift_" in output
+            assert "selected-other/src/lib.rs" not in output
+            assert "external.rs" not in output
+            assert "outside.rs" not in output
+            assert source.read_text(encoding="utf-8") == original + "mod external;\n"
+        assert outside.read_text(encoding="utf-8") == original
+        assert (tmp_path / "selected-other" / "src" / "lib.rs").read_text(
+            encoding="utf-8"
+        ) == original
+
+    assert "__lift_" in source.read_text(encoding="utf-8")
+
+
 def test_failed_improvement_stage_is_not_selected_as_output(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

@@ -97,7 +97,7 @@ impl SymbolTable {
         self.items.remove(name);
     }
 
-    /// Determine the type of a simple path or named-field expression.
+    /// Determine the type of a simple path, named field, or indexed expression.
     pub fn type_of_expr(&self, expr: &syn::Expr) -> Option<syn::Type> {
         match expr {
             syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
@@ -113,6 +113,10 @@ impl SymbolTable {
                     .get(&struct_name)?
                     .get(&field_name.to_string())
                     .cloned()
+            }
+            syn::Expr::Index(index) => {
+                let container_ty = self.type_of_expr(&index.expr)?;
+                indexed_element_type(&container_ty).cloned()
             }
             syn::Expr::Paren(paren) => self.type_of_expr(&paren.expr),
             syn::Expr::Group(group) => self.type_of_expr(&group.expr),
@@ -171,6 +175,42 @@ impl SymbolTable {
                 _ => {}
             }
         }
+    }
+}
+
+fn indexed_element_type(ty: &syn::Type) -> Option<&syn::Type> {
+    match ty {
+        syn::Type::Array(array) => Some(&array.elem),
+        syn::Type::Slice(slice) => Some(&slice.elem),
+        syn::Type::Reference(reference) => indexed_element_type(&reference.elem),
+        syn::Type::Paren(paren) => indexed_element_type(&paren.elem),
+        syn::Type::Group(group) => indexed_element_type(&group.elem),
+        syn::Type::Path(path) if path.qself.is_none() => {
+            let segments = &path.path.segments;
+            let is_vec = match segments.len() {
+                1 => segments[0].ident == "Vec",
+                3 => {
+                    (segments[0].ident == "std" || segments[0].ident == "alloc")
+                        && segments[1].ident == "vec"
+                        && segments[2].ident == "Vec"
+                }
+                _ => false,
+            };
+            if !is_vec {
+                return None;
+            }
+            let syn::PathArguments::AngleBracketed(args) = &segments.last()?.arguments else {
+                return None;
+            };
+            if args.args.len() != 1 {
+                return None;
+            }
+            match args.args.first()? {
+                syn::GenericArgument::Type(element) => Some(element),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1061,6 +1101,41 @@ pub fn collect_workspace_files(manifest_dir: &Path) -> Result<Vec<(CrateRoot, Cr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_expression_has_container_element_type() {
+        let mut symbols = SymbolTable::new();
+        for (name, ty) in [
+            ("vector", "Vec<Element>"),
+            ("qualified", "std::vec::Vec<Element>"),
+            ("borrowed", "&Vec<Element>"),
+            ("slice", "&mut [Element]"),
+            ("array", "[Element; 4]"),
+            ("matrix", "[[Element; 2]; 3]"),
+            ("scalar", "Element"),
+            ("other_vec", "other::Vec<Element>"),
+        ] {
+            symbols.insert(name.into(), syn::parse_str(ty).unwrap());
+        }
+
+        let element: syn::Type = syn::parse_quote!(Element);
+        for expr in [
+            "vector[0]",
+            "qualified[0]",
+            "borrowed[0]",
+            "slice[0]",
+            "array[0]",
+            "matrix[0][1]",
+        ] {
+            assert_eq!(
+                symbols.type_of_expr(&syn::parse_str(expr).unwrap()),
+                Some(element.clone())
+            );
+        }
+        for expr in ["scalar[0]", "other_vec[0]", "unknown[0]"] {
+            assert_eq!(symbols.type_of_expr(&syn::parse_str(expr).unwrap()), None);
+        }
+    }
 
     #[test]
     fn rewrite_file_strips_redundant_outer_statement_parens() {

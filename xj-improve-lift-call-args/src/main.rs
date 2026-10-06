@@ -1,6 +1,6 @@
 //! `xj-improve-lift-call-args` CLI entrypoint.
 //!
-//! For every Rust source file in the given Cargo workspace, walks each
+//! For every local Rust source file within the given source directory, walks each
 //! function/method call and applies the lift-subexpressions algorithm.
 //! Either prints the rewritten files to stdout or rewrites them in place.
 
@@ -28,8 +28,8 @@ use xj_improve_lift_call_args::text_edit::TextEdit;
              (uses rust-analyzer crates for type/trait info)."
 )]
 struct Args {
-    /// Root directory of the workspace to be rewritten (path to a directory
-    /// containing `Cargo.toml`).
+    /// Source directory to be rewritten (containing `Cargo.toml`). Files
+    /// outside this directory are used for analysis but never rewritten.
     workspace_root: PathBuf,
 
     /// Write results back to the source files instead of stdout.
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     let mut diagnostics: Vec<(PathBuf, Diagnostic)> = Vec::new();
     let mut per_file_edits: HashMap<PathBuf, TextEdit> = HashMap::new();
 
-    for (path, file_id) in workspace.files() {
+    for (path, file_id) in workspace.files()? {
         let analyses = analyze_file(&workspace.host, file_id)?;
         if analyses.is_empty() {
             continue;

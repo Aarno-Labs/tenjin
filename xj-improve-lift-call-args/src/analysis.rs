@@ -39,6 +39,7 @@ fn _ensure_lang_item_visible() {
 pub struct Workspace {
     pub host: AnalysisHost,
     pub vfs: Vfs,
+    source_dir: PathBuf,
 }
 
 impl Workspace {
@@ -70,12 +71,17 @@ impl Workspace {
                 .context("loading cargo workspace")?;
 
         let host = AnalysisHost::with_database(db);
-        Ok(Workspace { host, vfs })
+        Ok(Workspace {
+            host,
+            vfs,
+            source_dir: canon,
+        })
     }
 
-    /// All Rust source files in the workspace's *local* source roots
-    /// (i.e. the user's crates, excluding sysroot / dependencies).
-    pub fn files(&self) -> Vec<(PathBuf, ra_ap_vfs::FileId)> {
+    /// Rust source files in local source roots whose resolved paths are
+    /// within the supplied source directory. Other workspace members and
+    /// symlinks to files outside that directory are excluded.
+    pub fn files(&self) -> Result<Vec<(PathBuf, ra_ap_vfs::FileId)>> {
         let db = self.host.raw_database();
         let mut out = Vec::new();
         for (file_id, path) in self.vfs.iter() {
@@ -89,9 +95,15 @@ impl Workspace {
             if source_root.is_library {
                 continue;
             }
+            let resolved = p
+                .canonicalize()
+                .with_context(|| format!("canonicalising {}", p.display()))?;
+            if !resolved.starts_with(&self.source_dir) {
+                continue;
+            }
             out.push((p, file_id));
         }
-        out
+        Ok(out)
     }
 }
 

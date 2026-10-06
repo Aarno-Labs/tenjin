@@ -2409,6 +2409,7 @@ def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
         "#" * 80,
     ]
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 169
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -2748,6 +2749,7 @@ def test_howerj_lisp(tenjin_fixtures: TenjinFixtures):
 
     assert not problems, "The Rust lisp diverged from the C lisp:\n" + "\n".join(problems)
 
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 85
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
