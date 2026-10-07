@@ -755,7 +755,9 @@ impl<'c> Translation<'c> {
             .get_pointee_qual_type(type_id)
             .ok_or_else(|| TranslationError::generic("null_ptr requires a pointer"))?;
 
-        let func = if pointer_qty.qualifiers.is_const {
+        let cio_file = matches!(self.ast_context.resolve_type(pointer_qty.ctype).kind,
+            CTypeKind::Struct(id) if self.type_converter.borrow().cio_file_records.contains(&id));
+        let func = if pointer_qty.qualifiers.is_const || cio_file {
             "null"
         } else {
             "null_mut"

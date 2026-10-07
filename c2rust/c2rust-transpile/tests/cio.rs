@@ -22,7 +22,8 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             int n = vfscanf(f, fmt, ap); va_end(ap); return n;
         }
         int main(void) {
-            FILE *f = tmpfile();
+            FILE *f = NULL;
+            f = tmpfile();
             if (!f) return 1;
             if (fprintf(f, "%s:%d", "hello", 23) != 8) return 2;
             if (runtime(f, "|%*.*s", 5, 2, "abc") != 6) return 3;
@@ -42,8 +43,9 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             char out[5];
             if (snprintf(out, 5, "%s", "abcdef") != 6) return 8;
             if (out[3] != 'd' || out[4] != 0) return 9;
+            if (snprintf(out, 5, "%o", 8) != 2 || out[0] != '1' || out[1] != '0') return 18;
             const char *fmt = "%s:%d\n";
-            if (printf(fmt, "runtime", 7) != 10) return 10;
+            if (printf(fmt, "runtime", 3 + 4) != 10) return 10;
             if (printf("\xff%5.3s|%c\n", "\xc3\xa9\xf0\x9f\x91\xa8", 255) != 9) return 11;
             puts("puts");
             fwrite("write", 1, 5, stdout);

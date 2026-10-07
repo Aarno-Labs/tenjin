@@ -68,6 +68,8 @@ pub struct SymbolTable {
     pub items: HashMap<String, syn::Type>,
     /// Maps a named struct type to its named field types.
     pub fields: HashMap<String, HashMap<String, syn::Type>>,
+    /// Original return types of translated function adapters.
+    pub fn_outputs: HashMap<String, syn::Type>,
     /// Maps the name of each function declared in an `extern` block to its signature.
     pub foreign_fns: HashMap<String, syn::Signature>,
     /// Names of functions the crate defines, including their exported symbol names.
@@ -169,6 +171,12 @@ impl SymbolTable {
     fn collect_globals(&mut self, items: &[syn::Item]) {
         for item in items {
             match item {
+                syn::Item::Fn(i) => {
+                    if let syn::ReturnType::Type(_, ty) = &i.sig.output {
+                        self.fn_outputs
+                            .insert(i.sig.ident.to_string(), (**ty).clone());
+                    }
+                }
                 syn::Item::Const(i) => {
                     self.insert(i.ident.to_string(), (*i.ty).clone());
                 }

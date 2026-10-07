@@ -3293,6 +3293,15 @@ impl Rewriter {
             let size = &call.args[1];
             let count = &call.args[2];
             let stream = &call.args[3];
+            let result_type = if func.path.segments.len() == 1 {
+                symbols
+                    .fn_outputs
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| syn::parse_quote!(usize))
+            } else {
+                syn::parse_quote!(usize)
+            };
             self.add_dep("xj_cio");
             self.add_dep("xj_cstr");
             self.with_cur_file_item_store(|store| {
@@ -3317,11 +3326,11 @@ impl Rewriter {
             };
             return Some((
                 syn::parse_quote! {
-                    { let xj_cio_size = #size as usize; let xj_cio_count = #count as usize;
+                    ({ let xj_cio_size = (#size) as usize; let xj_cio_count = (#count) as usize;
                       let xj_cio_stream = #stream;
                       if xj_cio_size == 0 || xj_cio_count == 0 { 0 } else {
                         xj_cio::#target(#borrow #buffer.#method()[..xj_cio_size * xj_cio_count], xj_cio_stream) / xj_cio_size
-                      } }
+                      } }) as #result_type
                 },
                 Depth::Limited(0),
             ));

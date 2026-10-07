@@ -162,9 +162,9 @@ impl Translation<'_> {
             );
             if cstr {
                 needs_unsafe = true;
-                args.push(quote::quote!(unsafe { ::core::ffi::CStr::from_ptr(#arg as _) }));
+                args.push(quote::quote!(unsafe { ::core::ffi::CStr::from_ptr((#arg) as _) }));
             } else {
-                args.push(quote::quote!(#arg as _));
+                args.push(quote::quote!((#arg) as _));
             }
         }
         let unsafety = needs_unsafe.then(|| quote::quote!(unsafe));
@@ -220,7 +220,7 @@ impl Translation<'_> {
             let fmt = tenjin::expr_strip_casts(fmt);
             quote::quote!((#fmt).as_c_str())
         } else {
-            quote::quote!(unsafe { ::core::ffi::CStr::from_ptr(#fmt as _) })
+            quote::quote!(unsafe { ::core::ffi::CStr::from_ptr((#fmt) as _) })
         };
         if macro_compatible && matches!(name.as_str(), "printf" | "fprintf") {
             return Ok(None);
@@ -263,7 +263,7 @@ impl Translation<'_> {
                 } else {
                     dest
                 };
-                let size: Box<Expr> = Box::new(syn::parse_quote!(#size as usize));
+                let size: Box<Expr> = Box::new(syn::parse_quote!((#size) as usize));
                 let limit = mk().method_call_expr(Box::new(dest.clone()), "limit", vec![size]);
                 quote::quote!(#limit)
             } else {
@@ -271,7 +271,7 @@ impl Translation<'_> {
                     "unsafe fn xj_cfmt_dest<'a>(ptr: *mut u8, len: usize) -> &'a mut [u8] {
                         if len == 0 { &mut [] } else { unsafe { ::core::slice::from_raw_parts_mut(ptr, len) } }
                     }"));
-                quote::quote!(unsafe { xj_cfmt_dest(#dest as *mut u8, #size as usize) })
+                quote::quote!(unsafe { xj_cfmt_dest((#dest) as *mut u8, (#size) as usize) })
             };
             mac.tokens = quote::quote! { #destination, #tokens };
             return Ok(Some(mk().mac_expr(mac)));
@@ -336,7 +336,7 @@ impl Translation<'_> {
                     _ => "Str",
                 };
                 let variant = Ident::new(variant, Span::call_site());
-                quote::quote!(::xj_cio::OutArg::#variant(#arg as _))
+                quote::quote!(::xj_cio::OutArg::#variant((#arg) as _))
             } else {
                 let variant = match ty.kind {
                     CTypeKind::Float | CTypeKind::Double | CTypeKind::LongDouble => "F",
@@ -389,9 +389,9 @@ impl Translation<'_> {
                     } else {
                         quote::quote!(#arg)
                     };
-                    quote::quote!(xj_cio_ptr_arg(xj_cio_fmt, #position, ::xj_cio::Arg::#variant(#pointer as _)))
+                    quote::quote!(xj_cio_ptr_arg(xj_cio_fmt, #position, ::xj_cio::Arg::#variant((#pointer) as _)))
                 } else {
-                    quote::quote!(::xj_cio::Arg::#variant(#arg as _))
+                    quote::quote!(::xj_cio::Arg::#variant((#arg) as _))
                 }
             };
             values.push(value);
@@ -413,10 +413,18 @@ impl Translation<'_> {
             };
             if name == "snprintf" {
                 let size = &args[1];
-                quote::quote!((#dest).limit(#size as usize),)
+                quote::quote!((#dest).limit((#size) as usize),)
             } else {
                 self.use_crate(ExternCrate::XjZstr);
                 quote::quote!(::xj_zstr::CStrDest::from(#dest),)
+            }
+        } else if matches!(name.as_str(), "sprintf" | "snprintf") {
+            let dest = &args[0];
+            if name == "snprintf" {
+                let size = &args[1];
+                quote::quote!((#dest) as *mut ::core::ffi::c_char, (#size) as usize,)
+            } else {
+                quote::quote!((#dest) as *mut ::core::ffi::c_char,)
             }
         } else {
             let prefix = &args[..fmt_idx];
