@@ -32,6 +32,9 @@ fn main() -> Result<()> {
     let mut rw = Rewriter::new();
 
     rw.add_expr_rewrite(Rewriter::rewrite_errno_access);
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_buffers);
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_destination);
+    rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
     rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
@@ -140,7 +143,7 @@ fn add_deps_to_manifest(
 fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
         "xj_ctime" => "0.1.1",
-        "xj_cstat" => "0.1.0",
+        "xj_cstat" | "xj_cio" | "xj_cfmt" => "0.1.0",
         "xj_cstr" => "0.1.4",
         "xj_atone" => "0.1.0",
         "errno" => "0.3.14",

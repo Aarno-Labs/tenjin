@@ -955,7 +955,6 @@ impl Translation<'_> {
         }
 
         if tenjin::expr_is_ident(func, "printf")
-            && ctx.is_unused()
             && !args.is_empty()
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[0]))
         {
@@ -999,7 +998,6 @@ impl Translation<'_> {
         }
 
         if tenjin::expr_is_ident(func, "fprintf")
-            && ctx.is_unused()
             && args.len() >= 2
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
         {
@@ -1009,6 +1007,7 @@ impl Translation<'_> {
             if tenjin::expr_is_stdout(&args[0]) {
                 return RecognizedCallForm::PrintfOut { fmt_string_idx: 1 };
             }
+            return RecognizedCallForm::PrintfFile;
         }
 
         if tenjin::expr_is_ident(func, "abort") && args.is_empty() {
@@ -1049,13 +1048,17 @@ impl Translation<'_> {
                 &None,
             )
         };
+        if let Some(call) = self.convert_cio_variadic(&func, &args, cargs)? {
+            return Ok(WithStmts::new_val(call));
+        }
         match self.call_form_cases(&func, &args, cargs, ctx) {
             RecognizedCallForm::Puts => Ok(WithStmts::new_val(mk().mac_expr(
                 refactor_format::build_format_macro_from(
                     self,
                     "%s\n".into(),
-                    "println",
-                    "println",
+                    false,
+                    "xj_cio::cprintf",
+                    "xj_cio::cprintf",
                     &args,
                     cargs,
                     None,
@@ -1073,8 +1076,8 @@ impl Translation<'_> {
                 Ok(WithStmts::new_val(mk().mac_expr(
                     refactor_format::build_format_macro(
                         self,
-                        "print",
-                        "println",
+                        "xj_cio::cprintf",
+                        "xj_cio::cprintf",
                         &args[fmt_string_idx..],
                         &cargs[fmt_string_idx..],
                         None,
@@ -1092,14 +1095,29 @@ impl Translation<'_> {
                 Ok(WithStmts::new_val(mk().mac_expr(
                     refactor_format::build_format_macro(
                         self,
-                        "eprint",
-                        "eprintln",
+                        "xj_cio::ceprintf",
+                        "xj_cio::ceprintf",
                         &args[fmt_string_idx..],
                         &cargs[fmt_string_idx..],
                         None,
                         fmt_string_span,
                     ),
                 )))
+            }
+            RecognizedCallForm::PrintfFile => {
+                let mut mac = refactor_format::build_format_macro(
+                    self,
+                    "xj_cio::cfprintf",
+                    "xj_cio::cfprintf",
+                    &args[1..],
+                    &cargs[1..],
+                    None,
+                    None,
+                );
+                let stream = &args[0];
+                let tokens = mac.tokens;
+                mac.tokens = quote::quote! { #stream, #tokens };
+                Ok(WithStmts::new_val(mk().mac_expr(mac)))
             }
             RecognizedCallForm::PrintfS {
                 fmt_string_idx,
@@ -1112,15 +1130,21 @@ impl Translation<'_> {
                         .index_unwrap_parens(cargs[fmt_string_idx])
                         .loc,
                 );
-                let formatted_string = mk().mac_expr(refactor_format::build_format_macro(
+                let mut mac = refactor_format::build_format_macro(
                     self,
-                    "format",
-                    "format",
+                    "xj_cfmt::cwrite",
+                    "xj_cfmt::cwrite",
                     &args[fmt_string_idx..],
                     &cargs[fmt_string_idx..],
                     None,
                     fmt_string_span,
-                ));
+                );
+                let tokens = mac.tokens;
+                mac.tokens = quote::quote! { &mut output, #tokens };
+                let rendered = mk().mac_expr(mac);
+                let formatted_string = Box::new(syn::parse_quote! {
+                    { let mut output = Vec::new(); #rendered; output }
+                });
                 let size_expr = if let Some(size_expr) = opt_size {
                     mk().call_expr(mk().path_expr(vec!["Some"]), vec![size_expr])
                 } else {
@@ -1128,9 +1152,9 @@ impl Translation<'_> {
                 };
 
                 self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once("fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
+                    item_store.add_item_str_once("fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: Vec<u8>) -> usize {
                         if lim == Some(0) { return 0; }
-                        let bytes = val.as_bytes();
+                        let bytes = val.as_slice();
                         // We copy at most lim-1 bytes, to leave room for a NUL terminator.
                         let to_copy = if let Some(lim) = lim { std::cmp::min(lim - 1, bytes.len()) } else { bytes.len() };
                         dest.clear();
@@ -1159,6 +1183,15 @@ impl Translation<'_> {
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if let Some(path) = tenjin::expr_get_path(func) {
+            if path.segments.len() == 1
+                && self
+                    .cio_replacements
+                    .functions
+                    .values()
+                    .any(|name| path.is_ident(name))
+            {
+                return Ok(None);
+            }
             match () {
                 _ if tenjin::is_path_exactly_1(path, "exit") => {
                     // TODO: should check source of symbol to ensure it's the C standard library exit()
@@ -1688,8 +1721,9 @@ impl Translation<'_> {
                     let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
                         self,
                         "%s".to_string(),
-                        "print",
-                        "println",
+                        false,
+                        "xj_cio::cprintf",
+                        "xj_cio::cprintf",
                         &[expr.to_expr()],
                         &[cargs[0]],
                         None,
@@ -1729,8 +1763,9 @@ impl Translation<'_> {
             let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
                 self,
                 "%c".to_string(),
-                "print",
-                "println",
+                false,
+                "xj_cio::cprintf",
+                "xj_cio::cprintf",
                 &[expr.to_expr()],
                 &[cargs[0]],
                 None,
@@ -1759,8 +1794,9 @@ impl Translation<'_> {
             let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
                 self,
                 "%c".to_string(),
-                "print",
-                "println",
+                false,
+                "xj_cio::cprintf",
+                "xj_cio::cprintf",
                 &[expr.to_expr()],
                 &[cargs[0]],
                 None,

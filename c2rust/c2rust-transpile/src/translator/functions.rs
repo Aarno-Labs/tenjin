@@ -70,6 +70,10 @@ impl<'c> Translation<'c> {
             .get(&decl_id)
             .expect("Functions should already be renamed");
 
+        if let Some(cio_name) = self.cio_replacements.functions.get(&decl_id) {
+            return self.convert_cio_function(span, typ, new_name, cio_name, parameters);
+        }
+
         if let Some(libc_name) = self.libc_replacements.functions.get(&decl_id) {
             return self.convert_libc_stat_function(span, typ, new_name, libc_name, parameters);
         }

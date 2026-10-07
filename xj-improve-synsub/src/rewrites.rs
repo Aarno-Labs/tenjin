@@ -3245,3 +3245,122 @@ fn expr_strip_refs(expr: &Expr) -> &Expr {
         expr
     }
 }
+
+impl Rewriter {
+    /// Preserve bytes when formatting guided zero-terminated strings.
+    pub fn rewrite_cstr_from_ptr_of_zstr(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else { return None };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        if !func.path.is_ident("xj_cstr_from_ptr") || call.args.len() != 1 {
+            return None;
+        }
+        let place = zstr_place_of_c_str_arg(&call.args[0], symbols)?;
+        Some((syn::parse_quote! { #place.as_c_str() }, Depth::Limited(0)))
+    }
+
+    /// Use sized buffer APIs when translated stdio arguments retain a slice.
+    pub fn rewrite_cio_buffers(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else { return None };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        let name = func.path.segments.last()?.ident.to_string();
+        if func.path.segments.len() > 1
+            && !(func.path.segments.len() == 2 && func.path.segments[0].ident == "xj_cio")
+        {
+            return None;
+        }
+        if matches!(name.as_str(), "fread" | "fwrite") && call.args.len() == 4 {
+            let exclusive = name == "fread";
+            let buffer = extract_slice_ptr_base(expr_strip_casts(&call.args[0]), symbols)?;
+            if !is_u8_or_i8_sliceable_expr(buffer, symbols) {
+                return None;
+            }
+            let size = &call.args[1];
+            let count = &call.args[2];
+            let stream = &call.args[3];
+            self.add_dep("xj_cio");
+            self.add_dep("xj_cstr");
+            self.with_cur_file_item_store(|store| {
+                store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
+            });
+            let method = syn::Ident::new(
+                if exclusive {
+                    "as_mut_u8_slice"
+                } else {
+                    "as_u8_slice"
+                },
+                proc_macro2::Span::call_site(),
+            );
+            let target = syn::Ident::new(
+                if exclusive { "fread_" } else { "fwrite_" },
+                proc_macro2::Span::call_site(),
+            );
+            let borrow = if exclusive {
+                quote::quote!(&mut)
+            } else {
+                quote::quote!(&)
+            };
+            return Some((
+                syn::parse_quote! {
+                    { let size = #size as usize; let count = #count as usize;
+                      if size == 0 || count == 0 { 0 } else {
+                        xj_cio::#target(#borrow #buffer.#method()[..size * count], #stream) / size
+                      } }
+                },
+                Depth::Limited(0),
+            ));
+        }
+        None
+    }
+}
+
+impl Rewriter {
+    /// Replace raw views of known byte buffers with their bounded views.
+    pub fn rewrite_cio_destination(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else { return None };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        if !(is_path_exactly_3(&func.path, "core", "slice", "from_raw_parts_mut") || is_path_exactly_3(&func.path, "std", "slice", "from_raw_parts_mut")) || call.args.len() != 2 {
+            return None;
+        }
+        let size = &call.args[1];
+        let buffer = extract_slice_ptr_base(expr_strip_casts(&call.args[0]), symbols)?;
+        if !is_u8_type_of_buffer(buffer, symbols) {
+            return None;
+        }
+        Some((
+            syn::parse_quote! { &mut #buffer[..#size as usize] },
+            Depth::Limited(0),
+        ))
+    }
+}
+
+fn is_u8_type_of_buffer(expr: &Expr, symbols: &SymbolTable) -> bool {
+    fn byte_elements(ty: &Type) -> bool {
+        match ty {
+            Type::Reference(r) => byte_elements(&r.elem),
+            Type::Slice(s) => is_u8_type(&s.elem),
+            Type::Array(a) => is_u8_type(&a.elem),
+            Type::Path(p) => p.path.segments.last().is_some_and(|seg| {
+                seg.ident == "Vec" && matches!(&seg.arguments, syn::PathArguments::AngleBracketed(args)
+                    if args.args.first().is_some_and(|arg| matches!(arg, syn::GenericArgument::Type(ty) if is_u8_type(ty))))
+            }),
+            _ => false,
+        }
+    }
+    symbols
+        .type_of_expr(expr)
+        .is_some_and(|ty| byte_elements(&ty))
+}

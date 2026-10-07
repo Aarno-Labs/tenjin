@@ -831,7 +831,19 @@ impl VisitMut for RewriteVisitor<'_> {
         let is_format_macro = mac.path.segments.last().is_some_and(|seg| {
             matches!(
                 seg.ident.to_string().as_str(),
-                "print" | "println" | "eprint" | "eprintln" | "format" | "write" | "writeln"
+                "print"
+                    | "println"
+                    | "eprint"
+                    | "eprintln"
+                    | "format"
+                    | "write"
+                    | "writeln"
+                    | "cprintf"
+                    | "ceprintf"
+                    | "cfprintf"
+                    | "cemit"
+                    | "cwrite"
+                    | "csnprintf"
             )
         });
         if !is_format_macro {

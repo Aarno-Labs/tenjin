@@ -191,6 +191,8 @@ pub enum ExternCrate {
     XjCtime,
     XjCmath,
     XjZstr,
+    XjCio,
+    XjCfmt,
     LibzRsSys,
     Libbz2RsSys,
     Bytemuck,
@@ -258,7 +260,13 @@ impl ExternCrate {
             Hexfloat2 => ExternCrateDetails::external("xj_hexfloat", "0.1.1", false),
             XjCtime => ExternCrateDetails::external("xj_ctime", "0.1.1", false),
             XjCmath => ExternCrateDetails::external("xj_cmath", "0.1.0", false),
-            XjZstr => ExternCrateDetails::external("xj_zstr", "0.1", false),
+            XjZstr => {
+                ExternCrateDetails::external("xj_zstr", "0.1", false).with_features(vec!["cfmt"])
+            }
+            XjCio => {
+                ExternCrateDetails::external("xj_cio", "0.1", false).with_features(vec!["cfmt"])
+            }
+            XjCfmt => ExternCrateDetails::external("xj_cfmt", "0.1", false),
             LibzRsSys => ExternCrateDetails::external("libz-rs-sys", "0.6.8", false),
             Libbz2RsSys => ExternCrateDetails::external("libbz2-rs-sys", "0.2.5", false),
             Bytemuck => ExternCrateDetails::external("bytemuck", "1.23.2", false)

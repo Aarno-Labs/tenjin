@@ -52,6 +52,7 @@ use c2rust_ast_exporter::clang_ast::LRValue;
 mod assembly;
 mod atomics;
 mod builtins;
+mod cio;
 mod comments;
 mod enums;
 mod functions;
@@ -705,6 +706,7 @@ pub struct Translation<'c> {
     pub parsed_guidance: RefCell<ParsedGuidance>,
     type_overrides: RefCell<HashMap<CTypeId, tenjin::GuidedType>>,
     libc_replacements: libc::LibcReplacements,
+    cio_replacements: cio::CioReplacements,
 
     // Accumulated outputs
     pub features: RefCell<IndexSet<&'static str>>,
@@ -1345,6 +1347,12 @@ pub fn translate(
         // binary and unary operators' expr types agree with their argument types
         // in the presence of typedefs.
         t.ast_context.bubble_expr_types();
+
+        t.cio_replacements = cio::CioReplacements::discover(&t.ast_context);
+        t.type_converter.borrow_mut().cio_file_records = t.cio_replacements.records.clone();
+        if !t.cio_replacements.functions.is_empty() || !t.cio_replacements.streams.is_empty() {
+            t.use_crate(ExternCrate::XjCio);
+        }
 
         t.libc_replacements = libc::LibcReplacements::discover(
             &t.ast_context,
@@ -2130,6 +2138,7 @@ enum RecognizedCallForm {
     PrintfOut {
         fmt_string_idx: usize,
     },
+    PrintfFile,
     PrintfErr {
         fmt_string_idx: usize,
     },
@@ -2182,16 +2191,19 @@ mod refactor_format {
         trace!("  found fmt str {:?}", old_fmt_str_expr);
 
         let ep = &old_fmt_str_expr;
-        let s = match expr_as_lit_str(tenjin::expr_strip_casts(ep)) {
-            Some(LitStrOrByteStr::LitStr(s)) => s.value(),
-            Some(LitStrOrByteStr::ByteStr(b)) => std::str::from_utf8(b.value().as_slice())
-                .unwrap()
-                .to_owned(),
+        let (s, byte_literal) = match expr_as_lit_str(tenjin::expr_strip_casts(ep)) {
+            Some(LitStrOrByteStr::LitStr(s)) => (s.value(), false),
+            // Parsing only inspects ASCII printf syntax. Preserve every other
+            // byte through a one-byte-to-one-character intermediate form.
+            Some(LitStrOrByteStr::ByteStr(b)) => {
+                (b.value().into_iter().map(char::from).collect(), true)
+            }
             None => panic!("TENJIN expected format string to be a string literal: {ep:?}"),
         };
         build_format_macro_from(
             x,
             s,
+            byte_literal,
             macro_name,
             ln_macro_name,
             &fmt_args[1..],
@@ -2205,6 +2217,7 @@ mod refactor_format {
     pub fn build_format_macro_from(
         x: &Translation,
         fmt_literal: String,
+        byte_literal: bool,
         macro_name: &str,
         ln_macro_name: &str,
         args_after_fmt: &[Box<Expr>],
@@ -2213,6 +2226,12 @@ mod refactor_format {
         old_fmt_str_span: Option<Span>,
         fmt_string_span: Option<DisplaySrcSpan>,
     ) -> Macro {
+        if macro_name.starts_with("xj_cio::") {
+            x.use_crate(ExternCrate::XjCio);
+        }
+        if macro_name.starts_with("xj_cfmt::") {
+            x.use_crate(ExternCrate::XjCfmt);
+        }
         let mut new_s = String::with_capacity(fmt_literal.len());
         let mut casts = HashMap::new();
 
@@ -2256,7 +2275,7 @@ mod refactor_format {
         while new_s.ends_with('\0') {
             new_s.pop();
         }
-        let macro_name = if new_s.ends_with('\n') {
+        let macro_name = if macro_name != ln_macro_name && new_s.ends_with('\n') {
             // Format string ends with "\n", call println!/eprintln! versions instead
             new_s.pop();
             ln_macro_name
@@ -2264,9 +2283,16 @@ mod refactor_format {
             macro_name
         };
 
-        let new_fmt_str_expr = match old_fmt_str_span {
-            Some(span) => mk().span(span).lit_expr(&new_s),
-            None => mk().lit_expr(&new_s),
+        let new_fmt_str_expr = if byte_literal {
+            let bytes = new_s.chars().map(|c| c as u8).collect::<Vec<_>>();
+            let literal =
+                syn::LitByteStr::new(&bytes, old_fmt_str_span.unwrap_or_else(Span::call_site));
+            Box::new(syn::parse_quote! { #literal })
+        } else {
+            match old_fmt_str_span {
+                Some(span) => mk().span(span).lit_expr(&new_s),
+                None => mk().lit_expr(&new_s),
+            }
         };
 
         trace!("new fmt str expr: {:?}", new_fmt_str_expr);
@@ -2324,7 +2350,12 @@ mod refactor_format {
             mk()
         };
         b.mac(
-            mk().path(macro_name),
+            syn::parse_str::<syn::Path>(&if macro_name.contains("::") {
+                format!("::{macro_name}")
+            } else {
+                macro_name.to_owned()
+            })
+            .unwrap(),
             macro_tts,
             MacroDelimiter::Paren(Default::default()),
         )
@@ -2386,9 +2417,9 @@ mod refactor_format {
                     mk().call_expr(mk().path_expr(vec!["GPoint"]), vec![e])
                 }
                 CastType::Char => {
-                    // e as u8 as char
+                    x.use_crate(ExternCrate::XjCfmt);
                     let e = mk().cast_expr(e, mk().ident_ty("u8"));
-                    mk().span(span).cast_expr(e, mk().ident_ty("char"))
+                    mk().call_expr(mk().abs_path_expr(vec!["xj_cfmt", "Byte"]), vec![e])
                 }
                 CastType::Str => {
                     if let Some(CLiteral::String(ref val, width)) =
@@ -2414,13 +2445,13 @@ mod refactor_format {
                             return e;
                         }
 
+                        if !g.required_xj_zstr_types().is_empty() {
+                            return e;
+                        }
                         if tenjin::type_is_vec_of_1_path(g.strip_refs(), "u8") {
                             // For a variable that's type Vec<u8>, we can convert it to String directly.
                             // XREF:guided_cast_str_of_shared_vec_u8
-                            return mk().call_expr(
-                                mk().path_expr(vec!["String", "from_utf8_lossy"]),
-                                vec![mk().borrow_expr(e)],
-                            );
+                            return e;
                         }
                     }
 
@@ -2456,11 +2487,11 @@ mod refactor_format {
                 x.with_cur_file_item_store(|item_store| {
                     // TODO(brk): handle emission of bytes
                     item_store.add_item_str_once(
-                        r#"unsafe fn xj_str_from_ptr<'a>(ptr: *const u8) -> &'a str {
+                        r#"unsafe fn xj_cstr_from_ptr<'a>(ptr: *const u8) -> &'a core::ffi::CStr {
                           if ptr.is_null() {
-                              "(null)"
+                              c"(null)"
                           } else {
-                              core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char).to_str().unwrap()
+                              unsafe { core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char) }
                           }
                         }"#,
                     );
@@ -2469,7 +2500,7 @@ mod refactor_format {
                 let span = e.span();
 
                 let e = mk().cast_expr(e, mk().ptr_ty(mk().ident_ty("u8")));
-                let cs = mk().call_expr(mk().path_expr(vec!["xj_str_from_ptr"]), vec![e]);
+                let cs = mk().call_expr(mk().path_expr(vec!["xj_cstr_from_ptr"]), vec![e]);
                 let b = mk().unsafe_().block(vec![mk().expr_stmt(cs)]);
                 mk().span(span).block_expr(b)
             }
@@ -2620,9 +2651,7 @@ mod refactor_format {
                 // In C, the default is right-justified.
                 // In Rust, the default is left-justified for non-numeric types,
                 // and right-justified for numeric types.
-                if self.ty.is_numeric() {
-                    buf.push('<');
-                }
+                buf.push('<');
             } else if !self.ty.is_numeric() {
                 // For characters, use of precision results in UB, so we only need
                 // explicit justification if the width is specified.
@@ -2912,6 +2941,7 @@ impl<'c> Translation<'c> {
             parsed_guidance: RefCell::new(ParsedGuidance::new(tcfg.guidance_json.clone())),
             type_overrides: RefCell::new(HashMap::new()),
             libc_replacements: Default::default(),
+            cio_replacements: Default::default(),
             renamer,
             zero_inits: RefCell::new(IndexMap::new()),
             function_context: RefCell::new(FuncContext::new()),
@@ -3597,6 +3627,21 @@ impl<'c> Translation<'c> {
         let mut span = self
             .get_span(SomeId::Decl(decl_id))
             .unwrap_or_else(Span::call_site);
+
+        if self.cio_replacements.streams.contains_key(&decl_id) {
+            return Ok(ConvertedDecl::NoItem);
+        }
+        if self.cio_replacements.records.contains(&decl_id) {
+            let name = self
+                .type_converter
+                .borrow()
+                .resolve_decl_name(decl_id)
+                .unwrap();
+            let name = Ident::new(&name, span);
+            return Ok(ConvertedDecl::Item(Box::new(
+                syn::parse_quote! { pub type #name = ::xj_cio::_File; },
+            )));
+        }
 
         log::trace!("TENJIN convert_decl: {:?} ({:?})", decl.kind, decl_id);
 
@@ -5724,6 +5769,13 @@ impl<'c> Translation<'c> {
         if ctx.is_pattern {
             return Err(TranslationError::generic(
                 "non-EnumConstant DeclRefs are not supported in patterns",
+            ));
+        }
+
+        if let Some(name) = self.cio_replacements.streams.get(&decl_id) {
+            self.use_crate(ExternCrate::XjCio);
+            return Ok(WithStmts::new_val(
+                mk().call_expr(mk().abs_path_expr(vec!["xj_cio", name]), vec![]),
             ));
         }
 

@@ -31,6 +31,7 @@ pub struct TypeConverter {
     features: HashSet<&'static str>,
     extern_crates: CrateSet,
     pub(crate) libc_stat_records: HashSet<CDeclId>,
+    pub(crate) cio_file_records: HashSet<CDeclId>,
 }
 
 impl TypeConverter {
@@ -44,6 +45,7 @@ impl TypeConverter {
             features: HashSet::new(),
             extern_crates: IndexSet::new(),
             libc_stat_records: HashSet::new(),
+            cio_file_records: HashSet::new(),
         }
     }
 
@@ -163,6 +165,11 @@ impl TypeConverter {
         qtype: CQualTypeId,
         pg: &crate::translator::ParsedGuidance,
     ) -> TranslationResult<Box<Type>> {
+        if matches!(ctxt.resolve_type(qtype.ctype).kind, CTypeKind::Struct(id) if self.cio_file_records.contains(&id))
+        {
+            self.use_crate(ExternCrate::XjCio);
+            return Ok(mk().abs_path_ty(vec!["xj_cio", "FILE_ptr"]));
+        }
         let pointee_ty = self.convert_pointee(ctxt, qtype.ctype, pg)?;
 
         if let CTypeKind::Function(..) = ctxt.resolve_type(qtype.ctype).kind {
