@@ -505,7 +505,9 @@ impl<'a> Translation<'a> {
             }
         }
         stmts.push(mk().expr_stmt(mk().ident_expr(&name)));
-        Ok(WithStmts::new_val(mk().unsafe_block_expr(stmts)))
+        // Like other unsafe values, leave the `unsafe` block to callers in
+        // contexts that need one; translated `fn` bodies are already unsafe.
+        Ok(WithStmts::new_val(mk().block_expr(mk().block(stmts))).set_unsafe())
     }
 
     pub fn convert_struct_literal(
@@ -771,7 +773,7 @@ impl<'a> Translation<'a> {
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         if self.libc_replacements.stat_records.contains(&decl_id) {
             self.use_crate(ExternCrate::Libc);
-            return Ok(WithStmts::new_val(libc_stat_zero()));
+            return Ok(WithStmts::new_val(libc_stat_zero()).set_unsafe());
         }
         let name = self.resolve_decl_inner_name(name_decl_id);
         let reorganized_fields = self.get_field_types(decl_id, field_ids, platform_byte_size)?;
@@ -1363,9 +1365,10 @@ impl<'a> Translation<'a> {
 
 /// Zeroing the entire object includes libc's private reserved fields and
 /// padding. All fields of this verified stat layout admit the zero bit pattern.
+/// The expression is unsafe; callers mark it with [`WithStmts::set_unsafe`].
 fn libc_stat_zero() -> Box<Expr> {
     Box::new(syn::parse_quote! {
-        unsafe { ::core::mem::MaybeUninit::<::libc::stat>::zeroed().assume_init() }
+        ::core::mem::MaybeUninit::<::libc::stat>::zeroed().assume_init()
     })
 }
 
