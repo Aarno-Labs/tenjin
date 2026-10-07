@@ -9,6 +9,7 @@ pub(crate) struct CioReplacements {
 }
 
 pub(crate) fn is_stdio_function(name: &str) -> bool {
+    let name = name.strip_suffix("_unlocked").unwrap_or(name);
     matches!(
         name,
         "fopen"
@@ -77,6 +78,7 @@ fn system_stdio_header(ast: &TypedAstContext, decl: &CDecl) -> bool {
         });
         (path.starts_with("/usr/include") || sysroot.is_some_and(|p| path.starts_with(p)))
             && (path.ends_with("stdio.h")
+                || path.ends_with("bits/stdio.h")
                 || path.ends_with("bits/types/struct_FILE.h")
                 || path.ends_with("bits/types/FILE.h"))
     })
@@ -95,10 +97,11 @@ impl CioReplacements {
                 } if matches!(name.as_str(), "_IO_FILE" | "__sFILE") => {
                     result.records.insert(id);
                 }
-                CDeclKind::Function {
-                    name, body: None, ..
-                } if is_stdio_function(name) => {
-                    result.functions.insert(id, name.clone());
+                CDeclKind::Function { name, .. } if is_stdio_function(name) => {
+                    // Optimized libc headers define these functions inline in
+                    // terms of FILE's private fields. Replace those bodies too.
+                    let target = name.strip_suffix("_unlocked").unwrap_or(name);
+                    result.functions.insert(id, target.to_owned());
                 }
                 CDeclKind::Variable {
                     ident,

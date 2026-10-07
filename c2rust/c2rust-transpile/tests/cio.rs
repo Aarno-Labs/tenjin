@@ -11,6 +11,7 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
     fs::write(
         &source,
         r#"
+        #define __OPTIMIZE__ 1
         #include <stdio.h>
         #include <stdarg.h>
         int runtime(FILE *f, const char *fmt, ...) {
@@ -31,6 +32,12 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             char buf[32] = {0};
             if (fread(buf, 1, 14, f) != 14) return 5;
             if (buf[0] != 'h' || buf[13] != 'b') return 6;
+            if (fseek(f, 0, SEEK_SET)) return 19;
+            flockfile(f);
+            int first = getc_unlocked(f);
+            funlockfile(f);
+            if (first != 'h' || feof_unlocked(f) || ferror_unlocked(f)) return 20;
+            if (fseek(f, 14, SEEK_SET)) return 21;
             if (fseek(f, 0, SEEK_CUR)) return 17;
             int written = -1;
             if (fprintf(f, "%o:%i%n", 8, -3, &written) != 5 || written != 5) return 13;
