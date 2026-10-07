@@ -30,6 +30,7 @@ pub struct TypeConverter {
     suffix_names: HashMap<(CDeclId, &'static str), String>,
     features: HashSet<&'static str>,
     extern_crates: CrateSet,
+    pub(crate) libc_stat_records: HashSet<CDeclId>,
 }
 
 impl TypeConverter {
@@ -42,6 +43,7 @@ impl TypeConverter {
             suffix_names: HashMap::new(),
             features: HashSet::new(),
             extern_crates: IndexSet::new(),
+            libc_stat_records: HashSet::new(),
         }
     }
 
@@ -268,6 +270,10 @@ impl TypeConverter {
             CTypeKind::Paren(ref ctype) => self.convert(ctxt, *ctype, pg),
 
             CTypeKind::Struct(decl_id) => {
+                if self.libc_stat_records.contains(&decl_id) {
+                    self.use_crate(ExternCrate::Libc);
+                    return Ok(mk().abs_path_ty(vec!["libc", "stat"]));
+                }
                 let new_name = self
                     .resolve_decl_name(decl_id)
                     .ok_or_else(|| format_err!("Unknown decl id {:?}", decl_id))?;
@@ -285,6 +291,14 @@ impl TypeConverter {
             }
 
             CTypeKind::Typedef(decl_id) => {
+                if ctxt
+                    .prenamed_decls
+                    .get(&decl_id)
+                    .is_some_and(|record| self.libc_stat_records.contains(record))
+                {
+                    self.use_crate(ExternCrate::Libc);
+                    return Ok(mk().abs_path_ty(vec!["libc", "stat"]));
+                }
                 let new_name = self.resolve_decl_name(decl_id).unwrap();
                 Ok(mk().path_ty(vec![new_name]))
             }

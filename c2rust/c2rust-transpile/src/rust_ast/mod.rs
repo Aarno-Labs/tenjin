@@ -7,20 +7,24 @@ pub use c2rust_ast_printer::pprust::BytePos;
 use proc_macro2::Span;
 use syn::{punctuated::Punctuated, Expr, Pat};
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::cell::Cell;
 
-static SPAN_LIMIT: AtomicU32 = AtomicU32::new(0);
+// proc_macro2's fallback source map belongs to the current thread. A global
+// limit could skip allocating span storage in a second translation thread.
+thread_local! {
+    static SPAN_LIMIT: Cell<u32> = const { Cell::new(0) };
+}
 
 fn raise_span_limit(_new_limit: u32) {
-    let limit = SPAN_LIMIT.load(Ordering::Relaxed);
+    let limit = SPAN_LIMIT.get();
     let new_limit = 0x2000000;
-    if new_limit >= limit {
+    if new_limit > limit {
         let delta = new_limit - limit;
         let s = str::repeat("        ", (delta as usize).div_ceil(8));
         use std::str::FromStr;
         /* used only for its side-effect of expanding the source map */
         let _ = proc_macro2::TokenStream::from_str(&s);
-        SPAN_LIMIT.store(new_limit, Ordering::Relaxed);
+        SPAN_LIMIT.set(new_limit);
     }
 }
 

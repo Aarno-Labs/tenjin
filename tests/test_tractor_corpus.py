@@ -437,7 +437,7 @@ def eval_tractor_ta3_corpus_lib(
 def test_tractor_example_filesystem_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/Examples/filesystem_example"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 15
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 13
 
 
 # ██████╗  █████╗ ████████╗████████╗███████╗██████╗ ██╗   ██╗     ██╗    ██╗     ██╗██████╗ ███████╗
