@@ -304,9 +304,9 @@ impl Translation<'_> {
             let scanning = matches!(name.as_str(), "vscanf" | "vfscanf");
             let target = Ident::new(name.strip_prefix('v').unwrap(), Span::call_site());
             let values = if scanning {
-                quote::quote!(&mut unsafe { xj_cio_vscanargs(xj_cio_fmt, #ap) })
+                quote::quote!(&mut unsafe { xj_cio_scanargs::xj_cio_vscanargs(xj_cio_fmt, #ap) })
             } else {
-                quote::quote!(&unsafe { xj_cio_vargs(xj_cio_fmt, #ap) })
+                quote::quote!(&unsafe { xj_cio_varargs::xj_cio_vargs(xj_cio_fmt, #ap) })
             };
             return Ok(Some(Box::new(syn::parse_quote! {
                 { let xj_cio_fmt = #fmt_view;
@@ -392,7 +392,7 @@ impl Translation<'_> {
                     } else {
                         quote::quote!(#arg)
                     };
-                    quote::quote!(xj_cio_ptr_arg(xj_cio_fmt, #position, ::xj_cio::Arg::#variant((#pointer) as _)))
+                    quote::quote!(xj_cio_ptr_args::xj_cio_ptr_arg(xj_cio_fmt, #position, ::xj_cio::Arg::#variant((#pointer) as _)))
                 } else {
                     quote::quote!(::xj_cio::Arg::#variant((#arg) as _))
                 }

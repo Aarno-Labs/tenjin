@@ -14,6 +14,7 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
         #define __OPTIMIZE__ 1
         #include <stdio.h>
         #include <stdarg.h>
+        int fmt, bytes, i, arg, out, length, position, fallback, ap, suppressed, conv;
         int runtime(FILE *f, const char *fmt, ...) {
             va_list ap; va_start(ap, fmt);
             int n = vfprintf(f, fmt, ap); va_end(ap); return n;
@@ -23,6 +24,7 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             int n = vfscanf(f, fmt, ap); va_end(ap); return n;
         }
         int main(void) {
+            if (fmt + bytes + i + arg + out + length + position + fallback + ap + suppressed + conv) return 22;
             FILE *f = NULL;
             f = tmpfile();
             if (!f) return 1;
