@@ -81,6 +81,12 @@ PRINT_MACRO_REWRITES = (
     ("print!($$$ARGS)", "xj_astgrep_print($$$ARGS)"),
     ("eprintln!($$$ARGS)", "xj_astgrep_eprintln($$$ARGS)"),
     ("eprint!($$$ARGS)", "xj_astgrep_eprint($$$ARGS)"),
+    ("::xj_cio::cprintf!($$$ARGS)", "xj_astgrep_cprintf($$$ARGS)"),
+    ("::xj_cio::ceprintf!($$$ARGS)", "xj_astgrep_ceprintf($$$ARGS)"),
+    ("::xj_cio::cfprintf!($$$ARGS)", "xj_astgrep_cfprintf($$$ARGS)"),
+    ("::xj_cfmt::cemit!($$$ARGS)", "xj_astgrep_cemit($$$ARGS)"),
+    ("::xj_cfmt::cwrite!($$$ARGS)", "xj_astgrep_cwrite($$$ARGS)"),
+    ("::xj_cfmt::csnprintf!($$$ARGS)", "xj_astgrep_csnprintf($$$ARGS)"),
 )
 
 

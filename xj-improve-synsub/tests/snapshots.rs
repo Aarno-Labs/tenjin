@@ -1834,7 +1834,7 @@ fn cio_bulk_io_preserves_item_counts_and_zero_sizes() {
     let mut file = syn::parse_file(
         r#"
         fn demo(mut buf: [u8; 8], f: xj_cio::FILE_ptr, size: usize, n: usize, raw: *mut u8) {
-            let read = fread(buf.as_mut_ptr() as *mut core::ffi::c_void, size, n, f);
+            let read = fread(buf.as_mut_ptr() as *mut core::ffi::c_void, size, n, stream(f));
             let written = xj_cio::fwrite(buf.as_ptr(), size, n, f);
             fread(raw, size, n, f);
         }
@@ -1845,8 +1845,12 @@ fn cio_bulk_io_preserves_item_counts_and_zero_sizes() {
     let output = prettyplease::unparse(&file);
     assert!(output.contains("xj_cio::fread_("), "{output}");
     assert!(output.contains("xj_cio::fwrite_("), "{output}");
-    assert!(output.contains("if size == 0 || count == 0"), "{output}");
-    assert!(output.contains(") / size"), "{output}");
+    assert!(
+        output.contains("if xj_cio_size == 0 || xj_cio_count == 0"),
+        "{output}"
+    );
+    assert!(output.contains("let xj_cio_stream = stream(f)"), "{output}");
+    assert!(output.contains(") / xj_cio_size"), "{output}");
     assert!(output.contains("fread(raw, size, n, f)"), "{output}");
     assert!(rw.deps().contains("xj_cio"));
 }

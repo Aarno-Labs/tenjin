@@ -3317,9 +3317,10 @@ impl Rewriter {
             };
             return Some((
                 syn::parse_quote! {
-                    { let size = #size as usize; let count = #count as usize;
-                      if size == 0 || count == 0 { 0 } else {
-                        xj_cio::#target(#borrow #buffer.#method()[..size * count], #stream) / size
+                    { let xj_cio_size = #size as usize; let xj_cio_count = #count as usize;
+                      let xj_cio_stream = #stream;
+                      if xj_cio_size == 0 || xj_cio_count == 0 { 0 } else {
+                        xj_cio::#target(#borrow #buffer.#method()[..xj_cio_size * xj_cio_count], xj_cio_stream) / xj_cio_size
                       } }
                 },
                 Depth::Limited(0),

@@ -22,10 +22,10 @@ pub unsafe extern "C" fn lift_const(mut argc: ::core::ffi::c_int, mut argv: *mut
         starts_with_a = (**argv.offset(0 as isize) as ::core::ffi::c_int
             == 'a' as ::core::ffi::c_int) as ::core::ffi::c_int;
         if starts_with_a != 0 {
-            println!("  (arg 0 starts with 'a')");
+            ::xj_cio::cprintf!(b"  (arg 0 starts with 'a')\n");
         }
     }
     if argc == 3 as ::core::ffi::c_int {
-        println!("  (argc was 3)");
+        ::xj_cio::cprintf!(b"  (argc was 3)\n");
     }
 }

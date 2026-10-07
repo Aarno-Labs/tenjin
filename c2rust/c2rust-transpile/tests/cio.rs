@@ -71,6 +71,10 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
         "[package]\nname = \"cio-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {path = \"/home/brk/xj-cio/xj_cio\", features = [\"cfmt\"]}\nxj_cfmt = {path = \"/home/brk/xj_cfmt\"}\n").unwrap();
     fs::write(package.join("src/main.rs"), rust).unwrap();
     let output = Command::new("cargo")
+        .env(
+            "CARGO_TARGET_DIR",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/cio-runtime-tests"),
+        )
         .args([Edition2024.toolchain(), "run", "--offline", "--quiet"])
         .arg("--manifest-path")
         .arg(package.join("Cargo.toml"))
