@@ -2177,6 +2177,67 @@ mod refactor_format {
         }
     }
 
+    /// Only use Rust format syntax when it preserves this C format's semantics.
+    /// Other formats retain the C syntax and use xj_cio's runtime parser.
+    pub(super) fn macro_compatible(expr: &Expr) -> bool {
+        let bytes = match expr_as_lit_str(tenjin::expr_strip_casts(expr)) {
+            Some(LitStrOrByteStr::LitStr(s)) => s.value().into_bytes(),
+            Some(LitStrOrByteStr::ByteStr(s)) => s.value(),
+            None => return false,
+        };
+        let mut i = 0;
+        while i < bytes.len() && bytes[i] != 0 {
+            if bytes[i] != b'%' {
+                i += 1;
+                continue;
+            }
+            i += 1;
+            if bytes.get(i) == Some(&b'%') {
+                i += 1;
+                continue;
+            }
+            // The literal converter consumes flags in this order.
+            for flag in b"-+#0" {
+                if bytes.get(i) == Some(flag) {
+                    i += 1;
+                }
+            }
+            while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+                i += 1;
+            }
+            let precision = bytes.get(i) == Some(&b'.');
+            if precision {
+                i += 1;
+                let start = i;
+                while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+                    i += 1;
+                }
+                if i == start {
+                    return false;
+                }
+            }
+            let length_start = i;
+            if bytes.get(i).is_some_and(|b| b"hljzt".contains(b)) {
+                let length = bytes[i];
+                i += 1;
+                if matches!(length, b'h' | b'l') && bytes.get(i) == Some(&length) {
+                    i += 1;
+                }
+            }
+            let Some(&conv) = bytes.get(i) else {
+                return false;
+            };
+            if !b"duxXcsfagp".contains(&conv)
+                || (precision && b"duxX".contains(&conv))
+                || (length_start != i && b"cs".contains(&conv))
+            {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
     pub fn build_format_macro(
         x: &Translation,
         macro_name: &str,

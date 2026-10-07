@@ -17,6 +17,10 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             va_list ap; va_start(ap, fmt);
             int n = vfprintf(f, fmt, ap); va_end(ap); return n;
         }
+        int runtime_scan(FILE *f, const char *fmt, ...) {
+            va_list ap; va_start(ap, fmt);
+            int n = vfscanf(f, fmt, ap); va_end(ap); return n;
+        }
         int main(void) {
             FILE *f = tmpfile();
             if (!f) return 1;
@@ -26,7 +30,15 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             char buf[32] = {0};
             if (fread(buf, 1, 14, f) != 14) return 5;
             if (buf[0] != 'h' || buf[13] != 'b') return 6;
+            if (fseek(f, 0, SEEK_CUR)) return 17;
+            int written = -1;
+            if (fprintf(f, "%o:%i%n", 8, -3, &written) != 5 || written != 5) return 13;
+            if (fseek(f, 14, SEEK_SET)) return 14;
+            unsigned value = 0; int signed_value = 0;
+            if (runtime_scan(f, "%o:%d", &value, &signed_value) != 2) return 15;
+            if (value != 8 || signed_value != -3) return 16;
             if (fclose(f)) return 7;
+            if (snprintf(NULL, 0, "%d", 123) != 3) return 12;
             char out[5];
             if (snprintf(out, 5, "%s", "abcdef") != 6) return 8;
             if (out[3] != 'd' || out[4] != 0) return 9;
@@ -36,6 +48,7 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             puts("puts");
             fwrite("write", 1, 5, stdout);
             printf("tail\n");
+            printf("partial");
             return 0;
         }
     "#,
@@ -71,6 +84,26 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
     );
     assert_eq!(
         output.stdout,
-        b"runtime:7\n\xff  \xc3\xa9\xf0|\xff\nputs\nwritetail\n"
+        b"runtime:7\n\xff  \xc3\xa9\xf0|\xff\nputs\nwritetail\npartial"
     );
+}
+
+#[test]
+fn formatting_guided_zstr_uses_byte_views() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("guided.c");
+    fs::write(&source, "#include <stdio.h>\nvoid demo(const char *s, char *out, size_t n) { printf(\"%5.3s\", s); snprintf(out, n, \"%s\", s); }").unwrap();
+    let mut cfg = common::config(
+        Edition2024,
+        serde_json::json!({"vars_of_type": {
+            "&ZStr": "demo:s", "&mut ZStr": "demo:out"
+        }}),
+    );
+    cfg.output_dir = Some(dir.path().join("translated"));
+    let (_commands_dir, commands) = c2rust_transpile::create_temp_compile_commands(&[source]);
+    c2rust_transpile::transpile(cfg, &commands, &[]);
+    let rust = fs::read_to_string(dir.path().join("translated/src/guided.rs")).unwrap();
+    assert!(rust.contains("::xj_cio::cprintf!"), "{rust}");
+    assert!(rust.contains("out.limit("), "{rust}");
+    assert!(!rust.contains("to_string_lossy"), "{rust}");
 }

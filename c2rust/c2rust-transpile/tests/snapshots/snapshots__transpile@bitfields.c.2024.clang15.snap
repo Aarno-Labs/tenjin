@@ -50,8 +50,8 @@ pub unsafe extern "C" fn test_bitfields() {
     };
     h.set_version(5 as ::core::ffi::c_uchar);
     h.set_sequence(513 as ::core::ffi::c_ushort);
-    println!(
-        "version={:} sequence={:}",
+    ::xj_cio::cprintf!(
+        b"version={:} sequence={:}\n",
         h.version() as ::core::ffi::c_int as core::ffi::c_uint,
         h.sequence() as ::core::ffi::c_int as core::ffi::c_uint
     );

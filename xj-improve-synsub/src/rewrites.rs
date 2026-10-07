@@ -3278,7 +3278,15 @@ impl Rewriter {
         }
         if matches!(name.as_str(), "fread" | "fwrite") && call.args.len() == 4 {
             let exclusive = name == "fread";
-            let buffer = extract_slice_ptr_base(expr_strip_casts(&call.args[0]), symbols)?;
+            let pointer = expr_strip_casts(&call.args[0]);
+            let buffer = match pointer {
+                Expr::MethodCall(call)
+                    if !exclusive && call.method == "as_ptr" && call.args.is_empty() =>
+                {
+                    &*call.receiver
+                }
+                _ => extract_slice_ptr_base(pointer, symbols)?,
+            };
             if !is_u8_or_i8_sliceable_expr(buffer, symbols) {
                 return None;
             }
@@ -3332,7 +3340,11 @@ impl Rewriter {
         let Expr::Path(func) = &*call.func else {
             return None;
         };
-        if !(is_path_exactly_3(&func.path, "core", "slice", "from_raw_parts_mut") || is_path_exactly_3(&func.path, "std", "slice", "from_raw_parts_mut")) || call.args.len() != 2 {
+        if !(func.path.is_ident("xj_cfmt_dest")
+            || is_path_exactly_3(&func.path, "core", "slice", "from_raw_parts_mut")
+            || is_path_exactly_3(&func.path, "std", "slice", "from_raw_parts_mut"))
+            || call.args.len() != 2
+        {
             return None;
         }
         let size = &call.args[1];

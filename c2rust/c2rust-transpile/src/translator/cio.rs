@@ -153,7 +153,8 @@ impl Translation<'_> {
             let cstr = matches!(
                 (target, i),
                 ("fopen" | "popen", 0 | 1)
-                    | ("fdopen" | "fmemopen", 1)
+                    | ("fdopen", 1)
+                    | ("fmemopen", 2)
                     | ("freopen", 1)
                     | ("remove", 0)
                     | ("rename", 0 | 1)
@@ -165,11 +166,6 @@ impl Translation<'_> {
             } else {
                 args.push(quote::quote!(#arg as _));
             }
-        }
-        // fmemopen's mode is its third argument.
-        if target == "fmemopen" {
-            args[1] = quote::quote!(arg1 as _);
-            args[2] = quote::quote!(unsafe { ::core::ffi::CStr::from_ptr(arg2 as _) });
         }
         let unsafety = needs_unsafe.then(|| quote::quote!(unsafe));
         let body = if matches!(self.ast_context.resolve_type(typ).kind, CTypeKind::Function(ret, ..) if matches!(self.ast_context.resolve_type(ret.ctype).kind, CTypeKind::Void))
@@ -211,11 +207,25 @@ impl Translation<'_> {
             "snprintf" => 2,
             _ => return Ok(None),
         };
+        self.use_crate(ExternCrate::XjCio);
         let literal = tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[fmt_idx]));
-        if literal && matches!(name.as_str(), "printf" | "fprintf") {
+        let macro_compatible = literal && refactor_format::macro_compatible(&args[fmt_idx]);
+        let fmt = &args[fmt_idx];
+        let fmt_view = if self
+            .parsed_guidance
+            .borrow_mut()
+            .query_expr_type(self, cargs[fmt_idx])
+            .is_some_and(|g| !g.required_xj_zstr_types().is_empty())
+        {
+            let fmt = tenjin::expr_strip_casts(fmt);
+            quote::quote!((#fmt).as_c_str())
+        } else {
+            quote::quote!(unsafe { ::core::ffi::CStr::from_ptr(#fmt as _) })
+        };
+        if macro_compatible && matches!(name.as_str(), "printf" | "fprintf") {
             return Ok(None);
         }
-        if literal
+        if macro_compatible
             && name == "snprintf"
             && self
                 .parsed_guidance
@@ -225,7 +235,7 @@ impl Translation<'_> {
         {
             return Ok(None);
         }
-        if literal && name == "snprintf" {
+        if macro_compatible && name == "snprintf" {
             let mut mac = refactor_format::build_format_macro(
                 self,
                 "xj_cfmt::csnprintf",
@@ -238,10 +248,35 @@ impl Translation<'_> {
             let dest = &args[0];
             let size = &args[1];
             let tokens = mac.tokens;
-            mac.tokens = quote::quote! { unsafe { ::core::slice::from_raw_parts_mut(#dest as *mut u8, #size as usize) }, #tokens };
+            let zstr_dest = self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, cargs[0])
+                .is_some_and(|g| {
+                    tenjin::type_is_xj_zstr(g.strip_refs(), "ZStr")
+                        || tenjin::type_is_xj_zstr(g.strip_refs(), "ZString")
+                });
+            let destination = if zstr_dest {
+                let dest = tenjin::expr_strip_casts(dest);
+                let dest = if let Expr::RawAddr(raw) = dest {
+                    &*raw.expr
+                } else {
+                    dest
+                };
+                let size: Box<Expr> = Box::new(syn::parse_quote!(#size as usize));
+                let limit = mk().method_call_expr(Box::new(dest.clone()), "limit", vec![size]);
+                quote::quote!(#limit)
+            } else {
+                self.with_cur_file_item_store(|store| store.add_item_str_once(
+                    "unsafe fn xj_cfmt_dest<'a>(ptr: *mut u8, len: usize) -> &'a mut [u8] {
+                        if len == 0 { &mut [] } else { unsafe { ::core::slice::from_raw_parts_mut(ptr, len) } }
+                    }"));
+                quote::quote!(unsafe { xj_cfmt_dest(#dest as *mut u8, #size as usize) })
+            };
+            mac.tokens = quote::quote! { #destination, #tokens };
             return Ok(Some(mk().mac_expr(mac)));
         }
-        if literal
+        if macro_compatible
             && name == "sprintf"
             && self
                 .parsed_guidance
@@ -251,30 +286,33 @@ impl Translation<'_> {
         {
             return Ok(None);
         }
-        if matches!(name.as_str(), "vprintf" | "vfprintf") {
+        if matches!(name.as_str(), "vprintf" | "vfprintf" | "vscanf" | "vfscanf") {
             self.use_feature("c_variadic");
             self.with_cur_file_item_store(|store| {
-                let helper = include_str!("cio_va.rs");
+                let helper = if matches!(name.as_str(), "vscanf" | "vfscanf") {
+                    include_str!("cio_vscan.rs")
+                } else {
+                    include_str!("cio_va.rs")
+                };
                 store.add_item_str_once(helper);
             });
-            let fmt = &args[fmt_idx];
             let ap = &args[fmt_idx + 1];
             let prefix = &args[..fmt_idx];
-            let target = Ident::new(
-                if name == "vprintf" {
-                    "printf"
-                } else {
-                    "fprintf"
-                },
-                Span::call_site(),
-            );
+            let scanning = matches!(name.as_str(), "vscanf" | "vfscanf");
+            let target = Ident::new(name.strip_prefix('v').unwrap(), Span::call_site());
+            let values = if scanning {
+                quote::quote!(&mut unsafe { xj_cio_vscanargs(xj_cio_fmt, #ap) })
+            } else {
+                quote::quote!(&unsafe { xj_cio_vargs(xj_cio_fmt, #ap) })
+            };
             return Ok(Some(Box::new(syn::parse_quote! {
-                { let fmt = unsafe { ::core::ffi::CStr::from_ptr(#fmt as _) };
-                  ::xj_cio::#target(#(#prefix,)* fmt, &unsafe { xj_cio_vargs(fmt, #ap) }) }
+                { let xj_cio_fmt = #fmt_view;
+                  ::xj_cio::#target(#(#prefix,)* xj_cio_fmt, #values) }
             })));
         }
         let scanning = matches!(name.as_str(), "scanf" | "fscanf" | "vscanf" | "vfscanf");
         let mut values = Vec::new();
+        let mut storage = Vec::new();
         for (i, arg) in args.iter().enumerate().skip(fmt_idx + 1) {
             let ty = self
                 .ast_context
@@ -287,7 +325,7 @@ impl Translation<'_> {
                 };
                 let variant = match self.ast_context.resolve_type(pointee.ctype).kind {
                     CTypeKind::Int => "Int",
-                    CTypeKind::Short => "Short",
+                    CTypeKind::Short | CTypeKind::UShort => "Short",
                     CTypeKind::Long => "Long",
                     CTypeKind::LongLong => "LongLong",
                     CTypeKind::UInt => "UInt",
@@ -316,21 +354,87 @@ impl Translation<'_> {
                     _ => "I",
                 };
                 let variant = Ident::new(variant, Span::call_site());
-                quote::quote!(::xj_cio::Arg::#variant(#arg as _))
+                if matches!(ty.kind, CTypeKind::Pointer(_)) {
+                    self.with_cur_file_item_store(|store| {
+                        store.add_item_str_once(include_str!("cio_ptr_arg.rs"));
+                    });
+                    let position = i - fmt_idx - 1;
+                    let g = self
+                        .parsed_guidance
+                        .borrow_mut()
+                        .query_expr_type(self, cargs[i]);
+                    let pointer = if g
+                        .as_ref()
+                        .is_some_and(|g| !g.required_xj_zstr_types().is_empty())
+                    {
+                        let arg = tenjin::expr_strip_casts(arg);
+                        quote::quote!((#arg).as_c_str().as_ptr())
+                    } else if let Some(g) = g.as_ref().filter(|g| {
+                        tenjin::type_is_vec_of_1_path(g.strip_refs(), "u8")
+                            || tenjin::type_is_string(&g.parsed)
+                            || tenjin::type_is_str_ref(&g.parsed)
+                    }) {
+                        let arg = tenjin::expr_strip_casts(arg);
+                        let bytes = if tenjin::type_is_vec_of_1_path(g.strip_refs(), "u8") {
+                            quote::quote!((#arg).as_slice())
+                        } else {
+                            quote::quote!((#arg).as_bytes())
+                        };
+                        let saved =
+                            Ident::new(&format!("xj_cio_arg_{position}"), Span::call_site());
+                        storage.push(quote::quote! {
+                            let #saved = ::std::ffi::CString::new(#bytes.split(|b| *b == 0).next().unwrap()).unwrap();
+                        });
+                        quote::quote!(#saved.as_ptr())
+                    } else {
+                        quote::quote!(#arg)
+                    };
+                    quote::quote!(xj_cio_ptr_arg(xj_cio_fmt, #position, ::xj_cio::Arg::#variant(#pointer as _)))
+                } else {
+                    quote::quote!(::xj_cio::Arg::#variant(#arg as _))
+                }
             };
             values.push(value);
         }
-        let ident = Ident::new(&name, Span::call_site());
-        let fmt = &args[fmt_idx];
-        let prefix = &args[..fmt_idx];
+        let zstr_dest = matches!(name.as_str(), "snprintf" | "sprintf")
+            && self
+                .parsed_guidance
+                .borrow_mut()
+                .query_expr_type(self, cargs[0])
+                .is_some_and(|g| !g.required_xj_zstr_types().is_empty());
+        let target = if zstr_dest { "snprintf_" } else { &name };
+        let ident = Ident::new(target, Span::call_site());
+        let prefix = if zstr_dest {
+            let dest = tenjin::expr_strip_casts(&args[0]);
+            let dest = if let Expr::RawAddr(raw) = dest {
+                &*raw.expr
+            } else {
+                dest
+            };
+            if name == "snprintf" {
+                let size = &args[1];
+                quote::quote!((#dest).limit(#size as usize),)
+            } else {
+                self.use_crate(ExternCrate::XjZstr);
+                quote::quote!(::xj_zstr::CStrDest::from(#dest),)
+            }
+        } else {
+            let prefix = &args[..fmt_idx];
+            quote::quote!(#(#prefix,)*)
+        };
         let args = if scanning {
             quote::quote!(&mut [#(#values),*])
         } else {
             quote::quote!(&[#(#values),*])
         };
         self.use_crate(ExternCrate::XjCio);
-        Ok(Some(Box::new(syn::parse2(quote::quote! {
-            ::xj_cio::#ident(#(#prefix,)* unsafe { ::core::ffi::CStr::from_ptr(#fmt as _) }, #args)
-        }).map_err(|e| format_err!("Invalid cio call: {e}"))?)))
+        Ok(Some(Box::new(
+            syn::parse2(quote::quote! {
+            { let xj_cio_fmt = #fmt_view;
+              #(#storage)*
+              ::xj_cio::#ident(#prefix xj_cio_fmt, #args) }
+            })
+            .map_err(|e| format_err!("Invalid cio call: {e}"))?,
+        )))
     }
 }

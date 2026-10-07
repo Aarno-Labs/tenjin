@@ -82,3 +82,4 @@ unsafe fn xj_cio_vargs(fmt: &core::ffi::CStr, mut ap: ::core::ffi::VaList) -> Ve
     }
     out
 }
+

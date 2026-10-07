@@ -439,7 +439,7 @@ pub fn type_is_zstr_ref(ty: &Type) -> bool {
     type_of_ref(ty).is_some_and(|inner| type_is_xj_zstr(inner, "ZStr"))
 }
 
-fn type_is_xj_zstr(ty: &Type, name: &str) -> bool {
+pub(crate) fn type_is_xj_zstr(ty: &Type, name: &str) -> bool {
     type_get_bare_path(ty).is_some_and(|path| {
         is_path_exactly_1(path, name) || is_path_exactly_2(path, "xj_zstr", name)
     })
@@ -962,7 +962,6 @@ impl Translation<'_> {
         }
 
         if tenjin::expr_is_ident(func, "snprintf")
-            && ctx.is_unused()
             && args.len() >= 3
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[2]))
             && self
@@ -980,7 +979,6 @@ impl Translation<'_> {
         }
 
         if tenjin::expr_is_ident(func, "sprintf")
-            && ctx.is_unused()
             && args.len() >= 2
             && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
             && self
@@ -1152,14 +1150,15 @@ impl Translation<'_> {
                 };
 
                 self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once("fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: Vec<u8>) -> usize {
-                        if lim == Some(0) { return 0; }
+                    item_store.add_item_str_once("fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: Vec<u8>) -> ::core::ffi::c_int {
+                        let count = ::core::ffi::c_int::try_from(val.len()).unwrap_or(-1);
+                        if lim == Some(0) { return count; }
                         let bytes = val.as_slice();
                         // We copy at most lim-1 bytes, to leave room for a NUL terminator.
                         let to_copy = if let Some(lim) = lim { std::cmp::min(lim - 1, bytes.len()) } else { bytes.len() };
                         dest.clear();
                         dest.extend_from_slice(&bytes[..to_copy]);
-                        to_copy
+                        count
                     }",
                 );
             });

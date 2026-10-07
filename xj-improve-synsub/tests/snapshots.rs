@@ -1802,3 +1802,51 @@ fn deref_on_slice() {
         "#]],
     );
 }
+
+#[test]
+fn cio_macros_keep_zstr_bytes_and_bounded_destinations() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_destination);
+    let mut file = syn::parse_file(r#"
+        fn demo(s: &ZStr, f: xj_cio::FILE_ptr, mut buf: [u8; 8], raw: *mut u8) {
+            xj_cio::cfprintf!(f, b"{:>5}", unsafe { xj_cstr_from_ptr(s as *const u8) });
+            xj_cfmt::csnprintf!(unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr(), 4usize) }, "{}", s);
+            xj_cfmt::csnprintf!(unsafe { core::slice::from_raw_parts_mut(raw, 4usize) }, "{}", s);
+        }
+    "#).unwrap();
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+    assert!(output.contains("s.as_c_str()"), "{output}");
+    assert!(!output.contains("to_string_lossy"), "{output}");
+    assert!(output.contains("buf[..4usize as usize]"), "{output}");
+    assert!(!output.contains("from_raw_parts_mut(buf"), "{output}");
+    assert!(
+        output.contains("from_raw_parts_mut(raw, 4usize)"),
+        "{output}"
+    );
+}
+
+#[test]
+fn cio_bulk_io_preserves_item_counts_and_zero_sizes() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_buffers);
+    let mut file = syn::parse_file(
+        r#"
+        fn demo(mut buf: [u8; 8], f: xj_cio::FILE_ptr, size: usize, n: usize, raw: *mut u8) {
+            let read = fread(buf.as_mut_ptr() as *mut core::ffi::c_void, size, n, f);
+            let written = xj_cio::fwrite(buf.as_ptr(), size, n, f);
+            fread(raw, size, n, f);
+        }
+    "#,
+    )
+    .unwrap();
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+    assert!(output.contains("xj_cio::fread_("), "{output}");
+    assert!(output.contains("xj_cio::fwrite_("), "{output}");
+    assert!(output.contains("if size == 0 || count == 0"), "{output}");
+    assert!(output.contains(") / size"), "{output}");
+    assert!(output.contains("fread(raw, size, n, f)"), "{output}");
+    assert!(rw.deps().contains("xj_cio"));
+}

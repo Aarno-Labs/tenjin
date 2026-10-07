@@ -35,7 +35,6 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_cio_buffers);
     rw.add_expr_rewrite(Rewriter::rewrite_cio_destination);
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
-    rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
     rw.add_expr_rewrite(Rewriter::rewrite_null_pointer_offsetof);
@@ -49,10 +48,8 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
     rw.add_expr_rewrite(Rewriter::rewrite_atone_of_slice);
     rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
-    rw.add_expr_rewrite(Rewriter::rewrite_printf_with_lone_offset_fmt);
     rw.add_expr_rewrite(Rewriter::rewrite_usleep);
     rw.add_expr_rewrite(Rewriter::strip_as_c_float_of_int_literals);
-    rw.add_expr_rewrite(Rewriter::rewrite_fgets_stdin_is_null);
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_ctor_over_if);
     rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
     rw.add_expr_rewrite(Rewriter::rewrite_memcmp_float_comparison);
