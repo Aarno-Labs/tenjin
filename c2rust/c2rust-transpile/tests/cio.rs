@@ -14,6 +14,8 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
         #define __OPTIMIZE__ 1
         #include <stdio.h>
         #include <stdarg.h>
+        #include <locale.h>
+        #include <wchar.h>
         int fmt, bytes, i, arg, out, length, position, fallback, ap, suppressed, conv;
         int runtime(FILE *f, const char *fmt, ...) {
             va_list ap; va_start(ap, fmt);
@@ -48,6 +50,16 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             if (runtime_scan(f, "%o:%d", &value, &signed_value) != 2) return 15;
             if (value != 8 || signed_value != -3) return 16;
             if (fclose(f)) return 7;
+            if (!setlocale(LC_CTYPE, "C.UTF-8")) return 23;
+            f = tmpfile();
+            if (!f || fprintf(f, "%lc", (wint_t)0xa9) != 2) return 24;
+            if (fprintf(f, "%lc", (wint_t)0) != 1) return 25;
+            if (fseek(f, 0, SEEK_SET)) return 26;
+            if (fread(buf, 1, 3, f) != 3 || (unsigned char)buf[0] != 0xc2 || (unsigned char)buf[1] != 0xa9 || buf[2] != 0) return 27;
+            if (fprintf(f, "%lc", (wint_t)0xd800) != -1) return 28;
+            if (!setlocale(LC_CTYPE, "C")) return 29;
+            if (fprintf(f, "%lc", (wint_t)0xa9) != -1) return 30;
+            if (!setlocale(LC_CTYPE, "C.UTF-8") || fclose(f)) return 31;
             if (snprintf(NULL, 0, "%d", 123) != 3) return 12;
             char out[5];
             if (snprintf(out, 5, "%s", "abcdef") != 6) return 8;
@@ -79,7 +91,7 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
     let package = dir.path().join("runtime");
     fs::create_dir_all(package.join("src")).unwrap();
     fs::write(package.join("Cargo.toml"),
-        "[package]\nname = \"cio-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {path = \"/home/brk/xj-cio/xj_cio\", features = [\"cfmt\"]}\nxj_cfmt = {path = \"/home/brk/xj_cfmt\"}\n").unwrap();
+        "[package]\nname = \"cio-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {path = \"/home/brk/xj-cio/xj_cio\", features = [\"cfmt\"]}\nxj_cfmt = {path = \"/home/brk/xj_cfmt\"}\nlibc = \"0.2\"\n").unwrap();
     fs::write(package.join("src/main.rs"), rust).unwrap();
     let output = Command::new("cargo")
         .env(

@@ -2177,6 +2177,15 @@ mod refactor_format {
         }
     }
 
+    pub(super) fn is_single_wide_character(expr: &Expr) -> bool {
+        let bytes = match expr_as_lit_str(tenjin::expr_strip_casts(expr)) {
+            Some(LitStrOrByteStr::LitStr(s)) => s.value().into_bytes(),
+            Some(LitStrOrByteStr::ByteStr(s)) => s.value(),
+            None => return false,
+        };
+        bytes.split(|b| *b == 0).next() == Some(b"%lc".as_slice())
+    }
+
     /// Only use Rust format syntax when it preserves this C format's semantics.
     /// Other formats retain the C syntax and use xj_cio's runtime parser.
     pub(super) fn macro_compatible(expr: &Expr) -> bool {

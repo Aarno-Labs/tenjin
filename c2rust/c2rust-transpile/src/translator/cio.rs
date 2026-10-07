@@ -225,6 +225,25 @@ impl Translation<'_> {
         } else {
             quote::quote!(unsafe { ::core::ffi::CStr::from_ptr((#fmt) as _) })
         };
+        if matches!(name.as_str(), "printf" | "fprintf")
+            && refactor_format::is_single_wide_character(fmt)
+            && args.len() == fmt_idx + 2
+        {
+            self.use_crate(ExternCrate::Libc);
+            self.with_cur_file_item_store(|store| {
+                store.add_item_str_once(include_str!("cio_wchar.rs"));
+            });
+            let stream = if name == "printf" {
+                quote::quote!(::xj_cio::stdout())
+            } else {
+                let stream = &args[0];
+                quote::quote!(#stream)
+            };
+            let value = &args[fmt_idx + 1];
+            return Ok(Some(Box::new(syn::parse_quote! {
+                xj_cio_wchar::print(#stream, (#value) as ::libc::wchar_t)
+            })));
+        }
         if macro_compatible && matches!(name.as_str(), "printf" | "fprintf") {
             return Ok(None);
         }
