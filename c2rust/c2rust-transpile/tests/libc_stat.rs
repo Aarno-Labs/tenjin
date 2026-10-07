@@ -295,8 +295,11 @@ fn renamed_system_function_keeps_its_assembler_symbol() {
     let c = r#"
         #include <sys/stat.h>
         int stat(const char *, struct stat *) __asm__("custom_stat");
-        int custom_stat(const char *path, struct stat *output) { return 73; }
-        int main(void) { struct stat output; return stat("/dev/null", &output) == 73 ? 0 : 1; }
+        int custom_stat(const char *path, struct stat *output) { output->st_size = path[5]; return 73; }
+        int main(void) {
+            struct stat output;
+            return stat("/dev/null", &output) == 73 && output.st_size == 'n' ? 0 : 1;
+        }
     "#;
     let rust = translate(dir.path(), &[("renamed.c", c)], serde_json::json!({})).remove(0);
     assert!(rust.contains("link_name = \"custom_stat\""), "{rust}");
