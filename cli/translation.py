@@ -1,4 +1,3 @@
-import shutil
 from pathlib import Path
 from subprocess import CompletedProcess, CalledProcessError
 import json
@@ -24,7 +23,7 @@ from tenj_types import ResolvedPath, style_path, UserFacingError
 from c_refact_identify_mains import find_main_translation_units
 from fixup_rs_mod_collision import CrateRootNotFound, inject_tu_includes
 from translation_preparation import run_preparation_passes
-from translation_improvement import run_improvement_passes
+from translation_improvement import copy_translation_output, run_improvement_passes
 from translation_types import TranslationFlags
 from constants import XJ_GUIDANCE_FILENAME
 
@@ -372,7 +371,7 @@ def do_translate_with_tracker(
         finally:
             tracker.mark_translation_finished()
 
-        shutil.copytree(final_output, resultsdir / "final")
+        copy_translation_output(final_output, resultsdir / "final")
 
         print("Translation finished.")
         print("Collecting static code quality measurements...")
