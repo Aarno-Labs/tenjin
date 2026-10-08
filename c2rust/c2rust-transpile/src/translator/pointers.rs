@@ -1054,8 +1054,12 @@ impl<'c> Translation<'c> {
         mb_guided_type: &Option<tenjin::GuidedType>,
     ) -> TranslationResult<Box<Expr>> {
         if let Some(guided_type) = mb_guided_type {
-            if guided_type.pretty == "String" {
-                // strings are never null
+            if guided_type.pretty == "String"
+                || matches!(&guided_type.parsed, Type::Reference(reference)
+                    if reference.mutability.is_none()
+                        && tenjin::type_is_exactly_1_path(&reference.elem, "str"))
+            {
+                // Owned strings and string slices are never null.
                 // XREF:guided_condition_string_null_check_neq
                 return Ok(mk().lit_expr(mk().bool_lit(!is_null)));
             }
