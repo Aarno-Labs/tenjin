@@ -14,6 +14,9 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
         #define __OPTIMIZE__ 1
         #include <stdio.h>
         #include <stdarg.h>
+        #include <stdint.h>
+        #include <inttypes.h>
+        #include <stddef.h>
         #include <locale.h>
         #include <wchar.h>
         int fmt, bytes, i, arg, out, length, position, fallback, ap, suppressed, conv;
@@ -50,6 +53,23 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             if (runtime_scan(f, "%o:%d", &value, &signed_value) != 2) return 15;
             if (value != 8 || signed_value != -3) return 16;
             if (fclose(f)) return 7;
+            f = tmpfile();
+            if (!f || fprintf(f, "16 7 -12 65535 -123 4294967295 -1234567890123 1234567890123 -42 42 -3 4") < 0) return 32;
+            rewind(f);
+            uint32_t flags = 0; size_t count = 0;
+            int16_t small_signed = 0; uint16_t small_unsigned = 0;
+            int32_t signed32 = 0; uint32_t unsigned32 = 0;
+            int64_t signed64 = 0; uint64_t unsigned64 = 0;
+            intmax_t signedmax = 0; uintmax_t unsignedmax = 0;
+            ptrdiff_t difference = 0; uintptr_t address = 0;
+            if (fscanf(f, "%u %zu %hd %hu %" SCNd32 " %" SCNu32 " %" SCNd64 " %" SCNu64 " %jd %ju %td %" SCNuPTR,
+                       &flags, &count, &small_signed, &small_unsigned, &signed32, &unsigned32,
+                       &signed64, &unsigned64, &signedmax, &unsignedmax, &difference, &address) != 12) return 33;
+            if (flags != 16 || count != 7 || small_signed != -12 || small_unsigned != 65535 ||
+                signed32 != -123 || unsigned32 != UINT32_MAX || signed64 != -1234567890123LL ||
+                unsigned64 != 1234567890123ULL || signedmax != -42 || unsignedmax != 42 ||
+                difference != -3 || address != 4) return 34;
+            if (fclose(f)) return 35;
             if (!setlocale(LC_CTYPE, "C.UTF-8")) return 23;
             f = tmpfile();
             if (!f || fprintf(f, "%lc", (wint_t)0xa9) != 2) return 24;

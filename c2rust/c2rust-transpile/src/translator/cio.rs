@@ -345,14 +345,44 @@ impl Translation<'_> {
                         "scanf destination is not a pointer",
                     ));
                 };
-                let variant = match self.ast_context.resolve_type(pointee.ctype).kind {
-                    CTypeKind::Int => "Int",
-                    CTypeKind::Short | CTypeKind::UShort => "Short",
+                let kind = &self.ast_context.resolve_type(pointee.ctype).kind;
+                // The AST preserves portable integer typedefs as distinct kinds.
+                // Their destinations must still receive numeric writes, including
+                // pointer-sized integers on both 32-bit and 64-bit targets.
+                if matches!(
+                    kind,
+                    CTypeKind::IntPtr
+                        | CTypeKind::SSize
+                        | CTypeKind::PtrDiff
+                        | CTypeKind::UIntPtr
+                        | CTypeKind::Size
+                ) {
+                    let (small, large) = if kind.is_unsigned_integral_type() {
+                        ("UInt", "ULongLong")
+                    } else {
+                        ("Int", "LongLong")
+                    };
+                    let small = Ident::new(small, Span::call_site());
+                    let large = Ident::new(large, Span::call_site());
+                    values.push(quote::quote! {
+                        if ::core::mem::size_of::<usize>() == ::core::mem::size_of::<::core::ffi::c_int>() {
+                            ::xj_cio::OutArg::#small((#arg) as _)
+                        } else {
+                            ::xj_cio::OutArg::#large((#arg) as _)
+                        }
+                    });
+                    continue;
+                }
+                let variant = match kind {
+                    CTypeKind::Int | CTypeKind::Int32 => "Int",
+                    CTypeKind::Short | CTypeKind::UShort | CTypeKind::Int16 | CTypeKind::UInt16 => {
+                        "Short"
+                    }
                     CTypeKind::Long => "Long",
-                    CTypeKind::LongLong => "LongLong",
-                    CTypeKind::UInt => "UInt",
+                    CTypeKind::LongLong | CTypeKind::Int64 | CTypeKind::IntMax => "LongLong",
+                    CTypeKind::UInt | CTypeKind::UInt32 => "UInt",
                     CTypeKind::ULong => "ULong",
-                    CTypeKind::ULongLong => "ULongLong",
+                    CTypeKind::ULongLong | CTypeKind::UInt64 | CTypeKind::UIntMax => "ULongLong",
                     CTypeKind::Float => "Float",
                     CTypeKind::Double => "Double",
                     _ => "Str",
