@@ -3,28 +3,71 @@
 ## Where
 
 - [xj-prepare-pointertransform](/xj-prepare-pointertransform)
+- [xj-prepare-baserewrite](/xj-prepare-baserewrite)
 - [xj-prepare-slicetransform](/xj-prepare-slicetransform)
 
 ## What
 
-This pass includes two transformations:
+This pass runs three tools in sequence, over one metadata side-file:
 
 ### Pointer Arithmetic Reduction
 
-Convert pointer arithmetic into explicitly
-subscripted accesses: each moving pointer's motion is redirected into a
-companion integer index variable (`p` → `p_index_xj`), with accesses spelled
-`base[p_index_xj]`.
+Convert pointer arithmetic into explicitly subscripted accesses: each
+moving pointer's motion is redirected into a companion integer index
+variable (`p` → `p_index_xj`), with accesses spelled `p[p_index_xj]`.
 
-For each pointer rewritten by the tool, it records identifying
-facts (the index variable's name and the base it indexes) in a
-metadata side-file
-(`tenjin_ptr_index_metadata.json`, see
-`xj-prepare-support/PtrIndexMetadata.h`). The
-(`xj-prepare-slicetransform`) tool runs
-immediately afterwards, performs both the candidate *detection* and the
-reshaping, from this tool's output plus those records. This tool's output
-is always valid, compilable C with the original signatures intact.
+The rewrite is **syntactic, local and total**. The pointer variable is its
+own base: it stays where it is, stops moving, and holds whatever it was
+last assigned, while the index holds the position. Nothing is deleted, and
+the pass forms no opinion about what a base *is* — so there is no base to
+be unstable, punned, const-qualified or reseated out from under an access,
+and no shape has to be declined for any of those reasons. Four rules cover
+every use:
+
+| Use | Rewritten |
+|---|---|
+| `*p`, `p[i]`, `p->f`, `*(p + n)`, `*p++` | `p[p_index_xj + …]` |
+| `p++`, `p += n` | `p_index_xj++`, `p_index_xj += n` |
+| `p = q + 1` | `(p = q, p_index_xj = q_index_xj + 1)` |
+| anything else that reads `p` | `(p + p_index_xj)` |
+
+The last rule is the fallback, and it is what makes the rewrite total. The
+only use that declines a pointer is `&p`, where the pointer's storage is
+observable and cannot hold a base while an index holds the position. A
+pointer is also left alone when it never moves, when a reference sits
+where the Rewriter cannot edit (a macro expansion), when its index has
+nowhere to be declared, or when it is a file-scope pointer that other
+translation units can see or that is declared more than once.
+
+For each pointer rewritten by the tool, it records identifying facts — the
+pointer's name, its companion index variable, and whether it is a parameter
+— in a metadata side-file (`xj-ptrindex.json`, see
+`xj-prepare-support/PtrIndexMetadata.h`). Identity only: nothing about a
+base crosses the boundary. This tool's output is always valid, compilable
+C with the original signatures intact.
+
+### Base Reconstruction
+
+What a base equals is a separate question, and `xj-prepare-baserewrite`
+answers it. For each pointer the side-file names, it asks
+`xj::analysis::MustEqualAnalysis` (in `xj-analysis`) whether the pointer
+equals one nameable cell — a parameter, a local, or a field path such as
+`t->storage` — at every one of its reachable uses. Where it does, the
+pointer is deleted and that cell's spelling takes its place:
+
+| Pointer form | Reconstructed |
+|---|---|
+| `T *p = <anything>;` | deleted |
+| `p[E]` | `B[E]` |
+| `(p = ROOT, p_index_xj = OFF)` | `p_index_xj = OFF` |
+| `(p + p_index_xj)` | `(B + p_index_xj)` |
+| `(p + p_index_xj) OP B + e` | `p_index_xj OP e` |
+
+Declining is always safe: the retained form is what the pointer tool
+emitted, and it already compiles. The side-file is read and written on the
+same path, and comes back out with `base_text` filled in for every pointer
+that was reconstructed. That is the fact the slice pass groups and anchors
+on.
 
 ### Slice Reshaping
 
@@ -35,14 +78,11 @@ parameter pairs into C struct "slices":
 typedef struct { int *ptr; size_t len; } RustSlice_int;
 ```
 
-It runs immediately after
-[pointer arithmetic reduction](pointer_arithmetic_reduction.md)
-(`xj-prepare-pointertransform`) — within the same preparation pass — and
-consumes the metadata side-file that tool wrote
-(`tenjin_ptr_index_metadata.json`, schema in
-`xj-prepare-support/PtrIndexMetadata.h`), which identifies each
-synthesized index variable and its base. The side-file is internal to the
-pass: it is deleted before the pass finishes.
+It runs last, on the output of base reconstruction, and consumes the
+metadata side-file as that tool re-emitted it (`xj-ptrindex.json`, schema
+in `xj-prepare-support/PtrIndexMetadata.h`): each synthesized index
+variable, and the base proved for it where one was. The side-file is
+internal to the pass: it is deleted before the pass finishes.
 
 The tool works in two sweeps over the sources:
 
@@ -138,18 +178,14 @@ pub unsafe extern "C" fn get_bits(
 
 Transformed C:
 ```c
-static uint32_t get_bits(bs_t *bs, int n) {
-    uint32_t next, cache = 0, s = bs->pos & 7;
+static uint32_t get_bits(const uint8_t *p, int n) {
+    int p_index_xj = 0;
+    uint32_t next, cache = 0, s = n & 7;
     int shl = n + s;
-    const uint8_t *p = bs->buf + (bs->pos >> 3);
-    if ((bs->pos += n) > bs->limit) return 0;
-
-    int p_index = (bs->pos >> 3);
-
-    next = (bs->buf)[p_index++] & (255 >> s);  // <- pointer *not* modified
-    while ((shl-= 8) > 0) {
+    next = p[p_index_xj++] & (255 >> s);  // <- pointer *not* modified
+    while ((shl -= 8) > 0) {
         cache |= next << shl;
-        next = (bs->buf)[p_index++];           // <- pointer *not* modified
+        next = p[p_index_xj++];           // <- pointer *not* modified
     }
     return cache | (next >> -shl);
 }

@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "adjacent_pairs@nonconst_bound.c": {
+      "file": "nonconst_bound.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

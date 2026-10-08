@@ -12,10 +12,12 @@ add_executable(xj-prepare-pointertransform
     main.cpp
     Common.cpp
     PointerAccessCollector.cpp
+    EditPlan.cpp
     FunctionAccessAnalyzer.cpp
     ValidationMethods.cpp
     TransformationMethods.cpp
     PointerTransformAction.cpp
+    "${XJ_SUPPORT_DIR}/EditForest.cpp"
     "${XJ_SUPPORT_DIR}/PtrIndexMetadata.cpp"
     "${XJ_SUPPORT_DIR}/FunctionKey.cpp"
 )

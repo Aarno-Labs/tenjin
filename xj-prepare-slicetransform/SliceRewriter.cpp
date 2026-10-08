@@ -32,9 +32,10 @@ namespace xj
 
     // xj-prepare-pointertransform represents a NULL-able pointer as the
     // out-of-range index -1, and spells the pointer value it hands to an
-    // untransformed callee as
+    // untransformed callee as a conditional with a null arm:
     //
     //     (idx < 0 ? (void *)0 : base + idx)
+    //     (base ? base + idx : (void *)0)
     //
     // Wherever *this* pass moves a function into index space the guard is
     // redundant — -1 means null again there — and it would otherwise stop
@@ -500,8 +501,9 @@ namespace xj
             lenRepl = "(" + slice + ".len - " +
                       std::to_string(S.lookback + S.lookahead) + ")";
 
-        // Moved-pointer facts from the metadata: which index variables exist,
-        // and which of them iterate over the removed base param.
+        // Moved-pointer facts from the metadata: which index variables
+        // exist, and which of them were proved to iterate over the base
+        // param this slice removes.
         struct RsPtr
         {
             const PtrIndexPointerRecord *rec;

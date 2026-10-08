@@ -1,0 +1,72 @@
+{
+  "functions": {
+    "post@increment_root_split.c": {
+      "file": "increment_root_split.c",
+      "pointers": [
+        {
+          "base_text": "a",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "a",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "post_dec@increment_root_split.c": {
+      "file": "increment_root_split.c",
+      "pointers": [
+        {
+          "base_text": "a",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "a",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "pre@increment_root_split.c": {
+      "file": "increment_root_split.c",
+      "pointers": [
+        {
+          "base_text": "a",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "a",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "stepped_offset@increment_root_split.c": {
+      "file": "increment_root_split.c",
+      "pointers": [
+        {
+          "base_text": "a",
+          "index_var": "q_index_xj",
+          "name": "q",
+          "param_index": -1
+        },
+        {
+          "base_text": "a",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

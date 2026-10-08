@@ -3,13 +3,12 @@
 // This header defines the data structures every other component reads or
 // writes:
 //   - PointerAccessKind: the classification of a single pointer use
-//   - PointerCandidate: per-pointer metadata (base array, offset bounds, ...)
 //   - PointerAccess:    one classified use of a pointer
 //   - FunctionAnalysis: per-function snapshot saved from run() to use in
 //                       onEndOfTranslationUnit()
 //   - Edit:             one pending source-text rewrite
-//   - Globals (extern): cross-phase state (transformed functions, emitted
-//                       wrappers/typedefs, etc.). Defined in Common.cpp.
+//   - Globals (extern): cross-phase state (per-function analyses, logs,
+//                       metadata, etc.). Defined in Common.cpp.
 
 #pragma once
 
@@ -46,122 +45,161 @@ inline constexpr bool VERBOSE = false;
 // PointerAccessKind — every way a tracked pointer can appear in the source.
 // ============================================================================
 //
-// Each DeclRefExpr to a tracked pointer is classified into exactly one
-// of these kinds by walking the AST parent chain (see
-// PointerAccessCollector::classifyAccess). The kind drives both
-// validation (some kinds disqualify the pointer) and rewriting (each
-// kind has a corresponding case in TransformationMethods.cpp).
+// Each DeclRefExpr to a tracked pointer is classified into exactly one of
+// these kinds.
+enum class PointerAccessKind
+{
+    // --- Element access: the index selects an element of the base ---------
+    Element, // *p                        -> p[p_index_xj]
+             // *p++                      -> p[p_index_xj++]
+             // *(p + n)                  -> p[p_index_xj + n]
+             // p[i]                      -> p[p_index_xj + i]
+             // p->field                  -> p[p_index_xj].field
 
-enum class PointerAccessKind {
-    // --- Initialization (at the declaration site) -------------------------
-    InitNull,           // int *p = NULL;            → int p_index = -1;
-    InitArray,          // int *p = arr;             → int p_index = 0;
-    InitArrayOffset,    // int *p = arr + n;         → int p_index = n;
+    // --- Position: the index moves, the base stays put --------------------
+    Move, // p++ / ++p                 -> p_index_xj++ / ++p_index_xj
+          // p += n / p -= n           -> p_index_xj += n / -= n
 
-    // --- Reassignment after declaration -----------------------------------
-    AssignNull,         // p = NULL;                 → p_index = -1;
-    AssignAddrOf,       // p = &arr[i];              → p_index = i;
-    AssignArray,        // p = arr;                  → p_index = 0;
-    AssignArrayOffset,  // p = arr + n;              → p_index = n;
+    // --- (base, index) assignment -----------------------------------------
+    // The RHS is split syntactically into a root and an offset; see
+    // PointerAccess::root_expr. `int *q = p + 1;` is `q = p` paired with
+    // `q_index_xj = p_index_xj + 1`.
+    Init,   // T *p = RHS;
+    Assign, // p = RHS
 
-    // --- Pointer arithmetic on the pointer itself -------------------------
-    Increment,          // p++ / ++p                 → p_index++ / ++p_index
-    Decrement,          // p-- / --p                 → p_index-- / --p_index
-    PlusAssign,         // p += n                    → p_index += n
-    MinusAssign,        // p -= n                    → p_index -= n
+    // A null right-hand side reseats the region to the null region and
+    // drives the index to the -1 sentinel.
+    InitNull,   // T *p = NULL;              -> (p = NULL, p_index_xj = -1)
+    AssignNull, // p = NULL                  -> (p = NULL, p_index_xj = -1)
 
-    // --- Dereference (read) -----------------------------------------------
-    Deref,              // *p                        → arr[p_index]
-    DerefPostInc,       // *p++                      → arr[p_index++]
-    DerefPreInc,        // *++p                      → arr[++p_index]
-    DerefPostDec,       // *p--                      → arr[p_index--]
-    DerefPreDec,        // *--p                      → arr[--p_index]
+    // p = strchr(p, c) — the region is unchanged, so only the index moves.
+    AssignFromAllowedFunc, // p = strchr(...)
+                           //   -> p_index_xj = strchr_index_xj(p, p_index_xj, ...)
 
-    // --- Structured access ------------------------------------------------
-    ArrowAccess,        // p->field                  → arr[p_index].field
-    Subscript,          // p[i]                      → arr[p_index + i]
+    // --- Reads of the pointer's value -------------------------------------
+    ValueUse, // f(p), return p, p < end, p - buf, (char *)p, ...
+              //                           -> (p + p_index_xj)
+    NullTest, // if (p), !p, p == NULL, p && q — left as written,
+              // since the region is null exactly when the pointer
+              // is, unless the sentinel can sit over a live
+              // region; see PointerFacts::null_in_index.
+    NoEdit,   // sizeof p — the value is never read.
 
-    // --- Dereference with an offset expression ----------------------------
-    DerefOffset,        // *(p + n) / *(p - n)       → arr[p_index ± n]
-    DerefOffsetWrite,   // *(p + n) = v              → arr[p_index ± n] = v
-
-    // --- Writes through the pointer ---------------------------------------
-    DerefWrite,         // *p = v                    → arr[p_index] = v
-    ArrowWrite,         // p->field = v              → arr[p_index].field = v
-    SubscriptWrite,     // p[i] = v                  → arr[p_index + i] = v
-
-    // --- Comparison -------------------------------------------------------
-    Comparison,         // any comparison we can't resolve to an index form
-                        // (causes rejection)
-    ComparisonNull,     // p == NULL / p != NULL     → p_index == -1 / != -1
-    ComparisonExpr,     // p < arr + n / p < end     → p_index < n / < (end - arr)
-
-    // --- Implicit boolean (pointer used as a truth value) -----------------
-    BoolTrue,           // if (p), while (p), p && ..., p ? : ...
-                        //                           → p_index != -1
-    BoolFalse,          // !p                        → p_index == -1
-
-    // --- Calls to allowlisted library functions (g_allowed_funcs) ---------
-    PassedToAllowedFunc,    // strchr(p, c), sscanf(p, ...) — argument is
-                            // rebuilt as (base + p_index)
-    AssignFromAllowedFunc,  // p = strchr(...) — generates an _index wrapper
-
-    // --- Return value -----------------------------------------------------
-    ReturnPtr,              // return p → return base + p_index
-                            // (or return p_index if the function's return
-                            // type was rewritten to int)
-
-    // --- Escape / rejection triggers --------------------------------------
-    AddressOf,              // &p — pointer's identity matters; reject
-    PassedToFunc,           // pointer passed to an unknown function; if the
-                            // callee is RustSlice-transformed the call site
-                            // is rewritten later, otherwise the argument
-                            // becomes (base + p_index)
-    Unknown                 // any pattern we don't recognize — reject
+    // --- Rejected ------------------------------------------------------------
+    AddressOf, // &p — the pointer's storage is observable, so it
+               // cannot carry a base while an index carries the
+               // position.
+    Unknown    // no parent at all; nothing to anchor an edit to
 };
 
-// One pointer the tool is considering rewriting. Populated by
-// PointerAccessCollector and refined as more accesses are classified.
-struct PointerCandidate {
-    const VarDecl *ptr_var;
-    const Expr *base_array;        // AST node the base array was extracted from
-    std::string base_array_text;   // source text of the base, e.g. "users", "bs->buf"
-    bool is_parameter;             // true if this pointer is a function parameter
+// One term of a pointer-arithmetic offset: `p + a - b` has terms `a` and
+// `b`, the second flagged `minus`.
+struct OffsetTerm
+{
+    const Expr *expr = nullptr;
+    bool minus = false;
+};
 
-    // Lookback / lookahead bounds, computed from constant *(p ± k) accesses.
-    // Used by the RustSlice transform to extend slice bounds at call sites.
-    int min_relative_offset = 0;   // most-negative constant offset seen (e.g. -1)
-    int max_relative_offset = 0;   // most-positive constant offset seen (e.g. +2)
-    bool constant_offsets = true;  // false if any *(p + variable) was seen → reject
+// How an index is stepped as it is read: the `++` or `--` on a pointer,
+// carried over to the index that now holds its position.
+enum class IndexStep
+{
+    None,
+    PostInc,
+    PreInc,
+    PostDec,
+    PreDec
+};
+
+// The base a pointer-valued expression starts from and the offset, in
+// elements, that it lands at: `base(e)` and `offset(e)` for the `q = e` rule,
+// so that `q = e` becomes `q = base(e); q_index_xj = offset(e)`.
+//
+// This is used by the edit plan to split the expression across
+// a pointer base assignment and index assignment
+struct PointerSplit
+{
+    const Expr *base = nullptr;
+    std::vector<OffsetTerm> terms;
+    IndexStep step = IndexStep::None;
 };
 
 // One classified use of a tracked pointer. The combination of `kind` and
-// the populated string fields tells the rewriter exactly what edit to
-// produce; unused fields are left empty.
-struct PointerAccess {
+// the populated fields tells the rewriter exactly what edit to produce;
+// unused fields are left empty.
+struct PointerAccess
+{
     PointerAccessKind kind;
     SourceLocation loc;
-    const Expr *expr;              // the DeclRefExpr (or wrapping expr) for the access
-    const Stmt *enclosing_stmt;    // outer stmt used when replacing whole expressions
-    std::string offset_text;       // InitArrayOffset / AssignArrayOffset / DerefOffset / wrapper-name
-    std::string field_name;        // ArrowAccess / ArrowWrite
-    std::string subscript_text;    // Subscript / SubscriptWrite
-    std::string operand_text;      // PlusAssign / MinusAssign / comparison RHS / wrapper extra args
+    const Expr *expr = nullptr; // the DeclRefExpr (or, for Init, the initializer)
+
+    // The node the rewrite replaces, where that is not `expr` itself:
+    //   Element   the dereference, subscript or member access
+    //   Move      the `p++`, or the `p += n`
+    //   Assign    the assignment
+    //   NullTest  the comparison, for `p == NULL` and `p != NULL`
+    const Stmt *enclosing_stmt = nullptr;
+
+    // The `++` or `--` applied as the position is read, and whose index it
+    // moves:
+    //   Element, Move   this pointer's own — `*p++`, `p++`
+    //   Init, Assign    the root's — `q = p++`
+    IndexStep step = IndexStep::None;
+
+    // Element: the arithmetic after the pointer's name — `*(p + a - b)`
+    // becomes `p[p_index_xj + a - b]`.
+    std::vector<OffsetTerm> offset_terms;
+
+    // Init / Assign: the terms lifted out of the right-hand side and into
+    // the index — `q = p + 1` becomes `q_index_xj = p_index_xj + 1`. Empty
+    // unless the split was taken.
+    std::vector<OffsetTerm> index_terms;
+
+    const Expr *subscript_expr = nullptr; // Element: the `i` of `p[i]`
+
+    // The member's name, not source text: it is an identifier the AST
+    // supplies, so nothing can be nested inside it to lose.
+    std::string field_name; // Element: the `field` of `p->field`
+
+    // Init / Assign. `rhs_expr` is the whole right-hand side; `root_expr` is
+    // the sub-expression that becomes the new base, or null when the RHS is
+    // taken whole and the index starts at 0. When they differ the split was
+    // taken; see isSplit().
+    //
+    // AssignFromAllowedFunc sets `root_expr` alone: the region searched,
+    // which is the base the assigned pointer is reseated to.
+    const Expr *rhs_expr = nullptr;
+    const Expr *root_expr = nullptr;
+
+    // Init / Assign: true when the split was taken. The rewriter then
+    // replaces the right-hand side with its root, and `index_terms` and
+    // `step` hold what that dropped — at least one of them is set.
+    //
+    // This is what the syntax offers. A stepped root needs an index to step,
+    // so whether the split is *used* waits until it is known which pointers
+    // are rewritten; see EditPlan::splitStands.
+    bool isSplit() const
+    {
+        return root_expr && rhs_expr &&
+               root_expr != rhs_expr->IgnoreParenImpCasts();
+    }
 };
 
 // ============================================================================
 // Logging and per-pointer status
 // ============================================================================
 
-// One-pointer-per-file rollup used to print the per-file [SUMMARY] line.
-struct TransformationLog {
+// Per-file rollup behind the [SUMMARY] line.
+struct TransformationLog
+{
     bool foundPointer = false;
     bool replacedPointer = false;
     std::string error = "";
 };
 
 // Detail row for a pointer that was rejected, printed as [FAILED] ...
-struct FailedPointerLog {
+struct FailedPointerLog
+{
     std::string varName;
     unsigned line;
     unsigned col;
@@ -170,22 +208,12 @@ struct FailedPointerLog {
 
 // Detail row for a pointer that was successfully rewritten, printed as
 // [REPLACED] ...
-struct SucceededPointerLog {
+struct SucceededPointerLog
+{
     std::string varName;
     std::string funcName;
     unsigned line;
     unsigned col;
-};
-
-// ============================================================================
-// Global (file-scope) pointer tracking
-// ============================================================================
-
-// File-scope pointer variables are collected once per TU into
-// g_global_pointer_map and transformed separately from local pointers.
-struct GlobalPointerState {
-    PointerCandidate candidate;
-    std::vector<PointerAccess> accesses;
 };
 
 // ============================================================================
@@ -197,9 +225,11 @@ struct GlobalPointerState {
 // functions. We capture each function's collected pointer data here so
 // later passes can look it up in g_function_analyses.
 
-struct FunctionAnalysis {
+struct FunctionAnalysis
+{
     const FunctionDecl *FD = nullptr;
-    std::map<const VarDecl *, PointerCandidate> tracked_pointers;
+    // Every local and parameter pointer the function declares, with its
+    // accesses in the order they were visited.
     std::map<const VarDecl *, std::vector<PointerAccess>> accesses;
 };
 
@@ -209,56 +239,113 @@ struct FunctionAnalysis {
 //
 // The tool intentionally keeps cross-phase state in globals because
 // analysis is snapshotted per function during run() and consumed at
-// end-of-TU, and emission needs to dedupe across functions (one
-// strchr_index wrapper per TU).
+// end-of-TU.
 
 extern int g_pointers_found;
 extern int g_pointers_replaced;
+
+// Count of broken edit-plan invariants seen across the whole run,
+// which indicate a bug.
+extern int g_invariant_violations;
 extern TransformationLog gLog;
 extern std::vector<FailedPointerLog> g_failed_pointers;
 extern std::vector<SucceededPointerLog> g_succeeded_pointers;
-extern DeclarationMatcher FunctionMatcher;     // matches every function definition
-extern bool g_inplace;                         // --inplace CLI flag
-extern bool g_verbose;                         // --verbose CLI flag
+extern DeclarationMatcher FunctionMatcher; // matches every function definition
+extern bool g_inplace;                     // --inplace CLI flag
+extern bool g_verbose;                     // --verbose CLI flag
 
-// File-scope pointers found in this TU (separate from per-function locals).
-extern std::map<const VarDecl *, GlobalPointerState> g_global_pointer_map;
+// File-scope pointers found in this TU, each with its accesses from every
+// function. Collected once per TU, separately from per-function locals.
+extern std::map<const VarDecl *, std::vector<PointerAccess>> g_global_pointer_map;
 
-// Library functions whose pointer arguments / return values we know how
-// to handle (see PassedToAllowedFunc / AssignFromAllowedFunc).
+// Library functions whose return values we know how to turn into an
+// index (see AssignFromAllowedFunc). Every name here must have a wrapper
+// body in wrapperBodyFor(), or a rewritten call site would name a wrapper
+// that is never emitted.
 extern std::set<std::string> g_allowed_funcs;
-
-// Names of _index wrappers already emitted (e.g. "strchr_index"). Used
-// to make wrapper emission idempotent across the TU.
-extern std::set<std::string> g_emitted_wrappers;
 
 // Per-function analysis snapshots saved during run() for later phases.
 extern std::map<const FunctionDecl *, FunctionAnalysis> g_function_analyses;
 
 // Metadata accumulated across every TU in this run, written to
 // g_metadata_out (if set) after the last file is processed. Consumed by
-// xj-prepare-slicetransform.
+// xj-prepare-baserewrite, then by xj-prepare-slicetransform.
 extern xj::PtrIndexMetadata g_metadata;
 extern std::string g_metadata_out; // --metadata-out CLI flag ("" = don't write)
+
+// A request to fill in the `decl_line` and `decl_col` fields of one
+// PtrIndexPointerRecord in g_metadata after the translation unit has been
+// fully rewritten.
+//
+// `function_key` and `pointer_index` identify the record, as
+// g_metadata.functions[function_key].pointers[pointer_index].
+//
+// `file` and `offset` give the position of the pointer's declaring
+// identifier in the original source text.
+// PointerTransformAction::resolveDeclLocations uses this to set `decl_line`
+// and `decl_col` once every edit in the translation unit is in place.
+struct PendingDeclLoc
+{
+    std::string function_key; // key into g_metadata.functions
+    size_t pointer_index;     // index into that function record's `pointers`
+    FileID file;              // file containing the declaring identifier
+    unsigned offset;          // its offset in the original text of that file
+};
+
+// Cleared per TU: a record from an earlier file must not be re-mapped
+// through this file's Rewriter.
+extern std::vector<PendingDeclLoc> g_pending_decl_locs;
 
 // ============================================================================
 // Edit — one pending source-text rewrite
 // ============================================================================
 //
-// Transformation methods build a vector<Edit> per pointer (or per
-// function) and applyEdits() applies them in reverse-offset order so
+// emitIndexDecl and EditPlan::appendRootEdits build one vector<Edit> per
+// translation unit, and applyEdits() applies it in reverse-offset order so
 // earlier offsets stay stable. `offset` is the file offset used purely
 // for sorting; `start`/`end` are the actual SourceLocations passed to
 // the Rewriter.
 
-struct Edit {
-    enum Type { Replace, InsertBefore, InsertAfterToken };
+struct Edit
+{
+    enum Type
+    {
+        Replace,
+        InsertBefore,
+        InsertAfterToken
+    };
     Type type;
     unsigned offset;
     SourceLocation start;
-    SourceLocation end;  // only used for Replace
+    SourceLocation end; // only used for Replace
     std::string text;
 };
+
+// ============================================================================
+// Index declaration placement
+// ============================================================================
+//
+// Where one pointer's companion index is declared.
+struct IndexDeclSite
+{
+    SourceLocation at;       // insert the declaration before this position
+    std::string prefix;      // text ahead of the declaration
+    std::string suffix;      // text after it
+    SourceLocation brace_at; // a for-init hoist that had to wrap its loop
+    std::string brace_text;  //   closes the block after this token
+};
+
+// Locate a home for `PtrVar`'s index. False when there is none; such a
+// pointer is not rewritten.
+bool findIndexDeclSite(const FunctionDecl *FD, const VarDecl *PtrVar,
+                       ASTContext &Ctx, IndexDeclSite &site);
+
+// Append the edits that write the declaration at `site`. `index_init` is
+// the index's starting value, rendered by the edit plan — see
+// EditPlan::indexDeclInit.
+void emitIndexDecl(const IndexDeclSite &site, const VarDecl *PtrVar,
+                   const std::string &index_init, const SourceManager &SM,
+                   std::vector<Edit> &edits);
 
 // ============================================================================
 // AST helpers
@@ -270,12 +357,16 @@ struct Edit {
 // Returns nullptr if no such ancestor exists.
 
 template <typename T>
-const T *findEnclosingStmt(const Decl *D, ASTContext &Ctx) {
-    for (DynTypedNode parentNode : Ctx.getParents(*D)) {
-        if (const Stmt *stmtParent = parentNode.get<Stmt>()) {
+const T *findEnclosingStmt(const Decl *D, ASTContext &Ctx)
+{
+    for (DynTypedNode parentNode : Ctx.getParents(*D))
+    {
+        if (const Stmt *stmtParent = parentNode.get<Stmt>())
+        {
             const T *result = nullptr;
             const Stmt *current = stmtParent;
-            while (current) {
+            while (current)
+            {
                 if ((result = dyn_cast<T>(current)))
                     return result;
                 auto grandparents = Ctx.getParents(*current);
@@ -289,9 +380,11 @@ const T *findEnclosingStmt(const Decl *D, ASTContext &Ctx) {
 }
 
 template <typename T>
-const T *findEnclosingStmt(const Stmt *S, ASTContext &Ctx) {
+const T *findEnclosingStmt(const Stmt *S, ASTContext &Ctx)
+{
     const Stmt *Current = S;
-    while (Current) {
+    while (Current)
+    {
         auto Parents = Ctx.getParents(*Current);
         if (Parents.empty())
             break;
@@ -306,19 +399,25 @@ const T *findEnclosingStmt(const Stmt *S, ASTContext &Ctx) {
 }
 
 template <typename T>
-const T *findEnclosingStmt(const Expr *E, ASTContext &Ctx) {
+const T *findEnclosingStmt(const Expr *E, ASTContext &Ctx)
+{
     llvm::SmallVector<clang::DynTypedNode, 8> Worklist;
-    for (const DynTypedNode &ParentNode : Ctx.getParents(*E)) {
+    for (const DynTypedNode &ParentNode : Ctx.getParents(*E))
+    {
         Worklist.push_back(ParentNode);
     }
-    while (!Worklist.empty()) {
+    while (!Worklist.empty())
+    {
         const DynTypedNode Node = Worklist.pop_back_val();
-        if (const Stmt *S = Node.get<Stmt>()) {
+        if (const Stmt *S = Node.get<Stmt>())
+        {
             if (const T *Target = dyn_cast<T>(S))
                 return Target;
             for (const DynTypedNode &P : Ctx.getParents(*S))
                 Worklist.push_back(P);
-        } else if (const Decl *D = Node.get<Decl>()) {
+        }
+        else if (const Decl *D = Node.get<Decl>())
+        {
             for (const DynTypedNode &P : Ctx.getParents(*D))
                 Worklist.push_back(P);
         }
@@ -330,16 +429,19 @@ const T *findEnclosingStmt(const Expr *E, ASTContext &Ctx) {
 // ParenExpr — Clang inserts both routinely and they would otherwise
 // hide the "real" syntactic context the classifier wants to see
 // (e.g. *p sitting inside a UnaryOperator parent).
-inline const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx) {
+inline const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx)
+{
     const Stmt *Current = S;
-    while (true) {
+    while (true)
+    {
         auto Parents = Ctx.getParents(*Current);
         if (Parents.empty())
             return nullptr;
         const Stmt *P = Parents[0].get<Stmt>();
         if (!P)
             return nullptr;
-        if (isa<ImplicitCastExpr>(P) || isa<ParenExpr>(P)) {
+        if (isa<ImplicitCastExpr>(P) || isa<ParenExpr>(P))
+        {
             Current = P;
             continue;
         }
@@ -351,9 +453,12 @@ inline const Stmt *skipTransparentParents(const Stmt *S, ASTContext &Ctx) {
 // Free helpers (defined in Common.cpp)
 // ============================================================================
 
-// Find the DeclStmt that introduces `VD` inside `FunctionBody`. Used to
-// position rewrites at the variable's declaration line.
-const DeclStmt *findDeclStmtForVar(const VarDecl *VD, Stmt *FunctionBody);
+// The DeclStmt that declares `VD`, or null when it has none: a parameter
+// or a file-scope variable.
+const DeclStmt *declStmtOf(const VarDecl *VD, ASTContext &Ctx);
+
+// True if `S` names any of `decls` anywhere in its subtree.
+bool referencesAnyOf(const Stmt *S, const std::set<const Decl *> &decls);
 
 // The ForStmt whose init clause is `DS`, or null when `DS` is an ordinary
 // statement-level declaration.
@@ -370,7 +475,7 @@ const ForStmt *forStmtInitializedBy(const DeclStmt *DS, ASTContext &Ctx);
 bool isMultiDeclarator(const DeclStmt *DS);
 
 // Return the leading whitespace (spaces/tabs) on the line containing
-// `Loc`. Used to indent emitted code (wrappers, typedefs) consistently.
+// `Loc`, so that an emitted index declaration lines up with its anchor.
 llvm::StringRef getIndentBeforeLoc(SourceLocation Loc, const SourceManager &SM);
 
 // Lex back the original source text for a range / expression. Cheaper
@@ -380,6 +485,9 @@ std::string getSourceText(const Expr *E, const SourceManager &SM, const LangOpti
 
 // Debug helper: stringify a PointerAccessKind for trace logs.
 const char *pointerAccessKindToString(PointerAccessKind kind);
+
+// `name` stepped as `step` says: p++, ++p, p--, --p.
+std::string applyStep(IndexStep step, const std::string &name);
 
 // ============================================================================
 // Index variable naming
@@ -395,11 +503,17 @@ const char *pointerAccessKindToString(PointerAccessKind kind);
 //
 // assignIndexNames() takes one function's pointers in source order and
 // hands out `p_index_xj`, then `p_index_xj_1`, `p_index_xj_2`, ... on
-// collision. The first pointer of a given name keeps the plain form, so
-// the common case reads exactly as before.
+// collision. The first pointer of a given name keeps the plain form. The
+// file-scope pointers in
+// g_global_pointer_map have their names first, so a local that shares a
+// name with one of them starts at `p_index_xj_1`.
 void assignIndexNames(const std::vector<const VarDecl *> &ptrs);
 
 // The index name for `VD`. Falls back to the plain convention for
 // pointers that never went through assignIndexNames (file-scope ones,
 // which are rewritten on their own path).
 const std::string &indexNameFor(const VarDecl *VD);
+
+// Forget every name. They are keyed by declarations that do not outlive
+// their translation unit.
+void resetIndexNames();

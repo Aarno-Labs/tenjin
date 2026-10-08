@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "f@for_init_shadows_global.c": {
+      "file": "for_init_shadows_global.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "cur_index_xj_1",
+          "name": "cur",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

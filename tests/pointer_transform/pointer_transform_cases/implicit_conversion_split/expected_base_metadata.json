@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "third_then_fourth@implicit_conversion_split.c": {
+      "file": "implicit_conversion_split.c",
+      "pointers": [
+        {
+          "base_text": "v",
+          "index_var": "w_index_xj",
+          "name": "w",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

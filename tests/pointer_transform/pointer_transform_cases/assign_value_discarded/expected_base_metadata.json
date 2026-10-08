@@ -1,0 +1,26 @@
+{
+  "functions": {
+    "count_odd@assign_value_discarded.c": {
+      "file": "assign_value_discarded.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "third@assign_value_discarded.c": {
+      "file": "assign_value_discarded.c",
+      "pointers": [
+        {
+          "base_text": "s",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}

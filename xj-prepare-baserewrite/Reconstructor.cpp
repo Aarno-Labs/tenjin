@@ -50,11 +50,9 @@
 // Steps 4b and 6 share one notion of what a store to the pointer looks
 // like: the left arm of the comma the pointer pass emits, recognized in
 // `checkSubstitutable` and recorded on the `Plan` for `buildEdits` to
-// delete. That is deliberate. They used to recognize it separately, and
-// `checkSubstitutable` admitted a shape — a store that is a statement of
-// its own — that `buildEdits` did not delete, so the base was substituted
-// into the store's left-hand side and `p = NULL;` silently became
-// `t->storage = NULL;`.
+// delete. Two recognizers could admit different shapes, and a store that
+// one admits and the other does not delete has the base substituted into
+// its left-hand side: `p = NULL;` would become `t->storage = NULL;`.
 
 #include "Reconstructor.h"
 
@@ -506,10 +504,9 @@ namespace xj
     // 7. and 8.
     applyEdits(Edits, SM.getFileID(FD.getBody()->getBeginLoc()), Ctx);
 
-    // The base is the fact the slice pass consumes in place of the guess
-    // the pointer pass used to make. It is written only for pointers that
-    // were actually substituted, so an empty base_text still means exactly
-    // "this pointer is its own base".
+    // The base is the fact the slice pass groups and anchors on. It is
+    // written only for pointers that were actually substituted, so an
+    // empty base_text still means exactly "this pointer is its own base".
     for (const Plan *P : Committed)
       Ptrs[P->Record].base_text = P->Base;
   }
@@ -550,8 +547,8 @@ namespace xj
     // evaluates to; the pointer stays in both cases.
     //
     // Recording the commas is what lets `buildEdits` delete them without
-    // recognizing the shape a second time — the two recognizers used to be
-    // separate, and disagreed.
+    // recognizing the shape a second time; see the note at the top of the
+    // file.
     for (const BinaryOperator *BO : RC.Assigns)
     {
       const auto *Comma =
@@ -629,7 +626,8 @@ namespace xj
       emit(DeclRange, "", /*WholeLine=*/true);
 
     // 2. Each store's arm goes away, leaving the index assignment beside
-    //    it: `(p = ROOT, p_index_xj = OFF)` becomes `(p_index_xj = OFF)`.
+    //    it: `p = ROOT, p_index_xj = OFF` becomes `p_index_xj = OFF`, inside
+    //    whatever parentheses the pointer pass gave the pair.
     //    `checkSubstitutable` already proved every store has this shape,
     //    so there is nothing left to recognize here.
     for (const BinaryOperator *Comma : P.StoreCommas)

@@ -1,0 +1,26 @@
+{
+  "functions": {
+    "sum_plain@variable_offset.c": {
+      "file": "variable_offset.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    },
+    "sum_stride@variable_offset.c": {
+      "file": "variable_offset.c",
+      "pointers": [
+        {
+          "base_text": "buf",
+          "index_var": "p_index_xj",
+          "name": "p",
+          "param_index": -1
+        }
+      ]
+    }
+  }
+}
