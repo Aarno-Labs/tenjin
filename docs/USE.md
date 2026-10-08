@@ -199,6 +199,56 @@ We need to be able to generate different wrappers for the following cases
 
 Examples of applying ffi guidance can be found [here](../tests/snapshotted/ffi_guidance/).
 
+## C compatibility crates
+
+A barrier to translating C code to safe Rust is that the Rust ecosystem doesn't
+have safe implementations of some core functionality from `libc`. Examples:
+
+- In simple cases, C's `printf` can be translated to Rust's `print!` macro. But
+not in general:
+  - `printf` returns an integer count, but `print!` returns unit.
+  - `printf` can output non-UTF8 bytes, but not `print!`.
+  - `printf` computes alignment etc in terms of bytes; `print!` uses Unicode scalar values.
+- There is also no exact analogue of `scanf` -- there is a crate of the same name,
+but it does not implement the same functionality.
+- C strings can be trimmed by writing a null byte in the middle, but `core::ffi::CStr` forbids interior null bytes.
+
+One way Tenjin bridges this gap is to supply (and use) shim crates.
+
+So far we have:
+
+- [xj_atone](https://docs.rs/xj_atone/latest/xj_atone/) for `atoi`, `strtod`, etc.
+- [xj_scanf](https://docs.rs/xj_scanf/latest/xj_scanf/) for `scanf` etc.
+- [xj_zstr](https://docs.rs/xj_zstr/latest/xj_zstr/) for a safe equivalent to C string semantics: binary data with
+dynamic null byte termination.
+- [xj_cio](https://docs.rs/xj_cio/latest/xj_cio/) for a mirror of the `FILE*`-based stdio subsystem, with adapters
+for Rust-style formatting. Since [static I/O API translation](https://arxiv.org/abs/2506.01427) is limited to ~80% coverage in practice, this is needed to provide
+correct buffering behavior in code that mixes Rust-style formatted output with C APIs.
+- [xj_cfmt](https://docs.rs/xj_cfmt/latest/xj_cfmt/) - provides byte-oriented formatting macros (vs Rust counting Unicode scalars)
+- [xj_cstat](https://docs.rs/xj_cstat/latest/xj_cstat/) for a safe Rust implementation matching the `<sys/stat.h>` API
+- [xj_ctime](https://docs.rs/xj_ctime/latest/xj_ctime/) for functionality from `time.h`
+  - the main module has an idiomatic Rust interface, the `compat` module has a C-ish API, with e.g. `Option<&mut libc::time_t>` instead of `*mut libc::time_t`.
+- [xj_hexfloat](https://docs.rs/xj_hexfloat/latest/xj_hexfloat/) - a tiny wrapper around [hexfloat2](https://docs.rs/hexfloat2/0.2.0/hexfloat2/index.html) with tweaked output formatting
+- [xj_bytes](https://docs.rs/xj_bytes/latest/xj_bytes/) - provides a `ByteView` trait for abstracting over `&[u8]`, `&CStr`, `&str`, `&ZStr`, etc.
+
+Here is a layer-cake dependency diagram:
+
+```
+  ┌─────────┬──────────┬────────────────────┬──────────┬──────────┐
+  │ xj_...  │ xj_cstat │       xj_cio       │          │          │
+  ├─────────┴──────────┴─────────┬──────────┤          │          │
+  │           xj_zstr            │          │ xj_ctime │ xj_atone │
+  ├──(opt)───────────────────────┤ xj_scanf │          │          │
+  │           xj_cfmt            │          │          │          │
+  ├──────────────────────────────┴──────────┴──────────┴──────────┤
+  │                           xj_bytes                            │
+  └───────────────────────────────────────────────────────────────┘
+
+  ┌──────────┐ ┌─────────────┐
+  │ xj_cmath │ │ xj_hexfloat │   standalone (no xj deps)
+  └──────────┘ └─────────────┘
+```
+
 ## Preparatory Refactoring and Improvement Passes
 
 Tenjin applies a suite of source-to-source refactorings on C code which help
