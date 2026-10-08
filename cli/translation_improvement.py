@@ -671,6 +671,18 @@ def elapsed_ms_of_ns(start_ns: int, end_ns: int) -> float:
     return (end_ns - start_ns) / 1_000_000.0
 
 
+def copy_translation_output(source: Path, destination: Path) -> None:
+    """Copy a source snapshot, moving its Cargo build cache to the new stage."""
+    shutil.copytree(
+        source,
+        destination,
+        ignore=lambda directory, _names: ["target"] if Path(directory) == source else [],
+    )
+    target = source / "target"
+    if target.exists():
+        target.rename(destination / "target")
+
+
 def run_improvement_passes(
     root: Path, output: Path, resultsdir: Path, tracker: ingest_tracking.TimingRepo
 ) -> Path:
@@ -754,7 +766,7 @@ def run_improvement_passes(
         newdir = resultsdir / f"{counter:02d}_{tag}"
         with tracker.tracking(f"improvement_pass_{counter:02d}_{tag}", newdir) as _step:
             start_ns = time.perf_counter_ns()
-            shutil.copytree(prev, newdir)
+            copy_translation_output(prev, newdir)
             # Run the actual improvement pass, modifying the contents of `newdir`.
             cp_or_None: CompletedProcess | None = func(root, newdir)
             if cp_or_None is not None:
@@ -772,7 +784,7 @@ def run_improvement_passes(
             if counter > 1:
                 # Use explicit toolchain for checks because c2rust may use extern_types which is unstable.
                 quiet_cargo(["check"], cwd=newdir)
-                # Clean up the target directory so the next pass starts fresh.
+                # Remove workspace artifacts, retaining dependencies for the next pass.
                 quiet_cargo(
                     [
                         "clean",
