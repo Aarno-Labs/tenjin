@@ -207,7 +207,6 @@ the `preparation_passes` list within [translation_preparation.py](/cli/translati
 Some notable passes:
 
 - [convert union bitcasts](passes/convert_union_bitcasts.md)
-- [errno localization](passes/errno_localization.md)
 - [K&R syntax elimination](passes/knr_elimination.md)
 - [mutable global localization](passes/mutable_global_localization.md)
 - [pointer arithmetic reduction & slice reshaping](passes/pointer_arithmetic_reduction.md)

@@ -335,8 +335,6 @@ impl<'c> Translation<'c> {
                     block.set_span(span);
                 }
 
-                let is_builtin_wrapper = name.starts_with("_xj_wrap");
-
                 // Functions that produce an externally-visible, unmangled symbol;
                 // these are the ones that would otherwise carry `#[no_mangle]` /
                 // `#[export_name]` (see `mk_linkage`).
@@ -352,7 +350,7 @@ impl<'c> Translation<'c> {
                         api.contains(name)
                     } else {
                         // By default, all non-static functions might be externally visible.
-                        !is_builtin_wrapper
+                        true
                     };
 
                 // XREF:ffi_export_wrapper
@@ -371,7 +369,6 @@ impl<'c> Translation<'c> {
                     .contains_key(name);
                 let needs_ffi_wrapper = is_exported_symbol
                     && !is_main
-                    && !is_builtin_wrapper
                     && !is_variadic
                     && has_ffi_guidance;
 
@@ -388,8 +385,6 @@ impl<'c> Translation<'c> {
                     // FIXME: pass in a vector of NestedMetaItem elements,
                     // but strings have to do for now
                     self.mk_cross_check(mk(), vec!["entry(djb2=\"main\")", "exit(djb2=\"main\")"])
-                } else if is_builtin_wrapper {
-                    mk()
                 } else if needs_ffi_wrapper {
                     // The exported C symbol is provided by the `xj_ffi` shim emitted
                     // below, so the function itself is just a (public) Rust fn.
