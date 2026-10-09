@@ -20,6 +20,90 @@ fn check(rw: &Rewriter, input: &str, expected: Expect) {
 }
 
 #[test]
+fn errno_reads_and_writes() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_errno_access);
+    check(
+        &rw,
+        r#"unsafe fn demo(value: i32) -> i32 {
+            let saved = *__errno_location();
+            *__errno_location() = value;
+            (*(__errno_location)()) = *__errno_location() + saved;
+            *libc::__errno_location() = *::libc::__errno_location();
+            println!("{}", *__errno_location());
+            *__errno_location()
+        }"#,
+        expect![[r#"
+            unsafe fn demo(value: i32) -> i32 {
+                let saved = ::errno::errno().0;
+                ::errno::set_errno(::errno::Errno(value));
+                ::errno::set_errno(::errno::Errno(::errno::errno().0 + saved));
+                ::errno::set_errno(::errno::Errno(::errno::errno().0));
+                println!("{}", ::errno::errno().0);
+                ::errno::errno().0
+            }
+        "#]],
+    );
+    assert_eq!(rw.take_deps(), ["errno".to_owned()].into());
+}
+
+#[test]
+fn errno_compound_assignment_evaluates_rhs_before_reading() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_errno_access);
+    check(
+        &rw,
+        r#"unsafe fn demo() {
+            *__errno_location() += { *__errno_location() = 7; 3 };
+            (*__errno_location()) <<= *__errno_location();
+        }"#,
+        expect![[r#"
+            unsafe fn demo() {
+                {
+                    let xj_errno_rhs = {
+                        ::errno::set_errno(::errno::Errno(7));
+                        3
+                    };
+                    let mut xj_errno_value = ::errno::errno().0;
+                    xj_errno_value += xj_errno_rhs;
+                    ::errno::set_errno(::errno::Errno(xj_errno_value));
+                };
+                {
+                    let xj_errno_rhs = ::errno::errno().0;
+                    let mut xj_errno_value = ::errno::errno().0;
+                    xj_errno_value <<= xj_errno_rhs;
+                    ::errno::set_errno(::errno::Errno(xj_errno_value));
+                };
+            }
+        "#]],
+    );
+    assert_eq!(rw.take_deps(), ["errno".to_owned()].into());
+}
+
+#[test]
+fn errno_storage_addresses_and_unrelated_calls_are_preserved() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_errno_access);
+    let input = r#"unsafe fn demo(mut other: i32) {
+        let _ = __errno_location();
+        let _ = &*__errno_location();
+        let _ = &mut (*__errno_location());
+        let _ = &raw const *__errno_location();
+        let _ = &raw mut (*libc::__errno_location());
+        (*__errno_location(), other) = (1, 2);
+        [other, *__errno_location()] = [1, 2];
+        let _ = *other::__errno_location();
+        let _ = *__errno_location(1);
+        let _ = *__errno_location::<i32>();
+    }"#;
+    let mut file = syn::parse_file(input).unwrap();
+    let original = prettyplease::unparse(&file);
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    assert_eq!(prettyplease::unparse(&file), original);
+    assert!(rw.deps().is_empty());
+}
+
+#[test]
 fn nextafter_calls_use_libm() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_nextafter_call);

@@ -11,15 +11,12 @@
 #[allow(unused_imports)]
 use ::main as _;
 use ::std::process::ExitCode;
-extern "C" {
 
-    fn __errno_location() -> *mut ::core::ffi::c_int;
-}
 pub type __time_t = ::core::ffi::c_long;
 pub type time_t = __time_t;
 unsafe fn _xj_wrap_time(mut _xj_errno: &mut i32, mut __timer: *mut time_t) -> time_t {
     let mut ret = xj_ctime::compat::time(__timer.as_mut());
-    *_xj_errno = *__errno_location();
+    *_xj_errno = ::errno::errno().0;
     ret
 }
 unsafe fn main_0(mut argc: ::core::ffi::c_int, mut argv: *mut *mut u8) -> ::core::ffi::c_int {

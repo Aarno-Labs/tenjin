@@ -18,7 +18,7 @@ extern "C" {
     fn fclose(__stream: *mut FILE) -> ::core::ffi::c_int;
 
     fn bar() -> ::core::ffi::c_int;
-    fn __errno_location() -> *mut ::core::ffi::c_int;
+
     fn strerror(__errnum: ::core::ffi::c_int) -> *mut u8;
 }
 pub type size_t = usize;
@@ -71,7 +71,7 @@ pub unsafe extern "C" fn doesnt_use_errno(mut f: *mut FILE) -> ::core::ffi::c_in
 }
 unsafe fn _xj_wrap_fclose(mut _xj_errno: &mut i32, mut __stream: *mut FILE) -> ::core::ffi::c_int {
     let mut ret = fclose(__stream);
-    *_xj_errno = *__errno_location();
+    *_xj_errno = ::errno::errno().0;
     ret
 }
 #[no_mangle]
@@ -85,7 +85,7 @@ pub unsafe extern "C" fn does_use_errno(mut f: *mut FILE) -> ::core::ffi::c_int 
 }
 unsafe fn _xj_wrap_strerror(mut _xj_errno: &mut i32, mut __errnum: ::core::ffi::c_int) -> *mut u8 {
     let mut ret = strerror(__errnum);
-    *_xj_errno = *__errno_location();
+    *_xj_errno = ::errno::errno().0;
     ret
 }
 unsafe fn main_0(mut argc: ::core::ffi::c_int, mut argv: *mut *mut u8) -> ::core::ffi::c_int {
@@ -96,8 +96,8 @@ unsafe fn main_0(mut argc: ::core::ffi::c_int, mut argv: *mut *mut u8) -> ::core
         println!("Error: [{:>}]", {
             xj_str_from_ptr(
                 ({
-                    let __lift_2_3237_0 = _xj_local_errno;
-                    _xj_wrap_strerror(&mut _xj_local_errno, __lift_2_3237_0)
+                    let __lift_2_3235_0 = _xj_local_errno;
+                    _xj_wrap_strerror(&mut _xj_local_errno, __lift_2_3235_0)
                 }) as *const u8,
             )
         });

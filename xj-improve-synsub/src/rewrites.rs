@@ -19,6 +19,52 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    /// Replace accesses to glibc's errno storage with the errno crate's API.
+    pub fn rewrite_errno_access(
+        &self,
+        _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let replacement = match expr {
+            Expr::Assign(assign) if is_errno_deref(&assign.left) => {
+                let value = &assign.right;
+                syn::parse_quote! { ::errno::set_errno(::errno::Errno(#value)) }
+            }
+            Expr::Binary(binary)
+                if is_errno_deref(&binary.left) && is_assignment_operator(&binary.op) =>
+            {
+                let value = &binary.right;
+                let op = &binary.op;
+                // Primitive compound assignment evaluates the RHS before the
+                // LHS. It may itself change errno, so read errno afterwards.
+                syn::parse_quote! {{
+                    let xj_errno_rhs = #value;
+                    let mut xj_errno_value = ::errno::errno().0;
+                    xj_errno_value #op xj_errno_rhs;
+                    ::errno::set_errno(::errno::Errno(xj_errno_value));
+                }}
+            }
+            // Borrowing the actual storage must not become a borrow of a copy.
+            Expr::Reference(reference) if is_errno_deref(&reference.expr) => {
+                return Some((expr.clone(), Depth::Limited(0)));
+            }
+            Expr::RawAddr(addr) if is_errno_deref(&addr.expr) => {
+                return Some((expr.clone(), Depth::Limited(0)));
+            }
+            // Destructuring assignment requires real places. Keep these rare
+            // writes intact rather than rewriting their targets into values.
+            Expr::Assign(assign) if contains_errno_assignment_place(&assign.left) => {
+                return Some((expr.clone(), Depth::Limited(0)));
+            }
+            Expr::Unary(_) if is_errno_deref(expr) => {
+                syn::parse_quote! { ::errno::errno().0 }
+            }
+            _ => return None,
+        };
+        self.add_dep("errno");
+        Some((replacement, Depth::Unlimited))
+    }
+
     /// Use the pure-Rust implementations of C's nextafter functions.
     pub fn rewrite_nextafter_call(
         &self,
@@ -2136,6 +2182,56 @@ fn expr_strip_casts(expr: &Expr) -> &Expr {
             Expr::Cast(ExprCast { expr, .. }) => ep = expr,
             _ => break ep,
         }
+    }
+}
+
+fn is_errno_deref(expr: &Expr) -> bool {
+    let Expr::Unary(unary) = expr_strip_parens(expr) else {
+        return false;
+    };
+    if !matches!(unary.op, syn::UnOp::Deref(_)) {
+        return false;
+    }
+    let Expr::Call(call) = expr_strip_parens(&unary.expr) else {
+        return false;
+    };
+    let Expr::Path(function) = expr_strip_parens(&call.func) else {
+        return false;
+    };
+    function.qself.is_none()
+        && call.args.is_empty()
+        && (function.path.is_ident("__errno_location")
+            || (function.path.segments.len() == 2
+                && function.path.segments[0].ident == "libc"
+                && function.path.segments[1].ident == "__errno_location"
+                && function
+                    .path
+                    .segments
+                    .iter()
+                    .all(|segment| matches!(segment.arguments, syn::PathArguments::None))))
+}
+
+fn is_assignment_operator(op: &syn::BinOp) -> bool {
+    matches!(
+        op,
+        syn::BinOp::AddAssign(_)
+            | syn::BinOp::SubAssign(_)
+            | syn::BinOp::MulAssign(_)
+            | syn::BinOp::DivAssign(_)
+            | syn::BinOp::RemAssign(_)
+            | syn::BinOp::BitXorAssign(_)
+            | syn::BinOp::BitAndAssign(_)
+            | syn::BinOp::BitOrAssign(_)
+            | syn::BinOp::ShlAssign(_)
+            | syn::BinOp::ShrAssign(_)
+    )
+}
+
+fn contains_errno_assignment_place(expr: &Expr) -> bool {
+    match expr_strip_parens(expr) {
+        Expr::Tuple(tuple) => tuple.elems.iter().any(contains_errno_assignment_place),
+        Expr::Array(array) => array.elems.iter().any(contains_errno_assignment_place),
+        expr => is_errno_deref(expr),
     }
 }
 

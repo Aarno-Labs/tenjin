@@ -678,6 +678,9 @@ impl VisitMut for RewriteVisitor<'_> {
         // Try every registered expression rewrite on this node.
         if let Some((new_expr, inner_depth)) = self.rewriter.try_rewrite_expr(&self.symbols, expr) {
             *expr = new_expr;
+            if inner_depth == Depth::Limited(0) {
+                return;
+            }
             // Recurse into the replacement with the depth returned by the
             // rewrite, not the ambient depth.
             let mut inner = RewriteVisitor {
