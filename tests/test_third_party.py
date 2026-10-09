@@ -1471,7 +1471,7 @@ def test_Orc__discount(tenjin_fixtures: TenjinFixtures):
 </html>
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 234
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 235
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
