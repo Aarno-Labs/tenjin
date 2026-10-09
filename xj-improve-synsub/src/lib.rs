@@ -68,6 +68,12 @@ pub struct SymbolTable {
     pub items: HashMap<String, syn::Type>,
     /// Maps a named struct type to its named field types.
     pub fields: HashMap<String, HashMap<String, syn::Type>>,
+    /// Maps the name of each function declared in an `extern` block to its signature.
+    pub foreign_fns: HashMap<String, syn::Signature>,
+    /// Names of functions the crate defines, including their exported symbol names.
+    pub defined_fns: HashSet<String>,
+    /// Names of `static mut` items that are not shadowed by a local binding.
+    pub mutable_statics: HashSet<String>,
 }
 
 impl SymbolTable {
@@ -85,8 +91,18 @@ impl SymbolTable {
         self.items.get(name)
     }
 
+    /// Returns the signature of `name` if it refers to a function that the
+    /// crate declares in an `extern` block but does not itself define.
+    pub fn external_fn(&self, name: &str) -> Option<&syn::Signature> {
+        if self.has(name) || self.defined_fns.contains(name) {
+            return None;
+        }
+        self.foreign_fns.get(name)
+    }
+
     /// Insert a name -> type mapping.
     pub fn insert(&mut self, name: String, ty: syn::Type) {
+        self.mutable_statics.remove(&name);
         self.items.insert(name, ty);
     }
 
@@ -94,6 +110,7 @@ impl SymbolTable {
     /// with a type we cannot determine: the stale outer type must not
     /// remain visible.
     pub fn remove(&mut self, name: &str) {
+        self.mutable_statics.remove(name);
         self.items.remove(name);
     }
 
@@ -157,6 +174,9 @@ impl SymbolTable {
                 }
                 syn::Item::Static(i) => {
                     self.insert(i.ident.to_string(), (*i.ty).clone());
+                    if matches!(i.mutability, syn::StaticMutability::Mut(_)) {
+                        self.mutable_statics.insert(i.ident.to_string());
+                    }
                 }
                 syn::Item::Struct(i) => {
                     let mut fields = HashMap::new();
@@ -172,10 +192,48 @@ impl SymbolTable {
                         self.collect_globals(inner);
                     }
                 }
+                syn::Item::ForeignMod(i) => {
+                    for foreign in &i.items {
+                        if let syn::ForeignItem::Fn(f) = foreign {
+                            self.foreign_fns
+                                .insert(f.sig.ident.to_string(), f.sig.clone());
+                        }
+                    }
+                }
+                syn::Item::Fn(i) => {
+                    self.defined_fns.insert(i.sig.ident.to_string());
+                    if let Some(name) = export_name(&i.attrs) {
+                        self.defined_fns.insert(name);
+                    }
+                }
                 _ => {}
             }
         }
     }
+}
+
+/// The symbol name given by an `#[export_name = "..."]` attribute, if any.
+fn export_name(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        let meta = match &attr.meta {
+            // `#[unsafe(export_name = "...")]`
+            syn::Meta::List(list) if list.path.is_ident("unsafe") => list.parse_args().ok()?,
+            meta => meta.clone(),
+        };
+        let syn::Meta::NameValue(nv) = meta else {
+            return None;
+        };
+        if !nv.path.is_ident("export_name") {
+            return None;
+        }
+        match nv.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) => Some(s.value()),
+            _ => None,
+        }
+    })
 }
 
 fn indexed_element_type(ty: &syn::Type) -> Option<&syn::Type> {

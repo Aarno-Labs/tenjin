@@ -104,31 +104,180 @@ fn errno_storage_addresses_and_unrelated_calls_are_preserved() {
 }
 
 #[test]
-fn nextafter_calls_use_libm() {
+fn libm_calls_use_xj_cmath() {
     let mut rw = Rewriter::new();
-    rw.add_expr_rewrite(Rewriter::rewrite_nextafter_call);
+    rw.add_expr_rewrite(Rewriter::rewrite_libm_call_to_cmath);
     check(
         &rw,
-        r#"fn demo(a: f64, b: f64, x: f32, y: f32) {
-            let _ = nextafter(a, b);
-            let _ = nextafterf(x, y);
-            let _ = nextafter(nextafter(a, b), b);
-            let _ = other::nextafter(a, b);
-            let _ = nextafterl(a, b);
-            let _ = nextafter(a);
+        r#"extern "C" {
+            fn sqrt(__x: ::core::ffi::c_double) -> ::core::ffi::c_double;
+            fn sqrtf(_: ::core::ffi::c_float) -> ::core::ffi::c_float;
+            fn nextafter(__x: ::core::ffi::c_double, __y: ::core::ffi::c_double) -> ::core::ffi::c_double;
+            fn ldexpf(__x: ::core::ffi::c_float, __exponent: ::core::ffi::c_int) -> ::core::ffi::c_float;
+            fn lround(__x: ::core::ffi::c_double) -> ::core::ffi::c_long;
+            fn log(msg: *const ::core::ffi::c_char);
+            fn floor(__x: ::core::ffi::c_float) -> ::core::ffi::c_float;
+            fn lgamma(__x: ::core::ffi::c_double) -> ::core::ffi::c_double;
+            fn round(__x: ::core::ffi::c_double) -> ::core::ffi::c_double;
+            fn cos(__x: ::core::ffi::c_double) -> ::core::ffi::c_double;
+        }
+        mod other {
+            #[unsafe(export_name = "round")]
+            pub unsafe extern "C" fn round_xjtr_0(x: f64) -> f64 { x }
+        }
+        unsafe fn demo(a: f64, b: f64, x: f32, e: i32, msg: *const ::core::ffi::c_char) {
+            let _ = sqrt(a);
+            let _ = sqrtf(x);
+            let _ = nextafter(sqrt(a), b);
+            let _ = ldexpf(x, e);
+            let _ = lround(a);
+            log(msg);
+            let _ = floor(x);
+            let _ = lgamma(a);
+            let _ = round(a);
+            let _ = exp(a);
+            let _ = other::sqrt(a);
+            let _ = sqrt(a, b);
+            let cos: fn(f64) -> f64 = identity;
+            let _ = cos(a);
         }"#,
         expect![[r#"
-            fn demo(a: f64, b: f64, x: f32, y: f32) {
-                let _ = ::libm::nextafter(a, b);
-                let _ = ::libm::nextafterf(x, y);
-                let _ = ::libm::nextafter(::libm::nextafter(a, b), b);
-                let _ = other::nextafter(a, b);
-                let _ = nextafterl(a, b);
-                let _ = nextafter(a);
+            extern "C" {
+                fn sqrt(__x: ::core::ffi::c_double) -> ::core::ffi::c_double;
+                fn sqrtf(_: ::core::ffi::c_float) -> ::core::ffi::c_float;
+                fn nextafter(
+                    __x: ::core::ffi::c_double,
+                    __y: ::core::ffi::c_double,
+                ) -> ::core::ffi::c_double;
+                fn ldexpf(
+                    __x: ::core::ffi::c_float,
+                    __exponent: ::core::ffi::c_int,
+                ) -> ::core::ffi::c_float;
+                fn lround(__x: ::core::ffi::c_double) -> ::core::ffi::c_long;
+                fn log(msg: *const ::core::ffi::c_char);
+                fn floor(__x: ::core::ffi::c_float) -> ::core::ffi::c_float;
+                fn lgamma(__x: ::core::ffi::c_double) -> ::core::ffi::c_double;
+                fn round(__x: ::core::ffi::c_double) -> ::core::ffi::c_double;
+                fn cos(__x: ::core::ffi::c_double) -> ::core::ffi::c_double;
+            }
+            mod other {
+                #[unsafe(export_name = "round")]
+                pub unsafe extern "C" fn round_xjtr_0(x: f64) -> f64 {
+                    x
+                }
+            }
+            unsafe fn demo(a: f64, b: f64, x: f32, e: i32, msg: *const ::core::ffi::c_char) {
+                let _ = ::xj_cmath::sqrt(a);
+                let _ = ::xj_cmath::sqrtf(x);
+                let _ = ::xj_cmath::nextafter(::xj_cmath::sqrt(a), b);
+                let _ = ::xj_cmath::ldexpf(x, e);
+                let _ = ::xj_cmath::lround(a);
+                log(msg);
+                let _ = floor(x);
+                let _ = lgamma(a);
+                let _ = round(a);
+                let _ = exp(a);
+                let _ = other::sqrt(a);
+                let _ = sqrt(a, b);
+                let cos: fn(f64) -> f64 = identity;
+                let _ = cos(a);
             }
         "#]],
     );
-    assert_eq!(rw.take_deps(), ["libm".to_owned()].into());
+    assert_eq!(rw.take_deps(), ["xj_cmath".to_owned()].into());
+}
+
+#[test]
+fn libm_output_pointers_use_mut_refs_or_ptr_variants() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_libm_call_to_cmath);
+    check(
+        &rw,
+        r#"extern "C" {
+            fn frexp(__x: ::core::ffi::c_double, __exponent: *mut ::core::ffi::c_int) -> ::core::ffi::c_double;
+            fn modff(__x: ::core::ffi::c_float, __iptr: *mut ::core::ffi::c_float) -> ::core::ffi::c_float;
+            fn remquo(__x: ::core::ffi::c_double, __y: ::core::ffi::c_double, __quo: *mut ::core::ffi::c_int) -> ::core::ffi::c_double;
+            fn sincos(__x: ::core::ffi::c_double, __sinx: *mut ::core::ffi::c_double, __cosx: *mut ::core::ffi::c_double);
+            fn lgamma_r(_: ::core::ffi::c_double, __signgamp: *mut ::core::ffi::c_int) -> ::core::ffi::c_double;
+        }
+        struct Pair { whole: f32, quo: i32 }
+        static mut GLOBAL_EXP: ::core::ffi::c_int = 0;
+        unsafe fn demo(x: f64, f: f32, out: *mut ::core::ffi::c_int, r: &mut ::core::ffi::c_int, mut pair: Pair) {
+            let mut e = 0 as ::core::ffi::c_int;
+            let _ = frexp(x, &raw mut e);
+            let _ = modff(f, &raw mut pair.whole);
+            let mut quos: [::core::ffi::c_int; 2] = [0, 0];
+            let _ = remquo(x, 2.0f64, (&raw mut quos as *mut ::core::ffi::c_int).offset(1 as isize));
+            let mut s: ::core::ffi::c_double = 0.;
+            let mut c: ::core::ffi::c_double = 0.;
+            sincos(x, &raw mut s, &raw mut c);
+            let _ = lgamma_r(x, r as *mut ::core::ffi::c_int);
+            let _ = frexp(x, &raw mut pair.quo as *mut ::core::ffi::c_int);
+
+            let _ = frexp(x, out);
+            sincos(x, &raw mut s, &raw mut s);
+            let _ = frexp(x, &raw mut *out);
+            let _ = frexp(x, &raw mut GLOBAL_EXP);
+            let _ = frexp(x, &raw mut s as *mut ::core::ffi::c_int);
+            let _ = frexp(x, ::core::ptr::null_mut());
+        }"#,
+        expect![[r#"
+            extern "C" {
+                fn frexp(
+                    __x: ::core::ffi::c_double,
+                    __exponent: *mut ::core::ffi::c_int,
+                ) -> ::core::ffi::c_double;
+                fn modff(
+                    __x: ::core::ffi::c_float,
+                    __iptr: *mut ::core::ffi::c_float,
+                ) -> ::core::ffi::c_float;
+                fn remquo(
+                    __x: ::core::ffi::c_double,
+                    __y: ::core::ffi::c_double,
+                    __quo: *mut ::core::ffi::c_int,
+                ) -> ::core::ffi::c_double;
+                fn sincos(
+                    __x: ::core::ffi::c_double,
+                    __sinx: *mut ::core::ffi::c_double,
+                    __cosx: *mut ::core::ffi::c_double,
+                );
+                fn lgamma_r(
+                    _: ::core::ffi::c_double,
+                    __signgamp: *mut ::core::ffi::c_int,
+                ) -> ::core::ffi::c_double;
+            }
+            struct Pair {
+                whole: f32,
+                quo: i32,
+            }
+            static mut GLOBAL_EXP: ::core::ffi::c_int = 0;
+            unsafe fn demo(
+                x: f64,
+                f: f32,
+                out: *mut ::core::ffi::c_int,
+                r: &mut ::core::ffi::c_int,
+                mut pair: Pair,
+            ) {
+                let mut e = 0 as ::core::ffi::c_int;
+                let _ = ::xj_cmath::frexp(x, &mut e);
+                let _ = ::xj_cmath::modff(f, &mut pair.whole);
+                let mut quos: [::core::ffi::c_int; 2] = [0, 0];
+                let _ = ::xj_cmath::remquo(x, 2.0f64, &mut quos[1 as usize]);
+                let mut s: ::core::ffi::c_double = 0.;
+                let mut c: ::core::ffi::c_double = 0.;
+                ::xj_cmath::sincos(x, &mut s, &mut c);
+                let _ = ::xj_cmath::lgamma_r(x, &mut *r);
+                let _ = ::xj_cmath::frexp(x, &mut pair.quo);
+                let _ = ::xj_cmath::frexp_ptr(x, out);
+                ::xj_cmath::sincos_ptr(x, &raw mut s, &raw mut s);
+                let _ = ::xj_cmath::frexp_ptr(x, &raw mut *out);
+                let _ = ::xj_cmath::frexp_ptr(x, &raw mut GLOBAL_EXP);
+                let _ = ::xj_cmath::frexp_ptr(x, &raw mut s as *mut ::core::ffi::c_int);
+                let _ = ::xj_cmath::frexp_ptr(x, ::core::ptr::null_mut());
+            }
+        "#]],
+    );
+    assert_eq!(rw.take_deps(), ["xj_cmath".to_owned()].into());
 }
 
 #[test]
@@ -974,10 +1123,13 @@ fn isinf_isnan_strips_f64_cast() {
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
     check(
         &rw,
-        "fn demo(x: f64) -> bool { xj_isinf(x as f64) != 0 && xj_isnan(x as f64) == 0 }",
+        "fn demo(x: f64, f: f32) -> bool {
+            ::xj_cmath::isinf(x as f64) != 0
+                && ::xj_cmath::isnan(f as ::core::ffi::c_double as f64) == 0 as ::core::ffi::c_int
+        }",
         expect![[r#"
-            fn demo(x: f64) -> bool {
-                x.is_infinite() && !x.is_nan()
+            fn demo(x: f64, f: f32) -> bool {
+                x.is_infinite() && !f.is_nan()
             }
         "#]],
     );
@@ -989,10 +1141,29 @@ fn isinf_isnan_without_cast() {
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
     check(
         &rw,
-        "fn demo(x: f64) -> bool { xj_isinf(x) != 0 && xj_isnan(x) == 0 }",
+        "fn demo(x: f64, f: f32) -> bool {
+            xj_cmath::isinf(x) != 0 && xj_cmath::isnanf(f) == 0 && xj_cmath::isinff(-f) != 0
+        }",
+        expect![[r#"
+            fn demo(x: f64, f: f32) -> bool {
+                x.is_infinite() && !f.is_nan() && (-f).is_infinite()
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn isinf_isnan_other_comparisons_unchanged() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
+    check(
+        &rw,
+        "fn demo(x: f64) -> bool {
+            ::xj_cmath::isinf(x) == 1 && ::xj_cmath::isnan(x) > 0 && other::isnan(x) != 0
+        }",
         expect![[r#"
             fn demo(x: f64) -> bool {
-                x.is_infinite() && !x.is_nan()
+                ::xj_cmath::isinf(x) == 1 && ::xj_cmath::isnan(x) > 0 && other::isnan(x) != 0
             }
         "#]],
     );
