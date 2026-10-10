@@ -176,6 +176,10 @@ impl SymbolTable {
                         self.fn_outputs
                             .insert(i.sig.ident.to_string(), (**ty).clone());
                     }
+                    self.defined_fns.insert(i.sig.ident.to_string());
+                    if let Some(name) = export_name(&i.attrs) {
+                        self.defined_fns.insert(name);
+                    }
                 }
                 syn::Item::Const(i) => {
                     self.insert(i.ident.to_string(), (*i.ty).clone());
@@ -206,12 +210,6 @@ impl SymbolTable {
                             self.foreign_fns
                                 .insert(f.sig.ident.to_string(), f.sig.clone());
                         }
-                    }
-                }
-                syn::Item::Fn(i) => {
-                    self.defined_fns.insert(i.sig.ident.to_string());
-                    if let Some(name) = export_name(&i.attrs) {
-                        self.defined_fns.insert(name);
                     }
                 }
                 _ => {}
