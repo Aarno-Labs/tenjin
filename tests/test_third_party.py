@@ -296,7 +296,7 @@ def test_rupertwh__bmplib(tenjin_fixtures: TenjinFixtures):
                 f"Failed on {binname} with args {args!r}; got return code: {rs_prog_output.returncode}, expected: {c_prog_output.returncode}"
             )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 652
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 644
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -634,7 +634,7 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 1004
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 1002
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -957,7 +957,7 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
                     f"{label}: generated file {name!r} differed between Rust and C"
                 )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 386
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 384
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1471,7 +1471,7 @@ def test_Orc__discount(tenjin_fixtures: TenjinFixtures):
 </html>
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 234
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 235
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
@@ -1542,7 +1542,7 @@ def test_silentbicycle__guff(tenjin_fixtures: TenjinFixtures):
         "|                                     # ",
         "+----+----+----+----+----+----+----+----",
     ]
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 52
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 51
 
 
 @pytest.mark.slow  # expected runtime: 9 seconds
@@ -1594,7 +1594,7 @@ def test_silentbicycle__rollavg(tenjin_fixtures: TenjinFixtures):
 2589.633301
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 9
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 4
 
 
 @pytest.mark.slow  # expected runtime: 9 seconds

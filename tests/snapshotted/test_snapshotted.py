@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 import shutil
 from subprocess import CompletedProcess
-import pytest
 import sys
 
 import vcs_helpers
@@ -197,36 +196,6 @@ def test_pointer_param_reseat(root: Path, test_dir: Path, tmp_resultsdir: Path):
         (src_dir / "pointer_param_reseat.c").as_posix(),
         "--resultsdir",
         tmp_resultsdir.as_posix(),
-    ]
-    run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
-
-
-# We skip on macOS because CIL (and hence codehawk) can't parse some mac headers
-@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
-def test_basic_errno(root: Path, test_dir: Path, tmp_resultsdir: Path):
-    src_dir = test_dir / "errno_localization" / "assign"
-    cmd_args = [
-        (root / "cli" / "10j").as_posix(),
-        "translate",
-        "--codebase",
-        src_dir.as_posix(),
-        "--resultsdir",
-        tmp_resultsdir,
-    ]
-    run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
-
-
-# We skip on macOS because CIL (and hence codehawk) can't parse some mac headers
-@pytest.mark.skipif(sys.platform == "darwin", reason="Skipping on macOS.")
-def test_errno_time(root: Path, test_dir: Path, tmp_resultsdir: Path):
-    src_dir = test_dir / "errno_localization" / "time"
-    cmd_args = [
-        (root / "cli" / "10j").as_posix(),
-        "translate",
-        "--codebase",
-        (src_dir / "main.c").as_posix(),
-        "--resultsdir",
-        tmp_resultsdir,
     ]
     run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
 

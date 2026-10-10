@@ -166,34 +166,6 @@ def do_build_star(capture_output: bool = False):
     do_build_xj_prepare_pointertransform(capture_output=capture_output)
     do_build_xj_prepare_baserewrite(capture_output=capture_output)
     do_build_xj_prepare_slicetransform(capture_output=capture_output)
-    do_build_xj_localize_errno(capture_output=capture_output)
-
-
-def do_build_xj_localize_errno(capture_output: bool = False):
-    root = repo_root.find_repo_root_dir_Path()
-    builddir = hermetic.xj_localize_errno_build_dir(repo_root.localdir())
-
-    if not builddir.exists():
-        hermetic.run(
-            [
-                "cmake",
-                "-GNinja",
-                "-S",
-                (root / "xj-localize-errno").as_posix(),
-                "-B",
-                builddir.as_posix(),
-            ],
-            cwd=root,
-            check=True,
-            capture_output=capture_output,
-        )
-
-    hermetic.run(
-        ["cmake", "--build", builddir.as_posix(), "--", "--quiet"],
-        cwd=root,
-        check=True,
-        capture_output=capture_output,
-    )
 
 
 def do_build_xj_analysis(capture_output: bool = False):

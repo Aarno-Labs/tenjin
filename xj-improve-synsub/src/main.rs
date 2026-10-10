@@ -31,6 +31,7 @@ fn main() -> Result<()> {
     let mut crates = collect_workspace_files(&args.workspace_root)?;
     let mut rw = Rewriter::new();
 
+    rw.add_expr_rewrite(Rewriter::rewrite_errno_access);
     rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
@@ -51,7 +52,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_ctor_over_if);
     rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
     rw.add_expr_rewrite(Rewriter::rewrite_memcmp_float_comparison);
-    rw.add_expr_rewrite(Rewriter::rewrite_nextafter_call);
+    rw.add_expr_rewrite(Rewriter::rewrite_libm_call_to_cmath);
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
     rw.add_expr_rewrite(Rewriter::rewrite_ctime_time);
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
@@ -138,7 +139,7 @@ fn dep_version(crate_name: &str) -> &'static str {
         "xj_scanf" => "0.2.6",
         "atty" => "0.2.14",
         "bytemuck" => "1.25.0",
-        "libm" => "0.2.16",
+        "xj_cmath" => "0.1.0",
         _ => "*",
     }
 }

@@ -19,10 +19,66 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
-    /// Use the pure-Rust implementations of C's nextafter functions.
-    pub fn rewrite_nextafter_call(
+    /// Replace accesses to glibc's errno storage with the errno crate's API.
+    pub fn rewrite_errno_access(
         &self,
         _symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let replacement = match expr {
+            Expr::Assign(assign) if is_errno_deref(&assign.left) => {
+                let value = &assign.right;
+                syn::parse_quote! { ::errno::set_errno(::errno::Errno(#value)) }
+            }
+            Expr::Binary(binary)
+                if is_errno_deref(&binary.left) && is_assignment_operator(&binary.op) =>
+            {
+                let value = &binary.right;
+                let op = &binary.op;
+                // Primitive compound assignment evaluates the RHS before the
+                // LHS. It may itself change errno, so read errno afterwards.
+                syn::parse_quote! {{
+                    let xj_errno_rhs = #value;
+                    let mut xj_errno_value = ::errno::errno().0;
+                    xj_errno_value #op xj_errno_rhs;
+                    ::errno::set_errno(::errno::Errno(xj_errno_value));
+                }}
+            }
+            // Borrowing the actual storage must not become a borrow of a copy.
+            Expr::Reference(reference) if is_errno_deref(&reference.expr) => {
+                return Some((expr.clone(), Depth::Limited(0)));
+            }
+            Expr::RawAddr(addr) if is_errno_deref(&addr.expr) => {
+                return Some((expr.clone(), Depth::Limited(0)));
+            }
+            // Destructuring assignment requires real places. Keep these rare
+            // writes intact rather than rewriting their targets into values.
+            Expr::Assign(assign) if contains_errno_assignment_place(&assign.left) => {
+                return Some((expr.clone(), Depth::Limited(0)));
+            }
+            Expr::Unary(_) if is_errno_deref(expr) => {
+                syn::parse_quote! { ::errno::errno().0 }
+            }
+            _ => return None,
+        };
+        self.add_dep("errno");
+        Some((replacement, Depth::Unlimited))
+    }
+
+    /// Rewrite a call to a C math function, such as `sqrt(x)`, into a call to
+    /// the safe wrapper in `xj_cmath`, such as `::xj_cmath::sqrt(x)`.
+    ///
+    /// The callee must be declared in an `extern` block with the C signature
+    /// that `xj_cmath` wraps, and must not be defined by the crate itself.
+    ///
+    /// For functions with output parameters, such as `frexp(x, &raw mut e)`,
+    /// the outputs become mutable borrows, as in `::xj_cmath::frexp(x, &mut e)`,
+    /// when each one is a distinct place that can be borrowed safely.
+    /// Otherwise the call uses the unsafe pointer-taking variant, as in
+    /// `::xj_cmath::frexp_ptr(x, p)`.
+    pub fn rewrite_libm_call_to_cmath(
+        &self,
+        symbols: &SymbolTable,
         expr: &Expr,
     ) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else {
@@ -31,16 +87,50 @@ impl Rewriter {
         let Expr::Path(function) = &*call.func else {
             return None;
         };
-        if function.qself.is_some()
-            || !(function.path.is_ident("nextafter") || function.path.is_ident("nextafterf"))
-            || call.args.len() != 2
+        if function.qself.is_some() {
+            return None;
+        }
+        let name = function.path.get_ident()?;
+        let name_str = name.to_string();
+        let (params, outputs, ret) = cmath_signature(&name_str)?;
+        let sig = symbols.external_fn(&name_str)?;
+        if call.args.len() != params.len() + outputs.len()
+            || !sig_matches_cmath(sig, params, outputs, ret)
         {
             return None;
         }
-        let name = &function.path.segments[0].ident;
         let args = &call.args;
-        self.add_dep("libm");
-        Some((syn::parse_quote! { ::libm::#name(#args) }, Depth::Unlimited))
+        self.add_dep("xj_cmath");
+        if outputs.is_empty() {
+            return Some((
+                syn::parse_quote! { ::xj_cmath::#name(#args) },
+                Depth::Unlimited,
+            ));
+        }
+
+        // Pass output locations as mutable references when we can borrow
+        // each one, and otherwise pass the original pointers to the unsafe
+        // `_ptr` variant.
+        let arg_list = args.iter().collect::<Vec<_>>();
+        let (inputs, out_args) = arg_list.split_at(params.len());
+        let places = out_args
+            .iter()
+            .zip(outputs)
+            .map(|(arg, &ty)| cmath_output_place(arg, ty, symbols))
+            .collect::<Option<Vec<_>>>()
+            .filter(|places| places_are_disjoint(places));
+        let replacement = match places {
+            Some(places) => {
+                let inputs = inputs.iter();
+                let places = places.iter();
+                syn::parse_quote! { ::xj_cmath::#name(#(#inputs,)* #(&mut #places),*) }
+            }
+            None => {
+                let ptr_name = syn::Ident::new(&format!("{name}_ptr"), name.span());
+                syn::parse_quote! { ::xj_cmath::#ptr_name(#args) }
+            }
+        };
+        Some((replacement, Depth::Unlimited))
     }
 
     /// Compare complete float or double representations without calling C's `memcmp`.
@@ -522,8 +612,8 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
-    /// Rewrite `xj_isinf(e as f64) != 0` into `e.is_infinite()`, and similarly for `isnan`.
-    /// Rewrite `xj_isinf(e as f64) == 0` into `!e.is_infinite()`, and similarly for `isnan`.
+    /// Rewrite `::xj_cmath::isinf(e as f64) != 0` into `e.is_infinite()`, and similarly for `isnan`.
+    /// Rewrite `::xj_cmath::isinf(e as f64) == 0` into `!e.is_infinite()`, and similarly for `isnan`.
     pub fn rewrite_isinf_isnan_comparisons(
         &self,
         _symbols: &SymbolTable,
@@ -532,44 +622,53 @@ impl Rewriter {
         let Expr::Binary(bin) = expr else {
             return None;
         };
-        let (func_path, arg_expr, is_equality) = if let Expr::Call(call) = &*bin.left {
-            let Expr::Path(ref func) = *call.func else {
-                return None;
-            };
-            if func.path.is_ident("xj_isinf") || func.path.is_ident("xj_isnan") {
-                if call.args.len() != 1 {
-                    return None;
-                }
-                (
-                    &func.path,
-                    &call.args[0],
-                    matches!(bin.op, syn::BinOp::Eq(_)),
-                )
-            } else {
-                return None;
-            }
-        } else {
+        let is_equality = match bin.op {
+            syn::BinOp::Eq(_) => true,
+            syn::BinOp::Ne(_) => false,
+            _ => return None,
+        };
+        if !is_zero_integer_expr(&bin.right) {
+            return None;
+        }
+        let Expr::Call(call) = &*bin.left else {
             return None;
         };
-
-        let method_ident = syn::Ident::new(
-            if func_path.is_ident("xj_isinf") {
-                "is_infinite"
-            } else {
-                "is_nan"
-            },
-            func_path.span(),
-        );
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        if func.qself.is_some() || call.args.len() != 1 {
+            return None;
+        }
+        let segments = &func.path.segments;
+        if segments.len() != 2 || segments[0].ident != "xj_cmath" {
+            return None;
+        }
+        let method = match segments[1].ident.to_string().as_str() {
+            "isinf" | "isinff" => "is_infinite",
+            "isnan" | "isnanf" => "is_nan",
+            _ => return None,
+        };
+        let method_ident = syn::Ident::new(method, func.path.span());
 
         // Stripping casts is valid because (A) isinf/isnan (at least the versions from math.h)
         // cannot be given arguments of non-floating-point type, and (B) floating point casts
         // do not change the value's isinf/isnan-ness.
-        let receiver = expr_strip_casts(arg_expr);
+        let receiver = expr_strip_casts(&call.args[0]);
 
-        let replacement: Expr = if is_equality {
-            syn::parse_quote! { !#receiver.#method_ident() }
+        // Build the method call as a syntax tree, rather than by splicing
+        // tokens, so that a receiver like `-x` keeps its parentheses.
+        let mut predicate: syn::ExprMethodCall = syn::parse_quote! { receiver.#method_ident() };
+        predicate.receiver = Box::new(receiver.clone());
+        let predicate = Expr::MethodCall(predicate);
+
+        let replacement = if is_equality {
+            Expr::Unary(ExprUnary {
+                attrs: Vec::new(),
+                op: syn::UnOp::Not(Default::default()),
+                expr: Box::new(predicate),
+            })
         } else {
-            syn::parse_quote! { #receiver.#method_ident() }
+            predicate
         };
 
         Some((replacement, Depth::Unlimited))
@@ -2029,6 +2128,273 @@ fn float_width(ty: &Type) -> Option<FloatWidth> {
     }
 }
 
+/// A C scalar type appearing in the signature of a `math.h` function.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CScalar {
+    Float,
+    Double,
+    Int,
+    Long,
+    LongLong,
+}
+
+/// The signature of the C math function `name`, for functions that
+/// `xj_cmath` wraps safely: the types of its value parameters, the pointee
+/// types of the output parameters that follow them, and its return type
+/// (`None` for `void`).
+///
+/// Omits `lgamma`, `lgammaf`, `gamma`, and `gammaf`, whose `xj_cmath`
+/// versions do not update C's global `signgam`.
+fn cmath_signature(
+    name: &str,
+) -> Option<(&'static [CScalar], &'static [CScalar], Option<CScalar>)> {
+    use CScalar::*;
+    if let Some((params, ret)) = cmath_scalar_signature(name) {
+        return Some((params, &[], Some(ret)));
+    }
+    let sig: (&[CScalar], &[CScalar], Option<CScalar>) = match name {
+        "frexp" => (&[Double], &[Int], Some(Double)),
+        "frexpf" => (&[Float], &[Int], Some(Float)),
+        "modf" => (&[Double], &[Double], Some(Double)),
+        "modff" => (&[Float], &[Float], Some(Float)),
+        "remquo" => (&[Double, Double], &[Int], Some(Double)),
+        "remquof" => (&[Float, Float], &[Int], Some(Float)),
+        "sincos" => (&[Double], &[Double, Double], None),
+        "sincosf" => (&[Float], &[Float, Float], None),
+        "lgamma_r" => (&[Double], &[Int], Some(Double)),
+        "lgammaf_r" => (&[Float], &[Int], Some(Float)),
+        _ => return None,
+    };
+    Some(sig)
+}
+
+/// The parameter and return types of the C math functions whose
+/// `xj_cmath` wrappers take and return only scalars.
+fn cmath_scalar_signature(name: &str) -> Option<(&'static [CScalar], CScalar)> {
+    use CScalar::*;
+    const D: &[CScalar] = &[Double];
+    const F: &[CScalar] = &[Float];
+    const DD: &[CScalar] = &[Double, Double];
+    const FF: &[CScalar] = &[Float, Float];
+    const DDD: &[CScalar] = &[Double, Double, Double];
+    const FFF: &[CScalar] = &[Float, Float, Float];
+    const DI: &[CScalar] = &[Double, Int];
+    const FI: &[CScalar] = &[Float, Int];
+    const DL: &[CScalar] = &[Double, Long];
+    const FL: &[CScalar] = &[Float, Long];
+    const ID: &[CScalar] = &[Int, Double];
+    const IF: &[CScalar] = &[Int, Float];
+    let sig = match name {
+        "acos" | "asin" | "atan" | "cos" | "sin" | "tan" | "acosh" | "asinh" | "atanh" | "cosh"
+        | "sinh" | "tanh" | "exp" | "exp2" | "expm1" | "log" | "log10" | "log1p" | "log2"
+        | "logb" | "cbrt" | "fabs" | "sqrt" | "erf" | "erfc" | "tgamma" | "ceil" | "floor"
+        | "nearbyint" | "rint" | "round" | "trunc" | "significand" | "j0" | "j1" | "y0" | "y1" => {
+            (D, Double)
+        }
+        "acosf" | "asinf" | "atanf" | "cosf" | "sinf" | "tanf" | "acoshf" | "asinhf" | "atanhf"
+        | "coshf" | "sinhf" | "tanhf" | "expf" | "exp2f" | "expm1f" | "logf" | "log10f"
+        | "log1pf" | "log2f" | "logbf" | "cbrtf" | "fabsf" | "sqrtf" | "erff" | "erfcf"
+        | "tgammaf" | "ceilf" | "floorf" | "nearbyintf" | "rintf" | "roundf" | "truncf"
+        | "significandf" | "j0f" | "j1f" | "y0f" | "y1f" => (F, Float),
+        "atan2" | "hypot" | "pow" | "fmod" | "remainder" | "copysign" | "nextafter" | "fdim"
+        | "fmax" | "fmin" | "drem" | "scalb" => (DD, Double),
+        "atan2f" | "hypotf" | "powf" | "fmodf" | "remainderf" | "copysignf" | "nextafterf"
+        | "fdimf" | "fmaxf" | "fminf" | "dremf" | "scalbf" => (FF, Float),
+        "fma" => (DDD, Double),
+        "fmaf" => (FFF, Float),
+        "ilogb" | "finite" => (D, Int),
+        "ilogbf" | "finitef" => (F, Int),
+        "ldexp" | "scalbn" => (DI, Double),
+        "ldexpf" | "scalbnf" => (FI, Float),
+        "scalbln" => (DL, Double),
+        "scalblnf" => (FL, Float),
+        "lrint" | "lround" => (D, Long),
+        "lrintf" | "lroundf" => (F, Long),
+        "llrint" | "llround" => (D, LongLong),
+        "llrintf" | "llroundf" => (F, LongLong),
+        "jn" | "yn" => (ID, Double),
+        "jnf" | "ynf" => (IF, Float),
+        _ => return None,
+    };
+    Some(sig)
+}
+
+/// Whether an `extern` declaration has exactly the C signature
+/// `(params..., *mut outputs...) -> ret`.
+fn sig_matches_cmath(
+    sig: &syn::Signature,
+    params: &[CScalar],
+    outputs: &[CScalar],
+    ret: Option<CScalar>,
+) -> bool {
+    if sig.variadic.is_some()
+        || !sig.generics.params.is_empty()
+        || sig.inputs.len() != params.len() + outputs.len()
+    {
+        return false;
+    }
+    let ret_matches = match (&sig.output, ret) {
+        (syn::ReturnType::Default, None) => true,
+        (syn::ReturnType::Type(_, ret_ty), Some(ret)) => c_scalar_of_type(ret_ty) == Some(ret),
+        _ => false,
+    };
+    if !ret_matches {
+        return false;
+    }
+    let expected = params
+        .iter()
+        .map(|&ty| (ty, false))
+        .chain(outputs.iter().map(|&ty| (ty, true)));
+    sig.inputs
+        .iter()
+        .zip(expected)
+        .all(|(input, (ty, is_output))| {
+            let syn::FnArg::Typed(pat_ty) = input else {
+                return false;
+            };
+            if !is_output {
+                return c_scalar_of_type(&pat_ty.ty) == Some(ty);
+            }
+            matches!(&*pat_ty.ty, Type::Ptr(ptr)
+                if ptr.mutability.is_some() && c_scalar_of_type(&ptr.elem) == Some(ty))
+        })
+}
+
+/// The place that an output-pointer argument of pointee type `ty` points
+/// to, if the argument can be replaced by a mutable borrow of that place.
+///
+/// Recognizes `&raw mut place` and `&mut place` (possibly cast to a
+/// pointer), a variable of type `&mut T` (whose place is `*var`), and
+/// `(&raw mut array as *mut T).offset(k)` (whose place is `array[k]`).
+fn cmath_output_place(arg: &Expr, ty: CScalar, symbols: &SymbolTable) -> Option<Expr> {
+    let arg = expr_strip_parens(arg);
+    let has_cast = matches!(arg, Expr::Cast(_));
+    let inner = expr_strip_parens(expr_strip_casts(arg));
+    let (place, type_checked) = match inner {
+        Expr::RawAddr(raw) if matches!(raw.mutability, syn::PointerMutability::Mut(_)) => {
+            (expr_strip_parens(&raw.expr).clone(), !has_cast)
+        }
+        Expr::Reference(r) if r.mutability.is_some() => {
+            (expr_strip_parens(&r.expr).clone(), !has_cast)
+        }
+        Expr::Path(_) => {
+            let Type::Reference(r) = symbols.type_of_expr(inner)? else {
+                return None;
+            };
+            if r.mutability.is_none() || c_scalar_of_type(&r.elem) != Some(ty) {
+                return None;
+            }
+            (syn::parse_quote! { *#inner }, true)
+        }
+        Expr::MethodCall(m) if m.method == "offset" && m.args.len() == 1 => {
+            let Expr::Cast(cast) = expr_strip_parens(&m.receiver) else {
+                return None;
+            };
+            let Expr::RawAddr(raw) = expr_strip_parens(&cast.expr) else {
+                return None;
+            };
+            let array = expr_strip_parens(&raw.expr);
+            let Type::Array(array_ty) = symbols.type_of_expr(array)? else {
+                return None;
+            };
+            if c_scalar_of_type(&array_ty.elem) != Some(ty) {
+                return None;
+            }
+            let index = expr_strip_casts(&m.args[0]);
+            (syn::parse_quote! { #array[#index as usize] }, true)
+        }
+        _ => return None,
+    };
+    if !is_borrowable_place(&place, symbols) {
+        return None;
+    }
+    if !type_checked {
+        let place_ty = symbols.type_of_expr(&place)?;
+        if c_scalar_of_type(&place_ty) != Some(ty) {
+            return None;
+        }
+    }
+    Some(place)
+}
+
+/// Whether `&mut place` can be taken without dereferencing a raw pointer or
+/// borrowing a `static mut`.
+fn is_borrowable_place(place: &Expr, symbols: &SymbolTable) -> bool {
+    match expr_strip_parens(place) {
+        Expr::Path(path) => path
+            .path
+            .get_ident()
+            .is_some_and(|ident| !symbols.mutable_statics.contains(&ident.to_string())),
+        Expr::Field(field) => is_borrowable_place(&field.base, symbols),
+        Expr::Index(index) => is_borrowable_place(&index.expr, symbols),
+        Expr::Unary(ExprUnary {
+            op: syn::UnOp::Deref(_),
+            expr,
+            ..
+        }) => matches!(symbols.type_of_expr(expr_strip_parens(expr)),
+            Some(Type::Reference(r)) if r.mutability.is_some()),
+        _ => false,
+    }
+}
+
+/// Whether mutable borrows of all of `places` can coexist: each must be a
+/// variable or a chain of named fields of one, and none may contain another.
+fn places_are_disjoint(places: &[Expr]) -> bool {
+    if places.len() < 2 {
+        return true;
+    }
+    let Some(chains) = places
+        .iter()
+        .map(place_field_chain)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    chains.iter().enumerate().all(|(i, a)| {
+        chains[i + 1..]
+            .iter()
+            .all(|b| !a.starts_with(b) && !b.starts_with(a))
+    })
+}
+
+/// The variable and field names in a place like `a.b.c`, as `["a", "b", "c"]`.
+fn place_field_chain(place: &Expr) -> Option<Vec<String>> {
+    match expr_strip_parens(place) {
+        Expr::Path(path) => Some(vec![path.path.get_ident()?.to_string()]),
+        Expr::Field(field) => {
+            let syn::Member::Named(member) = &field.member else {
+                return None;
+            };
+            let mut chain = place_field_chain(&field.base)?;
+            chain.push(member.to_string());
+            Some(chain)
+        }
+        _ => None,
+    }
+}
+
+/// Classify a type such as `::core::ffi::c_double` or `f64`.
+fn c_scalar_of_type(ty: &Type) -> Option<CScalar> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() {
+        return None;
+    }
+    let segment = path.path.segments.last()?;
+    if !segment.arguments.is_none() {
+        return None;
+    }
+    match segment.ident.to_string().as_str() {
+        "c_float" | "f32" => Some(CScalar::Float),
+        "c_double" | "f64" => Some(CScalar::Double),
+        "c_int" | "i32" => Some(CScalar::Int),
+        "c_long" => Some(CScalar::Long),
+        "c_longlong" => Some(CScalar::LongLong),
+        _ => None,
+    }
+}
+
 fn is_zero_integer_expr(expr: &Expr) -> bool {
     match expr_strip_parens(expr) {
         Expr::Cast(cast) if is_integer_cast_type(&cast.ty) => is_zero_integer_expr(&cast.expr),
@@ -2136,6 +2502,56 @@ fn expr_strip_casts(expr: &Expr) -> &Expr {
             Expr::Cast(ExprCast { expr, .. }) => ep = expr,
             _ => break ep,
         }
+    }
+}
+
+fn is_errno_deref(expr: &Expr) -> bool {
+    let Expr::Unary(unary) = expr_strip_parens(expr) else {
+        return false;
+    };
+    if !matches!(unary.op, syn::UnOp::Deref(_)) {
+        return false;
+    }
+    let Expr::Call(call) = expr_strip_parens(&unary.expr) else {
+        return false;
+    };
+    let Expr::Path(function) = expr_strip_parens(&call.func) else {
+        return false;
+    };
+    function.qself.is_none()
+        && call.args.is_empty()
+        && (function.path.is_ident("__errno_location")
+            || (function.path.segments.len() == 2
+                && function.path.segments[0].ident == "libc"
+                && function.path.segments[1].ident == "__errno_location"
+                && function
+                    .path
+                    .segments
+                    .iter()
+                    .all(|segment| matches!(segment.arguments, syn::PathArguments::None))))
+}
+
+fn is_assignment_operator(op: &syn::BinOp) -> bool {
+    matches!(
+        op,
+        syn::BinOp::AddAssign(_)
+            | syn::BinOp::SubAssign(_)
+            | syn::BinOp::MulAssign(_)
+            | syn::BinOp::DivAssign(_)
+            | syn::BinOp::RemAssign(_)
+            | syn::BinOp::BitXorAssign(_)
+            | syn::BinOp::BitAndAssign(_)
+            | syn::BinOp::BitOrAssign(_)
+            | syn::BinOp::ShlAssign(_)
+            | syn::BinOp::ShrAssign(_)
+    )
+}
+
+fn contains_errno_assignment_place(expr: &Expr) -> bool {
+    match expr_strip_parens(expr) {
+        Expr::Tuple(tuple) => tuple.elems.iter().any(contains_errno_assignment_place),
+        Expr::Array(array) => array.elems.iter().any(contains_errno_assignment_place),
+        expr => is_errno_deref(expr),
     }
 }
 

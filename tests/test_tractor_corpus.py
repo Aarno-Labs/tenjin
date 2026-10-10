@@ -491,7 +491,7 @@ def test_tractor_b1_organic_contrast_ratio_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/contrast_ratio_lib"
     # guidance = """{"no_math_errno":true}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 3
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 0
 
 
 @pytest.mark.slow
@@ -728,7 +728,7 @@ def test_tractor_b1_organic_tritanopia_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_organic/tritanopia_lib"
     # guidance = """{"vars_of_type":{"&mut f32":["Tritanopia:Red","Tritanopia:Green","Tritanopia:Blue"]},"no_math_errno":true}"""
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 4
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 2
 
 
 @pytest.mark.slow
@@ -884,7 +884,7 @@ def test_tractor_b1_synthetic_006_app(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_synthetic_007_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/007_errno_pow"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 4
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 2
 
 
 # omitting 008_long_run for now
@@ -994,7 +994,7 @@ def test_tractor_b1_synthetic_022_app(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_synthetic_023_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/023_struct_and_errno"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 7
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 6
 
 
 @pytest.mark.slow
@@ -1008,7 +1008,7 @@ def test_tractor_b1_synthetic_024_app(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_synthetic_025_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/025_struct_and_errno_and_static"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 7
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 6
 
 
 @pytest.mark.slow
@@ -1161,14 +1161,14 @@ def test_tractor_b1_synthetic_011_app_hidden(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_synthetic_014_app_hidden(tenjin_fixtures: TenjinFixtures):
     case_dir = "Hidden-Tests/B01_synthetic/014_errno-pow-subfunction"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 5
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 3
 
 
 @pytest.mark.slow
 def test_tractor_b1_synthetic_016_app_hidden(tenjin_fixtures: TenjinFixtures):
     case_dir = "Hidden-Tests/B01_synthetic/016_switch-arith"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 3
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 2
 
 
 @pytest.mark.slow
@@ -1275,7 +1275,7 @@ def test_tractor_b2_synthetic_dataentry_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_doubleneg_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/doubleneg_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 4
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 3
 
 
 @pytest.mark.slow
@@ -1395,7 +1395,7 @@ def test_tractor_b2_synthetic_task_manager_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_organic_aabb_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/aabb_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 16
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 14
 
 
 @pytest.mark.slow
@@ -1444,7 +1444,7 @@ def test_tractor_b2_organic_call_predict_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_organic_capsule_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/capsule_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 16
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 14
 
 
 @pytest.mark.slow
@@ -1486,14 +1486,14 @@ def test_tractor_b2_organic_encode_base64_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_organic_file_queue_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/file_queue_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 21
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 15
 
 
 @pytest.mark.slow
 def test_tractor_b2_organic_gen_ray_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/gen_ray_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 7
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 5
 
 
 @pytest.mark.slow
@@ -1507,14 +1507,14 @@ def test_tractor_b2_organic_get_predict_func_lib(tenjin_fixtures: TenjinFixtures
 def test_tractor_b2_organic_gjk_cache_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/gjk_cache_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 13
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 11
 
 
 @pytest.mark.slow
 def test_tractor_b2_organic_gjk_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/gjk_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 13
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 11
 
 
 @pytest.mark.slow
@@ -1556,14 +1556,14 @@ def test_tractor_b2_organic_load_png_mem_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_organic_omni_collide_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/omni_collide_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 17
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 15
 
 
 @pytest.mark.slow
 def test_tractor_b2_organic_omni_manifold_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/omni_manifold_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 29
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 27
 
 
 @pytest.mark.slow
@@ -1591,21 +1591,21 @@ def test_tractor_b2_organic_pinflate_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_organic_poly_ray_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/poly_ray_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 8
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 6
 
 
 @pytest.mark.slow
 def test_tractor_b2_organic_rdg_genstdout_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/rdg_genstdout_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 6
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 3
 
 
 @pytest.mark.slow
 def test_tractor_b2_organic_reverse_collide_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/reverse_collide_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 16
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 14
 
 
 @pytest.mark.slow
@@ -1640,7 +1640,7 @@ def test_tractor_b2_organic_siphash_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_organic_spec_ray_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_organic/spec_ray_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 7
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 5
 
 
 @pytest.mark.slow
