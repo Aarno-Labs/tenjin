@@ -947,67 +947,9 @@ impl Translation<'_> {
         &self,
         func: &Expr,
         args: &[Box<Expr>],
-        cargs: &[CExprId],
-        ctx: ExprContext,
+        _cargs: &[CExprId],
+        _ctx: ExprContext,
     ) -> RecognizedCallForm {
-        if tenjin::expr_is_ident(func, "puts") && ctx.is_unused() && !args.is_empty() {
-            return RecognizedCallForm::Puts;
-        }
-
-        if tenjin::expr_is_ident(func, "printf")
-            && !args.is_empty()
-            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[0]))
-        {
-            return RecognizedCallForm::PrintfOut { fmt_string_idx: 0 };
-        }
-
-        if tenjin::expr_is_ident(func, "snprintf")
-            && args.len() >= 3
-            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[2]))
-            && self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, cargs[0])
-                .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
-        {
-            // XREF:sprint_into_mutref_vec_u8
-            return RecognizedCallForm::PrintfS {
-                fmt_string_idx: 2,
-                opt_size: Some(expr_in_usize(args[1].clone())),
-                dest: Box::new(tenjin::expr_strip_casts(&args[0]).clone()),
-            };
-        }
-
-        if tenjin::expr_is_ident(func, "sprintf")
-            && args.len() >= 2
-            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
-            && self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, cargs[0])
-                .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
-        {
-            // XREF:sprint_into_mutref_vec_u8
-            return RecognizedCallForm::PrintfS {
-                fmt_string_idx: 1,
-                opt_size: None,
-                dest: Box::new(tenjin::expr_strip_casts(&args[0]).clone()),
-            };
-        }
-
-        if tenjin::expr_is_ident(func, "fprintf")
-            && args.len() >= 2
-            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
-        {
-            if tenjin::expr_is_stderr(&args[0]) {
-                return RecognizedCallForm::PrintfErr { fmt_string_idx: 1 };
-            }
-            if tenjin::expr_is_stdout(&args[0]) {
-                return RecognizedCallForm::PrintfOut { fmt_string_idx: 1 };
-            }
-            return RecognizedCallForm::PrintfFile;
-        }
-
         if tenjin::expr_is_ident(func, "abort") && args.is_empty() {
             // TENJIN-TODO: guidance to allow mapping `abort()` to `panic!()`?
             return RecognizedCallForm::RetargetedCallee(
@@ -1029,6 +971,7 @@ impl Translation<'_> {
     #[allow(clippy::vec_box)]
     pub fn convert_call_with_args(
         &self,
+        callee: Option<CDeclId>,
         ctx: ExprContext,
         call_expr_ty: CQualTypeId,
         override_ty: Option<CQualTypeId>,
@@ -1046,128 +989,10 @@ impl Translation<'_> {
                 &None,
             )
         };
-        if let Some(call) = self.convert_cio_variadic(&func, &args, cargs)? {
+        if let Some(call) = self.convert_cio_variadic(callee, &args, cargs)? {
             return Ok(WithStmts::new_val(call));
         }
         match self.call_form_cases(&func, &args, cargs, ctx) {
-            RecognizedCallForm::Puts => Ok(WithStmts::new_val(mk().mac_expr(
-                refactor_format::build_format_macro_from(
-                    self,
-                    "%s\n".into(),
-                    false,
-                    "xj_cio::cprintf",
-                    "xj_cio::cprintf",
-                    &args,
-                    cargs,
-                    None,
-                    None,
-                    None,
-                ),
-            ))),
-            RecognizedCallForm::PrintfOut { fmt_string_idx } => {
-                let fmt_string_span = self.ast_context.display_loc(
-                    &self
-                        .ast_context
-                        .index_unwrap_parens(cargs[fmt_string_idx])
-                        .loc,
-                );
-                Ok(WithStmts::new_val(mk().mac_expr(
-                    refactor_format::build_format_macro(
-                        self,
-                        "xj_cio::cprintf",
-                        "xj_cio::cprintf",
-                        &args[fmt_string_idx..],
-                        &cargs[fmt_string_idx..],
-                        None,
-                        fmt_string_span,
-                    ),
-                )))
-            }
-            RecognizedCallForm::PrintfErr { fmt_string_idx } => {
-                let fmt_string_span = self.ast_context.display_loc(
-                    &self
-                        .ast_context
-                        .index_unwrap_parens(cargs[fmt_string_idx])
-                        .loc,
-                );
-                Ok(WithStmts::new_val(mk().mac_expr(
-                    refactor_format::build_format_macro(
-                        self,
-                        "xj_cio::ceprintf",
-                        "xj_cio::ceprintf",
-                        &args[fmt_string_idx..],
-                        &cargs[fmt_string_idx..],
-                        None,
-                        fmt_string_span,
-                    ),
-                )))
-            }
-            RecognizedCallForm::PrintfFile => {
-                let mut mac = refactor_format::build_format_macro(
-                    self,
-                    "xj_cio::cfprintf",
-                    "xj_cio::cfprintf",
-                    &args[1..],
-                    &cargs[1..],
-                    None,
-                    None,
-                );
-                let stream = &args[0];
-                let tokens = mac.tokens;
-                mac.tokens = quote::quote! { #stream, #tokens };
-                Ok(WithStmts::new_val(mk().mac_expr(mac)))
-            }
-            RecognizedCallForm::PrintfS {
-                fmt_string_idx,
-                opt_size,
-                dest,
-            } => {
-                let fmt_string_span = self.ast_context.display_loc(
-                    &self
-                        .ast_context
-                        .index_unwrap_parens(cargs[fmt_string_idx])
-                        .loc,
-                );
-                let mut mac = refactor_format::build_format_macro(
-                    self,
-                    "xj_cfmt::cwrite",
-                    "xj_cfmt::cwrite",
-                    &args[fmt_string_idx..],
-                    &cargs[fmt_string_idx..],
-                    None,
-                    fmt_string_span,
-                );
-                let tokens = mac.tokens;
-                mac.tokens = quote::quote! { &mut output, #tokens };
-                let rendered = mk().mac_expr(mac);
-                let formatted_string = Box::new(syn::parse_quote! {
-                    { let mut output = Vec::new(); #rendered; output }
-                });
-                let size_expr = if let Some(size_expr) = opt_size {
-                    mk().call_expr(mk().path_expr(vec!["Some"]), vec![size_expr])
-                } else {
-                    mk().path_expr(vec!["None"])
-                };
-
-                self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once("fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: Vec<u8>) -> ::core::ffi::c_int {
-                        let count = ::core::ffi::c_int::try_from(val.len()).unwrap_or(-1);
-                        if lim == Some(0) { return count; }
-                        let bytes = val.as_slice();
-                        // We copy at most lim-1 bytes, to leave room for a NUL terminator.
-                        let to_copy = if let Some(lim) = lim { std::cmp::min(lim - 1, bytes.len()) } else { bytes.len() };
-                        dest.clear();
-                        dest.extend_from_slice(&bytes[..to_copy]);
-                        count
-                    }",
-                );
-            });
-
-                Ok(WithStmts::new_val(mk().call_expr(
-                    mk().path_expr(vec!["xj_sprintf_Vec_u8"]),
-                    vec![mk().mutbl().borrow_expr(dest), size_expr, formatted_string],
-                )))
-            }
             RecognizedCallForm::RetargetedCallee(func) => mk_call_with(func, args),
             RecognizedCallForm::OtherCall => mk_call_with(func, args),
         }
@@ -1176,11 +1001,20 @@ impl Translation<'_> {
     #[allow(clippy::borrowed_box)]
     pub fn call_form_cases_preconversion(
         &self,
+        callee: Option<CDeclId>,
         call_type_id: CTypeId,
         ctx: ExprContext,
         func: &Box<Expr>,
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        // Stdio optimizations share the declaration registry with normal calls.
+        if ["fputs", "fputc", "putchar", "fgets"]
+            .iter()
+            .any(|name| tenjin::expr_is_ident(func, name))
+            && !callee.is_some_and(|id| self.cio_replacements.functions.contains_key(&id))
+        {
+            return Ok(None);
+        }
         if let Some(path) = tenjin::expr_get_path(func) {
             if path.segments.len() == 1
                 && self
@@ -1188,6 +1022,10 @@ impl Translation<'_> {
                     .functions
                     .values()
                     .any(|name| path.is_ident(name))
+                && !matches!(
+                    path.segments[0].ident.to_string().as_str(),
+                    "putchar" | "fputc" | "fputs"
+                )
             {
                 return Ok(None);
             }
@@ -1717,19 +1555,9 @@ impl Translation<'_> {
                     .is_some_and(|g| type_is_string(&g.parsed))
                 {
                     let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
-                        self,
-                        "%s".to_string(),
-                        false,
-                        "xj_cio::cprintf",
-                        "xj_cio::cprintf",
-                        &[expr.to_expr()],
-                        &[cargs[0]],
-                        None,
-                        None,
-                        self.ast_context
-                            .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
-                    ));
+                    let value = expr.to_expr();
+                    let print_call =
+                        Box::new(syn::parse_quote! { ::xj_cio::printf_safe!(b"%s", #value) });
                     return Ok(Some(WithStmts::new_val(print_call)));
                 }
             }
@@ -1759,19 +1587,8 @@ impl Translation<'_> {
             }
 
             let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
-            let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
-                self,
-                "%c".to_string(),
-                false,
-                "xj_cio::cprintf",
-                "xj_cio::cprintf",
-                &[expr.to_expr()],
-                &[cargs[0]],
-                None,
-                None,
-                self.ast_context
-                    .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
-            ));
+            let value = expr.to_expr();
+            let print_call = Box::new(syn::parse_quote! { ::xj_cio::printf_safe!(b"%c", #value) });
             return Ok(Some(WithStmts::new_val(print_call)));
         }
         Ok(None)
@@ -1790,19 +1607,8 @@ impl Translation<'_> {
             // should be translated to
             // print!("{}", FOO)
             let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
-            let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
-                self,
-                "%c".to_string(),
-                false,
-                "xj_cio::cprintf",
-                "xj_cio::cprintf",
-                &[expr.to_expr()],
-                &[cargs[0]],
-                None,
-                None,
-                self.ast_context
-                    .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
-            ));
+            let value = expr.to_expr();
+            let print_call = Box::new(syn::parse_quote! { ::xj_cio::printf_safe!(b"%c", #value) });
             return Ok(Some(WithStmts::new_val(print_call)));
         }
         Ok(None)

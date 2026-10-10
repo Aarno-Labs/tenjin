@@ -49,10 +49,10 @@ pub unsafe extern "C" fn test_bitfields() {
     };
     h.set_version(5 as ::core::ffi::c_uchar);
     h.set_sequence(513 as ::core::ffi::c_ushort);
-    ::xj_cio::cprintf!(
-        b"version={:} sequence={:}\n",
-        h.version() as ::core::ffi::c_int as core::ffi::c_uint,
-        h.sequence() as ::core::ffi::c_int as core::ffi::c_uint
+    printf(
+        b"version=%u sequence=%u\n\0".as_ptr(),
+        h.version() as ::core::ffi::c_int,
+        h.sequence() as ::core::ffi::c_int,
     );
     let mut s: SingleRawIdent = {
         let mut init = SingleRawIdent { r#as: [0; 1] };

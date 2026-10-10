@@ -263,9 +263,7 @@ impl ExternCrate {
             XjZstr => {
                 ExternCrateDetails::external("xj_zstr", "0.1", false).with_features(vec!["cfmt"])
             }
-            XjCio => {
-                ExternCrateDetails::external("xj_cio", "0.1", false).with_features(vec!["cfmt"])
-            }
+            XjCio => ExternCrateDetails::external("xj_cio", "0.1", false),
             XjCfmt => ExternCrateDetails::external("xj_cfmt", "0.1", false),
             LibzRsSys => ExternCrateDetails::external("libz-rs-sys", "0.6.8", false),
             Libbz2RsSys => ExternCrateDetails::external("libbz2-rs-sys", "0.2.5", false),
@@ -444,31 +442,51 @@ pub fn transpile(mut tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&
         .filter(|path| !path.starts_with("/c2rust/link/"))
         .collect();
     let mut prepared_inputs = HashMap::new();
-    if inputs.len() > 1
-        && tcfg.guidance_json.get("use_libc").and_then(|v| v.as_bool()) != Some(false)
-    {
-        let mut fallback = false;
-        for input in inputs {
-            let prepared = prepare_translation(&tcfg, &input, cc_db, &clang_args);
-            match &prepared {
-                Ok(prepared) => {
+    let check_stat = inputs.len() > 1
+        && tcfg.guidance_json.get("use_libc").and_then(|v| v.as_bool()) != Some(false);
+    let mut fallback = false;
+    for input in inputs {
+        let prepared = prepare_translation(&tcfg, &input, cc_db, &clang_args);
+        match &prepared {
+            Ok(prepared) => {
+                if check_stat {
                     let mut ast = prepared.ast.clone();
                     ast.bypass_typedefs();
                     ast.prune_unwanted_items(tcfg.preserve_unused_functions);
                     ast.bubble_expr_types();
                     fallback |= translator::libc_stat_requires_fallback(ast, &tcfg, &input);
                 }
-                Err(()) => fallback = true,
             }
-            prepared_inputs.insert(input, prepared);
+            Err(()) => fallback = true,
         }
-        if fallback {
-            warn!("Keeping generated sys/stat.h bindings for this batch: a translation unit cannot use libc::stat");
-            if !tcfg.guidance_json.is_object() {
-                tcfg.guidance_json = serde_json::json!({});
-            }
-            tcfg.guidance_json["use_libc"] = serde_json::json!(false);
+        prepared_inputs.insert(input, prepared);
+    }
+    // C external linkage binds a project definition across translation units.
+    // Establish these bindings before any caller can replace its system prototype.
+    let project_stdio: std::collections::HashSet<_> = prepared_inputs
+        .values()
+        .filter_map(|p| p.as_ref().ok())
+        .flat_map(|p| translator::stdio_project_definitions(&p.ast, &tcfg))
+        .collect();
+    if !project_stdio.is_empty() {
+        if !tcfg.guidance_json.is_object() {
+            tcfg.guidance_json = serde_json::json!({});
         }
+        let mut names: Vec<_> = project_stdio.into_iter().collect();
+        names.sort();
+        tcfg.guidance_json["xj_stdio_project_definitions"] = serde_json::json!(names);
+    }
+    for prepared in prepared_inputs.values().filter_map(|p| p.as_ref().ok()) {
+        if let Some(message) = translator::stdio_discovery_error(&prepared.ast, &tcfg) {
+            panic!("{message}");
+        }
+    }
+    if check_stat && fallback {
+        warn!("Keeping generated sys/stat.h bindings for this batch: a translation unit cannot use libc::stat");
+        if !tcfg.guidance_json.is_object() {
+            tcfg.guidance_json = serde_json::json!({});
+        }
+        tcfg.guidance_json["use_libc"] = serde_json::json!(false);
     }
 
     let mut top_level_ccfg = None;

@@ -518,8 +518,6 @@ Either disable refolding or modify the source and build to use regular `#include
   in `build.rs` and the latter give rise to inter-crate dependencies
   in `Cargo.toml`.
 
-- Tenjin [doesn't yet handle calls to printf/puts which need to return a count](https://github.com/Aarno-Labs/tenjin/issues/264)
-
 - Tenjin doesn't yet handle codebases which build multiple distinct
   libraries with the same initial stem (e.g. `libfoo.so.1.2.3` and also `libfoo.so.1.7.9`, which share the initial stem `libfoo`) at the same time.
 

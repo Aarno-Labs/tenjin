@@ -82,7 +82,7 @@ mod xj_cio_scanargs {
                         OutArg::Double(ap.arg::<*mut f64>())
                     }
                 },
-                b's' | b'c' | b'[' => OutArg::Str(unsafe { ap.arg::<*mut core::ffi::c_char>() }),
+                b's' | b'c' | b'[' => OutArg::Str(unsafe { ap.arg::<*mut core::ffi::c_char>().cast() }),
                 _ => return out,
             });
         }

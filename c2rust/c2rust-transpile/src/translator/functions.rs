@@ -602,7 +602,12 @@ impl<'c> Translation<'c> {
             // We want to decay refs only when function is variadic
             ctx.decay_ref = DecayRef::from(is_variadic);
 
+            let callee = match self.ast_context[self.c_strip_implicit_casts(func_id)].kind {
+                CExprKind::DeclRef(_, id, _) => Some(id),
+                _ => None,
+            };
             self.convert_call(
+                callee,
                 call_expr_ty,
                 func,
                 ctx,

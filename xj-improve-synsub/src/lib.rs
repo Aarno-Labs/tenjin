@@ -850,6 +850,16 @@ impl VisitMut for RewriteVisitor<'_> {
                     | "cemit"
                     | "cwrite"
                     | "csnprintf"
+                    | "printf"
+                    | "fprintf"
+                    | "sprintf"
+                    | "snprintf"
+                    | "printf_safe"
+                    | "fprintf_safe"
+                    | "sprintf_safe"
+                    | "snprintf_safe"
+                    | "sprintf_unchecked"
+                    | "snprintf_unchecked"
             )
         });
         if !is_format_macro {
@@ -860,6 +870,29 @@ impl VisitMut for RewriteVisitor<'_> {
             return;
         };
         let before = args.to_token_stream().to_string();
+        let path = &mac.path;
+        if path.segments.len() == 2
+            && matches!(
+                path.segments[0].ident.to_string().as_str(),
+                "xj_cio" | "xj_cfmt"
+            )
+            && matches!(
+                path.segments[1].ident.to_string().as_str(),
+                "snprintf" | "sprintf"
+            )
+        {
+            // Treat the whole invocation as a call while rewriting, so a
+            // bounded destination can change its macro name as well as its args.
+            let mut call: syn::Expr = syn::parse_quote! { #path(#args) };
+            self.visit_expr_mut(&mut call);
+            if let syn::Expr::Call(call) = call {
+                if let syn::Expr::Path(path) = *call.func {
+                    mac.path = path.path;
+                    mac.tokens = call.args.to_token_stream();
+                    return;
+                }
+            }
+        }
         for arg in args.iter_mut() {
             self.visit_expr_mut(arg);
         }

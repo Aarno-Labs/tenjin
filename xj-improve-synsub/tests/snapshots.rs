@@ -1856,3 +1856,34 @@ fn cio_bulk_io_preserves_item_counts_and_zero_sizes() {
     assert!(output.contains("fread(raw, size, n, f)"), "{output}");
     assert!(rw.deps().contains("xj_cio"));
 }
+
+#[test]
+fn c_format_macros_rewrite_arguments_and_destinations() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_destination);
+    let mut file = syn::parse_file(r#"
+        fn demo(mut out: [u8; 8], raw: *mut u8, s: &ZStr) {
+            unsafe { xj_cio::snprintf!(out.as_mut_ptr(), 4, b"%s", core::ffi::CStr::from_ptr(s.as_ptr())); }
+            unsafe { xj_cio::sprintf!(raw, b"%s", core::ffi::CStr::from_ptr(s.as_ptr())); }
+            xj_cio::printf_safe!(b"%s", unsafe { core::ffi::CStr::from_ptr(s.as_ptr()) });
+        }
+    "#).unwrap();
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+    assert!(
+        output
+            .split_whitespace()
+            .collect::<String>()
+            .contains("snprintf_unchecked!(out,4,b\"%s\",s.as_c_str())"),
+        "{output}"
+    );
+    assert!(
+        output.contains("sprintf!(raw, b\"%s\", s.as_c_str())"),
+        "{output}"
+    );
+    assert!(
+        output.contains("printf_safe!(b\"%s\", unsafe { s.as_c_str() })"),
+        "{output}"
+    );
+}

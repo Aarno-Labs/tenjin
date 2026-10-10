@@ -81,6 +81,16 @@ PRINT_MACRO_REWRITES = (
     ("print!($$$ARGS)", "xj_astgrep_print($$$ARGS)"),
     ("eprintln!($$$ARGS)", "xj_astgrep_eprintln($$$ARGS)"),
     ("eprint!($$$ARGS)", "xj_astgrep_eprint($$$ARGS)"),
+    ("::xj_cio::printf!($$$ARGS)", "xj_astgrep_printf($$$ARGS)"),
+    ("::xj_cio::fprintf!($$$ARGS)", "xj_astgrep_fprintf($$$ARGS)"),
+    ("::xj_cio::sprintf!($$$ARGS)", "xj_astgrep_sprintf($$$ARGS)"),
+    ("::xj_cio::snprintf!($$$ARGS)", "xj_astgrep_snprintf($$$ARGS)"),
+    ("::xj_cio::printf_safe!($$$ARGS)", "xj_astgrep_printf_safe($$$ARGS)"),
+    ("::xj_cio::fprintf_safe!($$$ARGS)", "xj_astgrep_fprintf_safe($$$ARGS)"),
+    ("::xj_cio::sprintf_safe!($$$ARGS)", "xj_astgrep_sprintf_safe($$$ARGS)"),
+    ("::xj_cio::snprintf_safe!($$$ARGS)", "xj_astgrep_snprintf_safe($$$ARGS)"),
+    ("::xj_cio::sprintf_unchecked!($$$ARGS)", "xj_astgrep_sprintf_unchecked($$$ARGS)"),
+    ("::xj_cio::snprintf_unchecked!($$$ARGS)", "xj_astgrep_snprintf_unchecked($$$ARGS)"),
     ("::xj_cio::cprintf!($$$ARGS)", "xj_astgrep_cprintf($$$ARGS)"),
     ("::xj_cio::ceprintf!($$$ARGS)", "xj_astgrep_ceprintf($$$ARGS)"),
     ("::xj_cio::cfprintf!($$$ARGS)", "xj_astgrep_cfprintf($$$ARGS)"),
@@ -300,20 +310,28 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                 for span in message.get("spans", []):
                     if not span.get("is_primary"):
                         continue
-                    file_name = span.get("file_name")
-                    byte_start = span.get("byte_start")
-                    if file_name is None or byte_start is None:
-                        continue
-                    path = (dir / file_name).resolve()
-                    containing = [
-                        key
-                        for key in remaining
-                        if key[0] == path and key[1] <= int(byte_start) <= key[2]
-                    ]
-                    if containing:
-                        restore.add(
-                            min(containing, key=lambda key: (key[2] - key[1], key[1], key[2]))
-                        )
+                    # Unsafe macro operations can point into the dependency's
+                    # definition. Follow nested expansions to the translated
+                    # invocation before deciding which function needs unsafe.
+                    while span is not None:
+                        file_name = span.get("file_name")
+                        byte_start = span.get("byte_start")
+                        if file_name is not None and byte_start is not None:
+                            path = (dir / file_name).resolve()
+                            containing = [
+                                key
+                                for key in remaining
+                                if key[0] == path and key[1] <= int(byte_start) <= key[2]
+                            ]
+                            if containing:
+                                restore.add(
+                                    min(
+                                        containing,
+                                        key=lambda key: (key[2] - key[1], key[1], key[2]),
+                                    )
+                                )
+                                break
+                        span = (span.get("expansion") or {}).get("span")
 
             if not restore:
                 if not remaining:

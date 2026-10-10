@@ -6,6 +6,17 @@ use std::process::Command;
 
 #[test]
 fn stdio_and_formatting_use_one_byte_exact_backend() {
+    // This larger differential input exercises the translator's recursive AST
+    // traversal beyond the default 2 MiB test-thread stack.
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(stdio_and_formatting_check)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn stdio_and_formatting_check() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("io.c");
     fs::write(
@@ -20,9 +31,18 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
         #include <locale.h>
         #include <wchar.h>
         int fmt, bytes, i, arg, out, length, position, fallback, ap, suppressed, conv;
+        int destination_calls;
         int runtime(FILE *f, const char *fmt, ...) {
             va_list ap; va_start(ap, fmt);
             int n = vfprintf(f, fmt, ap); va_end(ap); return n;
+        }
+        int runtime_buffer(char *xj_cio_plan, size_t n, const char *xj_cio_fmt, ...) {
+            va_list ap; va_start(ap, xj_cio_fmt);
+            int xj_cio_args = vsnprintf((destination_calls++, xj_cio_plan), n, xj_cio_fmt, ap); va_end(ap); return xj_cio_args;
+        }
+        int runtime_unbounded(char *out, const char *fmt, ...) {
+            va_list ap; va_start(ap, fmt);
+            int count = vsprintf(out, fmt, ap); va_end(ap); return count;
         }
         int runtime_scan(FILE *f, const char *fmt, ...) {
             va_list ap; va_start(ap, fmt);
@@ -85,6 +105,25 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
             if (snprintf(out, 5, "%s", "abcdef") != 6) return 8;
             if (out[3] != 'd' || out[4] != 0) return 9;
             if (snprintf(out, 5, "%o", 8) != 2 || out[0] != '1' || out[1] != '0') return 18;
+            char literal[128], dynamic[128];
+            const char *integer_fmt = "%hhd/%hd/%ld/%lld/%jd/%zd/%td";
+            int literal_n = sprintf(literal, "%hhd/%hd/%ld/%lld/%jd/%zd/%td",
+                255, 65535, (long)-7, (long long)-8, (intmax_t)-9, (ssize_t)-10, (ptrdiff_t)-11);
+            int dynamic_n = runtime_unbounded(dynamic, integer_fmt,
+                255, 65535, (long)-7, (long long)-8, (intmax_t)-9, (ssize_t)-10, (ptrdiff_t)-11);
+            if (literal_n != dynamic_n) return 36;
+            for (int j = 0; j <= literal_n; ++j) if (literal[j] != dynamic[j]) return 37;
+            const char *star_fmt = "%*.*s/%%/%#08.4x";
+            literal_n = snprintf(literal, 7, "%*.*s/%%/%#08.4x", -5, 2, "abcdef", 23u);
+            dynamic_n = runtime_buffer(dynamic, 7, star_fmt, -5, 2, "abcdef", 23u);
+            if (literal_n != dynamic_n || literal[6] != 0 || dynamic[6] != 0) return 38;
+            for (int j = 0; j < 7; ++j) if (literal[j] != dynamic[j]) return 39;
+            signed char n1 = -1; short n2 = -1; long n3 = -1; long long n4 = -1;
+            intmax_t n5 = -1; ssize_t n6 = -1; ptrdiff_t n7 = -1;
+            const char *count_fmt = "abc%hhn%hn%ln%lln%jn%zn%tn";
+            if (runtime_buffer(dynamic, sizeof dynamic, count_fmt, &n1, &n2, &n3, &n4, &n5, &n6, &n7) != 3) return 40;
+            if (n1 != 3 || n2 != 3 || n3 != 3 || n4 != 3 || n5 != 3 || n6 != 3 || n7 != 3) return 41;
+            if (runtime_buffer(dynamic, 1, "%") != -1 || destination_calls != 3) return 42;
             const char *fmt = "%s:%d\n";
             if (printf(fmt, "runtime", 3 + 4) != 10) return 10;
             if (printf("\xff%5.3s|%c\n", "\xc3\xa9\xf0\x9f\x91\xa8", 255) != 9) return 11;
@@ -97,21 +136,32 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
     "#,
     )
     .unwrap();
+    let original = dir.path().join("original");
+    assert!(Command::new("clang")
+        .args(["-fno-builtin", "-funsigned-char"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&original)
+        .status()
+        .unwrap()
+        .success());
+    let reference = Command::new(&original).output().unwrap();
+    assert!(reference.status.success());
     let mut cfg = common::config(Edition2024, serde_json::json!({"use_libc": false}));
     cfg.output_dir = Some(dir.path().join("translated"));
     let (_commands_dir, commands) = c2rust_transpile::create_temp_compile_commands(&[source]);
     c2rust_transpile::transpile(cfg, &commands, &[]);
     let rust = fs::read_to_string(dir.path().join("translated/src/io.rs")).unwrap();
     assert!(rust.contains("::xj_cio::FILE_ptr"), "{rust}");
-    assert!(rust.contains("xj_cio::cfprintf!"), "{rust}");
-    assert!(rust.contains("xj_cfmt::csnprintf!"), "{rust}");
+    assert!(rust.contains("xj_cio::fprintf!"), "{rust}");
+    assert!(rust.contains("xj_cio::snprintf!"), "{rust}");
     assert!(!rust.contains("pub struct _IO_FILE"), "{rust}");
     assert!(!rust.contains("to_str().unwrap()"), "{rust}");
 
     let package = dir.path().join("runtime");
     fs::create_dir_all(package.join("src")).unwrap();
     fs::write(package.join("Cargo.toml"),
-        "[package]\nname = \"cio-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {path = \"/home/brk/xj-cio/xj_cio\", features = [\"cfmt\"]}\nxj_cfmt = {path = \"/home/brk/xj_cfmt\"}\nlibc = \"0.2\"\n").unwrap();
+        "[package]\nname = \"cio-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {path = \"/home/brk/xj-cio/xj_cio\"}\nxj_cfmt = {path = \"/home/brk/xj_cfmt\"}\nlibc = \"0.2\"\n").unwrap();
     fs::write(package.join("src/main.rs"), rust).unwrap();
     let output = Command::new("cargo")
         .env(
@@ -129,6 +179,7 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert_eq!(output.stdout, reference.stdout);
     assert_eq!(
         output.stdout,
         b"runtime:7\n\xff  \xc3\xa9\xf0|\xff\nputs\nwritetail\npartial"
@@ -139,18 +190,203 @@ fn stdio_and_formatting_use_one_byte_exact_backend() {
 fn formatting_guided_zstr_uses_byte_views() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("guided.c");
-    fs::write(&source, "#include <stdio.h>\nvoid demo(const char *s, char *out, size_t n) { printf(\"%5.3s\", s); snprintf(out, n, \"%s\", s); }").unwrap();
+    fs::write(&source, "#include <stdio.h>\n#include <stdarg.h>\nvoid demo(const char *s, char *out, size_t n) { printf(\"%5.3s\", s); snprintf(out, n, \"%s\", s); }\nvoid demo_v(char *out, size_t n, const char *fmt, va_list ap) { vsnprintf(out, n, fmt, ap); }").unwrap();
     let mut cfg = common::config(
         Edition2024,
         serde_json::json!({"vars_of_type": {
-            "&ZStr": "demo:s", "&mut ZStr": "demo:out"
+            "&ZStr": ["demo:s", "demo_v:fmt"], "&mut ZStr": ["demo:out", "demo_v:out"]
         }}),
     );
     cfg.output_dir = Some(dir.path().join("translated"));
     let (_commands_dir, commands) = c2rust_transpile::create_temp_compile_commands(&[source]);
     c2rust_transpile::transpile(cfg, &commands, &[]);
     let rust = fs::read_to_string(dir.path().join("translated/src/guided.rs")).unwrap();
-    assert!(rust.contains("::xj_cio::cprintf!"), "{rust}");
-    assert!(rust.contains("out.limit("), "{rust}");
+    assert!(rust.contains("::xj_cio::printf_safe!"), "{rust}");
+    assert!(rust.contains("::xj_cio::snprintf_safe!(out,"), "{rust}");
+    assert!(rust.contains("::xj_cio::snprintf_plan_("), "{rust}");
     assert!(!rust.contains("to_string_lossy"), "{rust}");
+    fs::write(dir.path().join("translated/Cargo.toml"),
+        "[package]\nname = \"cio-guided-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[lib]\npath = \"src/guided.rs\"\n[dependencies]\nxj_cio = \"0.1.0\"\nxj_zstr = {version = \"0.1.0\", features = [\"cfmt\"]}\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
+    let output = Command::new("cargo")
+        .env(
+            "CARGO_TARGET_DIR",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/cio-runtime-tests"),
+        )
+        .current_dir(dir.path().join("translated"))
+        .args([Edition2024.toolchain(), "check", "--offline", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn translated_text(dir: &std::path::Path, source: &str, guidance: serde_json::Value) -> String {
+    let path = dir.join("case.c");
+    fs::write(&path, source).unwrap();
+    let mut cfg = common::config(Edition2024, guidance);
+    cfg.output_dir = Some(dir.join("translated"));
+    let (_commands_dir, commands) = c2rust_transpile::create_temp_compile_commands(&[path]);
+    c2rust_transpile::transpile(cfg, &commands, &[]);
+    fs::read_to_string(dir.join("translated/src/case.rs")).unwrap()
+}
+
+#[test]
+fn project_stdio_definitions_keep_their_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let rust = translated_text(
+        dir.path(),
+        r#"
+        #include <stdio.h>
+        int printf(const char *fmt, ...) { return 101; }
+        int fprintf(FILE *f, const char *fmt, ...) { return 102; }
+        int sprintf(char *out, const char *fmt, ...) { return 103; }
+        int snprintf(char *out, size_t n, const char *fmt, ...) { return 104; }
+        int puts(const char *s) { return 105; }
+        int main(void) {
+            char out[10]; const char *fmt = "%d";
+            if (printf("%d", 1) != 101 || printf(fmt, 1) != 101) return 1;
+            if (fprintf(stdout, "%d", 1) != 102 || fprintf(stdout, fmt, 1) != 102) return 2;
+            if (sprintf(out, "%d", 1) != 103 || sprintf(out, fmt, 1) != 103) return 3;
+            if (snprintf(out, 10, "%d", 1) != 104 || snprintf(out, 10, fmt, 1) != 104) return 4;
+            if (puts("s") != 105) return 5;
+            return 0;
+        }
+    "#,
+        serde_json::json!({}),
+    );
+    for name in ["printf", "fprintf", "sprintf", "snprintf", "puts"] {
+        assert!(rust.contains(&format!("fn {name}(")), "{rust}");
+        assert!(!rust.contains(&format!("xj_cio::{name}!")), "{rust}");
+        assert!(!rust.contains(&format!("xj_cio::{name}_safe!")), "{rust}");
+    }
+    // Other stdio declarations remain on the established stream backend.
+    assert!(rust.contains("xj_cio::stdout()"), "{rust}");
+}
+
+#[test]
+fn alternate_headers_require_explicit_trust_for_both_format_kinds() {
+    let dir = tempfile::tempdir().unwrap();
+    let header = dir.path().join("stdio.h");
+    fs::write(&header, "int printf(const char *, ...);\n").unwrap();
+    let source =
+        "#include \"stdio.h\"\nvoid demo(const char *f) { printf(\"%d\", 42); printf(f, 42); }";
+    // Failure occurs before declarations or output are replaced.
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        translated_text(dir.path(), source, serde_json::json!({"use_libc": false}));
+    }))
+    .unwrap_err();
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap();
+    assert!(message.contains("stdio_header_roots"), "{message}");
+    assert!(!dir.path().join("translated/src/case.rs").exists());
+    let rust = translated_text(
+        dir.path(),
+        source,
+        serde_json::json!({"stdio_header_roots": [dir.path().to_str().unwrap()]}),
+    );
+    assert!(rust.contains("xj_cio::printf_safe!(b\"%d\", 42"), "{rust}");
+    assert!(rust.contains("xj_cio::printf!("), "{rust}");
+    assert!(!rust.contains("extern \"C\" {\n    fn printf"), "{rust}");
+}
+
+#[test]
+fn literal_formats_preserve_bytes_and_extra_argument_evaluation() {
+    let dir = tempfile::tempdir().unwrap();
+    let rust = translated_text(
+        dir.path(),
+        r#"
+        #include <stdio.h>
+        int tick(void) { return 7; }
+        void demo(char *out, const char *path) {
+            sprintf(out, "%s/00Tree.html", path);
+            printf("%d\0ignored %q", tick(), tick());
+            printf("%d", (long)123);
+        }
+    "#,
+        serde_json::json!({}),
+    );
+    assert!(rust.contains("xj_cio::sprintf!"), "{rust}");
+    assert!(rust.contains("b\"%s/00Tree.html\""), "{rust}");
+    assert!(!rust.contains("xj_cio_ptr_arg"), "{rust}");
+    assert!(!rust.contains("ignored"), "{rust}");
+    assert!(rust.contains("tick(), tick()"), "{rust}");
+    assert!(rust.contains("as ::core::ffi::c_int"), "{rust}");
+}
+
+#[test]
+fn printing_keeps_unsafe_operations_visible_in_function_bodies() {
+    let dir = tempfile::tempdir().unwrap();
+    let rust = translated_text(
+        dir.path(),
+        r#"
+        #include <stdio.h>
+        #include <stdarg.h>
+        void direct(FILE *f, char *out, const char *s, const char *fmt, int *n) {
+            printf("%s", s);
+            fprintf(f, "%s", s);
+            sprintf(out, "%s", s);
+            snprintf(out, 8, "%s", s);
+            printf(fmt, s);
+            printf("%n", n);
+        }
+        void variadic(FILE *f, char *out, const char *fmt, va_list ap) {
+            vprintf(fmt, ap);
+            vfprintf(f, fmt, ap);
+            vsprintf(out, fmt, ap);
+            vsnprintf(out, 8, fmt, ap);
+        }
+        "#,
+        serde_json::json!({}),
+    );
+    struct UnsafeBlocks(usize);
+    impl syn::visit_mut::VisitMut for UnsafeBlocks {
+        fn visit_expr_unsafe_mut(&mut self, _: &mut syn::ExprUnsafe) {
+            self.0 += 1;
+        }
+    }
+    let mut file = syn::parse_file(&rust).unwrap();
+    let mut blocks = UnsafeBlocks(0);
+    syn::visit_mut::VisitMut::visit_file_mut(&mut blocks, &mut file);
+    assert_eq!(blocks.0, 0, "{rust}");
+    for name in ["direct", "variadic"] {
+        let function = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+                _ => None,
+            })
+            .unwrap();
+        assert!(function.sig.unsafety.is_some(), "{rust}");
+    }
+}
+
+#[test]
+fn project_stdio_bindings_apply_across_translation_units() {
+    let dir = tempfile::tempdir().unwrap();
+    let implementation = dir.path().join("implementation.c");
+    let caller = dir.path().join("caller.c");
+    fs::write(
+        &implementation,
+        "#include <stdio.h>\nint printf(const char *f, ...) { return 17; }\n",
+    )
+    .unwrap();
+    fs::write(&caller, "#include <stdio.h>\nint main(void) { const char *f = \"%d\"; return printf(\"%d\", 1) + printf(f, 1) - 34; }\n").unwrap();
+    let mut cfg = common::config(Edition2024, serde_json::json!({}));
+    cfg.output_dir = Some(dir.path().join("translated"));
+    let (_commands_dir, commands) =
+        c2rust_transpile::create_temp_compile_commands(&[implementation, caller]);
+    c2rust_transpile::transpile(cfg, &commands, &[]);
+    let caller = fs::read_to_string(dir.path().join("translated/src/caller.rs")).unwrap();
+    assert!(!caller.contains("xj_cio::printf"), "{caller}");
+    assert!(caller.contains("printf("), "{caller}");
+    let implementation =
+        fs::read_to_string(dir.path().join("translated/src/implementation.rs")).unwrap();
+    assert!(implementation.contains("fn printf("), "{implementation}");
 }

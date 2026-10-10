@@ -3176,14 +3176,9 @@ pub fn is_path_exactly_1(path: &Path, a: &str) -> bool {
     }
 }
 
-// fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
-//     if path.segments.len() == 2 {
-//         path.segments[0].ident.to_string().as_str() == a
-//             && path.segments[1].ident.to_string().as_str() == b
-//     } else {
-//         false
-//     }
-// }
+fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
+    path.segments.len() == 2 && path.segments[0].ident == a && path.segments[1].ident == b
+}
 
 fn is_path_exactly_3(path: &Path, a: &str, b: &str, c: &str) -> bool {
     if path.segments.len() == 3 {
@@ -3257,10 +3252,24 @@ impl Rewriter {
         let Expr::Path(func) = &*call.func else {
             return None;
         };
-        if !func.path.is_ident("xj_cstr_from_ptr") || call.args.len() != 1 {
+        let c_str_constructor = func.path.segments.len() == 4
+            && matches!(
+                func.path.segments[0].ident.to_string().as_str(),
+                "core" | "std"
+            )
+            && func.path.segments[1].ident == "ffi"
+            && func.path.segments[2].ident == "CStr"
+            && func.path.segments[3].ident == "from_ptr";
+        if !(func.path.is_ident("xj_cstr_from_ptr") || c_str_constructor) || call.args.len() != 1 {
             return None;
         }
-        let place = zstr_place_of_c_str_arg(&call.args[0], symbols)?;
+        let mut argument = expr_strip_parens(expr_strip_casts(&call.args[0]));
+        if let Expr::MethodCall(method) = argument {
+            if method.method == "as_ptr" && method.args.is_empty() {
+                argument = expr_strip_parens(expr_strip_casts(&method.receiver));
+            }
+        }
+        let place = zstr_place_of_c_str_arg(argument, symbols)?;
         Some((syn::parse_quote! { #place.as_c_str() }, Depth::Limited(0)))
     }
 
@@ -3350,6 +3359,41 @@ impl Rewriter {
         let Expr::Path(func) = &*call.func else {
             return None;
         };
+        let format_operation = if func.path.is_ident("xj_astgrep_snprintf")
+            || is_path_exactly_2(&func.path, "xj_cio", "snprintf")
+            || is_path_exactly_2(&func.path, "xj_cfmt", "snprintf")
+        {
+            Some("snprintf")
+        } else if func.path.is_ident("xj_astgrep_sprintf")
+            || is_path_exactly_2(&func.path, "xj_cio", "sprintf")
+            || is_path_exactly_2(&func.path, "xj_cfmt", "sprintf")
+        {
+            Some("sprintf")
+        } else {
+            None
+        };
+        if let Some(operation) = format_operation {
+            let minimum = if operation == "snprintf" { 3 } else { 2 };
+            if call.args.len() < minimum {
+                return None;
+            }
+            let buffer = extract_slice_ptr_base(expr_strip_casts(&call.args[0]), symbols)?;
+            if !is_u8_type_of_buffer(buffer, symbols) {
+                return None;
+            }
+            let mut call = call.clone();
+            call.args[0] = syn::parse_quote! { #buffer };
+            let mut path = func.path.clone();
+            let name = if path.segments.len() == 1 {
+                format!("xj_astgrep_{operation}_unchecked")
+            } else {
+                format!("{operation}_unchecked")
+            };
+            path.segments.last_mut()?.ident =
+                syn::Ident::new(&name, proc_macro2::Span::call_site());
+            call.func = Box::new(syn::parse_quote! { #path });
+            return Some((Expr::Call(call), Depth::Unlimited));
+        }
         if !(func.path.is_ident("xj_cfmt_dest")
             || is_path_exactly_3(&func.path, "core", "slice", "from_raw_parts_mut")
             || is_path_exactly_3(&func.path, "std", "slice", "from_raw_parts_mut"))

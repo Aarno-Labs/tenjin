@@ -1035,7 +1035,9 @@ def test_tractor_b1_synthetic_028_app(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_synthetic_029_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/029_strcspn"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 2
+    # The fgets adapter writes through a caller-provided pointer and must expose
+    # that unsafe contract, alongside driver and main_0.
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 3
 
 
 @pytest.mark.slow

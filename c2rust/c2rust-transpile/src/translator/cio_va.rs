@@ -1,90 +1,38 @@
-// Keep helper bindings separate from the translated C globals.
+// Toolchain-dependent va_list access; syntax and requirements live in the library.
 mod xj_cio_varargs {
     pub(super) unsafe fn xj_cio_vargs(
-        fmt: &core::ffi::CStr,
+        plan: &xj_cio::cformat::Plan<'_>,
         mut ap: ::core::ffi::VaList,
-    ) -> Vec<xj_cio::Arg> {
-        use xj_cio::Arg;
-        let bytes = fmt.to_bytes();
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] != b'%' {
-                i += 1;
-                continue;
-            }
-            i += 1;
-            if bytes.get(i) == Some(&b'%') {
-                i += 1;
-                continue;
-            }
-            while bytes.get(i).is_some_and(|b| b"-+ #0'".contains(b)) {
-                i += 1;
-            }
-            if bytes.get(i) == Some(&b'*') {
-                out.push(Arg::I(unsafe { ap.arg::<core::ffi::c_int>() } as i64));
-                i += 1;
-            } else {
-                while bytes.get(i).is_some_and(u8::is_ascii_digit) {
-                    i += 1;
-                }
-            }
-            if bytes.get(i) == Some(&b'.') {
-                i += 1;
-                if bytes.get(i) == Some(&b'*') {
-                    out.push(Arg::I(unsafe { ap.arg::<core::ffi::c_int>() } as i64));
-                    i += 1;
-                } else {
-                    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
-                        i += 1;
-                    }
-                }
-            }
-            let mut length = 0;
-            if bytes.get(i) == Some(&b'l') {
-                length = 1;
-                i += 1;
-                if bytes.get(i) == Some(&b'l') {
-                    length = 2;
-                    i += 1;
-                }
-            } else if bytes.get(i).is_some_and(|b| b"jzt".contains(b)) {
-                length = 2;
-                i += 1;
-            } else {
-                while bytes.get(i) == Some(&b'h') {
-                    i += 1;
-                }
-            }
-            let Some(&conv) = bytes.get(i) else {
-                break;
-            };
-            i += 1;
-            out.push(match conv {
-                b'd' | b'i' => Arg::I(unsafe {
-                    match length {
-                        0 => ap.arg::<core::ffi::c_int>() as i64,
-                        1 => ap.arg::<core::ffi::c_long>() as i64,
-                        _ => ap.arg::<core::ffi::c_longlong>() as i64,
-                    }
+    ) -> Vec<xj_cio::Arg<'static>> {
+        use xj_cio::{Arg, cformat::{Length, Requirement}};
+        plan.requirements.iter().map(|r| {
+            match r {
+                Requirement::Int => Arg::I(ap.arg::<core::ffi::c_int>() as i64),
+                Requirement::UInt | Requirement::WideChar => Arg::U(ap.arg::<core::ffi::c_uint>() as u64),
+                Requirement::Long => Arg::I(ap.arg::<core::ffi::c_long>() as i64),
+                Requirement::ULong => Arg::U(ap.arg::<core::ffi::c_ulong>() as u64),
+                Requirement::LongLong => Arg::I(ap.arg::<core::ffi::c_longlong>() as i64),
+                Requirement::ULongLong => Arg::U(ap.arg::<core::ffi::c_ulonglong>() as u64),
+                Requirement::IntMax => Arg::I(ap.arg::<xj_cio::__libc::intmax_t>() as i64),
+                Requirement::UIntMax => Arg::U(ap.arg::<xj_cio::__libc::uintmax_t>() as u64),
+                Requirement::SignedSize => Arg::I(ap.arg::<xj_cio::__libc::ssize_t>() as i64),
+                Requirement::PtrDiff => Arg::I(ap.arg::<xj_cio::__libc::ptrdiff_t>() as i64),
+                Requirement::Size | Requirement::UnsignedPtrDiff => Arg::U(ap.arg::<usize>() as u64),
+                Requirement::Double => Arg::F(ap.arg::<f64>()),
+                Requirement::String => Arg::Raw(ap.arg::<*const core::ffi::c_char>().cast_mut().cast()),
+                Requirement::Pointer => Arg::Raw(ap.arg::<*mut core::ffi::c_void>()),
+                Requirement::Count(length) => Arg::Raw(match length {
+                    Length::Hh => ap.arg::<*mut i8>().cast(),
+                    Length::H => ap.arg::<*mut core::ffi::c_short>().cast(),
+                    Length::None => ap.arg::<*mut core::ffi::c_int>().cast(),
+                    Length::L => ap.arg::<*mut core::ffi::c_long>().cast(),
+                    Length::Ll => ap.arg::<*mut core::ffi::c_longlong>().cast(),
+                    Length::J => ap.arg::<*mut xj_cio::__libc::intmax_t>().cast(),
+                    Length::Z => ap.arg::<*mut xj_cio::__libc::ssize_t>().cast(),
+                    Length::T => ap.arg::<*mut xj_cio::__libc::ptrdiff_t>().cast(),
+                    Length::BigL => unreachable!(),
                 }),
-                b'u' | b'o' | b'x' | b'X' => Arg::U(unsafe {
-                    match length {
-                        0 => ap.arg::<core::ffi::c_uint>() as u64,
-                        1 => ap.arg::<core::ffi::c_ulong>() as u64,
-                        _ => ap.arg::<core::ffi::c_ulonglong>() as u64,
-                    }
-                }),
-                b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => {
-                    Arg::F(unsafe { ap.arg::<f64>() })
-                }
-                b's' => Arg::S(unsafe { ap.arg::<*const core::ffi::c_char>() }),
-                b'c' => Arg::C(unsafe { ap.arg::<core::ffi::c_int>() }),
-                b'p' => Arg::P(unsafe { ap.arg::<*const core::ffi::c_void>() }),
-                b'n' => Arg::OutN(unsafe { ap.arg::<*mut core::ffi::c_int>() }),
-                _ => return out,
-            });
-        }
-        out
+            }
+        }).collect()
     }
 }
