@@ -35,6 +35,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_cio_buffers);
     rw.add_expr_rewrite(Rewriter::rewrite_cio_destination);
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
+    rw.add_macro_rewrite(Rewriter::rewrite_c_printf_safe);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
     rw.add_expr_rewrite(Rewriter::rewrite_null_pointer_offsetof);

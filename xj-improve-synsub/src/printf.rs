@@ -1,0 +1,483 @@
+//! Recover bounded string arguments before choosing a safe C formatting macro.
+
+use quote::ToTokens;
+use syn::{Expr, Type, parse::Parser, parse_quote};
+use xj_cfmt_core::{Plan, Requirement};
+
+use crate::{Rewriter, SymbolTable};
+
+impl Rewriter {
+    pub fn rewrite_c_printf_safe(
+        &self,
+        symbols: &SymbolTable,
+        mac: &syn::Macro,
+    ) -> Option<syn::Macro> {
+        let path = &mac.path;
+        if path.segments.len() != 2 {
+            return None;
+        }
+        let namespace = path.segments[0].ident.to_string();
+        if !matches!(namespace.as_str(), "xj_cio" | "xj_cfmt") {
+            return None;
+        }
+        let name = path.segments[1].ident.to_string();
+        let operation = name
+            .strip_suffix("_unchecked")
+            .or_else(|| name.strip_suffix("_safe"))
+            .unwrap_or(&name);
+        let format_index = match operation {
+            "printf" if namespace == "xj_cio" => 0,
+            "fprintf" if namespace == "xj_cio" => 1,
+            "sprintf" => 1,
+            "snprintf" => 2,
+            _ => return None,
+        };
+        let parser = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated;
+        let mut args = parser.parse2(mac.tokens.clone()).ok()?;
+        let bytes = literal_bytes(args.get(format_index)?)?;
+        let plan = Plan::new(&bytes).ok()?;
+        // Pointer identity and count stores cannot be expressed by SafeAdapt.
+        if plan
+            .requirements
+            .iter()
+            .any(|r| matches!(r, Requirement::Pointer | Requirement::Count(_)))
+            || args.len() < format_index + 1 + plan.requirements.len()
+        {
+            return None;
+        }
+        if matches!(operation, "sprintf" | "snprintf")
+            && !name.ends_with("_safe")
+            && !name.ends_with("_unchecked")
+        {
+            // Raw destinations are handled by the existing destination rewrite.
+            return None;
+        }
+        for (i, arg) in args.iter_mut().skip(format_index + 1).enumerate() {
+            if matches!(plan.requirements.get(i), Some(Requirement::String)) {
+                *arg = string_arg(arg, symbols, false)?;
+            } else if plan.requirements.get(i).is_some() {
+                if !scalar(arg, symbols) {
+                    return None;
+                }
+            } else {
+                // Extra arguments are still evaluated, and must also implement SafeAdapt.
+                if !scalar(arg, symbols) {
+                    *arg = string_arg(arg, symbols, false)?;
+                }
+            }
+        }
+        let mut result = mac.clone();
+        result.path.segments.last_mut()?.ident =
+            syn::Ident::new(&format!("{operation}_safe"), path.segments[1].ident.span());
+        result.tokens = args.to_token_stream();
+        if result.path == mac.path && result.tokens.to_string() == mac.tokens.to_string() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+}
+
+fn unparen(mut expr: &Expr) -> &Expr {
+    loop {
+        expr = match expr {
+            Expr::Paren(p) => &p.expr,
+            Expr::Group(g) => &g.expr,
+            _ => return expr,
+        };
+    }
+}
+
+fn literal_bytes(expr: &Expr) -> Option<Vec<u8>> {
+    match unparen(expr) {
+        Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::ByteStr(s) => Some(s.value()),
+            syn::Lit::Str(s) => Some(s.value().into_bytes()),
+            syn::Lit::CStr(s) => Some(s.value().into_bytes()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Storage {
+    Bytes,
+    Text,
+    CStr,
+    CString,
+    ZStr,
+}
+
+fn u8_type(ty: &Type) -> bool {
+    matches!(ty, Type::Path(p) if p.qself.is_none() && p.path.is_ident("u8"))
+}
+
+fn storage(ty: &Type) -> Option<Storage> {
+    match ty {
+        Type::Reference(r) => storage(&r.elem),
+        Type::Paren(p) => storage(&p.elem),
+        Type::Array(a) if u8_type(&a.elem) => Some(Storage::Bytes),
+        Type::Slice(s) if u8_type(&s.elem) => Some(Storage::Bytes),
+        Type::Path(p) if p.qself.is_none() => {
+            let last = p.path.segments.last()?;
+            let prefix: Vec<_> = p
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect();
+            let allowed = prefix.len() == 1
+                || matches!(prefix[0].as_str(), "std" | "core" | "alloc" | "xj_zstr");
+            if !allowed {
+                return None;
+            }
+            match last.ident.to_string().as_str() {
+                "str" | "String" => Some(Storage::Text),
+                "CStr" => Some(Storage::CStr),
+                "CString" => Some(Storage::CString),
+                "ZStr" | "ZString" => Some(Storage::ZStr),
+                "Vec"
+                    if matches!(&last.arguments, syn::PathArguments::AngleBracketed(a)
+                    if matches!(a.args.first(), Some(syn::GenericArgument::Type(t)) if u8_type(t))) =>
+                {
+                    Some(Storage::Bytes)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn expr_type(expr: &Expr, symbols: &SymbolTable) -> Option<Type> {
+    let expr = unparen(expr);
+    match expr {
+        Expr::Lit(lit) => Some(match &lit.lit {
+            syn::Lit::ByteStr(s) => {
+                let n = s.value().len();
+                parse_quote!(&[u8; #n])
+            }
+            syn::Lit::Str(_) => parse_quote!(&str),
+            syn::Lit::CStr(_) => parse_quote!(&::core::ffi::CStr),
+            syn::Lit::Int(i) => {
+                if i.suffix().is_empty() {
+                    parse_quote!(i32)
+                } else {
+                    syn::parse_str(i.suffix()).ok()?
+                }
+            }
+            syn::Lit::Float(f) => {
+                if f.suffix().is_empty() {
+                    parse_quote!(f64)
+                } else {
+                    syn::parse_str(f.suffix()).ok()?
+                }
+            }
+            syn::Lit::Byte(_) => parse_quote!(u8),
+            syn::Lit::Char(_) => parse_quote!(char),
+            syn::Lit::Bool(_) => parse_quote!(bool),
+            _ => return None,
+        }),
+        Expr::Cast(c) => Some((*c.ty).clone()),
+        Expr::Reference(r) => {
+            let inner = expr_type(&r.expr, symbols)?;
+            Some(if r.mutability.is_some() {
+                parse_quote!(&mut #inner)
+            } else {
+                parse_quote!(&#inner)
+            })
+        }
+        Expr::Call(c) => {
+            let Expr::Path(p) = unparen(&c.func) else {
+                return None;
+            };
+            if p.qself.is_none()
+                && p.path.segments.len() == 1
+                && !symbols.has(&p.path.segments[0].ident.to_string())
+            {
+                symbols
+                    .fn_outputs
+                    .get(&p.path.segments[0].ident.to_string())
+                    .cloned()
+            } else {
+                None
+            }
+        }
+        Expr::MethodCall(m) if m.args.is_empty() => {
+            let kind = storage(&expr_type(&m.receiver, symbols)?)?;
+            match (m.method.to_string().as_str(), kind) {
+                ("as_bytes", Storage::Text | Storage::CString | Storage::ZStr)
+                | ("as_bytes_with_nul", Storage::ZStr)
+                | ("to_bytes" | "to_bytes_with_nul", Storage::CStr)
+                | ("as_slice", Storage::Bytes) => Some(parse_quote!(&[u8])),
+                ("as_c_str", Storage::CString | Storage::ZStr) => {
+                    Some(parse_quote!(&::core::ffi::CStr))
+                }
+                _ => None,
+            }
+        }
+        Expr::Index(i) if matches!(unparen(&i.index), Expr::Range(_)) => {
+            if matches!(storage(&expr_type(&i.expr, symbols)?), Some(Storage::Bytes)) {
+                Some(parse_quote!([u8]))
+            } else {
+                None
+            }
+        }
+        Expr::If(i) if !condition_binds(&i.cond) => {
+            let a = block_type(&i.then_branch, symbols)?;
+            let b = expr_type(&i.else_branch.as_ref()?.1, symbols)?;
+            (a == b).then_some(a)
+        }
+        Expr::Block(b) if b.label.is_none() => block_type(&b.block, symbols),
+        _ => symbols.type_of_expr(expr),
+    }
+}
+
+fn scalar_type(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(r) => scalar_type(&r.elem),
+        Type::Path(p) if p.qself.is_none() => {
+            let Some(last) = p.path.segments.last() else {
+                return false;
+            };
+            let name = last.ident.to_string();
+            if p.path.segments.len() == 1
+                && matches!(
+                    name.as_str(),
+                    "i8" | "i16"
+                        | "i32"
+                        | "i64"
+                        | "isize"
+                        | "u8"
+                        | "u16"
+                        | "u32"
+                        | "u64"
+                        | "usize"
+                        | "f32"
+                        | "f64"
+                        | "char"
+                        | "bool"
+                )
+            {
+                return true;
+            }
+            matches!(
+                p.path.segments[0].ident.to_string().as_str(),
+                "core" | "std" | "libc" | "xj_cio"
+            ) && matches!(
+                name.as_str(),
+                "c_char"
+                    | "c_schar"
+                    | "c_uchar"
+                    | "c_short"
+                    | "c_ushort"
+                    | "c_int"
+                    | "c_uint"
+                    | "c_long"
+                    | "c_ulong"
+                    | "c_longlong"
+                    | "c_ulonglong"
+                    | "c_float"
+                    | "c_double"
+                    | "size_t"
+                    | "ssize_t"
+                    | "ptrdiff_t"
+            )
+        }
+        _ => false,
+    }
+}
+
+fn scalar(expr: &Expr, symbols: &SymbolTable) -> bool {
+    if expr_type(expr, symbols).is_some_and(|t| scalar_type(&t)) {
+        return true;
+    }
+    match unparen(expr) {
+        Expr::Unary(u) if !matches!(u.op, syn::UnOp::Deref(_)) => scalar(&u.expr, symbols),
+        Expr::Binary(b) => scalar(&b.left, symbols) && scalar(&b.right, symbols),
+        Expr::If(i) if !condition_binds(&i.cond) => {
+            block_scalar(&i.then_branch, symbols)
+                && i.else_branch
+                    .as_ref()
+                    .is_some_and(|(_, e)| scalar(e, symbols))
+        }
+        Expr::Block(b) if b.label.is_none() => block_scalar(&b.block, symbols),
+        _ => false,
+    }
+}
+
+fn condition_binds(expr: &Expr) -> bool {
+    match unparen(expr) {
+        Expr::Let(_) => true,
+        Expr::Binary(b) => condition_binds(&b.left) || condition_binds(&b.right),
+        _ => false,
+    }
+}
+
+fn shadow_functions(pat: &syn::Pat, scope: &mut SymbolTable) {
+    let mut names = SymbolTable::new();
+    names.items = scope.fn_outputs.clone();
+    crate::invalidate_pat_bindings(pat, &mut names);
+    scope.fn_outputs.retain(|name, _| names.has(name));
+}
+
+// This type-only path can retain a conditional producing owned safe storage,
+// without borrowing a temporary or a branch-local value out of its scope.
+fn block_type(block: &syn::Block, symbols: &SymbolTable) -> Option<Type> {
+    let (last, prefix) = block.stmts.split_last()?;
+    let syn::Stmt::Expr(tail, None) = last else {
+        return None;
+    };
+    let mut scope = symbols.clone();
+    for stmt in prefix {
+        match stmt {
+            syn::Stmt::Local(local) => {
+                shadow_functions(&local.pat, &mut scope);
+                crate::collect_pat_bindings(&local.pat, &mut scope);
+            }
+            syn::Stmt::Item(_) => return None,
+            _ => (),
+        }
+    }
+    expr_type(tail, &scope)
+}
+
+fn block_scope<'a>(
+    block: &'a syn::Block,
+    symbols: &SymbolTable,
+) -> Option<(SymbolTable, &'a Expr)> {
+    let (last, prefix) = block.stmts.split_last()?;
+    let syn::Stmt::Expr(tail, None) = last else {
+        return None;
+    };
+    let mut scope = symbols.clone();
+    for stmt in prefix {
+        match stmt {
+            syn::Stmt::Local(local) => {
+                shadow_functions(&local.pat, &mut scope);
+                crate::invalidate_pat_bindings(&local.pat, &mut scope);
+            }
+            // Local items may shadow functions or outer bindings, too.
+            syn::Stmt::Item(_) => return None,
+            _ => (),
+        }
+    }
+    Some((scope, tail))
+}
+
+fn block_scalar(block: &syn::Block, symbols: &SymbolTable) -> bool {
+    block_scope(block, symbols).is_some_and(|(scope, tail)| scalar(tail, &scope))
+}
+
+// Only borrow storage that outlives a conditional arm. Owned call results and
+// block locals cannot supply a borrowed result from that arm.
+fn live_storage(expr: &Expr, symbols: &SymbolTable) -> bool {
+    match unparen(expr) {
+        Expr::Lit(_) => true,
+        Expr::Path(_) => expr_type(expr, symbols).is_some(),
+        Expr::Field(f) => live_storage(&f.base, symbols),
+        Expr::Index(i) => live_storage(&i.expr, symbols),
+        Expr::Reference(r) => live_storage(&r.expr, symbols),
+        Expr::Unary(u) if matches!(u.op, syn::UnOp::Deref(_)) => {
+            matches!(expr_type(&u.expr, symbols), Some(Type::Reference(_)))
+                && live_storage(&u.expr, symbols)
+        }
+        Expr::Call(_) => matches!(expr_type(expr, symbols), Some(Type::Reference(_))),
+        Expr::MethodCall(m) => {
+            expr_type(expr, symbols).is_some() && live_storage(&m.receiver, symbols)
+        }
+        _ => false,
+    }
+}
+
+fn byte_view(expr: &Expr, symbols: &SymbolTable) -> Option<Expr> {
+    if !live_storage(expr, symbols) {
+        return None;
+    }
+    Some(match storage(&expr_type(expr, symbols)?)? {
+        Storage::Bytes => parse_quote!(&(#expr)[..]),
+        Storage::Text | Storage::CString => parse_quote!((#expr).as_bytes()),
+        Storage::CStr => parse_quote!((#expr).to_bytes()),
+        Storage::ZStr => parse_quote!((#expr).as_bytes_with_nul()),
+    })
+}
+
+fn pointer_base(expr: &Expr) -> Option<&Expr> {
+    match unparen(expr) {
+        Expr::Cast(c) if matches!(&*c.ty, Type::Ptr(_) | Type::Infer(_)) => pointer_base(&c.expr),
+        Expr::MethodCall(m) if m.args.is_empty() && m.method == "cast" => pointer_base(&m.receiver),
+        Expr::MethodCall(m)
+            if m.args.is_empty()
+                && m.turbofish.is_none()
+                && matches!(m.method.to_string().as_str(), "as_ptr" | "as_mut_ptr") =>
+        {
+            Some(&m.receiver)
+        }
+        _ => None,
+    }
+}
+
+fn string_block(block: &syn::Block, symbols: &SymbolTable) -> Option<syn::Block> {
+    let (scope, tail) = block_scope(block, symbols)?;
+    let replacement = string_arg(tail, &scope, true)?;
+    let mut result = block.clone();
+    *result.stmts.last_mut()? = syn::Stmt::Expr(replacement, None);
+    Some(result)
+}
+
+fn string_arg(expr: &Expr, symbols: &SymbolTable, as_view: bool) -> Option<Expr> {
+    match unparen(expr) {
+        Expr::Cast(c) if matches!(&*c.ty, Type::Ptr(_) | Type::Infer(_)) => {
+            return string_arg(&c.expr, symbols, as_view);
+        }
+        Expr::MethodCall(m) if m.args.is_empty() && m.method == "cast" => {
+            return string_arg(&m.receiver, symbols, as_view);
+        }
+        Expr::If(i) => {
+            if condition_binds(&i.cond) {
+                return None;
+            }
+            if !as_view && expr_type(expr, symbols).is_some_and(|ty| storage(&ty).is_some()) {
+                return Some(expr.clone());
+            }
+            let mut result = i.clone();
+            result.then_branch = string_block(&i.then_branch, symbols)?;
+            let (_, other) = result.else_branch.as_mut()?;
+            **other = string_arg(other, symbols, true)?;
+            return Some(Expr::If(result));
+        }
+        Expr::Block(b) if b.label.is_none() => {
+            if !as_view && expr_type(expr, symbols).is_some_and(|ty| storage(&ty).is_some()) {
+                return Some(expr.clone());
+            }
+            let mut result = b.clone();
+            result.block = string_block(&b.block, symbols)?;
+            return Some(Expr::Block(result));
+        }
+        _ => (),
+    }
+    if let Some(base) = pointer_base(expr) {
+        let ty = expr_type(base, symbols)?;
+        storage(&ty)?;
+        if as_view {
+            return byte_view(base, symbols);
+        }
+        if matches!(unparen(base), Expr::Lit(_)) {
+            return Some(base.clone());
+        }
+        // Preserve pointer receivers by borrowing rather than moving their storage.
+        return Some(match storage(&ty)? {
+            Storage::Bytes => parse_quote!(&(#base)[..]),
+            Storage::Text | Storage::CString => parse_quote!((#base).as_bytes()),
+            Storage::CStr => parse_quote!((#base).to_bytes()),
+            Storage::ZStr => parse_quote!((#base).as_bytes_with_nul()),
+        });
+    }
+    storage(&expr_type(expr, symbols)?)?;
+    if as_view {
+        byte_view(expr, symbols)
+    } else {
+        Some(expr.clone())
+    }
+}

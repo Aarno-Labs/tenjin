@@ -13,6 +13,7 @@
 //! (statics and consts) are collected in a pre-pass, then function
 //! arguments and let-bindings are added as the visitor enters scopes.
 
+mod printf;
 pub mod rewrites;
 
 use std::cell::RefCell;
@@ -308,6 +309,10 @@ pub type ExprRewrite = fn(&Rewriter, &SymbolTable, &syn::Expr) -> Option<(syn::E
 /// Same contract as [`ExprRewrite`] but for statements.
 pub type StmtRewrite = fn(&Rewriter, &SymbolTable, &syn::Stmt) -> Option<(syn::Stmt, Depth)>;
 
+/// A rewrite of a complete macro invocation, after rewriting its arguments.
+/// Applies to both expression and statement macros.
+pub type MacroRewrite = fn(&Rewriter, &SymbolTable, &syn::Macro) -> Option<syn::Macro>;
+
 #[derive(Debug, Default)]
 struct UseItems(BTreeMap<(bool, Vec<String>), BTreeSet<String>>);
 
@@ -399,6 +404,7 @@ pub struct Rewriter {
     deps: RefCell<BTreeSet<String>>,
     expr_rewrites: Vec<ExprRewrite>,
     stmt_rewrites: Vec<StmtRewrite>,
+    macro_rewrites: Vec<MacroRewrite>,
     item_stores: RefCell<HashMap<PathBuf, ItemStore>>,
     root_file: RefCell<Option<PathBuf>>,
     cur_file: RefCell<Option<PathBuf>>,
@@ -417,6 +423,7 @@ impl Rewriter {
             deps: RefCell::new(BTreeSet::new()),
             expr_rewrites: Vec::new(),
             stmt_rewrites: Vec::new(),
+            macro_rewrites: Vec::new(),
             item_stores: RefCell::new(HashMap::new()),
             root_file: RefCell::new(None),
             cur_file: RefCell::new(None),
@@ -431,6 +438,11 @@ impl Rewriter {
     /// Register a statement rewrite.
     pub fn add_stmt_rewrite(&mut self, rewrite: StmtRewrite) {
         self.stmt_rewrites.push(rewrite);
+    }
+
+    /// Register a rewrite of a complete macro invocation.
+    pub fn add_macro_rewrite(&mut self, rewrite: MacroRewrite) {
+        self.macro_rewrites.push(rewrite);
     }
 
     /// Record a crate dependency required by rewritten code.
@@ -831,6 +843,23 @@ impl VisitMut for RewriteVisitor<'_> {
     /// Rewrite the arguments of formatting macros, whose bodies are otherwise
     /// opaque token streams. The tokens are replaced only if a rewrite applied.
     fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+        self.rewrite_macro_args(mac);
+        if let Some(replacement) = self
+            .rewriter
+            .macro_rewrites
+            .iter()
+            .find_map(|rewrite| rewrite(self.rewriter, &self.symbols, mac))
+        {
+            *mac = replacement;
+            // Visit newly emitted arguments, as we do for expression and
+            // statement replacements (including redundant borrow/paren rules).
+            self.rewrite_macro_args(mac);
+        }
+    }
+}
+
+impl RewriteVisitor<'_> {
+    fn rewrite_macro_args(&mut self, mac: &mut syn::Macro) {
         use quote::ToTokens;
         use syn::parse::Parser;
 
