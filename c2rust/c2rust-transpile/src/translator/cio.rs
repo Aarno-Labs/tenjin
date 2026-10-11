@@ -200,87 +200,154 @@ impl CioReplacements {
     }
 }
 
-impl Translation<'_> {
-    pub(crate) fn convert_cio_function(
-        &self,
-        span: Span,
-        typ: CTypeId,
-        name: &str,
-        target: &str,
-        parameters: &[CDeclId],
-    ) -> TranslationResult<ConvertedDecl> {
-        let CTypeKind::Function(ret, _, variadic, _, _) = self.ast_context.resolve_type(typ).kind
-        else {
-            unreachable!()
+/// Parameters that the ordinary Rust API accepts as borrowed C strings.
+fn cio_string_argument(target: &str, index: usize) -> bool {
+    matches!(
+        (target, index),
+        ("fopen" | "popen", 0 | 1)
+            | ("fdopen", 1)
+            | ("fmemopen", 2)
+            | ("freopen", 1)
+            | ("remove", 0)
+            | ("rename", 0 | 1)
+            | ("fputs" | "puts", 0)
+    )
+}
+
+/// Clang's canonical function type can lose the public size_t/ssize_t
+/// spelling used by the declared API. Shared entry points use Rust's
+/// corresponding pointer-sized integers, as translated public typedefs do.
+pub(crate) fn cio_function_type(target: &str, mut ty: Box<Type>) -> Box<Type> {
+    if let Type::BareFn(function) = &mut *ty {
+        let ret = match target {
+            "fread" | "fwrite" => Some(syn::parse_quote!(usize)),
+            "getline" | "getdelim" => Some(syn::parse_quote!(isize)),
+            _ => None,
         };
-        // Variadic calls are marshalled at their call sites.
-        if variadic
-            || matches!(
-                target,
-                "vprintf" | "vfprintf" | "vsprintf" | "vsnprintf" | "vscanf" | "vfscanf"
-            )
-        {
-            return Ok(ConvertedDecl::NoItem);
+        if let Some(ret) = ret {
+            function.output = ReturnType::Type(Default::default(), Box::new(ret));
         }
-        let ret = self.convert_type(ret.ctype)?;
-        let ident = Ident::new(name, span);
-        let target_ident = Ident::new(target, span);
-        let mut params = Vec::new();
-        let mut args = Vec::new();
-        let mut needs_unsafe = matches!(
-            target,
-            "fdopen"
-                | "freopen"
-                | "tmpnam"
-                | "ctermid"
-                | "fmemopen"
-                | "fread"
-                | "fwrite"
-                | "fgets"
-                | "getline"
-                | "getdelim"
-                | "perror"
-                | "fgetpos"
-                | "fsetpos"
-        );
-        for (i, &id) in parameters.iter().enumerate() {
-            let CDeclKind::Variable { typ, .. } = self.ast_context[id].kind else {
-                unreachable!()
-            };
-            let ty = self.convert_type(typ.ctype)?;
-            let arg = Ident::new(&format!("arg{i}"), span);
-            params.push(quote::quote!(#arg: #ty));
-            let cstr = matches!(
-                (target, i),
-                ("fopen" | "popen", 0 | 1)
-                    | ("fdopen", 1)
-                    | ("fmemopen", 2)
-                    | ("freopen", 1)
-                    | ("remove", 0)
-                    | ("rename", 0 | 1)
-                    | ("fputs" | "puts", 0)
-            );
-            if cstr {
-                needs_unsafe = true;
-                args.push(quote::quote!(unsafe { ::core::ffi::CStr::from_ptr((#arg) as _) }));
-            } else {
-                args.push(quote::quote!((#arg) as _));
+    }
+    ty
+}
+
+fn cio_native_return_kind(target: &str) -> Option<CTypeKind> {
+    match target {
+        "fread" | "fwrite" => Some(CTypeKind::Size),
+        "getline" | "getdelim" => Some(CTypeKind::SSize),
+        _ => None,
+    }
+}
+
+impl Translation<'_> {
+    /// Return an existing borrowed C-string view when no pointer read is needed.
+    fn cio_cstr_view(&self, arg: &Expr, carg: CExprId) -> Option<Box<Expr>> {
+        if let Some(bytes) = self.printf_literal(carg) {
+            let value = std::ffi::CString::new(bytes).ok()?;
+            let literal = syn::LitCStr::new(&value, Span::call_site());
+            return Some(Box::new(syn::parse_quote!(#literal)));
+        }
+        let guided = self
+            .parsed_guidance
+            .borrow_mut()
+            .query_expr_type(self, carg)?;
+        let mut arg = Self::printf_guided_expr(arg);
+        // Pointer lowering may have inserted a byte view before as_ptr().
+        // Recover the guided storage, whose as_c_str() supplies the borrow.
+        while let Expr::MethodCall(call) = arg {
+            if !call.args.is_empty()
+                || !matches!(
+                    call.method.to_string().as_str(),
+                    "as_bytes_with_nul" | "as_bytes"
+                )
+            {
+                break;
             }
+            arg = Self::printf_guided_expr(&call.receiver);
         }
-        let unsafety = needs_unsafe.then(|| quote::quote!(unsafe));
-        let body = if matches!(self.ast_context.resolve_type(typ).kind, CTypeKind::Function(ret, ..) if matches!(self.ast_context.resolve_type(ret.ctype).kind, CTypeKind::Void))
+        let ty = guided.strip_refs();
+        if tenjin::type_is_xj_zstr(ty, "ZStr")
+            || tenjin::type_is_xj_zstr(ty, "ZString")
+            || matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.segments.last().is_some_and(|p| p.ident == "CString"))
         {
-            quote::quote! { ::xj_cio::#target_ident(#(#args),*); }
+            Some(Box::new(syn::parse_quote!((#arg).as_c_str())))
+        } else if matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.segments.last().is_some_and(|p| p.ident == "CStr"))
+        {
+            Some(Box::new(syn::parse_quote!(#arg)))
         } else {
-            quote::quote! { ::xj_cio::#target_ident(#(#args),*) as #ret }
+            None
+        }
+    }
+
+    /// Fixed-signature calls use ordinary Rust functions whenever their
+    /// arguments already match. Raw strings and void buffers use the shared
+    /// argument adapters; only function references require the C ABI itself.
+    #[allow(clippy::vec_box)]
+    pub(crate) fn convert_cio_fixed_call(
+        &self,
+        callee: Option<CDeclId>,
+        args: &[Box<Expr>],
+        cargs: &[CExprId],
+        call_type: CQualTypeId,
+    ) -> TranslationResult<Option<(Box<Expr>, CQualTypeId)>> {
+        let Some(target) = callee.and_then(|id| self.cio_replacements.functions.get(&id)) else {
+            return Ok(None);
+        };
+        if matches!(
+            target.as_str(),
+            "printf"
+                | "fprintf"
+                | "sprintf"
+                | "snprintf"
+                | "scanf"
+                | "fscanf"
+                | "vprintf"
+                | "vfprintf"
+                | "vsprintf"
+                | "vsnprintf"
+                | "vscanf"
+                | "vfscanf"
+        ) {
+            return Ok(None);
+        }
+        let mut views = Vec::with_capacity(args.len());
+        let mut adapter = matches!(target.as_str(), "fread" | "fwrite" | "fgetpos" | "fsetpos");
+        for (index, arg) in args.iter().enumerate() {
+            let view = if cio_string_argument(target, index) {
+                self.cio_cstr_view(arg, cargs[index])
+            } else {
+                None
+            };
+            adapter |= cio_string_argument(target, index) && view.is_none();
+            views.push(view);
+        }
+        let values = args
+            .iter()
+            .zip(views)
+            .map(|(arg, view)| match (adapter, view) {
+                (false, Some(view)) => view,
+                (true, Some(view)) => Box::new(syn::parse_quote!((#view).as_ptr().cast())),
+                (_, None) => arg.clone(),
+            })
+            .collect();
+        let path = if adapter {
+            vec!["xj_cio", "c_abi", target.as_str()]
+        } else {
+            vec!["xj_cio", target.as_str()]
         };
         self.use_crate(ExternCrate::XjCio);
-        Ok(ConvertedDecl::Item(Box::new(
-            syn::parse2(quote::quote! {
-                pub #unsafety extern "C" fn #ident(#(#params),*) -> #ret { #body }
-            })
-            .map_err(|e| format_err!("Invalid cio adapter: {e}"))?,
-        )))
+        let mut call = mk().call_expr(mk().abs_path_expr(path), values);
+        let mut source_type = call_type;
+        if let Some(kind) = cio_native_return_kind(target) {
+            if let Some(ty) = self.ast_context.try_type_for_kind(&kind) {
+                source_type = CQualTypeId::new(ty);
+            } else {
+                // Without a C node for the shared API's return representation,
+                // normalize it to the header type before ordinary C casts.
+                call = mk().cast_expr(call, self.convert_type(call_type.ctype)?);
+            }
+        }
+        Ok(Some((call, source_type)))
     }
 }
 

@@ -992,6 +992,17 @@ impl Translation<'_> {
         if let Some(call) = self.convert_cio_variadic(callee, &args, cargs)? {
             return Ok(WithStmts::new_val(call));
         }
+        if let Some((call, source_type)) =
+            self.convert_cio_fixed_call(callee, &args, cargs, call_expr_ty)?
+        {
+            return self.make_cast(
+                ctx,
+                source_type,
+                override_ty.unwrap_or(call_expr_ty),
+                WithStmts::new_val(call),
+                &None,
+            );
+        }
         match self.call_form_cases(&func, &args, cargs, ctx) {
             RecognizedCallForm::RetargetedCallee(func) => mk_call_with(func, args),
             RecognizedCallForm::OtherCall => mk_call_with(func, args),

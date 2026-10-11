@@ -5033,6 +5033,10 @@ impl<'c> Translation<'c> {
                         | "vfprintf"
                         | "vsprintf"
                         | "vsnprintf"
+                        | "scanf"
+                        | "fscanf"
+                        | "vscanf"
+                        | "vfscanf"
                 )
             })
         {
@@ -5049,7 +5053,7 @@ impl<'c> Translation<'c> {
                 }
             }
             if !direct {
-                return Err(TranslationError::generic("An indirect libc printing binding is incompatible with the xj_cio stream backend. Use a direct call or provide an explicit supported adapter; a function identifier alone cannot select formatting semantics."));
+                return Err(TranslationError::generic("An indirect libc formatted-I/O binding is incompatible with the xj_cio stream backend. Use a direct call or provide an explicit supported adapter; a function identifier alone cannot select formatting semantics."));
             }
         }
 
@@ -5069,13 +5073,21 @@ impl<'c> Translation<'c> {
             .ok_or_else(|| format_err!("name not declared: '{}'", varname))?;
 
         // Import the referenced global decl into our submodule
-        self.add_import(decl_id, &rustname);
+        if !self.cio_replacements.functions.contains_key(&decl_id) {
+            self.add_import(decl_id, &rustname);
+        }
         // match decl {
         //     CDeclKind::Variable { is_defn: false, .. } => {}
         //     _ => self.add_import(decl_id, &rustname),
         // }
 
         let mut val = mk().path_expr(vec![rustname]);
+        if ctx.needs_address {
+            if let Some(target) = self.cio_replacements.functions.get(&decl_id) {
+                self.use_crate(ExternCrate::XjCio);
+                val = mk().abs_path_expr(vec!["xj_cio", "c_abi", target]);
+            }
+        }
         let mut set_unsafe = false;
 
         match decl {
@@ -5083,7 +5095,11 @@ impl<'c> Translation<'c> {
                 // If we are referring to a function and need its address, we
                 // need to cast it to fn() to ensure that it has a real address.
                 if ctx.needs_address {
-                    let ty = self.convert_type(result_type_id.ctype)?;
+                    let function_type = |ty| match self.cio_replacements.functions.get(&decl_id) {
+                        Some(target) => cio::cio_function_type(target, ty),
+                        None => ty,
+                    };
+                    let ty = function_type(self.convert_type(result_type_id.ctype)?);
                     let actual_ty = self
                         .type_converter
                         .borrow_mut()
@@ -5094,6 +5110,7 @@ impl<'c> Translation<'c> {
                             &self.parsed_guidance.borrow(),
                         )?;
                     if let Some(actual_ty) = actual_ty {
+                        let actual_ty = function_type(actual_ty);
                         if actual_ty != ty {
                             // If we're casting a concrete function to
                             // a K&R function pointer type, use transmute
@@ -5112,7 +5129,7 @@ impl<'c> Translation<'c> {
                             .try_type_for_kind(&kind_with_declared_args)
                             .map(CQualTypeId::new)
                         {
-                            let ty = self.convert_type(ty.ctype)?;
+                            let ty = function_type(self.convert_type(ty.ctype)?);
                             val = mk().cast_expr(val, ty);
                         } else {
                             val = mk().cast_expr(val, ty);

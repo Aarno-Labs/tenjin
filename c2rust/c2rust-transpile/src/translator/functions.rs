@@ -70,8 +70,11 @@ impl<'c> Translation<'c> {
             .get(&decl_id)
             .expect("Functions should already be renamed");
 
-        if let Some(cio_name) = self.cio_replacements.functions.get(&decl_id) {
-            return self.convert_cio_function(span, typ, new_name, cio_name, parameters);
+        if self.cio_replacements.functions.contains_key(&decl_id) {
+            // Calls and function references bind directly to xj_cio. The
+            // shared c_abi module owns adapters, so no declaration is emitted.
+            self.use_crate(ExternCrate::XjCio);
+            return Ok(ConvertedDecl::NoItem);
         }
 
         if let Some(libc_name) = self.libc_replacements.functions.get(&decl_id) {
