@@ -1402,9 +1402,10 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
-    /// Rewrite `strlen(s)` into `s.len() as size_t`, for the same forms of `s`
+    /// Rewrite `strlen(s)` into `s.len()`, for the same forms of `s`
     /// accepted by [`Rewriter::rewrite_str_from_ptr_of_zstr`].
-    /// The cast keeps the C result type, which may be `c_ulong` rather than `usize`.
+    /// Also recognize pointer decay through an explicit ZStr view. Keep a cast
+    /// only when the C result type is not known to be `usize`.
     pub fn rewrite_strlen_of_zstr(
         &self,
         symbols: &SymbolTable,
@@ -1420,8 +1421,24 @@ impl Rewriter {
             return None;
         }
 
-        let place = zstr_place_of_c_str_arg(&call.args[0], symbols)?;
-        let replacement: Expr = syn::parse_quote! { #place.len() as size_t };
+        let mut arg = strlen_pointer_base(&call.args[0]);
+        if let Expr::MethodCall(view) = arg {
+            if view.args.is_empty()
+                && matches!(
+                    view.method.to_string().as_str(),
+                    "as_bytes"
+                        | "as_bytes_mut"
+                        | "as_bytes_with_nul"
+                        | "as_buffer"
+                        | "as_buffer_mut"
+                        | "as_c_str"
+                )
+            {
+                arg = &view.receiver;
+            }
+        }
+        let place = zstr_place_of_c_str_arg(arg, symbols)?;
+        let replacement = strlen_result(syn::parse_quote! { #place.len() }, symbols);
         Some((replacement, Depth::Limited(0)))
     }
 
@@ -1570,16 +1587,15 @@ impl Rewriter {
         Some((Stmt::Local(replacement), Depth::Unlimited))
     }
 
-    /// Rewrite `strlen(e1.as_mut_ptr())` into:
-    ///   * `(e1.len() - 1) as size_t` when `e1` is a `u8` slice (with the trailing NUL kept)
-    ///     and we've determined that e1 will never have its length changed by having
-    ///     a null byte written into its interior. (NOT YET IMPLEMENTED)
+    /// Rewrite `strlen(b"text\0".as_ptr())` into `b"text".len()`, trimming
+    /// at the first NUL. Keep a result cast only when needed by the C type.
+    /// Otherwise rewrite `strlen(e1.as_mut_ptr())` into:
     ///   * `CStr::from_bytes_until_nul(&e1[..]).count_bytes() as size_t` when e1 is a `u8`
     ///     array, slice, or `Vec`.
     ///   * `CStr::from_bytes_until_nul(e1.as_u8_slice()).count_bytes() as size_t` otherwise.
     pub fn rewrite_strlen_of_slice(
         &self,
-        _symbols: &SymbolTable,
+        symbols: &SymbolTable,
         expr: &Expr,
     ) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else {
@@ -1596,8 +1612,22 @@ impl Rewriter {
         }
 
         let arg = &call.args[0];
-        if let Some(decayed) = Self::peek_array_decay_coercion(arg, _symbols) {
-            if is_u8_sliceable_expr(decayed, _symbols) {
+        if let Expr::Lit(ExprLit {
+            lit: syn::Lit::ByteStr(literal),
+            ..
+        }) = strlen_pointer_base(arg)
+        {
+            let bytes = literal.value();
+            // Without a NUL, strlen could read beyond this literal's allocation.
+            let nul = bytes.iter().position(|&byte| byte == 0)?;
+            let trimmed = LitByteStr::new(&bytes[..nul], literal.span());
+            return Some((
+                strlen_result(syn::parse_quote! { #trimmed.len() }, symbols),
+                Depth::Limited(0),
+            ));
+        }
+        if let Some(decayed) = Self::peek_array_decay_coercion(arg, symbols) {
+            if is_u8_sliceable_expr(decayed, symbols) {
                 let replacement: Expr = syn::parse_quote! {
                     (::std::ffi::CStr::from_bytes_until_nul(&#decayed[..]).unwrap().count_bytes()) as size_t
                 };
@@ -2453,6 +2483,65 @@ fn is_ref_str_type(ty: &syn::Type) -> bool {
 
 fn is_string_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "String"))
+}
+
+/// Strip parentheses, pointer casts, and pointer decay without discarding any
+/// argument expressions that would otherwise be evaluated.
+fn strlen_pointer_base(mut expr: &Expr) -> &Expr {
+    loop {
+        expr = expr_strip_parens(expr);
+        match expr {
+            Expr::Cast(cast) if matches!(&*cast.ty, Type::Ptr(_)) => expr = &cast.expr,
+            Expr::MethodCall(call)
+                if call.args.is_empty()
+                    && matches!(
+                        call.method.to_string().as_str(),
+                        "as_ptr" | "as_mut_ptr" | "cast"
+                    ) =>
+            {
+                expr = &call.receiver;
+            }
+            _ => return expr,
+        }
+    }
+}
+
+/// Preserve strlen's declared return type while avoiding a redundant usize cast.
+fn strlen_result(length: Expr, symbols: &SymbolTable) -> Expr {
+    let result_ty = symbols
+        .foreign_fns
+        .get("strlen")
+        .and_then(|signature| match &signature.output {
+            syn::ReturnType::Type(_, ty) => Some((**ty).clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| syn::parse_quote! { size_t });
+    let mut ty = &result_ty;
+    // Bound alias traversal to also handle recursive or unresolved aliases.
+    for _ in 0..=symbols.type_aliases.len() {
+        match ty {
+            Type::Paren(paren) => ty = &paren.elem,
+            Type::Group(group) => ty = &group.elem,
+            Type::Path(path) if path.qself.is_none() => {
+                if path.path.is_ident("usize") {
+                    return length;
+                }
+                let Some(ident) = path.path.get_ident() else {
+                    break;
+                };
+                let Some(alias) = symbols
+                    .type_aliases
+                    .get(&ident.to_string())
+                    .and_then(Option::as_ref)
+                else {
+                    break;
+                };
+                ty = alias;
+            }
+            _ => break,
+        }
+    }
+    syn::parse_quote! { #length as #result_ty }
 }
 
 /// Given a C string argument `s` or `&raw mut s` (each perhaps cast to a pointer),

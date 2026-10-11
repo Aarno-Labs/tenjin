@@ -69,6 +69,8 @@ pub struct SymbolTable {
     pub items: HashMap<String, syn::Type>,
     /// Maps a named struct type to its named field types.
     pub fields: HashMap<String, HashMap<String, syn::Type>>,
+    /// Named type aliases, including `size_t`; conflicting definitions are unknown.
+    pub type_aliases: HashMap<String, Option<syn::Type>>,
     /// Original return types of translated function adapters.
     pub fn_outputs: HashMap<String, syn::Type>,
     /// Maps the name of each function declared in an `extern` block to its signature.
@@ -199,6 +201,16 @@ impl SymbolTable {
                         }
                     }
                     self.fields.insert(i.ident.to_string(), fields);
+                }
+                syn::Item::Type(i) if i.generics.params.is_empty() => {
+                    self.type_aliases
+                        .entry(i.ident.to_string())
+                        .and_modify(|ty| {
+                            if ty.as_ref() != Some(&*i.ty) {
+                                *ty = None;
+                            }
+                        })
+                        .or_insert_with(|| Some((*i.ty).clone()));
                 }
                 syn::Item::Mod(i) => {
                     if let Some((_, ref inner)) = i.content {
