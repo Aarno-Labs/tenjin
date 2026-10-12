@@ -2452,7 +2452,10 @@ fn strlen_result(length: Expr, symbols: &SymbolTable) -> Expr {
             _ => None,
         })
         .unwrap_or_else(|| syn::parse_quote! { size_t });
-    let mut ty = &result_ty;
+    usize_result(length, &result_ty, symbols)
+}
+
+fn is_usize_type<'a>(mut ty: &'a Type, symbols: &'a SymbolTable) -> bool {
     // Bound alias traversal to also handle recursive or unresolved aliases.
     for _ in 0..=symbols.type_aliases.len() {
         match ty {
@@ -2460,7 +2463,7 @@ fn strlen_result(length: Expr, symbols: &SymbolTable) -> Expr {
             Type::Group(group) => ty = &group.elem,
             Type::Path(path) if path.qself.is_none() => {
                 if path.path.is_ident("usize") {
-                    return length;
+                    return true;
                 }
                 let Some(ident) = path.path.get_ident() else {
                     break;
@@ -2477,7 +2480,36 @@ fn strlen_result(length: Expr, symbols: &SymbolTable) -> Expr {
             _ => break,
         }
     }
-    syn::parse_quote! { #length as #result_ty }
+    false
+}
+
+/// Keep the declared result type when it differs from the bounded API's usize.
+fn usize_result(value: Expr, ty: &Type, symbols: &SymbolTable) -> Expr {
+    if is_usize_type(ty, symbols) {
+        value
+    } else {
+        syn::parse_quote! { #value as #ty }
+    }
+}
+
+/// Avoid redundant conversions for counts already known to be usize.
+fn usize_argument(expr: &Expr, symbols: &SymbolTable) -> Expr {
+    let expr = expr_strip_parens(expr);
+    if let Expr::Cast(cast) = expr
+        && is_usize_type(&cast.ty, symbols)
+        && let Expr::Lit(lit) = expr_strip_parens(&cast.expr)
+        && let syn::Lit::Int(int) = &lit.lit
+        && matches!(int.suffix(), "" | "usize")
+    {
+        return Expr::Lit(lit.clone());
+    }
+    if matches!(expr, Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Int(int) if matches!(int.suffix(), "" | "usize")))
+        || crate::printf::expr_type(expr, symbols).is_some_and(|ty| is_usize_type(&ty, symbols))
+    {
+        expr.clone()
+    } else {
+        syn::parse_quote! { (#expr) as usize }
+    }
 }
 
 /// Given a C string argument `s` or `&raw mut s` (each perhaps cast to a pointer),
@@ -3298,7 +3330,7 @@ impl Rewriter {
         Some((syn::parse_quote! { #place.as_c_str() }, Depth::Limited(0)))
     }
 
-    /// Use sized buffer APIs when translated stdio arguments retain a slice.
+    /// Use bounded item APIs when translated stdio arguments retain their storage.
     pub fn rewrite_cio_buffers(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else { return None };
         let Expr::Path(func) = &*call.func else {
@@ -3332,8 +3364,8 @@ impl Rewriter {
             if !exclusive && read_view.is_none() {
                 return None;
             }
-            let size = &call.args[1];
-            let count = &call.args[2];
+            let size = usize_argument(&call.args[1], symbols);
+            let count = usize_argument(&call.args[2], symbols);
             let stream = &call.args[3];
             let result_type = if func.path.segments.len() == 1 {
                 symbols
@@ -3345,8 +3377,8 @@ impl Rewriter {
                 syn::parse_quote!(usize)
             };
             self.add_dep("xj_cio");
-            let memory: Expr = if let Some(input) = read_view {
-                syn::parse_quote! { ::xj_cio::ByteView::view_bytes(#input) }
+            let input: Expr = if let Some(input) = read_view {
+                *input
             } else {
                 self.add_dep("xj_cstr");
                 self.with_cur_file_item_store(|store| {
@@ -3355,22 +3387,18 @@ impl Rewriter {
                 syn::parse_quote! { #buffer.as_mut_u8_slice() }
             };
             let target = syn::Ident::new(
-                if exclusive { "fread_" } else { "fwrite_" },
+                if exclusive {
+                    "fread_items"
+                } else {
+                    "fwrite_items"
+                },
                 proc_macro2::Span::call_site(),
             );
-            let borrow = if exclusive {
-                quote::quote!(&mut)
-            } else {
-                quote::quote!(&)
+            let result = syn::parse_quote! {
+                xj_cio::#target(#input, #size, #count, #stream)
             };
             return Some((
-                syn::parse_quote! {
-                    ({ let xj_cio_size = (#size) as usize; let xj_cio_count = (#count) as usize;
-                      let xj_cio_stream = #stream;
-                      if xj_cio_size == 0 || xj_cio_count == 0 { 0 } else {
-                        xj_cio::#target(#borrow (#memory)[..xj_cio_size * xj_cio_count], xj_cio_stream) / xj_cio_size
-                      } }) as #result_type
-                },
+                usize_result(result, &result_type, symbols),
                 Depth::Limited(0),
             ));
         }

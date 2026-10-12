@@ -150,7 +150,10 @@ impl Rewriter {
             ("xj_cio", "fdopen" | "freopen" | "freopen_" | "fscanf" | "vfscanf") => &[1],
             ("xj_cio", "fmemopen") => &[2],
             ("xj_cio", "fmemopen_") => &[1],
-            ("xj_cio", "remove" | "fputs" | "puts" | "scanf" | "vscanf" | "fwrite_") => &[0],
+            (
+                "xj_cio",
+                "remove" | "fputs" | "puts" | "scanf" | "vscanf" | "fwrite_" | "fwrite_items",
+            ) => &[0],
             ("xj_atone", "atof" | "atoi" | "atol" | "atoll") => &[0],
             ("xj_cmath", "nan" | "nanf") => &[0],
             ("xj_atone", name) if name.starts_with("strto") => &[0],

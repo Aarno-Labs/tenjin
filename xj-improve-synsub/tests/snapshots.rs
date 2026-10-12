@@ -1834,14 +1834,15 @@ fn cio_bulk_io_preserves_item_counts_and_zero_sizes() {
     .unwrap();
     rw.rewrite_file(&mut file, Depth::Unlimited);
     let output = prettyplease::unparse(&file);
-    assert!(output.contains("xj_cio::fread_("), "{output}");
-    assert!(output.contains("xj_cio::fwrite_("), "{output}");
+    let compact = output.split_whitespace().collect::<String>();
     assert!(
-        output.contains("if xj_cio_size == 0 || xj_cio_count == 0"),
+        compact.contains("xj_cio::fread_items(buf.as_mut_u8_slice(),size,n,stream(f))"),
         "{output}"
     );
-    assert!(output.contains("let xj_cio_stream = stream(f)"), "{output}");
-    assert!(output.contains(") / xj_cio_size"), "{output}");
+    assert!(
+        compact.contains("xj_cio::fwrite_items(&buf,size,n,f)"),
+        "{output}"
+    );
     assert!(output.contains("as core::ffi::c_ulong"), "{output}");
     assert!(output.contains("fread(raw, size, n, f)"), "{output}");
     assert!(rw.deps().contains("xj_cio"));
