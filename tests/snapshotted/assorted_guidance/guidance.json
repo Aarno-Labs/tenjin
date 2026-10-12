@@ -14,7 +14,8 @@
         "u8": "guided_static:u8",
         "&mut StructWithMembersA": "*:gm_ptr",
         "&[u8]" : ["*:rsu8"],
-        "&u8": "*:ru8"
+        "&u8": "*:ru8",
+        "&ZStr" : "*:zstr"
     },
     "vars_mut" : {
         "guided_str_init_lit:ostr": false,

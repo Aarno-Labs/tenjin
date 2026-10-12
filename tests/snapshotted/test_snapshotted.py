@@ -140,6 +140,10 @@ def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
         (src_dir / "guidance.json").as_posix(),
     ]
     run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
+    rust = (tmp_resultsdir / "final" / "src" / "assorted_guidance.rs").read_text()
+    assert "pub unsafe fn print_unguided_ptr(" in rust
+    assert "pub unsafe fn forward_unguided_ptr(" in rust
+    assert "pub fn print_owned_String(" in rust
 
 
 def test_ffi_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):

@@ -2,12 +2,14 @@
 // Generated printing macros keep platform-specific parameter names out of the output.
 #include <stdio.h>
 size_t strlen(const char *s);
-void *memset(void *s, int c, long n);
+void *memset(void *s, int c, unsigned long n);
 unsigned long strcspn(const char *, const char *);
 // These are macros in <ctype.h> but Tenjin can translate the un-expanded form.
 int isalnum(int c);
 char tolower(int c);
 void exit(int status);
+int strcmp(const char *s1, const char *s2);
+int strncmp(const char *s1, const char *s2, size_t n);
 
 extern int extern_int_unguided;
 // XREF:extern_var_nonmutbl
@@ -347,4 +349,35 @@ void pass_slice_offset(int idx)
 {
     char unsigned arr[72] = {0};
     receive_slice(&arr[idx + 2]);
+}
+
+
+_Bool strncmp_idiom_01(const char* rsu8) {
+    return strncmp(rsu8, "prefix", 6) != 0;
+}
+
+_Bool strncmp_idiom_02(const char* rsu8) {
+    return strncmp(rsu8, "prefix", strlen("prefix")) != 0;
+}
+
+char strlen_idiom_01(const char* rsu8) {
+    return rsu8[strlen(rsu8) - 1];
+}
+
+char strlen_idiom_02(const char* rsu8) {
+    if (strlen(rsu8) < 2) {
+        return '\0';
+    }
+    return rsu8[strlen(rsu8) - 2];
+}
+
+_Bool snprintf_example_01(int x) {
+    unsigned char buf[9] = {0};
+    return snprintf(buf, 9, "%08d", x) >= 0;
+}
+
+void snprintf_example_02(int x) {
+    unsigned char buf[9] = {0};
+    snprintf(buf, 9, "%08d", x);
+    printf("%s\n", buf);
 }
