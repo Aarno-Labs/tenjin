@@ -763,6 +763,15 @@ impl RewriteVisitor<'_> {
 
     /// Add bindings introduced by a local `let` statement.
     fn add_local_bindings(&mut self, local: &syn::Local) {
+        if let syn::Pat::Ident(pat) = &local.pat
+            && pat.by_ref.is_none()
+            && pat.subpat.is_none()
+            && let Some(init) = &local.init
+            && let Some(ty) = byte_array_initializer_type(&init.expr, &self.symbols)
+        {
+            self.symbols.insert(pat.ident.to_string(), ty);
+            return;
+        }
         collect_pat_bindings(&local.pat, &mut self.symbols);
     }
 }
@@ -961,6 +970,55 @@ impl RewriteVisitor<'_> {
 }
 
 // ── Binding extraction helpers ───────────────────────────────────────
+
+/// Recover arrays with explicit byte-type evidence after c2rust omits their
+/// annotations. Unsuffixed integer literals alone are insufficient: later
+/// uses may infer a different element type.
+fn byte_array_initializer_type(expr: &syn::Expr, symbols: &SymbolTable) -> Option<syn::Type> {
+    use syn::{Expr, Lit, parse_quote};
+
+    let byte_element = |expr: &Expr| {
+        printf::expr_type(expr, symbols).is_some_and(|ty| byte_input::is_u8_type(&ty))
+    };
+    match expr {
+        Expr::Paren(p) => byte_array_initializer_type(&p.expr, symbols),
+        Expr::Group(g) => byte_array_initializer_type(&g.expr, symbols),
+        Expr::Reference(r) => {
+            let inner = byte_array_initializer_type(&r.expr, symbols)?;
+            Some(if r.mutability.is_some() {
+                parse_quote!(&mut #inner)
+            } else {
+                parse_quote!(&#inner)
+            })
+        }
+        Expr::Repeat(r) if byte_element(&r.expr) => {
+            let len = &r.len;
+            Some(parse_quote!([u8; #len]))
+        }
+        Expr::Array(a)
+            if a.elems.iter().any(byte_element)
+                && a.elems.iter().all(|e| {
+                    byte_element(e)
+                        || matches!(e, Expr::Lit(lit) if matches!(&lit.lit,
+                            Lit::Int(i) if i.suffix().is_empty()))
+                }) =>
+        {
+            let len = a.elems.len();
+            Some(parse_quote!([u8; #len]))
+        }
+        Expr::Unary(u) if matches!(u.op, syn::UnOp::Deref(_)) => {
+            let Expr::Lit(lit) = &*u.expr else {
+                return None;
+            };
+            let Lit::ByteStr(bytes) = &lit.lit else {
+                return None;
+            };
+            let len = bytes.value().len();
+            Some(parse_quote!([u8; #len]))
+        }
+        _ => None,
+    }
+}
 
 /// Extract a (name, type) pair from a function argument.
 fn binding_from_fn_arg(arg: &syn::FnArg) -> Option<(String, syn::Type)> {

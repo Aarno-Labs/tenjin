@@ -7,7 +7,7 @@ use syn::{
 
 use crate::{
     AtomicKind, Depth, Rewriter, SymbolTable, atomic_kind, atomic_kind_from_name,
-    c_atomic_rust_name,
+    byte_input::is_u8_type, c_atomic_rust_name,
 };
 
 fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
@@ -2184,13 +2184,22 @@ fn is_byte_vec_type(ty: &Type) -> bool {
 
 fn extract_slice_ptr_base<'e>(expr: &'e Expr, symbols: &SymbolTable) -> Option<&'e Expr> {
     match expr {
+        Expr::Paren(p) => extract_slice_ptr_base(&p.expr, symbols),
+        Expr::Group(g) => extract_slice_ptr_base(&g.expr, symbols),
+        Expr::Cast(c) if matches!(&*c.ty, Type::Ptr(_) | Type::Infer(_)) => {
+            extract_slice_ptr_base(&c.expr, symbols)
+        }
         Expr::MethodCall(call) if call.method == "cast" && call.args.is_empty() => {
             extract_slice_ptr_base(&call.receiver, symbols)
         }
         Expr::MethodCall(call) if call.method == "as_mut_ptr" && call.args.is_empty() => {
             Some(&call.receiver)
         }
-        Expr::RawAddr(raw_addr) if is_array_typed(&raw_addr.expr, symbols) => Some(&raw_addr.expr),
+        Expr::RawAddr(raw_addr)
+            if matches!(symbols.type_of_expr(&raw_addr.expr), Some(Type::Array(_))) =>
+        {
+            Some(&raw_addr.expr)
+        }
         _ => None,
     }
 }
@@ -2382,10 +2391,6 @@ fn is_u8_or_i8_path(p: &syn::Path) -> bool {
 
 fn is_u8_or_i8_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(path) if is_u8_or_i8_path(&path.path))
-}
-
-fn is_u8_type(ty: &syn::Type) -> bool {
-    matches!(ty, syn::Type::Path(path) if path.path.is_ident("u8"))
 }
 
 fn is_ref_str_type(ty: &syn::Type) -> bool {

@@ -4,7 +4,10 @@ use quote::ToTokens;
 use syn::{Expr, Type, parse::Parser, parse_quote};
 use xj_cfmt_core::{Piece, Plan, Requirement};
 
-use crate::{Depth, Rewriter, SymbolTable, byte_input::prefer_string_literal};
+use crate::{
+    Depth, Rewriter, SymbolTable,
+    byte_input::{is_u8_type, prefer_string_literal},
+};
 
 impl Rewriter {
     /// Normalize literal ByteView inputs in macros without changing raw pointers,
@@ -245,16 +248,12 @@ enum Storage {
     ZStr,
 }
 
-fn u8_type(ty: &Type) -> bool {
-    matches!(ty, Type::Path(p) if p.qself.is_none() && p.path.is_ident("u8"))
-}
-
 fn storage(ty: &Type) -> Option<Storage> {
     match ty {
         Type::Reference(r) => storage(&r.elem),
         Type::Paren(p) => storage(&p.elem),
-        Type::Array(a) if u8_type(&a.elem) => Some(Storage::Bytes),
-        Type::Slice(s) if u8_type(&s.elem) => Some(Storage::Bytes),
+        Type::Array(a) if is_u8_type(&a.elem) => Some(Storage::Bytes),
+        Type::Slice(s) if is_u8_type(&s.elem) => Some(Storage::Bytes),
         Type::Path(p) if p.qself.is_none() => {
             let last = p.path.segments.last()?;
             let prefix: Vec<_> = p
@@ -275,7 +274,7 @@ fn storage(ty: &Type) -> Option<Storage> {
                 "ZStr" | "ZString" => Some(Storage::ZStr),
                 "Vec"
                     if matches!(&last.arguments, syn::PathArguments::AngleBracketed(a)
-                    if matches!(a.args.first(), Some(syn::GenericArgument::Type(t)) if u8_type(t))) =>
+                    if matches!(a.args.first(), Some(syn::GenericArgument::Type(t)) if is_u8_type(t))) =>
                 {
                     Some(Storage::Bytes)
                 }
@@ -604,16 +603,25 @@ fn byte_view(expr: &Expr, symbols: &SymbolTable) -> Option<Expr> {
     })
 }
 
-fn pointer_base(expr: &Expr) -> Option<&Expr> {
+fn pointer_base<'a>(expr: &'a Expr, symbols: &SymbolTable) -> Option<&'a Expr> {
     match unparen(expr) {
-        Expr::Cast(c) if matches!(&*c.ty, Type::Ptr(_) | Type::Infer(_)) => pointer_base(&c.expr),
-        Expr::MethodCall(m) if m.args.is_empty() && m.method == "cast" => pointer_base(&m.receiver),
+        Expr::Cast(c) if matches!(&*c.ty, Type::Ptr(_) | Type::Infer(_)) => {
+            pointer_base(&c.expr, symbols)
+        }
+        Expr::MethodCall(m) if m.args.is_empty() && m.method == "cast" => {
+            pointer_base(&m.receiver, symbols)
+        }
         Expr::MethodCall(m)
             if m.args.is_empty()
                 && m.turbofish.is_none()
                 && matches!(m.method.to_string().as_str(), "as_ptr" | "as_mut_ptr") =>
         {
             Some(&m.receiver)
+        }
+        // An array address decays to its first element through the pointer cast
+        // emitted by c2rust. Addresses of references or container objects do not.
+        Expr::RawAddr(r) if matches!(expr_type(&r.expr, symbols), Some(Type::Array(_))) => {
+            Some(&r.expr)
         }
         _ => None,
     }
@@ -658,7 +666,7 @@ fn string_arg(expr: &Expr, symbols: &SymbolTable, as_view: bool) -> Option<Expr>
         }
         _ => (),
     }
-    if let Some(base) = pointer_base(expr) {
+    if let Some(base) = pointer_base(expr, symbols) {
         let ty = expr_type(base, symbols)?;
         storage(&ty)?;
         if as_view {

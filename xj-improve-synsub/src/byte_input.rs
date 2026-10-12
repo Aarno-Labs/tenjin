@@ -5,6 +5,44 @@ use syn::{Expr, Type, parse_quote};
 
 use crate::{Depth, Rewriter, SymbolTable};
 
+/// Recognize byte types whose unsignedness does not depend on the target.
+/// In particular, `c_char` is not necessarily a `u8` alias.
+pub(crate) fn is_u8_type(ty: &Type) -> bool {
+    match ty {
+        Type::Paren(p) => is_u8_type(&p.elem),
+        Type::Group(g) => is_u8_type(&g.elem),
+        Type::Path(p) if p.qself.is_none() => {
+            if p.path.is_ident("u8") {
+                return true;
+            }
+            if p.path
+                .segments
+                .iter()
+                .any(|s| !matches!(s.arguments, syn::PathArguments::None))
+            {
+                return false;
+            }
+            let names: Vec<_> = p
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect();
+            matches!(
+                names
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                ["core" | "std", "ffi", "c_uchar"]
+                    | ["std", "os", "raw", "c_uchar"]
+                    | ["libc", "c_uchar"]
+            )
+        }
+        _ => false,
+    }
+}
+
 /// Prefer text at ByteView inputs only when its complete view is identical.
 /// Keep stored NULs, including the implicit terminator of a C string literal.
 /// This must not be used where a byte array or CStr type is required.
@@ -58,8 +96,8 @@ fn view_type(ty: &Type, symbols: &SymbolTable, depth: usize, allow_os: bool) -> 
         Type::Reference(r) => view_type(&r.elem, symbols, depth + 1, allow_os),
         Type::Paren(p) => view_type(&p.elem, symbols, depth + 1, allow_os),
         Type::Group(g) => view_type(&g.elem, symbols, depth + 1, allow_os),
-        Type::Array(a) => matches!(&*a.elem, Type::Path(p) if p.path.is_ident("u8")),
-        Type::Slice(s) => matches!(&*s.elem, Type::Path(p) if p.path.is_ident("u8")),
+        Type::Array(a) => is_u8_type(&a.elem),
+        Type::Slice(s) => is_u8_type(&s.elem),
         Type::Path(p) if p.qself.is_none() => {
             if let Some(alias) = p.path.get_ident().and_then(|name| {
                 symbols
@@ -94,7 +132,7 @@ fn view_type(ty: &Type, symbols: &SymbolTable, depth: usize, allow_os: bool) -> 
                         return false;
                     };
                     if last.ident == "Vec" {
-                        matches!(inner, Type::Path(p) if p.path.is_ident("u8"))
+                        is_u8_type(inner)
                     } else {
                         view_type(inner, symbols, depth + 1, allow_os)
                     }
