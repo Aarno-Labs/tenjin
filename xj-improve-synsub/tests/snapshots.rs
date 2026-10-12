@@ -1281,7 +1281,7 @@ fn strcmp_of_zstr_and_literal_compares_bytes() {
         r#"fn demo(p: &xj_zstr::ZStr, q: &mut ZStr, r: &ZString, s: ZString, args: Vec<ZString>, raw: *const i8) {
             if strcmp(p.as_bytes_with_nul(), b"append\0") as ::core::ffi::c_int == 0 {}
             if libc::strcmp(q.as_buffer_mut().as_mut_ptr().cast(), b"hey\0".as_ptr()) != 0 as ::core::ffi::c_int {}
-            if 0 == ::xj_cstr::strcmp(b"hey", r.as_c_str()) as i32 {}
+            if 0 == ::xj_cstr::strcmp("hey", r.as_c_str()) as i32 {}
             if ::xj_zstr::strcmp(s.as_bytes_with_nul(), b"a\0b\0") == 0 {}
             if ::xj_cstr::strcmp(args[1].as_z_str().as_bytes_with_nul(), &*b"\0") == 0 as ::core::ffi::c_int {}
             if strcmp(raw, b"hey\0".as_ptr()) == 0 as ::core::ffi::c_int {}
@@ -1453,7 +1453,7 @@ fn atone_rewrites_all_null_endptr_and_simple_calls() {
         "::xj_atone::atoi(\"17\")",
         "::xj_atone::atol(chars.as_u8_slice())",
         "::xj_atone::atol(&bytes[1..])",
-        "::xj_atone::atoll(b\"42\\0\")",
+        "::xj_atone::atoll(\"42\\0\")",
         "::xj_atone::strtod_n(chars.as_u8_slice())",
         "::xj_atone::strtof_n(text)",
         "::xj_atone::strtol_n(bytes, 10)",
@@ -1731,7 +1731,7 @@ fn sscanf_with_raw_addr_buffer() {
         expect![[r#"
             use ::xj_cstr::ByteSlice;
             fn demo(mut input: [::core::ffi::c_char; 256], mut choice: ::core::ffi::c_int) -> bool {
-                if xj_scanf::bscanf!(input.as_u8_slice(), b"%d\0", & mut choice)
+                if xj_scanf::bscanf!(input.as_u8_slice(), "%d\0", & mut choice)
                     != 1 as ::core::ffi::c_int
                 {
                     return false;
@@ -1853,6 +1853,7 @@ fn c_format_macros_rewrite_arguments_and_destinations() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
     rw.add_expr_rewrite(Rewriter::rewrite_cio_destination);
+    rw.add_macro_rewrite(Rewriter::rewrite_byte_view_macro_literals);
     let mut file = syn::parse_file(r#"
         fn demo(mut out: [u8; 8], raw: *mut u8, s: &ZStr) {
             unsafe { xj_cio::snprintf!(out.as_mut_ptr(), 4, b"%s", core::ffi::CStr::from_ptr(s.as_ptr())); }
@@ -1866,15 +1867,15 @@ fn c_format_macros_rewrite_arguments_and_destinations() {
         output
             .split_whitespace()
             .collect::<String>()
-            .contains("snprintf_unchecked!(out,4,b\"%s\",s.as_c_str())"),
+            .contains("snprintf_unchecked!(out,4,\"%s\",s.as_c_str())"),
         "{output}"
     );
     assert!(
-        output.contains("sprintf!(raw, b\"%s\", s.as_c_str())"),
+        output.contains("sprintf!(raw, \"%s\", s.as_c_str())"),
         "{output}"
     );
     assert!(
-        output.contains("printf_safe!(b\"%s\", unsafe { s.as_c_str() })"),
+        output.contains("printf_safe!(\"%s\", unsafe { s.as_c_str() })"),
         "{output}"
     );
 }

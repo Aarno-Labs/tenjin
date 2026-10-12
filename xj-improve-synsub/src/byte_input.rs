@@ -5,6 +5,41 @@ use syn::{Expr, Type, parse_quote};
 
 use crate::{Depth, Rewriter, SymbolTable};
 
+/// Prefer text at ByteView inputs only when its complete view is identical.
+/// Keep stored NULs, including the implicit terminator of a C string literal.
+/// This must not be used where a byte array or CStr type is required.
+pub(crate) fn prefer_string_literal(expr: &Expr) -> Option<Expr> {
+    match expr {
+        Expr::Reference(reference) if reference.mutability.is_none() => {
+            let mut result = reference.clone();
+            result.expr = Box::new(prefer_string_literal(&reference.expr)?);
+            Some(Expr::Reference(result))
+        }
+        Expr::Paren(paren) => {
+            let mut result = paren.clone();
+            result.expr = Box::new(prefer_string_literal(&paren.expr)?);
+            Some(Expr::Paren(result))
+        }
+        Expr::Group(group) => {
+            let mut result = group.clone();
+            result.expr = Box::new(prefer_string_literal(&group.expr)?);
+            Some(Expr::Group(result))
+        }
+        Expr::Lit(lit) => {
+            let (bytes, span) = match &lit.lit {
+                syn::Lit::ByteStr(bytes) => (bytes.value(), bytes.span()),
+                syn::Lit::CStr(string) => (string.value().into_bytes_with_nul(), string.span()),
+                _ => return None,
+            };
+            let text = std::str::from_utf8(&bytes).ok()?;
+            let mut result = lit.clone();
+            result.lit = syn::Lit::Str(syn::LitStr::new(text, span));
+            Some(Expr::Lit(result))
+        }
+        _ => None,
+    }
+}
+
 fn unparen(mut expr: &Expr) -> &Expr {
     loop {
         expr = match expr {
@@ -79,6 +114,33 @@ impl Rewriter {
         symbols: &SymbolTable,
         expr: &Expr,
     ) -> Option<(Expr, Depth)> {
+        if let Expr::MethodCall(method) = expr {
+            if method.method == "view_bytes" && method.args.is_empty() && method.turbofish.is_none()
+            {
+                let mut result = method.clone();
+                result.receiver = Box::new(prefer_string_literal(&method.receiver)?);
+                return Some((Expr::MethodCall(result), Depth::Unlimited));
+            }
+            if method.method == "format"
+                && method.args.len() == 1
+                && method.turbofish.is_none()
+                && let Some(ty) = symbols.type_of_expr(&method.receiver)
+            {
+                let mut ty = &ty;
+                while let Type::Reference(reference) = ty {
+                    ty = &reference.elem;
+                }
+                if matches!(ty, Type::Path(p) if p.qself.is_none()
+                    && (p.path.is_ident("Tm") || (p.path.segments.len() == 2
+                        && p.path.segments[0].ident == "xj_ctime" && p.path.segments[1].ident == "Tm")))
+                {
+                    let mut result = method.clone();
+                    result.args[0] = prefer_string_literal(&method.args[0])?;
+                    return Some((Expr::MethodCall(result), Depth::Unlimited));
+                }
+            }
+            return None;
+        }
         let Expr::Call(call) = expr else { return None };
         let Expr::Path(function) = &*call.func else {
             return None;
@@ -87,8 +149,34 @@ impl Rewriter {
             return None;
         }
         let segments = &function.path.segments;
+        // Explicit generic arguments may require an array or CStr input type.
+        if segments.iter().any(|segment| !segment.arguments.is_none()) {
+            return None;
+        }
         let name = segments.last()?.ident.to_string();
         let namespace = segments.first()?.ident.to_string();
+        if segments.len() == 3
+            && segments[1].ident == "ByteView"
+            && name == "view_bytes"
+            && matches!(
+                namespace.as_str(),
+                "xj_cfmt_core"
+                    | "xj_cfmt"
+                    | "xj_zstr"
+                    | "xj_cio"
+                    | "xj_cstr"
+                    | "xj_atone"
+                    | "xj_scanf"
+                    | "xj_cstat"
+                    | "xj_ctime"
+                    | "xj_cmath"
+            )
+            && call.args.len() == 1
+        {
+            let mut result = call.clone();
+            result.args[0] = prefer_string_literal(&call.args[0])?;
+            return Some((Expr::Call(result), Depth::Unlimited));
+        }
         let native = segments.len() == 1 || (segments.len() == 2 && namespace == "libc");
         if native {
             if segments.len() == 1 {
@@ -147,7 +235,9 @@ impl Rewriter {
         }
         let input_indices: &[usize] = match (namespace.as_str(), name.as_str()) {
             ("xj_cio", "fopen" | "popen" | "rename") => &[0, 1],
-            ("xj_cio", "fdopen" | "freopen" | "freopen_" | "fscanf" | "vfscanf") => &[1],
+            ("xj_cio", "fdopen" | "freopen" | "fscanf" | "vfscanf") => &[1],
+            ("xj_cio", "freopen_") => &[0, 1],
+            ("xj_cio", "perror_") => &[0],
             ("xj_cio", "fmemopen") => &[2],
             ("xj_cio", "fmemopen_") => &[1],
             (
@@ -163,12 +253,19 @@ impl Rewriter {
             }
             ("xj_cstr", "strlen" | "strchr_idx" | "strrchr_idx") => &[0],
             ("xj_cstr", "strcmp" | "strncmp" | "strspn" | "strstr_idx" | "strstr_ptr") => &[0, 1],
+            (
+                "xj_cstr",
+                "strcmp_eq" | "strcmp_ne" | "strcmp_lt" | "strcmp_le" | "strcmp_gt" | "strcmp_ge",
+            ) => &[0, 1],
             ("xj_cstr", "strcpy" | "strncpy" | "strcat" | "strncat" | "strstr_mut_ptr") => &[1],
             ("xj_scanf", "scanf_str" | "sscanf" | "bscanf") => &[0, 1],
             ("xj_scanf", "parse_format" | "scanf") => &[0],
             ("xj_scanf", "scanf_core" | "brscanf") => &[1],
             ("xj_zstr", "strlen" | "strnlen" | "strdup" | "strndup" | "memchr") => &[0],
             ("xj_zstr", "strcmp" | "strncmp" | "memcmp" | "strspn" | "strcspn") => &[0, 1],
+            ("xj_cfmt" | "xj_cfmt_core" | "xj_zstr", "to_c_str") => &[0],
+            ("xj_cio", "to_c_str") if segments.len() == 3 && segments[1].ident == "__cfmt" => &[0],
+            ("xj_cfmt", "RawBytes") => &[0],
             (
                 "xj_zstr",
                 "memcpy" | "strcpy" | "strncpy" | "strcat" | "strncat" | "strstr" | "strpbrk",
@@ -180,18 +277,60 @@ impl Rewriter {
         let qualified_module = segments.len() == 3
             && matches!(
                 (namespace.as_str(), segments[1].ident.to_string().as_str()),
-                ("xj_cstat", "c") | ("xj_ctime", "compat") | ("xj_scanf", "legacy")
-            );
+                ("xj_cstat", "c")
+                    | ("xj_zstr", "c")
+                    | ("xj_ctime", "compat")
+                    | ("xj_scanf", "legacy")
+            )
+            || (namespace == "xj_cio"
+                && segments.len() == 3
+                && segments[1].ident == "__cfmt"
+                && name == "to_c_str");
         if !cio_adapter && segments.len() != 2 && !qualified_module {
             return None;
         }
         let mut result = call.clone();
         for &index in input_indices {
-            result.args[index] = *self.coerce_byte_view_input_with_os(
+            if namespace == "xj_cio"
+                && index == 0
+                && matches!(name.as_str(), "perror_" | "freopen_")
+            {
+                if let Expr::Call(optional) = unparen(call.args.get(index)?)
+                    && optional.args.len() == 1
+                    && let Expr::Path(function) = &*optional.func
+                    && function.qself.is_none()
+                    && (function.path.is_ident("Some")
+                        || (function.path.segments.len() == 4
+                            && matches!(
+                                function.path.segments[0].ident.to_string().as_str(),
+                                "std" | "core"
+                            )
+                            && function.path.segments[1].ident == "option"
+                            && function.path.segments[2].ident == "Option"
+                            && function.path.segments[3].ident == "Some"))
+                    && function
+                        .path
+                        .segments
+                        .iter()
+                        .all(|segment| segment.arguments.is_none())
+                    && let Some(literal) = prefer_string_literal(&optional.args[0])
+                {
+                    let mut optional = optional.clone();
+                    optional.args[0] = literal;
+                    result.args[index] = Expr::Call(optional);
+                }
+                continue;
+            }
+            let input = self.coerce_byte_view_input_with_os(
                 call.args.get(index)?,
                 symbols,
                 matches!(namespace.as_str(), "xj_cio" | "xj_cstat"),
-            )?;
+            );
+            if let Some(input) = input {
+                result.args[index] = *input;
+            } else if cio_adapter {
+                return None;
+            }
         }
         if cio_adapter {
             let ident = &segments.last()?.ident;
@@ -226,6 +365,9 @@ impl Rewriter {
         allow_os: bool,
     ) -> Option<Box<Expr>> {
         let expr = unparen(expr);
+        if let Some(literal) = prefer_string_literal(expr) {
+            return Some(Box::new(literal));
+        }
         match expr {
             Expr::Cast(c) if matches!(&*c.ty, Type::Ptr(_)) => {
                 return self.coerce_byte_view_input_with_os(&c.expr, symbols, allow_os);

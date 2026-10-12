@@ -2479,6 +2479,11 @@ fn strcmp_byte_literal(expr: &Expr) -> Option<LitByteStr> {
         }
         Expr::Lit(lit) => match &lit.lit {
             syn::Lit::ByteStr(bytes) => Some(bytes.clone()),
+            syn::Lit::Str(text) => Some(LitByteStr::new(text.value().as_bytes(), text.span())),
+            syn::Lit::CStr(text) => Some(LitByteStr::new(
+                text.value().as_bytes_with_nul(),
+                text.span(),
+            )),
             _ => None,
         },
         _ => None,

@@ -4,9 +4,73 @@ use quote::ToTokens;
 use syn::{Expr, Type, parse::Parser, parse_quote};
 use xj_cfmt_core::{Piece, Plan, Requirement};
 
-use crate::{Depth, Rewriter, SymbolTable};
+use crate::{Depth, Rewriter, SymbolTable, byte_input::prefer_string_literal};
 
 impl Rewriter {
+    /// Normalize literal ByteView inputs in macros without changing raw pointers,
+    /// mutable destinations, or Rust formatting arguments with ByteDisplay semantics.
+    pub fn rewrite_byte_view_macro_literals(
+        &self,
+        _symbols: &SymbolTable,
+        mac: &syn::Macro,
+    ) -> Option<syn::Macro> {
+        let path = &mac.path;
+        if path.segments.len() != 2 {
+            return None;
+        }
+        let namespace = path.segments[0].ident.to_string();
+        let name = path.segments[1].ident.to_string();
+        let operation = name
+            .strip_suffix("_safe")
+            .or_else(|| name.strip_suffix("_unchecked"))
+            .unwrap_or(&name);
+        let (format_index, input_index, printf) = match (namespace.as_str(), operation) {
+            ("xj_cio", "printf") => (0, None, true),
+            ("xj_cio", "fprintf") => (1, None, true),
+            ("xj_cio" | "xj_cfmt", "sprintf") => (1, None, true),
+            ("xj_cio" | "xj_cfmt", "snprintf") => (2, None, true),
+            ("xj_scanf", "scanf") => (0, None, false),
+            ("xj_scanf", "sscanf" | "bscanf") => (1, Some(0), false),
+            ("xj_scanf", "brscanf") => (1, None, false),
+            _ => return None,
+        };
+        let mut args = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+            .parse2(mac.tokens.clone())
+            .ok()?;
+        let before = args.to_token_stream().to_string();
+        if let Some(input_index) = input_index
+            && let Some(input) = prefer_string_literal(args.get(input_index)?)
+        {
+            args[input_index] = input;
+        }
+        if let Some(format) = prefer_string_literal(args.get(format_index)?) {
+            args[format_index] = format;
+        }
+        if printf
+            && let Some(bytes) = literal_bytes(&args[format_index])
+            && let Ok(plan) = Plan::new(&bytes)
+        {
+            for (arg, requirement) in args
+                .iter_mut()
+                .skip(format_index + 1)
+                .zip(plan.requirements)
+            {
+                if requirement == Requirement::String
+                    && let Some(text) = prefer_string_literal(arg)
+                {
+                    *arg = text;
+                }
+            }
+        }
+        let tokens = args.to_token_stream();
+        if tokens.to_string() == before {
+            return None;
+        }
+        let mut result = mac.clone();
+        result.tokens = tokens;
+        Some(result)
+    }
+
     /// Rewrite an ignored, literal ASCII stderr line to `xj_cio::eprintln!`.
     pub fn rewrite_stmt_fprintf_stderr(
         &self,
@@ -120,6 +184,9 @@ impl Rewriter {
         {
             // Raw destinations are handled by the existing destination rewrite.
             return None;
+        }
+        if let Some(format) = prefer_string_literal(&args[format_index]) {
+            args[format_index] = format;
         }
         for (i, arg) in args.iter_mut().skip(format_index + 1).enumerate() {
             if matches!(plan.requirements.get(i), Some(Requirement::String)) {
@@ -537,7 +604,7 @@ fn string_arg(expr: &Expr, symbols: &SymbolTable, as_view: bool) -> Option<Expr>
             return byte_view(base, symbols);
         }
         if matches!(unparen(base), Expr::Lit(_)) {
-            return Some(base.clone());
+            return Some(prefer_string_literal(base).unwrap_or_else(|| base.clone()));
         }
         // Preserve pointer receivers by borrowing rather than moving their storage.
         return Some(match storage(&ty)? {
@@ -551,6 +618,6 @@ fn string_arg(expr: &Expr, symbols: &SymbolTable, as_view: bool) -> Option<Expr>
     if as_view {
         byte_view(expr, symbols)
     } else {
-        Some(expr.clone())
+        Some(prefer_string_literal(expr).unwrap_or_else(|| expr.clone()))
     }
 }
