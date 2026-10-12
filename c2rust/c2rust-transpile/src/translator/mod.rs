@@ -5035,8 +5035,10 @@ impl<'c> Translation<'c> {
                         | "vsnprintf"
                         | "scanf"
                         | "fscanf"
+                        | "sscanf"
                         | "vscanf"
                         | "vfscanf"
+                        | "vsscanf"
                 )
             })
         {

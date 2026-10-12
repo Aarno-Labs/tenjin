@@ -32,7 +32,6 @@ impl Rewriter {
             ("xj_cio", "fprintf") => (1, None, true),
             ("xj_cio" | "xj_cfmt", "sprintf") => (1, None, true),
             ("xj_cio" | "xj_cfmt", "snprintf") => (2, None, true),
-            ("xj_scanf", "scanf") => (0, None, false),
             ("xj_scanf", "sscanf" | "bscanf") => (1, Some(0), false),
             ("xj_scanf", "brscanf") => (1, None, false),
             _ => return None,

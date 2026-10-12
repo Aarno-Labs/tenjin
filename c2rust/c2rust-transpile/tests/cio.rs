@@ -161,7 +161,7 @@ fn stdio_and_formatting_check() {
     let package = dir.path().join("runtime");
     fs::create_dir_all(package.join("src")).unwrap();
     fs::write(package.join("Cargo.toml"),
-        "[package]\nname = \"cio-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {path = \"/home/brk/xj-cio/xj_cio\"}\nxj_cfmt = {path = \"/home/brk/xj_cfmt\"}\nlibc = \"0.2\"\n").unwrap();
+        "[package]\nname = \"cio-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {version = \"0.1.0\", features = [\"c_variadic\"]}\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
     fs::write(package.join("src/main.rs"), rust).unwrap();
     let output = Command::new("cargo")
         .env(
@@ -389,4 +389,134 @@ fn project_stdio_bindings_apply_across_translation_units() {
     let implementation =
         fs::read_to_string(dir.path().join("translated/src/implementation.rs")).unwrap();
     assert!(implementation.contains("fn printf("), "{implementation}");
+}
+
+/// Literal and runtime scanf formats, `hh`, `%n`, unsigned short and
+/// pointer-sized destinations, and the `va_list` path agree with native C.
+#[test]
+fn scanf_family_matches_native() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("scan.c");
+    fs::write(
+        &source,
+        r#"
+        #include <stdio.h>
+        #include <stdarg.h>
+        #include <stdint.h>
+        #include <stddef.h>
+        #include <inttypes.h>
+        #include <sys/types.h>
+        static int vs(const char *in, const char *fmt, ...) {
+            va_list ap; va_start(ap, fmt);
+            int n = vsscanf(in, fmt, ap); va_end(ap); return n;
+        }
+        struct guarded { unsigned short before; unsigned short v; unsigned short after[3]; };
+        int main(void) {
+            char c = 0; signed char sc = 0; unsigned char uc = 0; int8_t i8 = 0; uint8_t u8 = 0;
+            int n = -1; short sn = -1; long ln = -1; size_t zn = 0; char hn = 0;
+            int r = sscanf("-7 200 x -3 250 tail", "%hhd %hhu %c %" SCNd8 " %" SCNu8 "%n %hn%ln%zn%hhn",
+                           &sc, &uc, &c, &i8, &u8, &n, &sn, &ln, &zn, &hn);
+            printf("%d %d %d %d %d %d %d %d %ld %zu %d\n", r, sc, uc, c, i8, u8, n, sn, ln, zn, hn);
+            unsigned short us = 0; short ss = 0; uint16_t u16 = 0; ssize_t sz = 0; ptrdiff_t pd = 0;
+            intptr_t ip = 0; uintptr_t up = 0;
+            r = sscanf("65535 -2 65534 -5 -6 -7 8", "%hu %hd %" SCNu16 " %zd %td %" SCNdPTR " %" SCNuPTR,
+                       &us, &ss, &u16, &sz, &pd, &ip, &up);
+            printf("%d %u %d %u %zd %td %" PRIdPTR " %" PRIuPTR "\n", r, us, ss, u16, sz, pd, ip, up);
+            char word[8] = {0}, rest[16] = {0};
+            r = sscanf("hello world", "%7s %15s", word, rest);
+            printf("%d %s %s\n", r, word, rest);
+            const char *fmt = "%d,%d";
+            int a = 0, b = 0;
+            r = sscanf("3,4", fmt, &a, &b);
+            printf("%d %d %d\n", r, a, b);
+            struct guarded g = {0xa5a5, 0, {0xa5a5, 0xa5a5, 0xa5a5}};
+            signed char h = 0; int d = 0;
+            r = vs("9 -1 5", "%hu %hhd %d", &g.v, &h, &d);
+            printf("%d %u %d %d %x %x %x %x\n", r, g.v, h, d, g.before, g.after[0], g.after[1], g.after[2]);
+            FILE *f = tmpfile();
+            if (!f) return 1;
+            fputs("abc]def 12 0x1f 2.5", f);
+            rewind(f);
+            char set[8] = {0}, three[4] = {0}; int k = 0; unsigned x = 0; double dd = 0;
+            r = fscanf(f, "%7[a-c]%*c%3c %d %x %lf", set, three, &k, &x, &dd);
+            printf("%d %s %s %d %u %g %d\n", r, set, three, k, x, dd, feof(f));
+            r = fscanf(f, "%d", &k);
+            printf("%d\n", r);
+            fclose(f);
+            return 0;
+        }
+    "#,
+    )
+    .unwrap();
+    let native = dir.path().join("native");
+    assert!(Command::new("clang")
+        .args(["-fno-builtin", "-w"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&native)
+        .status()
+        .unwrap()
+        .success());
+    let reference = Command::new(&native).output().unwrap();
+    assert!(reference.status.success());
+    let mut cfg = common::config(Edition2024, serde_json::json!({"use_libc": false}));
+    cfg.output_dir = Some(dir.path().join("translated"));
+    let (_commands_dir, commands) = c2rust_transpile::create_temp_compile_commands(&[source]);
+    c2rust_transpile::transpile(cfg, &commands, &[]);
+    let rust = fs::read_to_string(dir.path().join("translated/src/scan.rs")).unwrap();
+    for expected in [
+        "::xj_cio::sscanf_raw(",
+        "::xj_cio::fscanf_raw(",
+        "::xj_cio::vsscanf(",
+        "OutArg::SChar(",
+        "OutArg::UChar(",
+        "OutArg::UShort(",
+        "OutArg::Size(",
+        "OutArg::ISize(",
+    ] {
+        assert!(rust.contains(expected), "{expected}\n{rust}");
+    }
+    assert!(!rust.contains("xj_cio_vscanargs"), "{rust}");
+    assert!(!rust.contains("size_of::<usize>()"), "{rust}");
+
+    let package = dir.path().join("runtime");
+    fs::create_dir_all(package.join("src")).unwrap();
+    fs::write(package.join("Cargo.toml"),
+        "[package]\nname = \"cio-scan-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {version = \"0.1.0\", features = [\"c_variadic\"]}\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
+    fs::write(package.join("src/main.rs"), rust).unwrap();
+    let output = Command::new("cargo")
+        .env(
+            "CARGO_TARGET_DIR",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/cio-runtime-tests"),
+        )
+        .args([Edition2024.toolchain(), "run", "--offline", "--quiet"])
+        .arg("--manifest-path")
+        .arg(package.join("Cargo.toml"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "status {:?}\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&reference.stdout)
+    );
+}
+
+/// A literal directive that conflicts with the C pointee type keeps the
+/// pointee's width; the engine rejects it at run time.
+#[test]
+fn scanf_conflicting_literal_keeps_the_destination_width() {
+    let dir = tempfile::tempdir().unwrap();
+    let rust = translated_text(
+        dir.path(),
+        "#include <stdio.h>\nint demo(void) { short s = 0; char word[4]; return sscanf(\"5 x\", \"%d %s\", &s, word); }\n",
+        serde_json::json!({"use_libc": false}),
+    );
+    assert!(rust.contains("OutArg::Short("), "{rust}");
+    assert!(!rust.contains("OutArg::Int("), "{rust}");
+    assert!(rust.contains("OutArg::Str("), "{rust}");
 }

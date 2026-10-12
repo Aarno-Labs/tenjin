@@ -268,14 +268,16 @@ impl Rewriter {
         let namespace = namespace.as_str();
         let input_indices: &[usize] = match (namespace, name.as_str()) {
             ("xj_cio", "fopen" | "popen" | "rename") => &[0, 1],
-            ("xj_cio", "fdopen" | "freopen" | "fscanf" | "vfscanf") => &[1],
+            ("xj_cio", "fdopen" | "freopen" | "fscanf" | "fscanf_raw" | "vfscanf") => &[1],
+            ("xj_cio", "sscanf_raw" | "vsscanf") => &[0, 1],
             ("xj_cio", "freopen_") => &[0, 1],
             ("xj_cio", "perror_") => &[0],
             ("xj_cio", "fmemopen") => &[2],
             ("xj_cio", "fmemopen_") => &[1],
             (
                 "xj_cio",
-                "remove" | "fputs" | "puts" | "scanf" | "vscanf" | "fwrite_" | "fwrite_items",
+                "remove" | "fputs" | "puts" | "scanf" | "scanf_raw" | "vscanf" | "fwrite_"
+                | "fwrite_items",
             ) => &[0],
             ("xj_atone", "atof" | "atoi" | "atol" | "atoll") => &[0],
             ("xj_cmath", "nan" | "nanf") => &[0],
@@ -288,9 +290,8 @@ impl Rewriter {
                 "xj_zstr",
                 "strcmp_eq" | "strcmp_ne" | "strcmp_lt" | "strcmp_le" | "strcmp_gt" | "strcmp_ge",
             ) => &[0, 1],
-            ("xj_scanf", "scanf_str" | "sscanf" | "bscanf") => &[0, 1],
-            ("xj_scanf", "parse_format" | "scanf") => &[0],
-            ("xj_scanf", "scanf_core" | "brscanf") => &[1],
+            ("xj_scanf", "sscanf" | "bscanf") => &[0, 1],
+            ("xj_scanf", "brscanf") => &[1],
             (
                 "xj_zstr",
                 "strlen" | "strnlen" | "strdup" | "strndup" | "memchr" | "strchr_idx"
@@ -316,10 +317,7 @@ impl Rewriter {
         let qualified_module = segments.len() == 3
             && matches!(
                 (namespace, segments[1].ident.to_string().as_str()),
-                ("xj_cstat", "c")
-                    | ("xj_zstr", "c")
-                    | ("xj_ctime", "compat")
-                    | ("xj_scanf", "legacy")
+                ("xj_cstat", "c") | ("xj_zstr", "c") | ("xj_ctime", "compat")
             )
             || (namespace == "xj_cio"
                 && segments.len() == 3

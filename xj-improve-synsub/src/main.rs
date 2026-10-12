@@ -148,7 +148,7 @@ fn dep_version(crate_name: &str) -> &'static str {
         "xj_cstr" => "0.1.4",
         "xj_atone" => "0.1.0",
         "errno" => "0.3.14",
-        "xj_scanf" => "0.2.6",
+        "xj_scanf" => "0.3.0",
         "atty" => "0.2.14",
         "bytemuck" => "1.25.0",
         "xj_cmath" => "0.1.0",

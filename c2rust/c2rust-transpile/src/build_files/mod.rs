@@ -17,6 +17,7 @@ use super::compile_cmds::LinkCmd;
 use super::TranspilerConfig;
 use crate::get_module_name;
 use crate::CrateSet;
+use crate::ExternCrate;
 use crate::ExternCrateDetails;
 use crate::PragmaSet;
 use crate::WorkspaceCrateDetails;
@@ -362,8 +363,12 @@ fn convert_dependencies_list(
     crates: CrateSet,
     c2rust_dir: Option<&Path>,
 ) -> Vec<ExternCrateDetails> {
+    // One manifest entry per crate: the `va_list` scanning entry points
+    // need xj_cio's `c_variadic` feature.
+    let variadic_cio = crates.contains(&ExternCrate::XjCioVariadic);
     crates
         .into_iter()
+        .filter(|dep| !(variadic_cio && *dep == ExternCrate::XjCio))
         .map(|dep| dep.with_details(c2rust_dir))
         .collect()
 }

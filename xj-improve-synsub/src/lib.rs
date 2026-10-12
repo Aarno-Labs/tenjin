@@ -16,6 +16,7 @@
 mod byte_input;
 mod printf;
 pub mod rewrites;
+mod scanf;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -1437,7 +1438,8 @@ mod tests {
 
         let mut file = syn::parse_file(
             r#"fn demo(values: &mut [i32; 2]) {
-                scanf(
+                sscanf(
+                    b"7\0" as *const u8 as *const i8,
                     b"%d\0" as *const u8 as *const i8,
                     &raw mut values[isatty(1) as usize],
                 );

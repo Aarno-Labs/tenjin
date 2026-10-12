@@ -517,8 +517,9 @@ dependencies = [
  "syn 2.0.106",
  "tempfile",
  "which",
- "xj_bytes 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xj_bytes",
  "xj_cfmt_core",
+ "xj_scanf_core",
 ]
 
 [[package]]
@@ -3197,7 +3198,16 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "923e3d3cb4a64024d216abe7c33c4c8495f46e3e1f1847a31daf657e76de2f7d"
 dependencies = [
- "xj_bytes 0.1.0",
+ "xj_bytes",
+]
+
+[[package]]
+name = "xj_scanf_core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b732a88b65530a9c20f44a4347f810303dfc5c8a70cfd7917768ca476e432d86"
+dependencies = [
+ "xj_bytes",
 ]
 
 [[package]]

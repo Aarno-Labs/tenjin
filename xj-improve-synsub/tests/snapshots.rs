@@ -1869,3 +1869,164 @@ fn c_format_macros_rewrite_arguments_and_destinations() {
         "{output}"
     );
 }
+
+#[test]
+fn cio_raw_scanf_with_provable_destinations_becomes_safe() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
+    check(
+        &rw,
+        r#"pub type size_t = usize;
+        unsafe fn demo(stream: ::xj_cio::FILE_ptr) -> ::core::ffi::c_int {
+            let mut n: ::core::ffi::c_int = 0;
+            let mut word: [::core::ffi::c_char; 16] = [0; 16];
+            let mut bytes: [u8; 8] = [0; 8];
+            let mut c: u8 = 0;
+            let mut z: size_t = 0;
+            let mut d: f64 = 0.0;
+            {
+                let xj_cio_fmt = b"%d %15s %7s %c %zu %lf";
+                ::xj_cio::fscanf_raw(stream, xj_cio_fmt, &mut [
+                    ::xj_cio::OutArg::Int((&raw mut n) as _),
+                    ::xj_cio::OutArg::Str((&raw mut word as *mut u8) as _),
+                    ::xj_cio::OutArg::Str((bytes.as_mut_ptr()) as _),
+                    ::xj_cio::OutArg::Str((&raw mut c) as _),
+                    ::xj_cio::OutArg::Size((&raw mut z) as _),
+                    ::xj_cio::OutArg::Double((&raw mut d) as _),
+                ])
+            }
+        }
+        unsafe fn input(line: [u8; 32]) -> ::core::ffi::c_int {
+            let mut x: ::core::ffi::c_long = 0;
+            { let xj_cio_fmt = b"%ld"; ::xj_cio::sscanf_raw(&line, xj_cio_fmt, &mut [::xj_cio::OutArg::Long((&raw mut x) as _)]) }
+        }
+        unsafe fn standard() -> ::core::ffi::c_int {
+            let mut x: i32 = 0;
+            { let xj_cio_fmt = b"%d"; ::xj_cio::scanf_raw(xj_cio_fmt, &mut [::xj_cio::OutArg::Int((&raw mut x) as _)]) }
+        }"#,
+        expect![[r#"
+            use ::xj_cstr::ByteSlice;
+            pub type size_t = usize;
+            unsafe fn demo(stream: ::xj_cio::FILE_ptr) -> ::core::ffi::c_int {
+                let mut n: ::core::ffi::c_int = 0;
+                let mut word: [::core::ffi::c_char; 16] = [0; 16];
+                let mut bytes: [u8; 8] = [0; 8];
+                let mut c: u8 = 0;
+                let mut z: size_t = 0;
+                let mut d: f64 = 0.0;
+                {
+                    let xj_cio_fmt = b"%d %15s %7s %c %zu %lf";
+                    ::xj_cio::fscanf(
+                        stream,
+                        xj_cio_fmt,
+                        &mut [
+                            &mut n,
+                            &mut word.as_mut_u8_slice(),
+                            &mut bytes,
+                            &mut c,
+                            &mut z,
+                            &mut d,
+                        ],
+                    )
+                }
+            }
+            unsafe fn input(line: [u8; 32]) -> ::core::ffi::c_int {
+                let mut x: ::core::ffi::c_long = 0;
+                {
+                    let xj_cio_fmt = b"%ld";
+                    ::xj_scanf::sscanf(&line, xj_cio_fmt, &mut [&mut x])
+                }
+            }
+            unsafe fn standard() -> ::core::ffi::c_int {
+                let mut x: i32 = 0;
+                {
+                    let xj_cio_fmt = b"%d";
+                    ::xj_cio::scanf(xj_cio_fmt, &mut [&mut x])
+                }
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn cio_raw_scanf_keeps_unproven_destinations_raw() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
+    check(
+        &rw,
+        r#"static mut COUNT: ::core::ffi::c_int = 0;
+        unsafe fn demo(p: *mut ::core::ffi::c_int) -> ::core::ffi::c_int {
+            let mut word: [u8; 4] = [0; 4];
+            let mut name: [::core::ffi::c_char; 8] = [0; 8];
+            let mut x: ::core::ffi::c_int = 0;
+            let mut buf: [u8; 8] = [0; 8];
+            {
+                let xj_cio_fmt = b"%d %3s %7s";
+                ::xj_cio::scanf_raw(xj_cio_fmt, &mut [
+                    ::xj_cio::OutArg::Int((p) as _),
+                    ::xj_cio::OutArg::Str((&raw mut word as *mut u8) as _),
+                    ::xj_cio::OutArg::Str((&raw mut name as *mut u8) as _),
+                ])
+            };
+            // The same storage twice, a static and an array element.
+            { let xj_cio_fmt = b"%d %d"; ::xj_cio::scanf_raw(xj_cio_fmt, &mut [::xj_cio::OutArg::Int((&raw mut x) as _), ::xj_cio::OutArg::Int((&raw mut x) as _)]) };
+            { let xj_cio_fmt = b"%d"; ::xj_cio::scanf_raw(xj_cio_fmt, &mut [::xj_cio::OutArg::Int((&raw mut COUNT) as _)]) };
+            { let xj_cio_fmt = b"%s"; ::xj_cio::scanf_raw(xj_cio_fmt, &mut [::xj_cio::OutArg::Str((&raw mut buf[1]) as _)]) };
+            // Input and destination share storage.
+            { let xj_cio_fmt = b"%s"; ::xj_cio::sscanf_raw(::core::ffi::CStr::from_ptr((buf.as_ptr()) as _), xj_cio_fmt, &mut [::xj_cio::OutArg::Str((&raw mut buf as *mut u8) as _)]) }
+        }"#,
+        expect![[r#"
+            use ::xj_cstr::ByteSlice;
+            static mut COUNT: ::core::ffi::c_int = 0;
+            unsafe fn demo(p: *mut ::core::ffi::c_int) -> ::core::ffi::c_int {
+                let mut word: [u8; 4] = [0; 4];
+                let mut name: [::core::ffi::c_char; 8] = [0; 8];
+                let mut x: ::core::ffi::c_int = 0;
+                let mut buf: [u8; 8] = [0; 8];
+                {
+                    let xj_cio_fmt = b"%d %3s %7s";
+                    ::xj_cio::scanf_raw(
+                        xj_cio_fmt,
+                        &mut [
+                            ::xj_cio::OutArg::Int((p) as _),
+                            ::xj_cio::OutArg::Buf(::xj_cio::CStrDest::from(&mut word)),
+                            ::xj_cio::OutArg::Buf(::xj_cio::CStrDest::from(name.as_mut_u8_slice())),
+                        ],
+                    )
+                };
+                {
+                    let xj_cio_fmt = b"%d %d";
+                    ::xj_cio::scanf_raw(
+                        xj_cio_fmt,
+                        &mut [
+                            ::xj_cio::OutArg::Int((&raw mut x) as _),
+                            ::xj_cio::OutArg::Int((&raw mut x) as _),
+                        ],
+                    )
+                };
+                {
+                    let xj_cio_fmt = b"%d";
+                    ::xj_cio::scanf_raw(
+                        xj_cio_fmt,
+                        &mut [::xj_cio::OutArg::Int((&raw mut COUNT) as _)],
+                    )
+                };
+                {
+                    let xj_cio_fmt = b"%s";
+                    ::xj_cio::scanf_raw(
+                        xj_cio_fmt,
+                        &mut [::xj_cio::OutArg::Str((&raw mut buf[1]) as _)],
+                    )
+                };
+                {
+                    let xj_cio_fmt = b"%s";
+                    ::xj_cio::sscanf_raw(
+                        ::core::ffi::CStr::from_ptr((buf.as_ptr()) as _),
+                        xj_cio_fmt,
+                        &mut [::xj_cio::OutArg::Str((&raw mut buf as *mut u8) as _)],
+                    )
+                }
+            }
+        "#]],
+    );
+}

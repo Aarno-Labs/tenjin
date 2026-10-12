@@ -63,12 +63,14 @@ pub(crate) fn is_stdio_function(name: &str) -> bool {
             | "snprintf"
             | "scanf"
             | "fscanf"
+            | "sscanf"
             | "vprintf"
             | "vfprintf"
             | "vsprintf"
             | "vsnprintf"
             | "vscanf"
             | "vfscanf"
+            | "vsscanf"
     )
 }
 
@@ -336,12 +338,14 @@ impl Translation<'_> {
                 | "snprintf"
                 | "scanf"
                 | "fscanf"
+                | "sscanf"
                 | "vprintf"
                 | "vfprintf"
                 | "vsprintf"
                 | "vsnprintf"
                 | "vscanf"
                 | "vfscanf"
+                | "vsscanf"
         ) {
             return Ok(None);
         }
@@ -438,9 +442,12 @@ impl Translation<'_> {
         }
         let fmt_idx = match name.as_str() {
             "scanf" | "vscanf" => 0,
-            "fscanf" | "vfscanf" => 1,
+            "fscanf" | "vfscanf" | "sscanf" | "vsscanf" => 1,
             _ => return Ok(None),
         };
+        if args.len() <= fmt_idx {
+            return Err(TranslationError::generic("missing scanf format"));
+        }
         self.use_crate(ExternCrate::XjCio);
         let fmt = &args[fmt_idx];
         let fmt_view = if let Some(view) = self.cio_byte_view(fmt, cargs[fmt_idx]) {
@@ -448,90 +455,136 @@ impl Translation<'_> {
         } else {
             quote::quote!(unsafe { ::core::ffi::CStr::from_ptr((#fmt) as _) })
         };
-        if matches!(name.as_str(), "vscanf" | "vfscanf") {
+        // The stream, or the C string input of `sscanf`.
+        let prefix = match name.as_str() {
+            "sscanf" | "vsscanf" => {
+                let input = &args[0];
+                match self.cio_byte_view(input, cargs[0]) {
+                    Some(view) => quote::quote!(#view,),
+                    None => quote::quote!(unsafe { ::core::ffi::CStr::from_ptr((#input) as _) },),
+                }
+            }
+            _ => {
+                let prefix_args = &args[..fmt_idx];
+                quote::quote!(#(#prefix_args,)*)
+            }
+        };
+        if name.starts_with('v') {
+            // The engine's parser decides which pointer to pull from the
+            // `va_list` for each directive.
+            self.use_crate(ExternCrate::XjCioVariadic);
             self.use_feature("c_variadic");
-            self.with_cur_file_item_store(|store| {
-                store.add_item_str_once(include_str!("cio_vscan.rs"))
-            });
-            let ap = &args[fmt_idx + 1];
-            let prefix = &args[..fmt_idx];
-            let target = Ident::new(name.strip_prefix('v').unwrap(), Span::call_site());
+            let ap = args
+                .get(fmt_idx + 1)
+                .ok_or_else(|| TranslationError::generic("missing va_list argument"))?;
+            let ident = Ident::new(name, Span::call_site());
             return Ok(Some(Box::new(syn::parse_quote! {
                 { let xj_cio_fmt = #fmt_view;
-                  ::xj_cio::#target(#(#prefix,)* xj_cio_fmt,
-                    &mut unsafe { xj_cio_scanargs::xj_cio_vscanargs(xj_cio_fmt, #ap) }) }
+                  ::xj_cio::#ident(#prefix xj_cio_fmt, #ap) }
             })));
         }
-        let mut values = Vec::new();
-        for (i, arg) in args.iter().enumerate().skip(fmt_idx + 1) {
-            let ty = self
-                .ast_context
-                .resolve_type(self.ast_context[cargs[i]].kind.get_type().unwrap());
-            let value = {
-                let CTypeKind::Pointer(pointee) = &ty.kind else {
-                    return Err(TranslationError::generic(
-                        "scanf destination is not a pointer",
-                    ));
-                };
-                let kind = &self.ast_context.resolve_type(pointee.ctype).kind;
-                // The AST preserves portable integer typedefs as distinct kinds.
-                // Their destinations must still receive numeric writes, including
-                // pointer-sized integers on both 32-bit and 64-bit targets.
-                if matches!(
-                    kind,
-                    CTypeKind::IntPtr
-                        | CTypeKind::SSize
-                        | CTypeKind::PtrDiff
-                        | CTypeKind::UIntPtr
-                        | CTypeKind::Size
-                ) {
-                    let (small, large) = if kind.is_unsigned_integral_type() {
-                        ("UInt", "ULongLong")
-                    } else {
-                        ("Int", "LongLong")
-                    };
-                    let small = Ident::new(small, Span::call_site());
-                    let large = Ident::new(large, Span::call_site());
-                    values.push(quote::quote! {
-                        if ::core::mem::size_of::<usize>() == ::core::mem::size_of::<::core::ffi::c_int>() {
-                            ::xj_cio::OutArg::#small((#arg) as _)
-                        } else {
-                            ::xj_cio::OutArg::#large((#arg) as _)
-                        }
-                    });
-                    continue;
-                }
-                let variant = match kind {
-                    CTypeKind::Int | CTypeKind::Int32 => "Int",
-                    CTypeKind::Short | CTypeKind::UShort | CTypeKind::Int16 | CTypeKind::UInt16 => {
-                        "Short"
-                    }
-                    CTypeKind::Long => "Long",
-                    CTypeKind::LongLong | CTypeKind::Int64 | CTypeKind::IntMax => "LongLong",
-                    CTypeKind::UInt | CTypeKind::UInt32 => "UInt",
-                    CTypeKind::ULong => "ULong",
-                    CTypeKind::ULongLong | CTypeKind::UInt64 | CTypeKind::UIntMax => "ULongLong",
-                    CTypeKind::Float => "Float",
-                    CTypeKind::Double => "Double",
-                    _ => "Str",
-                };
-                let variant = Ident::new(variant, Span::call_site());
-                quote::quote!(::xj_cio::OutArg::#variant((#arg) as _))
-            };
-            values.push(value);
+        let requirements = self.scanf_literal_requirements(name, cargs[fmt_idx]);
+        let model = xj_scanf_core::DataModel::for_target(&self.ast_context.target);
+        let destinations = &args[fmt_idx + 1..];
+        if let Some(reqs) = &requirements {
+            if reqs.len() > destinations.len() {
+                warn!(
+                    "{name}: the format has {} destinations but the call passes {}; the call will stop with EINVAL at the first missing one",
+                    reqs.len(),
+                    destinations.len()
+                );
+            }
         }
-        let ident = Ident::new(name, Span::call_site());
-        let prefix_args = &args[..fmt_idx];
-        let prefix = quote::quote!(#(#prefix_args,)*);
-        let args = quote::quote!(&mut [#(#values),*]);
-        self.use_crate(ExternCrate::XjCio);
+        let mut values = Vec::new();
+        for (index, arg) in destinations.iter().enumerate() {
+            let ty = self.ast_context.resolve_type(
+                self.ast_context[cargs[fmt_idx + 1 + index]]
+                    .kind
+                    .get_type()
+                    .unwrap(),
+            );
+            let CTypeKind::Pointer(pointee) = &ty.kind else {
+                return Err(TranslationError::generic(
+                    "scanf destination is not a pointer",
+                ));
+            };
+            let kind = &self.ast_context.resolve_type(pointee.ctype).kind;
+            let requirement = requirements.as_ref().and_then(|r| r.get(index).copied());
+            let (variant, slot) = cio_scan_destination(kind, requirement);
+            if let (Some(req), Some(slot)) = (requirement, slot) {
+                if !req.accepts(slot, &model) {
+                    warn!(
+                        "{name} argument {}: its {req:?} directive does not fit a {kind:?} destination; the call will stop with EINVAL before that directive reads input",
+                        index + 1
+                    );
+                }
+            }
+            let variant = Ident::new(variant, Span::call_site());
+            values.push(quote::quote!(::xj_cio::OutArg::#variant((#arg) as _)));
+        }
+        let ident = Ident::new(&format!("{name}_raw"), Span::call_site());
         Ok(Some(Box::new(
             syn::parse2(quote::quote! {
             { let xj_cio_fmt = #fmt_view;
-              ::xj_cio::#ident(#prefix xj_cio_fmt, #args) }
+              ::xj_cio::#ident(#prefix xj_cio_fmt, &mut [#(#values),*]) }
             })
             .map_err(|e| format_err!("Invalid cio call: {e}"))?,
         )))
+    }
+
+    /// The destinations a literal scanf format requires, in order. A format
+    /// the engine will reject is reported here and analyzed no further.
+    fn scanf_literal_requirements(
+        &self,
+        name: &str,
+        fmt: CExprId,
+    ) -> Option<Vec<xj_scanf_core::Requirement>> {
+        let literal = self.printf_literal(fmt)?;
+        match xj_scanf_core::Format::requirements(literal).collect() {
+            Ok(requirements) => Some(requirements),
+            Err(e) => {
+                warn!("{name}: {e}; the call will return without reading input, setting EINVAL");
+                None
+            }
+        }
+    }
+}
+
+/// The raw `OutArg` variant for a scanf destination of C pointee type
+/// `kind`, with its class and width for the compatibility rule. Plain `char`
+/// takes `hh` integers as `SChar`/`UChar` by the directive's signedness and
+/// otherwise names byte storage, as do unknown pointee types.
+fn cio_scan_destination(
+    kind: &CTypeKind,
+    requirement: Option<xj_scanf_core::Requirement>,
+) -> (&'static str, Option<xj_scanf_core::Slot>) {
+    use xj_scanf_core::{IntKind as K, Requirement, Slot};
+    let int = |name, kind| (name, Some(Slot::Int(kind)));
+    match kind {
+        CTypeKind::Char => match requirement {
+            Some(Requirement::Int { signed, .. }) => {
+                int(if signed { "SChar" } else { "UChar" }, K::Char)
+            }
+            Some(Requirement::Count(_)) => int("SChar", K::Char),
+            _ => ("Str", Some(Slot::Bytes)),
+        },
+        CTypeKind::SChar | CTypeKind::Int8 => int("SChar", K::Char),
+        CTypeKind::UChar | CTypeKind::UInt8 => int("UChar", K::Char),
+        CTypeKind::Short | CTypeKind::Int16 => int("Short", K::Short),
+        CTypeKind::UShort | CTypeKind::UInt16 => int("UShort", K::Short),
+        CTypeKind::Int | CTypeKind::Int32 => int("Int", K::Int),
+        CTypeKind::UInt | CTypeKind::UInt32 => int("UInt", K::Int),
+        CTypeKind::Long => int("Long", K::Long),
+        CTypeKind::ULong => int("ULong", K::Long),
+        CTypeKind::LongLong | CTypeKind::Int64 | CTypeKind::IntMax => int("LongLong", K::LongLong),
+        CTypeKind::ULongLong | CTypeKind::UInt64 | CTypeKind::UIntMax => {
+            int("ULongLong", K::LongLong)
+        }
+        CTypeKind::Size | CTypeKind::UIntPtr => int("Size", K::Size),
+        CTypeKind::SSize | CTypeKind::PtrDiff | CTypeKind::IntPtr => int("ISize", K::PtrDiff),
+        CTypeKind::Float => ("Float", Some(Slot::Float)),
+        CTypeKind::Double => ("Double", Some(Slot::Double)),
+        _ => ("Str", None),
     }
 }
 

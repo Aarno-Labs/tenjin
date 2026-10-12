@@ -1130,112 +1130,6 @@ impl Rewriter {
         None
     }
 
-    /// Rewrite `scanf(...)` and `fscanf(stdin, ...)` into `xj_scanf::scanf!(...)`
-    /// and likewise for `sscanf(...)`.
-    pub fn rewrite_scanf_variants(
-        &self,
-        symbols: &SymbolTable,
-        expr: &Expr,
-    ) -> Option<(Expr, Depth)> {
-        let Expr::Call(call) = expr else {
-            return None;
-        };
-        let Expr::Path(ref func) = *call.func else {
-            return None;
-        };
-        if !(func.path.is_ident("scanf")
-            || func.path.is_ident("fscanf")
-            || func.path.is_ident("sscanf"))
-        {
-            return None;
-        }
-
-        if func.path.is_ident("scanf") && call.args.is_empty() {
-            return None;
-        }
-        if func.path.is_ident("fscanf") {
-            if call.args.len() < 2 {
-                return None;
-            }
-            let first_arg = &call.args[0];
-            if !matches!(first_arg, Expr::Path(fp) if fp.path.is_ident("stdin")) {
-                return None;
-            }
-        } else if func.path.is_ident("sscanf") && call.args.len() < 2 {
-            return None;
-        }
-
-        let fmt_arg_zero_terminated = if func.path.is_ident("scanf") {
-            call.args
-                .get(0)
-                .expect("scanf should have at least 1 argument")
-        } else {
-            call.args
-                .get(1)
-                .expect("s/fscanf should have at least 2 arguments")
-        };
-
-        let fmt_arg = self.coerce_byte_view_input(fmt_arg_zero_terminated, symbols)
-            .unwrap_or_else(|| Box::new(syn::parse_quote! {
-                ::core::ffi::CStr::from_ptr((#fmt_arg_zero_terminated) as *const core::ffi::c_char)
-            }));
-
-        let value_args = if func.path.is_ident("scanf") {
-            // skip fmt string
-            &call.args.iter().skip(1).collect::<Vec<_>>()
-        } else {
-            // skip input (FILE*/char*) arg and fmt string
-            &call.args.iter().skip(2).collect::<Vec<_>>()
-        };
-
-        let mut scanf_compatible_args = vec![];
-        for arg in value_args {
-            if let Some(coerced) = self.coerce_scanf_arg(arg, symbols) {
-                let mut coerced = *coerced;
-                self.rewrite_expr_fully(symbols, &mut coerced);
-                scanf_compatible_args.push(coerced);
-            } else {
-                eprintln!(
-                    "synsub: rewrite_scanf_and_fscanf_and_sscanf: unsupported target argument {arg:?}"
-                );
-                return None;
-            }
-        }
-
-        let comma_punctuated_args: Punctuated<Expr, Comma> =
-            Punctuated::from_iter(scanf_compatible_args);
-
-        let scanf_call: Expr = if func.path.is_ident("scanf") || func.path.is_ident("fscanf") {
-            self.add_dep("xj_scanf");
-            self.with_cur_file_item_store(|item_store| {
-                item_store.add_use(false, vec!["xj_scanf".into()], "scanf");
-            });
-            syn::parse_quote! {
-                xj_scanf::scanf!(#fmt_arg, #comma_punctuated_args)
-            }
-        } else {
-            let raw_input = &call.args[0];
-            let input_u8s = self
-                .coerce_byte_view_input(raw_input, symbols)
-                .unwrap_or_else(|| {
-                    Box::new(syn::parse_quote! {
-                        ::core::ffi::CStr::from_ptr((#raw_input) as *const core::ffi::c_char)
-                    })
-                });
-            self.add_dep("xj_scanf");
-            let mut input_u8s = *input_u8s;
-            self.rewrite_expr_fully(symbols, &mut input_u8s);
-            // self.with_cur_file_item_store(|item_store| {
-            //     item_store.add_use(false, vec!["xj_scanf".into()], "bscanf");
-            // });
-            syn::parse_quote! {
-                xj_scanf::bscanf!(#input_u8s, #fmt_arg, #comma_punctuated_args)
-            }
-        };
-
-        Some((scanf_call, Depth::Limited(0)))
-    }
-
     /// Rewrite code like
     ///   ```ignore
     ///     xj_str_from_ptr((if COND { THN } else { ELS }) as *const core::ffi::c_char)
@@ -1822,20 +1716,6 @@ impl Rewriter {
         };
         Some(Box::new(coerced))
     }
-
-    fn coerce_scanf_arg(&self, expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> {
-        match categorize_scanf_arg(expr, symbols) {
-            ScanfArgCategory::Borrow(e) => Some(Box::new(syn::parse_quote! { &mut #e })),
-            ScanfArgCategory::AsMutPtr(e) => {
-                self.add_dep("xj_cstr");
-                self.with_cur_file_item_store(|item_store| {
-                    item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
-                });
-                Some(Box::new(syn::parse_quote! { &mut #e.as_mut_u8_slice() }))
-            }
-            ScanfArgCategory::Other => None,
-        }
-    }
 }
 
 pub(crate) fn is_atomic_constructor(expr: &Expr) -> bool {
@@ -2022,36 +1902,6 @@ fn atomic_intrinsic_method(
         }
     }
     None
-}
-
-enum ScanfArgCategory {
-    Borrow(Box<Expr>),
-    AsMutPtr(Box<Expr>),
-    Other,
-}
-
-fn categorize_scanf_arg(mut expr: &Expr, symbols: &SymbolTable) -> ScanfArgCategory {
-    expr = strip_casts(expr);
-    if let Expr::Reference(reference) = expr {
-        return ScanfArgCategory::Borrow(reference.expr.clone());
-    }
-    if let Expr::RawAddr(reference) = expr {
-        // Raw borrows of arrays should be treated as if we used .as_mut_ptr()
-        if is_array_typed(&reference.expr, symbols) {
-            return ScanfArgCategory::AsMutPtr(reference.expr.clone());
-        }
-        return ScanfArgCategory::Borrow(reference.expr.clone());
-    }
-
-    if let Expr::MethodCall(method_call) = expr {
-        if method_call.method == "as_mut_ptr" {
-            return ScanfArgCategory::AsMutPtr(method_call.receiver.clone());
-        }
-    }
-
-    // Probably a direct raw pointer; can't safely convert that.
-
-    ScanfArgCategory::Other
 }
 
 fn as_usize(expr: &Expr) -> Box<Expr> {
