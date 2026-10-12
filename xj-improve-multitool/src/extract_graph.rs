@@ -106,6 +106,7 @@ impl GraphExtractionVisitor<'_> {
         item_def: DefId,
         item_span: rustc_span::Span,
         vis_span: rustc_span::Span,
+        is_foreign: bool,
     ) {
         if !item_span.data().ctxt.is_root() {
             // A non-root syntax context occurs, for example, when the item has
@@ -134,6 +135,14 @@ impl GraphExtractionVisitor<'_> {
             }
         }
 
+        // c2rust marks imported declarations `pub`, but that does not make them
+        // roots of the generated program. Keep foreign types, functions, and
+        // statics only when reachable from live items. Their graph nodes, spans,
+        // and dependencies are still recorded so unused declarations can be erased.
+        if is_foreign {
+            return;
+        }
+
         let src_map = self.tcx.sess.source_map();
         if self.is_binary {
             // In a binary crate, most identifiers are dead if not explicitly referenced,
@@ -157,7 +166,7 @@ impl GraphExtractionVisitor<'_> {
                     .update_edge(GNode::VirtualRoot, GNode::Def(item_def), GEdge::Mentions);
             }
         } else {
-            // In a library crate, `pub` items must be considered live.
+            // In a library crate, `pub` definitions must be considered live.
             if src_map.span_to_snippet(vis_span) == Ok("pub".to_string()) {
                 self.graf
                     .update_edge(GNode::VirtualRoot, GNode::Def(item_def), GEdge::Mentions);
@@ -217,7 +226,7 @@ impl<'c> Visitor<'c> for GraphExtractionVisitor<'c> {
             _ => {}
         }
 
-        self.saw_item_like(item.owner_id.to_def_id(), item.span, item.vis_span);
+        self.saw_item_like(item.owner_id.to_def_id(), item.span, item.vis_span, false);
 
         self.scope.push(item.owner_id);
         intravisit::walk_item(self, item);
@@ -225,7 +234,7 @@ impl<'c> Visitor<'c> for GraphExtractionVisitor<'c> {
     }
 
     fn visit_foreign_item(&mut self, item: &'c ForeignItem<'c>) -> Self::Result {
-        self.saw_item_like(item.owner_id.to_def_id(), item.span, item.vis_span);
+        self.saw_item_like(item.owner_id.to_def_id(), item.span, item.vis_span, true);
 
         self.scope.push(item.owner_id);
         intravisit::walk_foreign_item(self, item);
