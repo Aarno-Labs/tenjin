@@ -80,6 +80,8 @@ pub struct SymbolTable {
     pub defined_fns: HashSet<String>,
     /// Names of `static mut` items that are not shadowed by a local binding.
     pub mutable_statics: HashSet<String>,
+    /// Constants are values, not persistent storage; local bindings shadow them.
+    pub constants: HashSet<String>,
 }
 
 impl SymbolTable {
@@ -109,6 +111,7 @@ impl SymbolTable {
     /// Insert a name -> type mapping.
     pub fn insert(&mut self, name: String, ty: syn::Type) {
         self.mutable_statics.remove(&name);
+        self.constants.remove(&name);
         self.items.insert(name, ty);
     }
 
@@ -117,6 +120,7 @@ impl SymbolTable {
     /// remain visible.
     pub fn remove(&mut self, name: &str) {
         self.mutable_statics.remove(name);
+        self.constants.remove(name);
         self.items.remove(name);
     }
 
@@ -187,6 +191,7 @@ impl SymbolTable {
                 }
                 syn::Item::Const(i) => {
                     self.insert(i.ident.to_string(), (*i.ty).clone());
+                    self.constants.insert(i.ident.to_string());
                 }
                 syn::Item::Static(i) => {
                     self.insert(i.ident.to_string(), (*i.ty).clone());
@@ -815,6 +820,16 @@ impl VisitMut for RewriteVisitor<'_> {
     /// symbol table is restored when leaving the block.
     fn visit_block_mut(&mut self, block: &mut syn::Block) {
         let saved = self.symbols.clone();
+        // Item constants are in scope throughout the block, including before
+        // their declaration. Track them so an owned constant cannot be mistaken
+        // for an outer binding with persistent storage.
+        for stmt in &block.stmts {
+            if let syn::Stmt::Item(syn::Item::Const(item)) = stmt {
+                self.symbols
+                    .insert(item.ident.to_string(), (*item.ty).clone());
+                self.symbols.constants.insert(item.ident.to_string());
+            }
+        }
         for stmt in &mut block.stmts {
             self.visit_stmt_mut(stmt);
             // After the statement has been (potentially) rewritten,

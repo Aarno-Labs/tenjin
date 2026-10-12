@@ -1635,8 +1635,9 @@ impl Rewriter {
     }
 
     /// Replace C numeric parsers when their input is backed by a ByteView.
-    /// `xj_atone` reports an end offset rather than a C end pointer, so the
-    /// non-null `endptr` forms use a small per-file adapter.
+    /// Null `endptr` forms use the safe `_n` variants; other forms use the
+    /// crate's unsafe `_ptr` variants in the original call's unsafe context.
+    /// End-pointer forms require storage that survives the call statement.
     pub fn rewrite_atone_of_slice(
         &self,
         symbols: &SymbolTable,
@@ -1659,6 +1660,14 @@ impl Rewriter {
             return None;
         }
 
+        if expected_args > 1
+            && !is_null_pointer_expr(&call.args[1])
+            && !crate::printf::live_storage_for_endptr(&call.args[0], symbols)
+        {
+            // Check before recovering the input: recovery may add imports and
+            // dependencies, and a rejected rewrite must not add either.
+            return None;
+        }
         let input = self.coerce_byte_view_input(&call.args[0], symbols)?;
         self.add_dep("xj_atone");
         let replacement: Expr = if expected_args == 1 {
@@ -1675,18 +1684,11 @@ impl Rewriter {
                     syn::parse_quote! { ::xj_atone::#function(#input) }
                 }
             } else {
-                let helper = syn::Ident::new(&format!("xj_synsub_{name}_with_endptr"), func.span());
-                let helper_src = atone_endptr_helper_source(&name);
-                self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once(&helper_src);
-                });
-                if matches!(name.as_str(), "strtod" | "strtof") {
-                    self.add_dep("errno");
-                }
+                let function = syn::Ident::new(&format!("{name}_ptr"), func.span());
                 if let Some(base) = base {
-                    syn::parse_quote! { #helper(#input, #endptr, #base) }
+                    syn::parse_quote! { ::xj_atone::#function(#input, #endptr, #base) }
                 } else {
-                    syn::parse_quote! { #helper(#input, #endptr) }
+                    syn::parse_quote! { ::xj_atone::#function(#input, #endptr) }
                 }
             }
         };
@@ -2178,45 +2180,6 @@ fn is_byte_vec_type(ty: &Type) -> bool {
         }
         _ => false,
     }
-}
-
-fn atone_endptr_helper_source(name: &str) -> String {
-    let (return_type, base_arg, parse_body) = match name {
-        "strtod" => (
-            "f64",
-            "",
-            "let (value, error) = ::xj_atone::strtod_u_e(input, &mut endoff);\n    if let Some(error) = error { ::errno::set_errno(error); }",
-        ),
-        "strtof" => (
-            "f32",
-            "",
-            "let (value, error) = ::xj_atone::strtof_u_e(input, &mut endoff);\n    if let Some(error) = error { ::errno::set_errno(error); }",
-        ),
-        "strtol" => (
-            "::core::ffi::c_long",
-            ", base: ::core::ffi::c_int",
-            "let value = ::xj_atone::strtol(input, &mut endoff, base);",
-        ),
-        "strtoul" => (
-            "::core::ffi::c_ulong",
-            ", base: ::core::ffi::c_int",
-            "let value = ::xj_atone::strtoul(input, &mut endoff, base);",
-        ),
-        "strtoll" => (
-            "::core::ffi::c_longlong",
-            ", base: ::core::ffi::c_int",
-            "let value = ::xj_atone::strtoll(input, &mut endoff, base);",
-        ),
-        "strtoull" => (
-            "::core::ffi::c_ulonglong",
-            ", base: ::core::ffi::c_int",
-            "let value = ::xj_atone::strtoull(input, &mut endoff, base);",
-        ),
-        _ => unreachable!("only strto* functions use an endptr adapter"),
-    };
-    format!(
-        "fn xj_synsub_{name}_with_endptr<B: ::xj_atone::ByteView + ?Sized>(\n    input: &B,\n    endptr: *mut *mut u8{base_arg}\n) -> {return_type} {{\n    let input = ::xj_atone::ByteView::view_bytes(input);\n    let mut endoff = 0usize;\n    {parse_body}\n    if !endptr.is_null() {{\n        unsafe {{ *endptr = input.as_ptr().add(endoff) as *mut u8; }}\n    }}\n    value\n}}"
-    )
 }
 
 fn extract_slice_ptr_base<'e>(expr: &'e Expr, symbols: &SymbolTable) -> Option<&'e Expr> {

@@ -1497,28 +1497,18 @@ fn atone_adapts_non_null_endptr_and_preserves_raw_pointer_calls() {
         "strtod", "strtof", "strtol", "strtoul", "strtoll", "strtoull",
     ] {
         assert!(
-            output.contains(&format!("fn xj_synsub_{function}_with_endptr<")),
-            "missing adapter for {function}: {output}"
-        );
-        assert!(
-            output.contains(&format!(
-                "xj_synsub_{function}_with_endptr(input.as_u8_slice()"
-            )),
+            output.contains(&format!("::xj_atone::{function}_ptr(input.as_u8_slice()")),
             "missing call for {function}: {output}"
         );
     }
-    assert_eq!(
-        output.matches("fn xj_synsub_strtod_with_endptr<").count(),
-        1
-    );
-    assert!(output.contains("::xj_atone::strtod_u_e(input, &mut endoff)"));
-    assert!(output.contains("::errno::set_errno(error)"));
-    assert!(output.contains("::xj_atone::strtol(input, &mut endoff, base)"));
+    assert_eq!(output.matches("::xj_atone::strtod_ptr(").count(), 2);
+    assert!(!output.contains("xj_synsub_"));
+    assert!(!output.contains("::errno::"));
     assert!(output.contains("atoi(raw)"));
     assert!(output.contains("strtod(raw, ::core::ptr::null_mut())"));
     assert_eq!(
         rw.deps(),
-        ["errno", "xj_atone", "xj_cstr"].map(str::to_string).into()
+        ["xj_atone", "xj_cstr"].map(str::to_string).into()
     );
 }
 

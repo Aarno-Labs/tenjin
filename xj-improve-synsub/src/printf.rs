@@ -513,19 +513,80 @@ fn block_scalar(block: &syn::Block, symbols: &SymbolTable) -> bool {
 // Only borrow storage that outlives a conditional arm. Owned call results and
 // block locals cannot supply a borrowed result from that arm.
 fn live_storage(expr: &Expr, symbols: &SymbolTable) -> bool {
+    live_storage_inner(expr, symbols, StorageLifetime::ConditionalArm)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StorageLifetime {
+    ConditionalArm,
+    EndPointer,
+}
+
+/// Recognize existing storage for a C end pointer without introducing an owner
+/// that dies at the end of the call statement. This is a local check, not proof
+/// that the original program keeps that storage alive for every pointer use.
+/// In particular, even reference-returning calls may borrow temporary arguments,
+/// so calls, blocks, conditionals, and unknown methods are conservatively rejected.
+pub(crate) fn live_storage_for_endptr(expr: &Expr, symbols: &SymbolTable) -> bool {
+    live_storage_inner(expr, symbols, StorageLifetime::EndPointer)
+}
+
+fn live_storage_inner(expr: &Expr, symbols: &SymbolTable, lifetime: StorageLifetime) -> bool {
+    let live = |expr: &Expr| live_storage_inner(expr, symbols, lifetime);
     match unparen(expr) {
-        Expr::Lit(_) => true,
-        Expr::Path(_) => expr_type(expr, symbols).is_some(),
-        Expr::Field(f) => live_storage(&f.base, symbols),
-        Expr::Index(i) => live_storage(&i.expr, symbols),
-        Expr::Reference(r) => live_storage(&r.expr, symbols),
-        Expr::Unary(u) if matches!(u.op, syn::UnOp::Deref(_)) => {
-            matches!(expr_type(&u.expr, symbols), Some(Type::Reference(_)))
-                && live_storage(&u.expr, symbols)
+        Expr::Lit(lit) => {
+            lifetime == StorageLifetime::ConditionalArm
+                || matches!(
+                    lit.lit,
+                    syn::Lit::Str(_) | syn::Lit::ByteStr(_) | syn::Lit::CStr(_)
+                )
         }
-        Expr::Call(_) => matches!(expr_type(expr, symbols), Some(Type::Reference(_))),
+        Expr::Path(path) => {
+            let Some(ty) = expr_type(expr, symbols) else {
+                return false;
+            };
+            // A constant owner is materialized at each use. Reference constants
+            // already refer to persistent storage; alias types are unknown here.
+            lifetime == StorageLifetime::ConditionalArm
+                || matches!(ty, Type::Reference(_))
+                || path
+                    .path
+                    .get_ident()
+                    .is_some_and(|name| !symbols.constants.contains(&name.to_string()))
+        }
+        Expr::Field(f) => live(&f.base),
+        Expr::Index(i) => live(&i.expr),
+        Expr::Reference(r) => live(&r.expr),
+        Expr::Unary(u) if matches!(u.op, syn::UnOp::Deref(_)) => {
+            matches!(expr_type(&u.expr, symbols), Some(Type::Reference(_))) && live(&u.expr)
+        }
+        Expr::Call(_) => {
+            lifetime == StorageLifetime::ConditionalArm
+                && matches!(expr_type(expr, symbols), Some(Type::Reference(_)))
+        }
+        Expr::Cast(c)
+            if lifetime == StorageLifetime::EndPointer && matches!(&*c.ty, Type::Ptr(_)) =>
+        {
+            live(&c.expr)
+        }
+        Expr::RawAddr(raw) if lifetime == StorageLifetime::EndPointer => live(&raw.expr),
+        Expr::MethodCall(m)
+            if lifetime == StorageLifetime::EndPointer
+                && m.args.is_empty()
+                && ((m.turbofish.is_none()
+                    && matches!(m.method.to_string().as_str(), "as_ptr" | "as_mut_ptr"))
+                    || m.method == "cast") =>
+        {
+            // These are the pointer-decay layers stripped by ByteView recovery.
+            live(&m.receiver)
+        }
         Expr::MethodCall(m) => {
-            expr_type(expr, symbols).is_some() && live_storage(&m.receiver, symbols)
+            let ty = expr_type(expr, symbols);
+            (if lifetime == StorageLifetime::EndPointer {
+                m.turbofish.is_none() && matches!(ty, Some(Type::Reference(_)))
+            } else {
+                ty.is_some()
+            }) && live(&m.receiver)
         }
         _ => false,
     }
