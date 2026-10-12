@@ -54,13 +54,13 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_ctor_over_if);
     rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
     rw.add_expr_rewrite(Rewriter::rewrite_memcmp_float_comparison);
+    rw.add_expr_rewrite(Rewriter::rewrite_strcmp_zstr_eq_literal);
     rw.add_expr_rewrite(Rewriter::rewrite_byte_view_calls);
     rw.add_expr_rewrite(Rewriter::rewrite_libm_call_to_cmath);
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
     rw.add_expr_rewrite(Rewriter::rewrite_ctime_time);
     rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
     rw.add_expr_rewrite(Rewriter::rewrite_str_from_ptr_of_zstr);
-    rw.add_expr_rewrite(Rewriter::rewrite_strcmp_zstr_eq_literal);
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
     rw.add_expr_rewrite(Rewriter::rewrite_bool_cast_nonzero);
     rw.add_expr_rewrite(Rewriter::rewrite_u8_char_comparison);

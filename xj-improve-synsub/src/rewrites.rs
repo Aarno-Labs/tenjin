@@ -1434,6 +1434,8 @@ impl Rewriter {
     /// of either the call or the comparison in either order) into
     /// `s.as_bytes() == b"lit"` when `s` is a `ZString`, `&ZString`, `&ZStr`, or `&mut ZStr`.
     /// `ZStr::as_bytes` stops at the first NUL, as does `strcmp`.
+    /// Recognize explicit ZStr views, pointer decay, and C int result casts,
+    /// including calls already lowered to the xj ByteView APIs.
     pub fn rewrite_strcmp_zstr_eq_literal(
         &self,
         symbols: &SymbolTable,
@@ -1446,9 +1448,9 @@ impl Rewriter {
             return None;
         }
         let call = if is_zero_integer_expr(&binary.right) {
-            expr_strip_parens(&binary.left)
+            strcmp_result_base(&binary.left)
         } else if is_zero_integer_expr(&binary.left) {
-            expr_strip_parens(&binary.right)
+            strcmp_result_base(&binary.right)
         } else {
             return None;
         };
@@ -1458,29 +1460,42 @@ impl Rewriter {
         let Expr::Path(function) = expr_strip_parens(&call.func) else {
             return None;
         };
-        if function.qself.is_some() || !function.path.is_ident("strcmp") || call.args.len() != 2 {
+        if function.qself.is_some() || call.args.len() != 2 {
+            return None;
+        }
+        let bounded = is_path_exactly_2(&function.path, "xj_cstr", "strcmp")
+            || is_path_exactly_2(&function.path, "xj_zstr", "strcmp")
+            || is_path_exactly_3(&function.path, "xj_zstr", "c", "strcmp");
+        if !bounded
+            && !function.path.is_ident("strcmp")
+            && !is_path_exactly_2(&function.path, "libc", "strcmp")
+        {
+            return None;
+        }
+        if function.path.is_ident("strcmp")
+            && (symbols.has("strcmp") || symbols.defined_fns.contains("strcmp"))
+        {
             return None;
         }
 
-        let (place, literal) = match (get_litbytestr(&call.args[0]), get_litbytestr(&call.args[1]))
-        {
+        let (place, literal) = match (
+            strcmp_byte_literal(&call.args[0]),
+            strcmp_byte_literal(&call.args[1]),
+        ) {
             (None, Some(literal)) => (&call.args[0], literal),
             (Some(literal), None) => (&call.args[1], literal),
             _ => return None,
         };
-        // Restrict to places that can be method receivers without parenthesization.
-        let place = expr_strip_parens(place);
-        if !matches!(place, Expr::Path(_) | Expr::Field(_) | Expr::Index(_)) {
-            return None;
-        }
-        if !is_zstr_like_type(&symbols.type_of_expr(place)?) {
-            return None;
-        }
+        let place = strcmp_zstr_place(place, symbols)?;
 
-        // `strcmp` reads the literal only up to its first NUL; without one it
-        // would read out of bounds, so leave that case alone.
+        // Bounded xj inputs have a virtual terminator at the view's end.
+        // Raw C literals need a stored NUL to keep the read within bounds.
         let bytes = literal.value();
-        let nul = bytes.iter().position(|&b| b == 0)?;
+        let nul = match bytes.iter().position(|&b| b == 0) {
+            Some(nul) => nul,
+            None if bounded => bytes.len(),
+            None => return None,
+        };
         let literal = LitByteStr::new(&bytes[..nul], literal.span());
 
         let op = &binary.op;
@@ -2440,6 +2455,69 @@ fn strlen_pointer_base(mut expr: &Expr) -> &Expr {
             _ => return expr,
         }
     }
+}
+
+/// Remove only result casts that preserve a C int's zero/nonzero value.
+fn strcmp_result_base(mut expr: &Expr) -> &Expr {
+    loop {
+        expr = expr_strip_parens(expr);
+        match expr {
+            Expr::Cast(cast) if c_scalar_of_type(&cast.ty) == Some(CScalar::Int) => {
+                expr = &cast.expr;
+            }
+            _ => return expr,
+        }
+    }
+}
+
+/// Recover the literal without dropping evaluated pointer-method arguments.
+fn strcmp_byte_literal(expr: &Expr) -> Option<LitByteStr> {
+    match strlen_pointer_base(expr) {
+        Expr::Reference(reference) => strcmp_byte_literal(&reference.expr),
+        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            strcmp_byte_literal(&unary.expr)
+        }
+        Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::ByteStr(bytes) => Some(bytes.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Recover a guided string only through views of its complete effective contents.
+/// Sub-slices and arbitrary method calls retain their original comparisons.
+fn strcmp_zstr_place<'a>(mut expr: &'a Expr, symbols: &SymbolTable) -> Option<&'a Expr> {
+    loop {
+        expr = strlen_pointer_base(expr);
+        match expr {
+            Expr::Reference(reference) => expr = &reference.expr,
+            Expr::RawAddr(_) => return zstr_place_of_c_str_arg(expr, symbols),
+            Expr::MethodCall(view)
+                if view.args.is_empty()
+                    && matches!(
+                        view.method.to_string().as_str(),
+                        "as_bytes"
+                            | "as_bytes_mut"
+                            | "as_bytes_with_nul"
+                            | "as_buffer"
+                            | "as_buffer_mut"
+                            | "as_c_str"
+                            | "as_z_str"
+                            | "as_z_str_mut"
+                            | "view_bytes"
+                    ) =>
+            {
+                expr = &view.receiver;
+            }
+            _ => break,
+        }
+    }
+    // Restrict to places that can be method receivers without parenthesization.
+    if !matches!(expr, Expr::Path(_) | Expr::Field(_) | Expr::Index(_)) {
+        return None;
+    }
+    is_zstr_like_type(&symbols.type_of_expr(expr)?).then_some(expr)
 }
 
 /// Preserve strlen's declared return type while avoiding a redundant usize cast.

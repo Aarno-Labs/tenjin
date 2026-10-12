@@ -1279,11 +1279,11 @@ fn strcmp_of_zstr_and_literal_compares_bytes() {
     check(
         &rw,
         r#"fn demo(p: &xj_zstr::ZStr, q: &mut ZStr, r: &ZString, s: ZString, args: Vec<ZString>, raw: *const i8) {
-            if strcmp(p, b"hey\0".as_ptr()) == 0 as ::core::ffi::c_int {}
-            if strcmp(q, b"hey\0".as_ptr()) != 0 as ::core::ffi::c_int {}
-            if 0 == strcmp(b"hey\0".as_ptr(), r) {}
-            if strcmp(s, b"a\0b\0" as *const u8 as *const ::core::ffi::c_char) == 0 {}
-            if strcmp(args[1], b"\0".as_ptr()) == 0 as ::core::ffi::c_int {}
+            if strcmp(p.as_bytes_with_nul(), b"append\0") as ::core::ffi::c_int == 0 {}
+            if libc::strcmp(q.as_buffer_mut().as_mut_ptr().cast(), b"hey\0".as_ptr()) != 0 as ::core::ffi::c_int {}
+            if 0 == ::xj_cstr::strcmp(b"hey", r.as_c_str()) as i32 {}
+            if ::xj_zstr::strcmp(s.as_bytes_with_nul(), b"a\0b\0") == 0 {}
+            if ::xj_cstr::strcmp(args[1].as_z_str().as_bytes_with_nul(), &*b"\0") == 0 as ::core::ffi::c_int {}
             if strcmp(raw, b"hey\0".as_ptr()) == 0 as ::core::ffi::c_int {}
             if strcmp(p, b"hey".as_ptr()) == 0 as ::core::ffi::c_int {}
             if strcmp(p, q) == 0 as ::core::ffi::c_int {}
@@ -1299,7 +1299,7 @@ fn strcmp_of_zstr_and_literal_compares_bytes() {
                 args: Vec<ZString>,
                 raw: *const i8,
             ) {
-                if p.as_bytes() == b"hey" {}
+                if p.as_bytes() == b"append" {}
                 if q.as_bytes() != b"hey" {}
                 if r.as_bytes() == b"hey" {}
                 if s.as_bytes() == b"a" {}
