@@ -2,11 +2,80 @@
 
 use quote::ToTokens;
 use syn::{Expr, Type, parse::Parser, parse_quote};
-use xj_cfmt_core::{Plan, Requirement};
+use xj_cfmt_core::{Piece, Plan, Requirement};
 
-use crate::{Rewriter, SymbolTable};
+use crate::{Depth, Rewriter, SymbolTable};
 
 impl Rewriter {
+    /// Rewrite an ignored, literal ASCII stderr line to `xj_cio::eprintln!`.
+    pub fn rewrite_stmt_fprintf_stderr(
+        &self,
+        _symbols: &SymbolTable,
+        stmt: &syn::Stmt,
+    ) -> Option<(syn::Stmt, Depth)> {
+        // This rewrite is not conservative: it assumes the program's use of
+        // errno (if any) cannot be affected by these calls, and that differences
+        // in observable behavior in failure conditions is acceptable.
+        let (attrs, mac) = match stmt {
+            syn::Stmt::Macro(m) if m.semi_token.is_some() => (&m.attrs, &m.mac),
+            syn::Stmt::Expr(Expr::Macro(m), Some(_)) => (&m.attrs, &m.mac),
+            _ => return None,
+        };
+        if mac.path.segments.len() != 2
+            || mac.path.segments[0].ident != "xj_cio"
+            || mac.path.segments[1].ident != "fprintf_safe"
+        {
+            return None;
+        }
+        let args = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+            .parse2(mac.tokens.clone())
+            .ok()?;
+        // Additional arguments must not lose their evaluation or formatting.
+        if args.len() != 2 {
+            return None;
+        }
+        let Expr::Call(stream) = unparen(&args[0]) else {
+            return None;
+        };
+        let Expr::Path(function) = unparen(&stream.func) else {
+            return None;
+        };
+        if !stream.args.is_empty()
+            || function.qself.is_some()
+            || function.path.segments.len() != 2
+            || function.path.segments[0].ident != "xj_cio"
+            || function.path.segments[1].ident != "stderr"
+        {
+            return None;
+        }
+        let bytes = literal_bytes(&args[1])?;
+        let bytes = xj_cfmt_core::c_bytes(&bytes);
+        if !bytes.is_ascii() {
+            return None;
+        }
+        let plan = Plan::new(bytes).ok()?;
+        let mut text = Vec::new();
+        for piece in plan.pieces {
+            match piece {
+                Piece::Literal(bytes) => text.extend_from_slice(bytes),
+                Piece::Conversion(c) if c.conversion == b'%' => text.push(b'%'),
+                _ => return None,
+            }
+        }
+        // eprintln supplies exactly one newline; preserve all other bytes.
+        if text.pop()? != b'\n' {
+            return None;
+        }
+        let text = String::from_utf8(text).ok()?;
+        let format = text.replace('{', "{{").replace('}', "}}");
+        let format = syn::LitStr::new(&format, mac.path.segments[1].ident.span());
+        self.add_dep("xj_cio");
+        Some((
+            parse_quote! { #(#attrs)* ::xj_cio::eprintln!(#format); },
+            Depth::Limited(0),
+        ))
+    }
+
     pub fn rewrite_c_printf_safe(
         &self,
         symbols: &SymbolTable,
