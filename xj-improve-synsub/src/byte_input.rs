@@ -195,21 +195,15 @@ impl Rewriter {
                     let left = self.coerce_byte_view_input(&call.args[0], symbols)?;
                     let right = self.coerce_byte_view_input(&call.args[1], symbols)?;
                     let ident = &segments.last()?.ident;
+                    self.add_dep("xj_zstr");
                     let result = if name == "memcmp" {
                         let length = &call.args[2];
-                        self.add_dep("xj_zstr");
                         parse_quote! { ::xj_zstr::memcmp(#left, #right, (#length) as usize).expect("memcmp length exceeds byte view") }
-                    } else if name == "strcspn" {
-                        self.add_dep("xj_zstr");
-                        parse_quote! { ::xj_zstr::strcspn(#left, #right) }
+                    } else if count == 3 {
+                        let length = &call.args[2];
+                        parse_quote! { ::xj_zstr::#ident(#left, #right, (#length) as usize) }
                     } else {
-                        self.add_dep("xj_cstr");
-                        if count == 3 {
-                            let length = &call.args[2];
-                            parse_quote! { ::xj_cstr::#ident(#left, #right, (#length) as usize) }
-                        } else {
-                            parse_quote! { ::xj_cstr::#ident(#left, #right) }
-                        }
+                        parse_quote! { ::xj_zstr::#ident(#left, #right) }
                     };
                     // Preserve non-usize size_t spellings as well as c_int aliases.
                     let result = if let Some(syn::ReturnType::Type(_, ty)) =
@@ -233,7 +227,8 @@ impl Rewriter {
                 _ => return None,
             }
         }
-        let input_indices: &[usize] = match (namespace.as_str(), name.as_str()) {
+        let namespace = namespace.as_str();
+        let input_indices: &[usize] = match (namespace, name.as_str()) {
             ("xj_cio", "fopen" | "popen" | "rename") => &[0, 1],
             ("xj_cio", "fdopen" | "freopen" | "fscanf" | "vfscanf") => &[1],
             ("xj_cio", "freopen_") => &[0, 1],
@@ -251,24 +246,30 @@ impl Rewriter {
             ("xj_ctime", "strftime") if segments.len() == 3 && segments[1].ident == "compat" => {
                 &[1]
             }
-            ("xj_cstr", "strlen" | "strchr_idx" | "strrchr_idx") => &[0],
-            ("xj_cstr", "strcmp" | "strncmp" | "strspn" | "strstr_idx" | "strstr_ptr") => &[0, 1],
             (
-                "xj_cstr",
+                "xj_zstr",
                 "strcmp_eq" | "strcmp_ne" | "strcmp_lt" | "strcmp_le" | "strcmp_gt" | "strcmp_ge",
             ) => &[0, 1],
-            ("xj_cstr", "strcpy" | "strncpy" | "strcat" | "strncat" | "strstr_mut_ptr") => &[1],
             ("xj_scanf", "scanf_str" | "sscanf" | "bscanf") => &[0, 1],
             ("xj_scanf", "parse_format" | "scanf") => &[0],
             ("xj_scanf", "scanf_core" | "brscanf") => &[1],
-            ("xj_zstr", "strlen" | "strnlen" | "strdup" | "strndup" | "memchr") => &[0],
-            ("xj_zstr", "strcmp" | "strncmp" | "memcmp" | "strspn" | "strcspn") => &[0, 1],
+            (
+                "xj_zstr",
+                "strlen" | "strnlen" | "strdup" | "strndup" | "memchr" | "strchr_idx"
+                | "strrchr_idx",
+            ) => &[0],
+            (
+                "xj_zstr",
+                "strcmp" | "strncmp" | "memcmp" | "strspn" | "strcspn" | "strstr_idx"
+                | "strstr_ptr",
+            ) => &[0, 1],
             ("xj_cfmt" | "xj_cfmt_core" | "xj_zstr", "to_c_str") => &[0],
             ("xj_cio", "to_c_str") if segments.len() == 3 && segments[1].ident == "__cfmt" => &[0],
             ("xj_cfmt", "RawBytes") => &[0],
             (
                 "xj_zstr",
-                "memcpy" | "strcpy" | "strncpy" | "strcat" | "strncat" | "strstr" | "strpbrk",
+                "memcpy" | "strcpy" | "strncpy" | "strcat" | "strncat" | "strstr" | "strpbrk"
+                | "strstr_mut_ptr",
             ) => &[1],
             _ => return None,
         };
@@ -276,7 +277,7 @@ impl Rewriter {
             namespace == "xj_cio" && segments.len() == 3 && segments[1].ident == "c_abi";
         let qualified_module = segments.len() == 3
             && matches!(
-                (namespace.as_str(), segments[1].ident.to_string().as_str()),
+                (namespace, segments[1].ident.to_string().as_str()),
                 ("xj_cstat", "c")
                     | ("xj_zstr", "c")
                     | ("xj_ctime", "compat")
@@ -324,7 +325,7 @@ impl Rewriter {
             let input = self.coerce_byte_view_input_with_os(
                 call.args.get(index)?,
                 symbols,
-                matches!(namespace.as_str(), "xj_cio" | "xj_cstat"),
+                matches!(namespace, "xj_cio" | "xj_cstat"),
             );
             if let Some(input) = input {
                 result.args[index] = *input;

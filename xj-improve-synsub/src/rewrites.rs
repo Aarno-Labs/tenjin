@@ -802,7 +802,7 @@ impl Rewriter {
         Some((replacement, Depth::Unlimited))
     }
 
-    /// Rewrite `strstr(e1, e2)` into `xj_cstr::strstr_mut_ptr(e1, e2)` when
+    /// Rewrite `strstr(e1, e2)` into `xj_zstr::strstr_mut_ptr(e1, e2)` when
     /// both arguments can be coerced to byte slices.
     pub fn rewrite_strstr(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else {
@@ -821,10 +821,10 @@ impl Rewriter {
         let e1 = self.coerce_u8s(&call.args[0], symbols, true)?;
         let e2 = self.coerce_u8s(&call.args[1], symbols, false)?;
 
-        self.add_dep("xj_cstr");
+        self.add_dep("xj_zstr");
 
         let replacement: Expr = syn::parse_quote! {
-            xj_cstr::strstr_mut_ptr(#e1, #e2)
+            xj_zstr::strstr_mut_ptr(#e1, #e2)
         };
 
         Some((replacement, Depth::Unlimited))
@@ -1592,7 +1592,7 @@ impl Rewriter {
 
     /// Rewrite `strlen(b"text\0".as_ptr())` into `b"text".len()`, trimming
     /// at the first NUL. Keep a result cast only when needed by the C type.
-    /// Other bounded inputs use `xj_cstr::strlen`, with a virtual end terminator.
+    /// Other bounded inputs use `xj_zstr::strlen`, with a virtual end terminator.
     pub fn rewrite_strlen_of_slice(
         &self,
         symbols: &SymbolTable,
@@ -1627,9 +1627,9 @@ impl Rewriter {
             ));
         }
         let input = self.coerce_byte_view_input(arg, symbols)?;
-        self.add_dep("xj_cstr");
+        self.add_dep("xj_zstr");
         Some((
-            strlen_result(syn::parse_quote! { ::xj_cstr::strlen(#input) }, symbols),
+            strlen_result(syn::parse_quote! { ::xj_zstr::strlen(#input) }, symbols),
             Depth::Unlimited,
         ))
     }

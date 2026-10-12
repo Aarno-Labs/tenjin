@@ -1394,8 +1394,8 @@ fn strlen_of_slice_adds_use_item() {
         expect![[r#"
             use ::xj_cstr::ByteSlice;
             fn demo(buf: &[i8]) {
-                let _ = ::xj_cstr::strlen(buf.as_u8_slice()) as size_t;
-                let _ = ::xj_cstr::strlen(buf.as_u8_slice()) as size_t;
+                let _ = ::xj_zstr::strlen(buf.as_u8_slice()) as size_t;
+                let _ = ::xj_zstr::strlen(buf.as_u8_slice()) as size_t;
             }
         "#]],
     );
@@ -1411,7 +1411,7 @@ fn strlen_of_u8_array_borrows_slice() {
         expect![[r#"
             fn demo() {
                 let mut buf: [u8; 100] = [0; 100];
-                let _ = ::xj_cstr::strlen(&buf) as size_t;
+                let _ = ::xj_zstr::strlen(&buf) as size_t;
             }
         "#]],
     );
