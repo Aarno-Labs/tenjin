@@ -1390,16 +1390,12 @@ fn strlen_of_slice_adds_use_item() {
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
     check(
         &rw,
-        "fn demo(buf: &[u16]) { let _ = strlen(buf.as_mut_ptr()); let _ = strlen(buf.as_mut_ptr()); }",
+        "fn demo(buf: &[i8]) { let _ = strlen(buf.as_mut_ptr()); let _ = strlen(buf.as_mut_ptr()); }",
         expect![[r#"
             use ::xj_cstr::ByteSlice;
-            fn demo(buf: &[u16]) {
-                let _ = (::std::ffi::CStr::from_bytes_until_nul(buf.as_u8_slice())
-                    .unwrap()
-                    .count_bytes()) as size_t;
-                let _ = (::std::ffi::CStr::from_bytes_until_nul(buf.as_u8_slice())
-                    .unwrap()
-                    .count_bytes()) as size_t;
+            fn demo(buf: &[i8]) {
+                let _ = ::xj_cstr::strlen(buf.as_u8_slice()) as size_t;
+                let _ = ::xj_cstr::strlen(buf.as_u8_slice()) as size_t;
             }
         "#]],
     );
@@ -1415,8 +1411,7 @@ fn strlen_of_u8_array_borrows_slice() {
         expect![[r#"
             fn demo() {
                 let mut buf: [u8; 100] = [0; 100];
-                let _ = (::std::ffi::CStr::from_bytes_until_nul(&buf[..]).unwrap().count_bytes())
-                    as size_t;
+                let _ = ::xj_cstr::strlen(&buf) as size_t;
             }
         "#]],
     );
@@ -1451,29 +1446,24 @@ fn atone_rewrites_all_null_endptr_and_simple_calls() {
     rw.rewrite_file(&mut file, Depth::Unlimited);
     let output = prettyplease::unparse(&file);
     for call in [
-        "::xj_atone::atof(bytes.as_u8_slice())",
+        "::xj_atone::atof(bytes)",
         "::xj_atone::atof(vector.as_u8_slice())",
         "::xj_atone::atoi(chars.as_u8_slice())",
-        "::xj_atone::atoi(string.as_bytes())",
-        "::xj_atone::atoi(\"17\".as_bytes())",
+        "::xj_atone::atoi(&string)",
+        "::xj_atone::atoi(\"17\")",
         "::xj_atone::atol(chars.as_u8_slice())",
-        "::xj_atone::atol(bytes[1..].as_u8_slice())",
-        "::xj_atone::atoll(b\"42\")",
+        "::xj_atone::atol(&bytes[1..])",
+        "::xj_atone::atoll(b\"42\\0\")",
         "::xj_atone::strtod_n(chars.as_u8_slice())",
-        "::xj_atone::strtof_n(text.as_bytes())",
-        "::xj_atone::strtol_n(bytes.as_u8_slice(), 10)",
-        "::xj_atone::strtoul_n(bytes.as_u8_slice(), 16)",
+        "::xj_atone::strtof_n(text)",
+        "::xj_atone::strtol_n(bytes, 10)",
+        "::xj_atone::strtoul_n(bytes, 16)",
         "::xj_atone::strtoll_n(chars.as_u8_slice(), 0)",
         "::xj_atone::strtoull_n(chars.as_u8_slice(), 8)",
     ] {
         assert!(output.contains(call), "missing {call} in {output}");
     }
-    assert_eq!(
-        output
-            .matches("::xj_atone::strtof_n(text.as_bytes())")
-            .count(),
-        2
-    );
+    assert_eq!(output.matches("::xj_atone::strtof_n(text)").count(), 2);
     assert_eq!(output.matches("use ::xj_cstr::ByteSlice;").count(), 1);
     assert_eq!(
         rw.deps(),
@@ -1507,7 +1497,7 @@ fn atone_adapts_non_null_endptr_and_preserves_raw_pointer_calls() {
         "strtod", "strtof", "strtol", "strtoul", "strtoll", "strtoull",
     ] {
         assert!(
-            output.contains(&format!("fn xj_synsub_{function}_with_endptr(")),
+            output.contains(&format!("fn xj_synsub_{function}_with_endptr<")),
             "missing adapter for {function}: {output}"
         );
         assert!(
@@ -1518,7 +1508,7 @@ fn atone_adapts_non_null_endptr_and_preserves_raw_pointer_calls() {
         );
     }
     assert_eq!(
-        output.matches("fn xj_synsub_strtod_with_endptr(").count(),
+        output.matches("fn xj_synsub_strtod_with_endptr<").count(),
         1
     );
     assert!(output.contains("::xj_atone::strtod_u_e(input, &mut endoff)"));
@@ -1741,7 +1731,7 @@ fn sscanf_with_raw_addr_buffer() {
         expect![[r#"
             use ::xj_cstr::ByteSlice;
             fn demo(mut input: [::core::ffi::c_char; 256], mut choice: ::core::ffi::c_int) -> bool {
-                if xj_scanf::bscanf!(input.as_u8_slice(), "%d", & mut choice)
+                if xj_scanf::bscanf!(input.as_u8_slice(), b"%d\0", & mut choice)
                     != 1 as ::core::ffi::c_int
                 {
                     return false;

@@ -200,7 +200,7 @@ impl CioReplacements {
     }
 }
 
-/// Parameters that the ordinary Rust API accepts as borrowed C strings.
+/// Parameters that the ordinary Rust API accepts as borrowed byte views.
 fn cio_string_argument(target: &str, index: usize) -> bool {
     matches!(
         (target, index),
@@ -212,6 +212,49 @@ fn cio_string_argument(target: &str, index: usize) -> bool {
             | ("rename", 0 | 1)
             | ("fputs" | "puts", 0)
     )
+}
+
+fn cio_byte_view_type(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(r) => cio_byte_view_type(&r.elem),
+        Type::Array(a) => matches!(&*a.elem, Type::Path(p) if p.path.is_ident("u8")),
+        Type::Slice(s) => matches!(&*s.elem, Type::Path(p) if p.path.is_ident("u8")),
+        Type::Path(p) if p.qself.is_none() => {
+            let Some(last) = p.path.segments.last() else {
+                return false;
+            };
+            if p.path.segments.len() > 1
+                && !matches!(
+                    p.path.segments[0].ident.to_string().as_str(),
+                    "std" | "core" | "alloc" | "xj_zstr"
+                )
+            {
+                return false;
+            }
+            match last.ident.to_string().as_str() {
+                "str" | "String" | "CStr" | "CString" | "ZStr" | "ZString" | "OsStr"
+                | "OsString" | "Path" | "PathBuf" => true,
+                "Vec" | "Box" | "Rc" | "Arc" | "Cow" => {
+                    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+                        return false;
+                    };
+                    let Some(inner) = args.args.iter().find_map(|arg| match arg {
+                        syn::GenericArgument::Type(ty) => Some(ty),
+                        _ => None,
+                    }) else {
+                        return false;
+                    };
+                    if last.ident == "Vec" {
+                        matches!(inner, Type::Path(p) if p.path.is_ident("u8"))
+                    } else {
+                        cio_byte_view_type(inner)
+                    }
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 /// Clang's canonical function type can lose the public size_t/ssize_t
@@ -240,11 +283,10 @@ fn cio_native_return_kind(target: &str) -> Option<CTypeKind> {
 }
 
 impl Translation<'_> {
-    /// Return an existing borrowed C-string view when no pointer read is needed.
-    fn cio_cstr_view(&self, arg: &Expr, carg: CExprId) -> Option<Box<Expr>> {
+    /// Recover ByteView storage without reading through the translated pointer.
+    fn cio_byte_view(&self, arg: &Expr, carg: CExprId) -> Option<Box<Expr>> {
         if let Some(bytes) = self.printf_literal(carg) {
-            let value = std::ffi::CString::new(bytes).ok()?;
-            let literal = syn::LitCStr::new(&value, Span::call_site());
+            let literal = syn::LitByteStr::new(bytes, Span::call_site());
             return Some(Box::new(syn::parse_quote!(#literal)));
         }
         let guided = self
@@ -253,7 +295,7 @@ impl Translation<'_> {
             .query_expr_type(self, carg)?;
         let mut arg = Self::printf_guided_expr(arg);
         // Pointer lowering may have inserted a byte view before as_ptr().
-        // Recover the guided storage, whose as_c_str() supplies the borrow.
+        // Recover the guided storage, which implements ByteView directly.
         while let Expr::MethodCall(call) = arg {
             if !call.args.is_empty()
                 || !matches!(
@@ -265,15 +307,8 @@ impl Translation<'_> {
             }
             arg = Self::printf_guided_expr(&call.receiver);
         }
-        let ty = guided.strip_refs();
-        if tenjin::type_is_xj_zstr(ty, "ZStr")
-            || tenjin::type_is_xj_zstr(ty, "ZString")
-            || matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.segments.last().is_some_and(|p| p.ident == "CString"))
-        {
-            Some(Box::new(syn::parse_quote!((#arg).as_c_str())))
-        } else if matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.segments.last().is_some_and(|p| p.ident == "CStr"))
-        {
-            Some(Box::new(syn::parse_quote!(#arg)))
+        if cio_byte_view_type(guided.strip_refs()) {
+            Some(Box::new(syn::parse_quote!(&(#arg))))
         } else {
             None
         }
@@ -314,26 +349,52 @@ impl Translation<'_> {
         let mut adapter = matches!(target.as_str(), "fread" | "fwrite" | "fgetpos" | "fsetpos");
         for (index, arg) in args.iter().enumerate() {
             let view = if cio_string_argument(target, index) {
-                self.cio_cstr_view(arg, cargs[index])
+                self.cio_byte_view(arg, cargs[index])
             } else {
                 None
             };
             adapter |= cio_string_argument(target, index) && view.is_none();
             views.push(view);
         }
-        let values = args
+        let optional_view = if matches!(target.as_str(), "freopen" | "perror") {
+            self.cio_byte_view(&args[0], cargs[0])
+        } else {
+            None
+        };
+        let mut values: Vec<Box<Expr>> = args
             .iter()
             .zip(views)
             .map(|(arg, view)| match (adapter, view) {
                 (false, Some(view)) => view,
-                (true, Some(view)) => Box::new(syn::parse_quote!((#view).as_ptr().cast())),
+                // The ABI adapter needs a stored NUL, even for an unterminated
+                // ByteView. This temporary owner lives until the call returns.
+                (true, Some(view)) => Box::new(syn::parse_quote!(
+                    ::xj_cio::__cfmt::to_c_str(#view).as_ptr().cast()
+                )),
                 (_, None) => arg.clone(),
             })
             .collect();
+        let direct_target = if let Some(view) = optional_view {
+            if adapter {
+                values[0] = Box::new(syn::parse_quote!(
+                    ::xj_cio::__cfmt::to_c_str(#view).as_ptr().cast()
+                ));
+                target.as_str()
+            } else {
+                values[0] = Box::new(syn::parse_quote!(Some(#view)));
+                if target == "freopen" {
+                    "freopen_"
+                } else {
+                    "perror_"
+                }
+            }
+        } else {
+            target.as_str()
+        };
         let path = if adapter {
             vec!["xj_cio", "c_abi", target.as_str()]
         } else {
-            vec!["xj_cio", target.as_str()]
+            vec!["xj_cio", direct_target]
         };
         self.use_crate(ExternCrate::XjCio);
         let mut call = mk().call_expr(mk().abs_path_expr(path), values);
@@ -382,14 +443,8 @@ impl Translation<'_> {
         };
         self.use_crate(ExternCrate::XjCio);
         let fmt = &args[fmt_idx];
-        let fmt_view = if self
-            .parsed_guidance
-            .borrow_mut()
-            .query_expr_type(self, cargs[fmt_idx])
-            .is_some_and(|g| !g.required_xj_zstr_types().is_empty())
-        {
-            let fmt = tenjin::expr_strip_casts(fmt);
-            quote::quote!((#fmt).as_c_str())
+        let fmt_view = if let Some(view) = self.cio_byte_view(fmt, cargs[fmt_idx]) {
+            quote::quote!(#view)
         } else {
             quote::quote!(unsafe { ::core::ffi::CStr::from_ptr((#fmt) as _) })
         };
@@ -491,6 +546,9 @@ impl Translation<'_> {
                 Self::printf_guided_expr(&call.receiver)
             }
             Expr::Paren(paren) => Self::printf_guided_expr(&paren.expr),
+            // Guided C arrays can still appear as synthetic raw addresses of
+            // their Rust storage. Borrow that storage for byte consumers.
+            Expr::RawAddr(raw) => Self::printf_guided_expr(&raw.expr),
             _ => expr,
         }
     }
@@ -529,12 +587,9 @@ impl Translation<'_> {
             .borrow_mut()
             .query_expr_type(self, cargs[fmt_idx]);
         let mut safe = literal.is_some()
-            || fmt_guided.as_ref().is_some_and(|g| {
-                !g.required_xj_zstr_types().is_empty()
-                    || tenjin::type_is_vec_of_1_path(g.strip_refs(), "u8")
-                    || tenjin::type_is_string(&g.parsed)
-                    || tenjin::type_is_str_ref(&g.parsed)
-            });
+            || fmt_guided
+                .as_ref()
+                .is_some_and(|g| cio_byte_view_type(g.strip_refs()));
         let format = if let Some(bytes) = literal {
             let lit = syn::LitByteStr::new(bytes, Span::call_site());
             quote::quote!(#lit)
@@ -560,12 +615,9 @@ impl Translation<'_> {
                 .parsed_guidance
                 .borrow_mut()
                 .query_expr_type(self, cargs[position]);
-            let guided = guidance.as_ref().is_some_and(|g| {
-                !g.required_xj_zstr_types().is_empty()
-                    || tenjin::type_is_vec_of_1_path(g.strip_refs(), "u8")
-                    || tenjin::type_is_string(&g.parsed)
-                    || tenjin::type_is_str_ref(&g.parsed)
-            });
+            let guided = guidance
+                .as_ref()
+                .is_some_and(|g| cio_byte_view_type(g.strip_refs()));
             let mut value = if guided {
                 let arg = Self::printf_guided_expr(arg);
                 quote::quote!(#arg)
@@ -779,7 +831,7 @@ impl Translation<'_> {
                 { #(#bindings)*
                   let #fmt_name = &#format;
                   let #ap_name = #ap;
-                  match ::xj_cio::cformat::Plan::new(::xj_cio::__cfmt::CBytes::c_bytes(&#fmt_name)) {
+                  match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(#fmt_name)) {
                     Ok(#plan_name) => {
                         let #args_name = xj_cio_varargs::xj_cio_vargs(&#plan_name, #ap_name);
                         ::xj_cio::#target(#(#prefix_names,)* &#plan_name, &#args_name)

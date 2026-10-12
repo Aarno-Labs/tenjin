@@ -1,11 +1,11 @@
 // Keep helper bindings separate from the translated C globals.
 mod xj_cio_scanargs {
-    pub(super) unsafe fn xj_cio_vscanargs(
-        fmt: &core::ffi::CStr,
+    pub(super) unsafe fn xj_cio_vscanargs<B: xj_cio::ByteView + ?Sized>(
+        fmt: &B,
         mut ap: ::core::ffi::VaList,
     ) -> Vec<xj_cio::OutArg<'static>> {
         use xj_cio::OutArg;
-        let bytes = fmt.to_bytes();
+        let bytes = xj_cio::__cfmt::cformat::c_bytes(xj_cio::ByteView::view_bytes(fmt));
         let mut out = Vec::new();
         let mut i = 0;
         while i < bytes.len() {

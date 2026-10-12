@@ -54,6 +54,7 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_ctor_over_if);
     rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
     rw.add_expr_rewrite(Rewriter::rewrite_memcmp_float_comparison);
+    rw.add_expr_rewrite(Rewriter::rewrite_byte_view_calls);
     rw.add_expr_rewrite(Rewriter::rewrite_libm_call_to_cmath);
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
     rw.add_expr_rewrite(Rewriter::rewrite_ctime_time);

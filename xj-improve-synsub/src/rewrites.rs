@@ -603,7 +603,7 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
-    /// Use the safe stat wrappers when the path is an owned ZString.
+    /// Use the safe stat wrappers for paths backed by a ByteView.
     pub fn rewrite_stat_of_zstring(
         &self,
         symbols: &SymbolTable,
@@ -627,29 +627,10 @@ impl Rewriter {
             return None;
         }
 
-        let path_arg = expr_strip_parens(&call.args[0]);
-        let path = match path_arg {
-            Expr::MethodCall(method)
-                if (method.method == "as_ptr" || method.method == "as_mut_ptr")
-                    && method.args.is_empty()
-                    && method.turbofish.is_none() =>
-            {
-                &*method.receiver
-            }
-            Expr::MethodCall(method)
-                if method.method == "as_z_str"
-                    && method.args.is_empty()
-                    && method.turbofish.is_none() =>
-            {
-                &*method.receiver
-            }
-            Expr::Reference(reference) => &*reference.expr,
-            other => other,
-        };
-        if !is_zstring_type(&symbols.type_of_expr(path)?) {
+        if symbols.defined_fns.contains(&name.to_string()) {
             return None;
         }
-        let path: Expr = syn::parse_quote! { &#path };
+        let path = self.coerce_byte_view_path_input(&call.args[0], symbols)?;
 
         let output = match expr_strip_parens(&call.args[1]) {
             Expr::Reference(reference) if reference.mutability.is_some() => {
@@ -1169,6 +1150,9 @@ impl Rewriter {
             return None;
         }
 
+        if func.path.is_ident("scanf") && call.args.is_empty() {
+            return None;
+        }
         if func.path.is_ident("fscanf") {
             if call.args.len() < 2 {
                 return None;
@@ -1191,12 +1175,10 @@ impl Rewriter {
                 .expect("s/fscanf should have at least 2 arguments")
         };
 
-        let Some(fmt_arg) = coerce_str_of_cast_byte_str(fmt_arg_zero_terminated) else {
-            eprintln!(
-                "synsub: rewrite_scanf_and_fscanf_and_sscanf: unsupported format string argument {fmt_arg_zero_terminated:?}"
-            );
-            return None;
-        };
+        let fmt_arg = self.coerce_byte_view_input(fmt_arg_zero_terminated, symbols)
+            .unwrap_or_else(|| Box::new(syn::parse_quote! {
+                ::core::ffi::CStr::from_ptr((#fmt_arg_zero_terminated) as *const core::ffi::c_char)
+            }));
 
         let value_args = if func.path.is_ident("scanf") {
             // skip fmt string
@@ -1231,7 +1213,15 @@ impl Rewriter {
             syn::parse_quote! {
                 xj_scanf::scanf!(#fmt_arg, #comma_punctuated_args)
             }
-        } else if let Some(input_u8s) = self.coerce_u8s(&call.args[0], symbols, false) {
+        } else {
+            let raw_input = &call.args[0];
+            let input_u8s = self
+                .coerce_byte_view_input(raw_input, symbols)
+                .unwrap_or_else(|| {
+                    Box::new(syn::parse_quote! {
+                        ::core::ffi::CStr::from_ptr((#raw_input) as *const core::ffi::c_char)
+                    })
+                });
             self.add_dep("xj_scanf");
             let mut input_u8s = *input_u8s;
             self.rewrite_expr_fully(symbols, &mut input_u8s);
@@ -1241,8 +1231,6 @@ impl Rewriter {
             syn::parse_quote! {
                 xj_scanf::bscanf!(#input_u8s, #fmt_arg, #comma_punctuated_args)
             }
-        } else {
-            return None;
         };
 
         Some((scanf_call, Depth::Limited(0)))
@@ -1589,10 +1577,7 @@ impl Rewriter {
 
     /// Rewrite `strlen(b"text\0".as_ptr())` into `b"text".len()`, trimming
     /// at the first NUL. Keep a result cast only when needed by the C type.
-    /// Otherwise rewrite `strlen(e1.as_mut_ptr())` into:
-    ///   * `CStr::from_bytes_until_nul(&e1[..]).count_bytes() as size_t` when e1 is a `u8`
-    ///     array, slice, or `Vec`.
-    ///   * `CStr::from_bytes_until_nul(e1.as_u8_slice()).count_bytes() as size_t` otherwise.
+    /// Other bounded inputs use `xj_cstr::strlen`, with a virtual end terminator.
     pub fn rewrite_strlen_of_slice(
         &self,
         symbols: &SymbolTable,
@@ -1626,28 +1611,15 @@ impl Rewriter {
                 Depth::Limited(0),
             ));
         }
-        if let Some(decayed) = Self::peek_array_decay_coercion(arg, symbols) {
-            if is_u8_sliceable_expr(decayed, symbols) {
-                let replacement: Expr = syn::parse_quote! {
-                    (::std::ffi::CStr::from_bytes_until_nul(&#decayed[..]).unwrap().count_bytes()) as size_t
-                };
-                Some((replacement, Depth::Unlimited))
-            } else {
-                self.add_dep("xj_cstr");
-                self.with_cur_file_item_store(|item_store| {
-                    item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
-                });
-                let replacement: Expr = syn::parse_quote! {
-                    (::std::ffi::CStr::from_bytes_until_nul(#decayed.as_u8_slice()).unwrap().count_bytes()) as size_t
-                };
-                Some((replacement, Depth::Unlimited))
-            }
-        } else {
-            None
-        }
+        let input = self.coerce_byte_view_input(arg, symbols)?;
+        self.add_dep("xj_cstr");
+        Some((
+            strlen_result(syn::parse_quote! { ::xj_cstr::strlen(#input) }, symbols),
+            Depth::Unlimited,
+        ))
     }
 
-    /// Replace C numeric parsers when their input is backed by a byte slice.
+    /// Replace C numeric parsers when their input is backed by a ByteView.
     /// `xj_atone` reports an end offset rather than a C end pointer, so the
     /// non-null `endptr` forms use a small per-file adapter.
     pub fn rewrite_atone_of_slice(
@@ -1672,7 +1644,7 @@ impl Rewriter {
             return None;
         }
 
-        let input = self.coerce_atone_input(&call.args[0], symbols)?;
+        let input = self.coerce_byte_view_input(&call.args[0], symbols)?;
         self.add_dep("xj_atone");
         let replacement: Expr = if expected_args == 1 {
             let function = syn::Ident::new(&name, func.span());
@@ -1704,45 +1676,6 @@ impl Rewriter {
             }
         };
         Some((replacement, Depth::Unlimited))
-    }
-
-    fn coerce_atone_input(&self, expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> {
-        let expr = expr_strip_parens(expr);
-        if let Some(bytes) = coerce_cast_byte_str(expr) {
-            return Some(bytes);
-        }
-
-        let expr = expr_strip_refs(expr_strip_parens(expr_strip_casts(expr)));
-        if let Some(bytes) = coerce_str_as_bytes(expr, symbols) {
-            return Some(bytes);
-        }
-
-        if is_string_expr(expr, symbols) {
-            return Some(Box::new(syn::parse_quote! { #expr.as_bytes() }));
-        }
-
-        let slice = if is_atone_byte_slice_expr(expr, symbols) {
-            expr
-        } else if let Some(decayed) = Self::peek_array_decay_coercion(expr, symbols) {
-            if let Some(bytes) = coerce_str_as_bytes(decayed, symbols) {
-                return Some(bytes);
-            }
-            if is_string_expr(decayed, symbols) {
-                return Some(Box::new(syn::parse_quote! { #decayed.as_bytes() }));
-            }
-            if !is_atone_byte_slice_expr(decayed, symbols) {
-                return None;
-            }
-            decayed
-        } else {
-            return None;
-        };
-
-        self.add_dep("xj_cstr");
-        self.with_cur_file_item_store(|item_store| {
-            item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
-        });
-        Some(Box::new(syn::parse_quote! { #slice.as_u8_slice() }))
     }
 
     /// Rewrite let-bound expressions when simpler forms exist.
@@ -2202,7 +2135,7 @@ fn is_null_pointer_expr(expr: &Expr) -> bool {
     }
 }
 
-fn is_atone_byte_slice_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
+pub(crate) fn is_atone_byte_slice_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
     if let Expr::Index(index) = expr_strip_parens(expr) {
         return matches!(&*index.index, Expr::Range(_))
             && is_atone_byte_slice_expr(&index.expr, symbols);
@@ -2267,12 +2200,15 @@ fn atone_endptr_helper_source(name: &str) -> String {
         _ => unreachable!("only strto* functions use an endptr adapter"),
     };
     format!(
-        "fn xj_synsub_{name}_with_endptr(\n    input: &[u8],\n    endptr: *mut *mut u8{base_arg}\n) -> {return_type} {{\n    let mut endoff = 0usize;\n    {parse_body}\n    if !endptr.is_null() {{\n        unsafe {{ *endptr = input.as_ptr().add(endoff) as *mut u8; }}\n    }}\n    value\n}}"
+        "fn xj_synsub_{name}_with_endptr<B: ::xj_atone::ByteView + ?Sized>(\n    input: &B,\n    endptr: *mut *mut u8{base_arg}\n) -> {return_type} {{\n    let input = ::xj_atone::ByteView::view_bytes(input);\n    let mut endoff = 0usize;\n    {parse_body}\n    if !endptr.is_null() {{\n        unsafe {{ *endptr = input.as_ptr().add(endoff) as *mut u8; }}\n    }}\n    value\n}}"
     )
 }
 
 fn extract_slice_ptr_base<'e>(expr: &'e Expr, symbols: &SymbolTable) -> Option<&'e Expr> {
     match expr {
+        Expr::MethodCall(call) if call.method == "cast" && call.args.is_empty() => {
+            extract_slice_ptr_base(&call.receiver, symbols)
+        }
         Expr::MethodCall(call) if call.method == "as_mut_ptr" && call.args.is_empty() => {
             Some(&call.receiver)
         }
@@ -3371,21 +3307,29 @@ impl Rewriter {
         let name = func.path.segments.last()?.ident.to_string();
         if func.path.segments.len() > 1
             && !(func.path.segments.len() == 2 && func.path.segments[0].ident == "xj_cio")
+            && !(func.path.segments.len() == 3
+                && func.path.segments[0].ident == "xj_cio"
+                && func.path.segments[1].ident == "c_abi")
         {
             return None;
         }
         if matches!(name.as_str(), "fread" | "fwrite") && call.args.len() == 4 {
             let exclusive = name == "fread";
             let pointer = expr_strip_casts(&call.args[0]);
-            let buffer = match pointer {
-                Expr::MethodCall(call)
-                    if !exclusive && call.method == "as_ptr" && call.args.is_empty() =>
-                {
-                    &*call.receiver
-                }
-                _ => extract_slice_ptr_base(pointer, symbols)?,
+            let buffer = if exclusive {
+                extract_slice_ptr_base(pointer, symbols)?
+            } else {
+                &call.args[0]
             };
-            if !is_u8_or_i8_sliceable_expr(buffer, symbols) {
+            let read_view = if exclusive {
+                None
+            } else {
+                self.coerce_byte_view_path_input(&call.args[0], symbols)
+            };
+            if exclusive && !is_u8_or_i8_sliceable_expr(buffer, symbols) {
+                return None;
+            }
+            if !exclusive && read_view.is_none() {
                 return None;
             }
             let size = &call.args[1];
@@ -3401,18 +3345,15 @@ impl Rewriter {
                 syn::parse_quote!(usize)
             };
             self.add_dep("xj_cio");
-            self.add_dep("xj_cstr");
-            self.with_cur_file_item_store(|store| {
-                store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
-            });
-            let method = syn::Ident::new(
-                if exclusive {
-                    "as_mut_u8_slice"
-                } else {
-                    "as_u8_slice"
-                },
-                proc_macro2::Span::call_site(),
-            );
+            let memory: Expr = if let Some(input) = read_view {
+                syn::parse_quote! { ::xj_cio::ByteView::view_bytes(#input) }
+            } else {
+                self.add_dep("xj_cstr");
+                self.with_cur_file_item_store(|store| {
+                    store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
+                });
+                syn::parse_quote! { #buffer.as_mut_u8_slice() }
+            };
             let target = syn::Ident::new(
                 if exclusive { "fread_" } else { "fwrite_" },
                 proc_macro2::Span::call_site(),
@@ -3427,7 +3368,7 @@ impl Rewriter {
                     ({ let xj_cio_size = (#size) as usize; let xj_cio_count = (#count) as usize;
                       let xj_cio_stream = #stream;
                       if xj_cio_size == 0 || xj_cio_count == 0 { 0 } else {
-                        xj_cio::#target(#borrow #buffer.#method()[..xj_cio_size * xj_cio_count], xj_cio_stream) / xj_cio_size
+                        xj_cio::#target(#borrow (#memory)[..xj_cio_size * xj_cio_count], xj_cio_stream) / xj_cio_size
                       } }) as #result_type
                 },
                 Depth::Limited(0),

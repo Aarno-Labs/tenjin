@@ -13,6 +13,7 @@
 //! (statics and consts) are collected in a pre-pass, then function
 //! arguments and let-bindings are added as the visitor enters scopes.
 
+mod byte_input;
 mod printf;
 pub mod rewrites;
 
@@ -1421,7 +1422,7 @@ mod tests {
             (
                 PathBuf::from("src/uses_trait.rs"),
                 syn::parse_file(
-                    "fn demo(buf: &[u16]) { let _ = strlen(buf.as_mut_ptr()); let _ = strlen(buf.as_mut_ptr()); }",
+                    "fn demo(buf: &[i8]) { let _ = strlen(buf.as_mut_ptr()); let _ = strlen(buf.as_mut_ptr()); }",
                 )
                 .unwrap(),
             ),
@@ -1477,7 +1478,7 @@ mod tests {
         rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
 
         let mut file =
-            syn::parse_file("fn demo(buf: &[u16]) { let _ = strlen(buf.as_mut_ptr()); }").unwrap();
+            syn::parse_file("fn demo(buf: &[i8]) { let _ = strlen(buf.as_mut_ptr()); }").unwrap();
 
         rw.rewrite_file(&mut file, Depth::Unlimited);
 

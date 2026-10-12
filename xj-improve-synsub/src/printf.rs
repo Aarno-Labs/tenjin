@@ -150,7 +150,7 @@ fn storage(ty: &Type) -> Option<Storage> {
     }
 }
 
-fn expr_type(expr: &Expr, symbols: &SymbolTable) -> Option<Type> {
+pub(crate) fn expr_type(expr: &Expr, symbols: &SymbolTable) -> Option<Type> {
     let expr = unparen(expr);
     match expr {
         Expr::Lit(lit) => Some(match &lit.lit {
@@ -207,10 +207,14 @@ fn expr_type(expr: &Expr, symbols: &SymbolTable) -> Option<Type> {
         Expr::MethodCall(m) if m.args.is_empty() => {
             let kind = storage(&expr_type(&m.receiver, symbols)?)?;
             match (m.method.to_string().as_str(), kind) {
+                ("view_bytes", _) => Some(parse_quote!(&[u8])),
                 ("as_bytes", Storage::Text | Storage::CString | Storage::ZStr)
                 | ("as_bytes_with_nul", Storage::ZStr)
+                | ("as_buffer", Storage::ZStr)
                 | ("to_bytes" | "to_bytes_with_nul", Storage::CStr)
                 | ("as_slice", Storage::Bytes) => Some(parse_quote!(&[u8])),
+                ("as_bytes_mut" | "as_buffer_mut", Storage::ZStr) => Some(parse_quote!(&mut [u8])),
+                ("as_z_str", Storage::ZStr) => Some(parse_quote!(&::xj_zstr::ZStr)),
                 ("as_c_str", Storage::CString | Storage::ZStr) => {
                     Some(parse_quote!(&::core::ffi::CStr))
                 }
