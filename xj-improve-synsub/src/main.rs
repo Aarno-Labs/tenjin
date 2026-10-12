@@ -144,7 +144,7 @@ fn add_deps_to_manifest(
 fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
         "xj_ctime" => "0.1.1",
-        "xj_cstat" | "xj_cio" | "xj_cfmt" => "0.1.0",
+        "xj_cstat" | "xj_cio" | "xj_cfmt" | "xj_bytes" => "0.1.0",
         "xj_cstr" => "0.1.4",
         "xj_atone" => "0.1.0",
         "errno" => "0.3.14",

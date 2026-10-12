@@ -5,7 +5,7 @@ mod xj_cio_scanargs {
         mut ap: ::core::ffi::VaList,
     ) -> Vec<xj_cio::OutArg<'static>> {
         use xj_cio::OutArg;
-        let bytes = xj_cio::__cfmt::cformat::c_bytes(xj_cio::ByteView::view_bytes(fmt));
+        let bytes = xj_cio::__cfmt::c_bytes(xj_cio::ByteView::view_bytes(fmt));
         let mut out = Vec::new();
         let mut i = 0;
         while i < bytes.len() {

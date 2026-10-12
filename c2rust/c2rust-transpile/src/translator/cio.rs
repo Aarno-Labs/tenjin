@@ -555,7 +555,7 @@ impl Translation<'_> {
 
     fn printf_literal(&self, expr: CExprId) -> Option<&[u8]> {
         match &self.ast_context[self.c_strip_implicit_casts(expr)].kind {
-            CExprKind::Literal(_, CLiteral::String(bytes, 1)) => Some(xj_cfmt_core::c_bytes(bytes)),
+            CExprKind::Literal(_, CLiteral::String(bytes, 1)) => Some(xj_bytes::c_bytes(bytes)),
             _ => None,
         }
     }

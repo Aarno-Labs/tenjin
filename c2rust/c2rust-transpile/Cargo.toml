@@ -14,6 +14,7 @@ categories.workspace = true
 
 [dependencies]
 xj_cfmt_core = "0.1.0"
+xj_bytes = "0.1.0"
 c2rust-ast-builder = { path = "../c2rust-ast-builder", version = "0.22.1" }
 c2rust-ast-exporter = { path = "../c2rust-ast-exporter", version = "0.22.1" }
 c2rust-ast-printer = { path = "../c2rust-ast-printer", version = "0.22.1" }

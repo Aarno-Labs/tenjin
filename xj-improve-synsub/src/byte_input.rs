@@ -198,7 +198,7 @@ impl Rewriter {
             && name == "view_bytes"
             && matches!(
                 namespace.as_str(),
-                "xj_cfmt_core"
+                "xj_bytes"
                     | "xj_cfmt"
                     | "xj_zstr"
                     | "xj_cio"
@@ -301,7 +301,7 @@ impl Rewriter {
                 "strcmp" | "strncmp" | "memcmp" | "strspn" | "strcspn" | "strstr_idx"
                 | "strstr_ptr",
             ) => &[0, 1],
-            ("xj_cfmt" | "xj_cfmt_core" | "xj_zstr", "to_c_str") => &[0],
+            ("xj_cfmt" | "xj_bytes" | "xj_zstr", "to_c_str") => &[0],
             ("xj_cio", "to_c_str") if segments.len() == 3 && segments[1].ident == "__cfmt" => &[0],
             ("xj_cfmt", "RawBytes") => &[0],
             (

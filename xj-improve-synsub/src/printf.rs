@@ -116,7 +116,7 @@ impl Rewriter {
             return None;
         }
         let bytes = literal_bytes(&args[1])?;
-        let bytes = xj_cfmt_core::c_bytes(&bytes);
+        let bytes = xj_bytes::c_bytes(&bytes);
         if !bytes.is_ascii() {
             return None;
         }
