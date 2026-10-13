@@ -49,8 +49,10 @@ described under [How](#how).
 5. **Null tests.** `p == NULL`, `p != 0`, `!p` and `p` in a condition, for
    guided `p`, become `xj_is_null_<T>(p)`.
 
-Markers are `static inline` functions computing what C would have (the value
-itself, `b + i`, `p == 0`), so the C still compiles and means the same thing.
+Markers are `static __inline__` functions computing what C would have (the
+value itself, `b + i`, `p == 0`), so the C still compiles and means the same
+thing. They are spelled `__inline__` rather than `inline` so they also compile
+under `-std=c89`, where `inline` is not a keyword.
 
 ## Why
 

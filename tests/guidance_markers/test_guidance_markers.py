@@ -182,7 +182,7 @@ def test_nested_buffers_get_element_typedefs(root, tmp_codebase):
         r"return \(\*xj_index_Vec_i32\(\(\*xj_index_Vec_Vec_i32\(rows, i\)\), j\)\);",
         result.sources["a.c"],
     )
-    assert f"static inline {inner} *xj_index_Vec_Vec_i32({outer} b, long i)" in result.header
+    assert f"static __inline__ {inner} *xj_index_Vec_Vec_i32({outer} b, long i)" in result.header
 
 
 def test_arrays_sized_by_their_initializer_keep_the_completed_type(root, tmp_codebase):
