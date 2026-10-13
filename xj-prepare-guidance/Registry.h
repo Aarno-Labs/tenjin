@@ -96,7 +96,8 @@ public:
   llvm::json::Object markerTypedefsJson() const;
   llvm::json::Object markersJson() const;
 
-  // Local typedefs a local definition depends on, innermost first.
+  // Local typedefs a local definition depends on, transitively, in no
+  // particular order.
   std::vector<const TypedefKey *> typedefClosure(const Spelling &S) const;
 
 private:

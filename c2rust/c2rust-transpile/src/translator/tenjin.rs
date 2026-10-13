@@ -1737,7 +1737,7 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "fputs") && cargs.len() == 2 {
             // fputs(FOO, stdout)
-            //    when FOO is a simple variable with type String
+            //    when FOO is guided as String
             // should be translated to
             // println!(FOO)
             if !(self.c_expr_is_var_ident(cargs[1], "stdout")
@@ -1854,7 +1854,7 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "strlen") && cargs.len() == 1 {
             // strlen(FOO)
-            //    when FOO is a simple variable with type String
+            //    when FOO is guided as String
             // should be translated to
             // FOO.len() as size_t
             // XREF:guided_c_strlen
@@ -1878,8 +1878,7 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "strcspn") && cargs.len() == 2 {
             // strcspn(FOO, BAR)
-            //    when FOO is a simple variable with type String
-            //    and BAR is a simple variable with type String
+            //    when FOO and BAR are guided as String
             // should be translated to
             // strcspn_str(&FOO, &BAR)
             // XREF:guided_strcspn
@@ -2293,7 +2292,7 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "fgets") && cargs.len() == 3 {
             // fgets(FOO, limit_expr, stdin)
-            //    when FOO is a simple variable with type String
+            //    when FOO is guided as String
             // should be translated to
             // fgets_stdin_bool(&mut FOO, limit_expr, io::stdin())
             //
@@ -2659,9 +2658,8 @@ impl Translation<'_> {
         None
     }
 
-    /// A pointer offset as `isize`: cast with `as`, which later passes drop
-    /// where it is trivial, rather than written as a suffixed literal. An
-    /// enum is a newtype, so it takes C's conversion to get its integer out.
+    /// A pointer offset as `isize`, cast with `as`. An enum is a newtype, so
+    /// it takes C's conversion to get its integer out.
     pub fn convert_expr_as_offset(
         &self,
         ctx: ExprContext,

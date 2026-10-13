@@ -18,8 +18,7 @@ std::optional<DeclSpec> DeclSpec::parse(StringRef S) {
     return std::nullopt;
   DeclSpec D;
   D.Text = S.str();
-  // The parser this replaces reads `file@fn:var#line`, whatever its comment
-  // said; specifiers in the wild are written that way.
+  // `file@` comes first and `#line` last.
   if (S.contains('@')) {
     auto [File, Rest] = S.split('@');
     D.File = File.str();

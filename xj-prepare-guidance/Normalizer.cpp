@@ -111,7 +111,7 @@ void Normalizer::addMarkerCall(const Expr *Node, const MarkerKey &M,
                    .around(Deref ? Edit::Around::Deref : Edit::Around::None));
 }
 
-// `(*xj_index_<b>(Base, Index))` in place of `Node`.
+// `(*xj_index_<T>(Base, Index))` in place of `Node`.
 void Normalizer::addIndexCall(const Expr *Node, const Expr *Base,
                               const Expr *Index) {
   XjType BaseX = Types.of(Base);
@@ -126,7 +126,7 @@ void Normalizer::addIndexCall(const Expr *Node, const Expr *Base,
   addMarkerCall(Node, *M, Base, Index, true);
 }
 
-// `xj_char_at_<s>(Base, Index)` in place of the read `Node`.
+// `xj_char_at_<T>(Base, Index)` in place of the read `Node`.
 void Normalizer::addCharAtCall(const Expr *Node, const Expr *Base,
                                const Expr *Index) {
   const MarkerKey *M = Markers.charAt(stripValueCasts(Base)->getType(),
@@ -140,7 +140,7 @@ void Normalizer::addCharAtCall(const Expr *Node, const Expr *Base,
 }
 
 // A shared slice moved forward by a statement of its own is resliced:
-// `p = xj_slice_from_<p>(p, n)`. A null `Step` is 1.
+// `p = xj_slice_from_<T>(p, n)`. A null `Step` is 1.
 bool Normalizer::advanceSlice(const Expr *Node, const Expr *Operand,
                               const Expr *Step) {
   XjType X = Types.of(Operand);

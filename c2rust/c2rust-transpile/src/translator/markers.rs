@@ -6,9 +6,8 @@
 //! marker functions: the name says what the flow does (`xj_slice_all`,
 //! `xj_slice_from`, `xj_elem_ref`, `xj_coerce`, `xj_is_null`), and the
 //! parameter and return types say between which types. Elements of guided
-//! buffers are read through `(*xj_index_<b>(b, i))`, characters of guided
-//! strings through `xj_char_at_<s>(s, i)`. This module reads both;
-//! nothing here matches declarations against specifiers.
+//! buffers are read through `(*xj_index_<T>(b, i))`, characters of guided
+//! strings through `xj_char_at_<T>(s, i)`. This module reads both.
 
 use super::*;
 use crate::convert_type::TypeConverter;
@@ -51,8 +50,9 @@ impl MarkerFamily {
         }
     }
 
-    /// Markers whose argument is the value itself, which a recognizer that
-    /// looks at the value may see through.
+    /// Markers whose C body returns the argument unchanged. In Rust they may
+    /// still convert it, but a recognizer that looks at the value may see
+    /// through them to the value the program wrote.
     fn is_identity(self) -> bool {
         matches!(self, Self::SliceAll | Self::Coerce)
     }
@@ -60,7 +60,10 @@ impl MarkerFamily {
 
 /// What a place marker's result is fitted to.
 enum PlaceSink {
+    /// A guided sink (`&[T]`, `&mut T`, ...). Only its mutability is read:
+    /// the result is a borrow of the place.
     Guided(Box<GuidedType>),
+    /// An unguided raw pointer, `*mut` when `mutable`.
     Raw { mutable: bool },
 }
 
@@ -268,12 +271,11 @@ fn method(val: Box<Expr>, name: &str) -> Box<Expr> {
     mk().method_call_expr(val, name, Vec::<Box<Expr>>::new())
 }
 
-/// `val.name()` for a `&self` method `name`, or `f(&val)` with `f` naming it
-/// by its type (`str::is_empty`) when `val` is not a plain variable. Called
-/// as a method on a field reached through a raw pointer, `val` would need an
-/// explicit borrow, which `cargo clippy --fix` removes as needless on
-/// toolchains that predate `dangerous_implicit_autorefs`. Deref and unsize
-/// coercion fit `&val` to the parameter whether `val` is owned or a borrow.
+/// `val.name()` for a `&self` method `name` when `val` is a plain variable,
+/// and otherwise `f(&val)`, with `f` naming the method by its type
+/// (`str::is_empty`): a method call through a raw-pointer place uses UFCS
+/// with an explicit borrow. Deref and unsize coercion fit `&val` to the
+/// parameter whether `val` is owned or a borrow.
 fn ref_method(val: Box<Expr>, f: Box<Expr>, name: &str) -> Box<Expr> {
     if matches!(*val, Expr::Path(_)) {
         method(val, name)
@@ -410,6 +412,8 @@ impl Translation<'_> {
         }
     }
 
+    /// The guidance on a variable or field, read off the marker typedef in
+    /// its declared type.
     pub fn xj_type_of_decl(&self, decl: CDeclId) -> Option<GuidedType> {
         match self.ast_context.get_decl(&decl)?.kind {
             CDeclKind::Variable { typ, .. } | CDeclKind::Field { typ, .. } => {
@@ -504,6 +508,9 @@ impl Translation<'_> {
         }
     }
 
+    /// Translates a call to a marker function of `family`, as named by
+    /// `marker_callee`. The marker's own prototype gives the source and sink
+    /// types; a call whose arity is not the family's is an error.
     pub fn convert_marker_call(
         &self,
         ctx: ExprContext,
@@ -614,7 +621,7 @@ impl Translation<'_> {
         self.convert_expr(ctx.used(), self.c_strip_noop_casts(expr), None)
     }
 
-    /// The base and index of a call `xj_index_<b>(b, i)`, through parentheses
+    /// The base and index of a call `xj_index_<T>(b, i)`, through parentheses
     /// and implicit casts.
     pub fn index_marker_operands(&self, expr: CExprId) -> Option<(CExprId, CExprId)> {
         let mut current = expr;
@@ -631,7 +638,7 @@ impl Translation<'_> {
     }
 
     /// `TypedAstContext::is_expr_pure`, except that a marker call is pure when
-    /// its arguments are, so `(*xj_index_<p>(p, i)) += 1` names its place
+    /// its arguments are, so `(*xj_index_<T>(p, i)) += 1` names its place
     /// directly. Covers the forms an lvalue is built from; anything else is
     /// left to `is_expr_pure`.
     pub fn is_pure_with_markers(&self, expr: CExprId) -> bool {
@@ -665,7 +672,7 @@ impl Translation<'_> {
         }
     }
 
-    /// `(*xj_index_<b>(b, i))`: element `i` of the buffer `b`.
+    /// `(*xj_index_<T>(b, i))`: element `i` of the buffer `b`.
     pub fn convert_index_deref(
         &self,
         ctx: ExprContext,
@@ -677,7 +684,7 @@ impl Translation<'_> {
         Ok(base.zip(index).map(|(b, i)| mk().index_expr(b, i)))
     }
 
-    /// `xj_index_<b>(b, i)` itself, as in `&b[i]`: a raw pointer to the
+    /// `xj_index_<T>(b, i)` itself, as in `&b[i]`: a raw pointer to the
     /// element, mutable unless the C pointee is const or `b` a shared borrow.
     fn convert_index_address(
         &self,
@@ -707,7 +714,7 @@ impl Translation<'_> {
         }
     }
 
-    /// `xj_char_at_<s>(s, i)`: byte `i` of a guided string as a C character,
+    /// `xj_char_at_<T>(s, i)`: byte `i` of a guided string as a C character,
     /// or 0 at and past its end, where C would read the terminator.
     fn convert_char_at(
         &self,
@@ -782,8 +789,8 @@ impl Translation<'_> {
     }
 
     /// A base reached through a raw pointer (`(*s).buf`) is borrowed
-    /// explicitly before it is indexed or has a method called on it; the
-    /// implicit borrow there is an error on newer toolchains.
+    /// explicitly before it is indexed or has a method called on it: Rust
+    /// rejects an implicit borrow through a raw-pointer place.
     fn borrowed_base(base: Box<Expr>, mutable: bool) -> Box<Expr> {
         let direct = matches!(*base, Expr::Path(_) | Expr::Lit(_) | Expr::Reference(_));
         if direct {
@@ -793,6 +800,10 @@ impl Translation<'_> {
         }
     }
 
+    /// `xj_slice_from(b, i)` or `xj_elem_ref(b, i)` on the converted base:
+    /// the suffix `&b[i..]` or the element `&b[i]`, as a borrow for a guided
+    /// sink and as a raw pointer (`b[i..].as_ptr()`, `&raw const b[i]`)
+    /// otherwise.
     fn offset_place(
         family: MarkerFamily,
         sink: &PlaceSink,
@@ -822,6 +833,10 @@ impl Translation<'_> {
         }
     }
 
+    /// `xj_is_null(p)`: what C's `p == 0` means for the guidance on `p`.
+    /// An `Option` is `None`; a string, `Vec` or slice is empty; any other
+    /// guided value (a reference, a `Box`) is never null, so the test is
+    /// `false`; an unguided pointer keeps `.is_null()`.
     // XREF:guided_condition_string_null_check_neq
     fn convert_is_null_marker(
         &self,
@@ -850,6 +865,28 @@ impl Translation<'_> {
     /// Fits the value of `arg` to `to` (or to the unguided C type `to_cty`).
     /// Used by `xj_coerce` markers and by initializers the C pass could not
     /// wrap (constant contexts, array initializers).
+    ///
+    /// | from | to | Rust |
+    /// |---|---|---|
+    /// | null constant | `String`, `Vec`, `Option`, `&str`, slice | `String::new()`, `Vec::new()`, `None`, `""`, `&[]` |
+    /// | string literal | `String`, `&str`, `Vec<u8>`, `&[u8]` | the literal in that form |
+    /// | `&x` | a borrow | `&x` or `&mut x` |
+    /// | unguided | `Vec`, array | `vec![..]` from an array expression; an array as is |
+    /// | unguided | number, `char` | `v as T`; `v as u8 as char` |
+    /// | unguided pointer | `&T`, `&mut T` | `v.as_ref().unwrap()`, `v.as_mut().unwrap()` |
+    /// | owned | a borrow | `&v` or `&mut v` |
+    /// | a borrow | a borrow | `&*v` or `&mut *v` |
+    /// | `&str`, `char` | `String` | `v.to_string()` |
+    /// | `String`, `&String` | `String` | `v.clone()` |
+    /// | borrowed buffer | `Vec` | `v.to_vec()` |
+    /// | `T` | `Option<T>` | `Some(v)` |
+    /// | `char` | a number | `v as T` |
+    /// | a number | `char` | `v as char` |
+    /// | buffer | raw pointer | `v.as_ptr() as *T` |
+    /// | `&T`, `&mut T`, `Box<T>` | raw pointer | `v` where Rust coerces it, else `v as *const T as *U` |
+    /// | raw pointer, scalar | C type | `v as T` |
+    ///
+    /// Any other pair is `xj_unhandled_coercion`.
     pub fn coerce_value(
         &self,
         ctx: ExprContext,
@@ -982,6 +1019,8 @@ impl Translation<'_> {
         Ok(val.map(|v| borrow(v, to.is_exclusive_borrow())))
     }
 
+    /// A converted value into a guided type, from guidance `from` or from an
+    /// unguided C value. A pair neither table knows is unhandled.
     fn coerce_to_guided(
         &self,
         val: Box<Expr>,
@@ -995,6 +1034,8 @@ impl Translation<'_> {
         converted.unwrap_or_else(|| unhandled_coercion(self, val, &guided_text(from), &to.pretty))
     }
 
+    /// An unguided C value into guided `to`, or `None` when there is no
+    /// conversion.
     fn raw_to_guided(val: Box<Expr>, to: &GuidedType) -> Option<Box<Expr>> {
         let ty = &to.parsed;
         if tenjin::type_is_vec(ty) {
@@ -1024,6 +1065,8 @@ impl Translation<'_> {
         None
     }
 
+    /// A value guided `from` into guided `to`, or `None` when there is no
+    /// conversion. The first rule that applies wins.
     fn guided_to_guided(val: Box<Expr>, from: &GuidedType, to: &GuidedType) -> Option<Box<Expr>> {
         let (f, t) = (&from.parsed, &to.parsed);
         let mutable = to.is_exclusive_borrow();

@@ -1,11 +1,10 @@
 // The parts of xj-guidance.json this pass consumes, and declaration matching.
 //
-// A declaration specifier is `fn:var#line@file` with every part but `fn`
-// optional. Matching reproduces what the transpiler did before this pass
-// existed (`matches_decl`), with two deliberate differences: parameters of
-// prototypes match `fn:var` (the transpiler only saw definitions), and when
-// several specifiers match one declaration the most specific wins instead of
-// whichever a hash map happened to yield first.
+// A declaration specifier is `file@fn:var#line` with every part but `fn`
+// optional. Parameters of prototypes match `fn:var` as parameters of
+// definitions do. When several specifiers match one declaration, the most
+// specific wins (see DeclSpec::specificity), and among equally specific ones
+// the first in the JSON.
 
 #pragma once
 
@@ -22,8 +21,8 @@
 
 namespace xj {
 
-// Must match TENJIN_UNIQUE_SUFFIX in c2rust-transpile and
-// translation_preparation.py.
+// The suffix `_plan_static_uniquification` in cli/translation_preparation.py
+// appends to a renamed static (`_xjtr_N`).
 inline constexpr llvm::StringRef UniqueSuffix = "_xjtr";
 
 // `spec` names `instance`, ignoring a uniquification suffix on the instance.

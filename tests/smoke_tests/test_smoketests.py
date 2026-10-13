@@ -420,9 +420,9 @@ def test_guided_stat_declarations_keep_generated_bindings(
     test_dir, tenjin_fixtures, guidance, guided
 ):
     # Guidance on a `sys/stat.h` declaration retypes it in the header's
-    # expanded text, which refolding then keeps in the `.c`. As with explicit
-    # guidance on main, the whole stat API keeps its generated bindings, with
-    # the guided type, rather than half of it using `libc`.
+    # expanded text, which refolding then keeps in the `.c`. The whole stat
+    # API keeps its generated bindings, with the guided type, rather than half
+    # of it using `libc`.
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     translation_preparation.copy_codebase(test_dir / "guided_stat" / "main.c", tmp_codebase)
 

@@ -6,13 +6,14 @@ use failure::format_err;
 use proc_macro2::{TokenStream, TokenTree};
 
 impl<'c> Translation<'c> {
-    /// Explicit guidance takes precedence over automatic system bindings.
-    /// Type guidance reaches here as marker typedefs, which xj-prepare-guidance
-    /// may also have written into the system header's expanded text. Refolding
-    /// keeps such an edited declaration in the codebase file, so it is no
-    /// longer discovered as a system one: a retyped `stat` prototype would
-    /// otherwise translate as the codebase's own function while `struct stat`
-    /// is still substituted. Look for stat functions by name instead.
+    /// Whether guidance rules out the `libc` crate's bindings, which explicit
+    /// guidance takes precedence over: FFI guidance on a libc function, or a
+    /// stat function whose signature carries type guidance. Type guidance on
+    /// a system declaration is a marker typedef in the header's text, which
+    /// refolding keeps in the codebase file, so the declaration is not
+    /// recognized as a system one and stat functions are found by name. The
+    /// whole stat API then keeps generated bindings rather than half of it
+    /// using `libc`.
     pub(crate) fn libc_guidance_requires_fallback(&self) -> bool {
         let guidance = self.parsed_guidance.borrow();
         if self

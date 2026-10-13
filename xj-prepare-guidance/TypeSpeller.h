@@ -6,11 +6,10 @@
 // only mention builtin types: a type written with builtins alone goes there.
 // Other types are written as the program wrote them and placed in the
 // translation unit, which is only possible when nothing in them is local to
-// a function. Keeping typedef names matters: guidance such as `&[tflac_u8]`
+// a function. Records are spelled as declared, so their declarations stay
+// where the program put them and the order of the translated items doesn't
+// change. Keeping typedef names matters: guidance such as `&[tflac_u8]`
 // names them, and the transpiler only emits typedefs something still uses.
-// (A forward declaration in the header would also work for records, but it
-// moves the record's first declaration, and with it the order and placement
-// of the translated items.)
 
 #pragma once
 

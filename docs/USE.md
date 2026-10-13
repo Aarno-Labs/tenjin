@@ -62,7 +62,12 @@ A variable specifier is a string like `foo:bar`, which indicates the `bar`
 parameter or local variable within the `foo` function. `*:bar` means every
 such variable named `bar` in every function. A bare `quux` refers to
 a global variable. `Rec:field` refers to a field of the struct or union
-`Rec`. A guided field's type may not borrow, except with `'static`:
+`Rec`. A specifier can be narrowed to a file and a line, written
+`file@fn:var#line`: `file` matches any path that ends with it, and `line` is
+the line of the declaration in the preprocessed (`.nolines.i`) file. When
+several specifiers match one declaration, the most specific wins (a named
+function over `*`, then one with a line, then one with a file), and among
+equally specific ones the first listed. A guided field's type may not borrow, except with `'static`:
 `&'static str` works but `&mut [u8]` does not, since the record would need
 a lifetime parameter. Such guidance is reported as `not-retyped` and the
 field keeps its C type. Guiding a declaration from a system header (a
@@ -188,7 +193,7 @@ is lower than the cost of otherwise obtaining an acceptably correct translation.
 
 Type guidance is applied to the C before translation by
 [guidance instrumentation](passes/guidance_instrumentation.md). Incompatible
-occurrences it cannot convert are emitted as
+occurrences the transpiler has no conversion for are emitted as
 `xj_unhandled_coercion(value, "<from> -> <to>")`, which keeps the value's type,
 and guidance the program cannot honour (for example, a guided slice that is
 still incremented) is listed under `guidance_diagnostics` in the prepared

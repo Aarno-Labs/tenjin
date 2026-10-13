@@ -1,19 +1,22 @@
-// Marker functions: identity functions whose name and signature carry the
-// decision the transpiler would otherwise have to reconstruct.
+// Marker functions: functions computing what C would have, whose name and
+// signature carry the decision the transpiler would otherwise have to
+// reconstruct.
 //
-//     xj_slice_all_<to>(b)        the whole buffer b
-//     xj_slice_from_<to>(b, i)    the suffix of b from i
-//     xj_elem_ref_<to>(b, i)      element i of b
-//     xj_index_<b>(b, i)          a raw pointer to element i of b, written
-//                                 `(*xj_index_<b>(b, i))` for the element
-//     xj_char_at_<s>(s, i)        character i of the string s, read
-//     xj_coerce_<x>_to_<to>(x)    x, changing representation or C type
-//     xj_is_null_<p>(p)           p == 0
+//     xj_slice_all_<T>(b)         the whole buffer b
+//     xj_slice_from_<T>(b, i)     the suffix of b from i
+//     xj_elem_ref_<T>(b, i)       element i of b
+//     xj_index_<T>(b, i)          a raw pointer to element i of b, written
+//                                 `(*xj_index_<T>(b, i))` for the element
+//     xj_char_at_<T>(s, i)        character i of the string s, read
+//     xj_coerce_<T>_to_<U>(x)     x, changing representation or C type
+//     xj_is_null_<T>(p)           p == 0
 //
 // The parameter and return types carry the typedef sugar of the source and
 // the sink, so the transpiler reads (from, to) off the declaration. The
-// names say the same for a reader: each side is its Rust type when guided
-// (`ref_slice_u8`) and its C type otherwise (`ptr_const_char`).
+// names say the same for a reader: `<T>` and `<U>` are types, each its Rust
+// type when guided (`ref_slice_u8`) and its C type otherwise
+// (`ptr_const_char`). `<T>` is the sink for the place markers, the buffer
+// for `index`, the string for `char_at`, and the operand for `is_null`.
 
 #pragma once
 

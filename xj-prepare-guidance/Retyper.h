@@ -3,8 +3,8 @@
 // `const char *ostr` guided as `String` becomes `xj_ty_String ostr` with
 // `typedef const char *xj_ty_String;`. The C is unchanged (a typedef is an
 // alias), but the typedef survives into the transpiler's view of every
-// expression that reads the declaration, so the transpiler no longer needs
-// to match specifiers itself. Parameters are retyped at the same position in
+// expression that reads the declaration, so the transpiler reads guidance
+// off the declared type. Parameters are retyped at the same position in
 // every redeclaration of their function, and file-scope variables in every
 // redeclaration, so prototypes and definitions stay compatible.
 

@@ -10,8 +10,13 @@
 
 C preparatory refactoring pass that applies type guidance (`vars_of_type`,
 `fn_return_type`, `vars_mut`) in the C, so the transpiler reads it off the
-program instead of matching declaration specifiers itself. It runs after the
-pointer passes and static-inline un-uniquification, and before refolding.
+program. It runs after the pointer passes and static-inline
+un-uniquification, and before refolding. Running after the pointer passes
+means a guided pointer that still moves is reported as a diagnostic rather
+than translated.
+
+In the marker names below, `<T>` and `<U>` stand for types, spelled as
+described under [How](#how).
 
 1. **Retyping.** Every guided declaration is rewritten to use a marker
    typedef: `const char *msg` guided as `String` becomes `xj_ty_String msg`
@@ -21,42 +26,38 @@ pointer passes and static-inline un-uniquification, and before refolding.
    `"marker_typedefs": {"xj_ty_String": "String"}`.
 2. **Operator normalization.** Pointer operators on guided operands become the
    form whose Rust meaning is direct. On a buffer held in a pointer, `*p`,
-   `*(p + i)` and `p[i]` become `(*xj_index_<p>(p, i))`; the marker returns a raw
+   `*(p + i)` and `p[i]` become `(*xj_index_<T>(p, i))`; the marker returns a raw
    pointer to the element, so the result is still an lvalue. Guided arrays are
    subscripted as written (`*a` → `a[0]`). On single objects `p[0]` → `(*p)`;
    `&*p` → `p`. A shared slice moved forward by a statement of its own
-   (`p++`, `p += n`) is resliced: `p = xj_slice_from_<p>(p, n)`. A `String`
+   (`p++`, `p += n`) is resliced: `p = xj_slice_from_<T>(p, n)`. A `String`
    or `str` cannot be indexed in Rust, so reads of its characters (`s[i]`,
-   `*s`, `*(s + i)`) become `xj_char_at_<s>(s, i)`; writes keep their C form.
+   `*s`, `*(s + i)`) become `xj_char_at_<T>(s, i)`; writes keep their C form.
 3. **Place markers.** A pointer-valued flow (call argument, `=`, local
    initializer, `return`, explicit pointer cast) whose base is an array or a
-   guided buffer becomes one of `xj_slice_all_<to>(b)`,
-   `xj_slice_from_<to>(b, i)`, `xj_elem_ref_<to>(b, i)`, chosen from the
+   guided buffer becomes one of `xj_slice_all_<T>(b)`,
+   `xj_slice_from_<T>(b, i)`, `xj_elem_ref_<T>(b, i)`, chosen from the
    source shape (`b`, `&b[i]`, `b + i`) and the sink's demand (`&T`, `&[T]`,
    raw pointer).
 4. **Coercion markers.** Any other flow whose source and sink carry different
-   guidance is wrapped in `xj_coerce_<from>_to_<to>(e)`; the marker's
+   guidance is wrapped in `xj_coerce_<T>_to_<U>(e)`; the marker's
    parameter and return types carry the two typedefs. A guided pointer or
    array flowing into a place with the same guidance but a differently
    written C type (`char *` into `const char *`, an array into a pointer) is
    wrapped too, in an identity coercion, so no C conversion is left to apply
    to the guided value.
 5. **Null tests.** `p == NULL`, `p != 0`, `!p` and `p` in a condition, for
-   guided `p`, become `xj_is_null_<p>(p)`.
+   guided `p`, become `xj_is_null_<T>(p)`.
 
 Markers are `static inline` functions computing what C would have (the value
 itself, `b + i`, `p == 0`), so the C still compiles and means the same thing.
 
 ## Why
 
-Before this pass the transpiler applied guidance through many special cases:
-specifier matching at every use, a guided "context type" threaded through
-expression conversion, parent-expression walks to decide whether a guided
-slice should decay, borrow coercions at call arguments, and guidance arms in
-the cast and address-of code. Deciding how a C pointer is read needs the
-shape of the source expression and the demand of the sink together, which the
-C pass has and the transpiler, converting one expression at a time, does not.
-Recording the decision in the C leaves the transpiler one rule per marker.
+Deciding how a guided value is read needs the shape of the source expression
+and the demand of the sink together. The C pass sees both; the transpiler
+converts one expression at a time and sees only one. Recording the decision
+in the C leaves the transpiler one rule per marker family.
 
 ## Examples
 
@@ -119,13 +120,19 @@ Its name says what it is: a typedef is `xj_ty_` and its Rust type
 `xj_ty_array_4_u8`); a marker is its family and the types it connects, each
 the Rust type when guided and the C type otherwise
 (`xj_coerce_ptr_const_char_to_String`, `xj_index_ref_slice_u8`,
-`xj_slice_all_ptr_const_unsigned_char`). Keys that would read the same, such
+`xj_slice_all_ptr_const_unsigned_char`). This is what `<T>` and `<U>` stand
+for in the marker names above. `<T>` is the type of the buffer for `index`,
+of the string for `char_at`, and of the operand for `is_null`; it is the
+sink's type for the place markers (`slice_all`, `slice_from`, `elem_ref`);
+and `xj_coerce_<T>_to_<U>` converts from `<T>` to `<U>`. Keys that would read the same, such
 as `Vec<u8>` on both `unsigned char *` and `unsigned char[8]`, are told apart
 by `_1`, `_2`, ... in sorted key order; the first keeps the plain name.
 
-A declaration's guidance comes from matching `fn:var#line@file` specifiers
-(suffix-blind on `_xjtr`). When several match, the most specific wins: a named
-function over `*`, then a line, then a file. `vars_mut` is resolved to
+A declaration's guidance comes from matching `file@fn:var#line` specifiers
+(suffix-blind on `_xjtr`), in which only `fn` is required. Parameters of
+prototypes match as parameters of definitions do. When several specifiers
+match, the most specific wins: a named function over `*`, then a line, then a
+file; among equally specific ones, the first in the JSON wins. `vars_mut` is resolved to
 `"vars_mut_resolved": {"fn:var": bool}` (bare `var` at file scope).
 `semantically_immutable_globals`, which the PANGS pass records with the same
 keys, is passed through and read by the transpiler by name.
@@ -134,10 +141,10 @@ Typedefs and markers whose types are written with builtins alone go in
 `xj_guidance.h`, which `BuildInfo` force-includes into every later compile.
 Anything that names a record, an enum, or a typedef is written as the program
 wrote it and inserted once per TU, before the first top-level declaration that
-needs it. Keeping typedef names matters because guidance such as `&[tflac_u8]`
-names them, and the transpiler only emits typedefs that something uses. (A
-forward declaration in the header would move each record's first declaration
-and, with it, the order of the translated items.) Buffers whose
+needs it. Records are spelled as declared, so their declarations stay where
+the program put them and the order of the translated items doesn't change.
+Keeping typedef names matters because guidance such as `&[tflac_u8]` names
+them, and the transpiler only emits typedefs that something uses. Buffers whose
 element carries guidance of its own (`Vec<Vec<u8>>` on `char **`,
 `&Option<&u8>` on `const u8 **`) get an element typedef, so `x[i]` and `*p`
 carry it by clang's own typing.
@@ -155,10 +162,10 @@ says otherwise.
 On the Rust side, `TypeConverter` maps marker typedefs to their Rust types,
 marker typedef and function declarations produce no items, and calls to
 markers are translated by family, which the transpiler reads from the
-`markers` table in `xj-guidance.json`: `(*xj_index_<b>(b, i))` is
-`b[i as usize]`; `xj_char_at_<s>(s, i)` is
+`markers` table in `xj-guidance.json`: `(*xj_index_<T>(b, i))` is
+`b[i as usize]`; `xj_char_at_<T>(s, i)` is
 `s.as_bytes().get(i).copied().unwrap_or(0)`, so reading at the length yields
-the terminator's 0 as in C; and an identity `xj_coerce_<x>_to_<x>(e)` is `e`
+the terminator's 0 as in C; and an identity `xj_coerce_<T>_to_<T>(e)` is `e`
 without the C conversions around it.
 The transpiler treats marker calls as free of side effects, so `p[i] += 1`
 still names its place directly. Libc recognizers look through identity
@@ -167,7 +174,17 @@ markers (`xj_coerce`, `xj_slice_all`) at the value the program passed.
 ## Diagnostics
 
 Guidance the program cannot honour is reported on stderr and in the
-`"guidance_diagnostics"` list of `xj-guidance.json`:
+`"guidance_diagnostics"` list of `xj-guidance.json`. Each entry is an object
+with four string fields:
+
+- `kind`: one of the kinds below;
+- `site`: the source location, as `file:line:column`, or empty for
+  `unmatched-specifier`, which has none;
+- `subject`: what the diagnostic is about, such as a declaration and its
+  guided type (`p: &[u8]`), or the specifier that matched nothing;
+- `message`: a sentence explaining it.
+
+The kinds are:
 
 - `pointer-motion`: `p--`, `p -= n`, `p = q + k`, or forward motion that is
   not a statement on a shared slice, on a guided pointer the pointer passes
@@ -194,7 +211,7 @@ Guidance the program cannot honour is reported on stderr and in the
 
 ## Other Notes
 
-- The pass runs on the `.nolines.i` files, so `#line` and `@file` specifier
+- The pass runs on the `.nolines.i` files, so the `#line` and `file@` specifier
   components are matched against locations in those files.
 - A field (`Rec:field`) is guided as a variable is: its declaration is
   retyped, and since `s.field` and `p->field` then have the marker type,
@@ -209,14 +226,6 @@ Guidance the program cannot honour is reported on stderr and in the
   keeps the value's type (so rustc still reports the mismatch) and keeps the
   site greppable.
 - A null test of a `String`, `Vec`, or slice becomes `.is_empty()`, which
-  differs from C when the value can be empty and non-null. On anything but a
-  plain variable it is written `str::is_empty(&e)` (`<[_]>::is_empty`,
-  `Option::is_none`): a method call on a field reached through a raw pointer
-  needs an explicit borrow, which `cargo clippy --fix` on the pinned
-  toolchain removes, and the newer toolchain then rejects the implicit one
-  (`dangerous_implicit_autorefs`).
+  differs from C when the value can be empty and non-null.
 - Rerunning the pass on instrumented input (the guidance already has
   `marker_typedefs`) changes nothing.
-- A guided pointer that still moves after the pointer passes is a diagnostic,
-  not a translation case; running this pass before them would treat a moving
-  pointer as a base.
