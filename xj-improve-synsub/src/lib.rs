@@ -921,10 +921,10 @@ impl RewriteVisitor<'_> {
                     | "fprintf"
                     | "sprintf"
                     | "snprintf"
-                    | "printf_safe"
-                    | "fprintf_safe"
-                    | "sprintf_safe"
-                    | "snprintf_safe"
+                    | "printf_raw"
+                    | "fprintf_raw"
+                    | "sprintf_raw"
+                    | "snprintf_raw"
                     | "sprintf_unchecked"
                     | "snprintf_unchecked"
             )
@@ -945,7 +945,7 @@ impl RewriteVisitor<'_> {
             )
             && matches!(
                 path.segments[1].ident.to_string().as_str(),
-                "snprintf" | "sprintf"
+                "snprintf_raw" | "sprintf_raw"
             )
         {
             // Treat the whole invocation as a call while rewriting, so a

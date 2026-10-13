@@ -3322,14 +3322,14 @@ impl Rewriter {
         let Expr::Path(func) = &*call.func else {
             return None;
         };
-        let format_operation = if func.path.is_ident("xj_astgrep_snprintf")
-            || is_path_exactly_2(&func.path, "xj_cio", "snprintf")
-            || is_path_exactly_2(&func.path, "xj_cfmt", "snprintf")
+        let format_operation = if func.path.is_ident("xj_astgrep_snprintf_raw")
+            || is_path_exactly_2(&func.path, "xj_cio", "snprintf_raw")
+            || is_path_exactly_2(&func.path, "xj_cfmt", "snprintf_raw")
         {
             Some("snprintf")
-        } else if func.path.is_ident("xj_astgrep_sprintf")
-            || is_path_exactly_2(&func.path, "xj_cio", "sprintf")
-            || is_path_exactly_2(&func.path, "xj_cfmt", "sprintf")
+        } else if func.path.is_ident("xj_astgrep_sprintf_raw")
+            || is_path_exactly_2(&func.path, "xj_cio", "sprintf_raw")
+            || is_path_exactly_2(&func.path, "xj_cfmt", "sprintf_raw")
         {
             Some("sprintf")
         } else {

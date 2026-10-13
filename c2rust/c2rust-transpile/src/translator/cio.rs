@@ -879,7 +879,7 @@ impl Translation<'_> {
                 }
             }
             let target = Ident::new(
-                &format!("{name}_plan{}", if guided_dest { "_" } else { "" }),
+                &format!("{name}_plan{}", if guided_dest { "_" } else { "_raw" }),
                 Span::call_site(),
             );
             let fresh = |name: &str| {
@@ -953,11 +953,11 @@ impl Translation<'_> {
             prefix.push(quote::quote!(#stream));
         }
         let suffix = if safe {
-            "_safe"
+            ""
         } else if guided_dest {
             "_unchecked"
         } else {
-            ""
+            "_raw"
         };
         let mac = Ident::new(&format!("{name}{suffix}"), Span::call_site());
         // Leave unsafe operations visible to Tenjin's ununsafe pass, so the

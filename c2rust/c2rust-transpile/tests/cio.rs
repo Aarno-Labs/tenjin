@@ -153,8 +153,8 @@ fn stdio_and_formatting_check() {
     c2rust_transpile::transpile(cfg, &commands, &[]);
     let rust = fs::read_to_string(dir.path().join("translated/src/io.rs")).unwrap();
     assert!(rust.contains("::xj_cio::FILE_ptr"), "{rust}");
-    assert!(rust.contains("xj_cio::fprintf!"), "{rust}");
-    assert!(rust.contains("xj_cio::snprintf!"), "{rust}");
+    assert!(rust.contains("xj_cio::fprintf_raw!"), "{rust}");
+    assert!(rust.contains("xj_cio::snprintf_raw!"), "{rust}");
     assert!(!rust.contains("pub struct _IO_FILE"), "{rust}");
     assert!(!rust.contains("to_str().unwrap()"), "{rust}");
 
@@ -201,8 +201,8 @@ fn formatting_guided_zstr_uses_byte_views() {
     let (_commands_dir, commands) = c2rust_transpile::create_temp_compile_commands(&[source]);
     c2rust_transpile::transpile(cfg, &commands, &[]);
     let rust = fs::read_to_string(dir.path().join("translated/src/guided.rs")).unwrap();
-    assert!(rust.contains("::xj_cio::printf_safe!"), "{rust}");
-    assert!(rust.contains("::xj_cio::snprintf_safe!(out,"), "{rust}");
+    assert!(rust.contains("::xj_cio::printf!"), "{rust}");
+    assert!(rust.contains("::xj_cio::snprintf!(out,"), "{rust}");
     assert!(rust.contains("::xj_cio::snprintf_plan_("), "{rust}");
     assert!(!rust.contains("to_string_lossy"), "{rust}");
     fs::write(dir.path().join("translated/Cargo.toml"),
@@ -290,8 +290,8 @@ fn alternate_headers_require_explicit_trust_for_both_format_kinds() {
         source,
         serde_json::json!({"stdio_header_roots": [dir.path().to_str().unwrap()]}),
     );
-    assert!(rust.contains("xj_cio::printf_safe!(b\"%d\", 42"), "{rust}");
-    assert!(rust.contains("xj_cio::printf!("), "{rust}");
+    assert!(rust.contains("xj_cio::printf!(b\"%d\", 42"), "{rust}");
+    assert!(rust.contains("xj_cio::printf_raw!("), "{rust}");
     assert!(!rust.contains("extern \"C\" {\n    fn printf"), "{rust}");
 }
 
@@ -311,7 +311,7 @@ fn literal_formats_preserve_bytes_and_extra_argument_evaluation() {
     "#,
         serde_json::json!({}),
     );
-    assert!(rust.contains("xj_cio::sprintf!"), "{rust}");
+    assert!(rust.contains("xj_cio::sprintf_raw!"), "{rust}");
     assert!(rust.contains("b\"%s/00Tree.html\""), "{rust}");
     assert!(!rust.contains("xj_cio_ptr_arg"), "{rust}");
     assert!(!rust.contains("ignored"), "{rust}");

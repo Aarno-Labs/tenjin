@@ -1846,9 +1846,9 @@ fn c_format_macros_rewrite_arguments_and_destinations() {
     rw.add_macro_rewrite(Rewriter::rewrite_byte_view_macro_literals);
     let mut file = syn::parse_file(r#"
         fn demo(mut out: [u8; 8], raw: *mut u8, s: &ZStr) {
-            unsafe { xj_cio::snprintf!(out.as_mut_ptr(), 4, b"%s", core::ffi::CStr::from_ptr(s.as_ptr())); }
-            unsafe { xj_cio::sprintf!(raw, b"%s", core::ffi::CStr::from_ptr(s.as_ptr())); }
-            xj_cio::printf_safe!(b"%s", unsafe { core::ffi::CStr::from_ptr(s.as_ptr()) });
+            unsafe { xj_cio::snprintf_raw!(out.as_mut_ptr(), 4, b"%s", core::ffi::CStr::from_ptr(s.as_ptr())); }
+            unsafe { xj_cio::sprintf_raw!(raw, b"%s", core::ffi::CStr::from_ptr(s.as_ptr())); }
+            xj_cio::printf!(b"%s", unsafe { core::ffi::CStr::from_ptr(s.as_ptr()) });
         }
     "#).unwrap();
     rw.rewrite_file(&mut file, Depth::Unlimited);
@@ -1861,11 +1861,11 @@ fn c_format_macros_rewrite_arguments_and_destinations() {
         "{output}"
     );
     assert!(
-        output.contains("sprintf!(raw, \"%s\", s.as_c_str())"),
+        output.contains("sprintf_raw!(raw, \"%s\", s.as_c_str())"),
         "{output}"
     );
     assert!(
-        output.contains("printf_safe!(\"%s\", unsafe { s.as_c_str() })"),
+        output.contains("printf!(\"%s\", unsafe { s.as_c_str() })"),
         "{output}"
     );
 }

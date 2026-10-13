@@ -24,8 +24,8 @@ impl Rewriter {
         let namespace = path.segments[0].ident.to_string();
         let name = path.segments[1].ident.to_string();
         let operation = name
-            .strip_suffix("_safe")
-            .or_else(|| name.strip_suffix("_unchecked"))
+            .strip_suffix("_unchecked")
+            .or_else(|| name.strip_suffix("_raw"))
             .unwrap_or(&name);
         let (format_index, input_index, printf) = match (namespace.as_str(), operation) {
             ("xj_cio", "printf") => (0, None, true),
@@ -89,7 +89,7 @@ impl Rewriter {
         };
         if mac.path.segments.len() != 2
             || mac.path.segments[0].ident != "xj_cio"
-            || mac.path.segments[1].ident != "fprintf_safe"
+            || mac.path.segments[1].ident != "fprintf"
         {
             return None;
         }
@@ -158,7 +158,7 @@ impl Rewriter {
         let name = path.segments[1].ident.to_string();
         let operation = name
             .strip_suffix("_unchecked")
-            .or_else(|| name.strip_suffix("_safe"))
+            .or_else(|| name.strip_suffix("_raw"))
             .unwrap_or(&name);
         let format_index = match operation {
             "printf" if namespace == "xj_cio" => 0,
@@ -180,10 +180,7 @@ impl Rewriter {
         {
             return None;
         }
-        if matches!(operation, "sprintf" | "snprintf")
-            && !name.ends_with("_safe")
-            && !name.ends_with("_unchecked")
-        {
+        if matches!(operation, "sprintf" | "snprintf") && name.ends_with("_raw") {
             // Raw destinations are handled by the existing destination rewrite.
             return None;
         }
@@ -206,7 +203,7 @@ impl Rewriter {
         }
         let mut result = mac.clone();
         result.path.segments.last_mut()?.ident =
-            syn::Ident::new(&format!("{operation}_safe"), path.segments[1].ident.span());
+            syn::Ident::new(operation, path.segments[1].ident.span());
         result.tokens = args.to_token_stream();
         if result.path == mac.path && result.tokens.to_string() == mac.tokens.to_string() {
             None

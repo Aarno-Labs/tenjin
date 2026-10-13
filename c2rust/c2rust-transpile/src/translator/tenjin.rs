@@ -1568,7 +1568,7 @@ impl Translation<'_> {
                     let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
                     let value = expr.to_expr();
                     let print_call =
-                        Box::new(syn::parse_quote! { ::xj_cio::printf_safe!(b"%s", #value) });
+                        Box::new(syn::parse_quote! { ::xj_cio::printf!(b"%s", #value) });
                     return Ok(Some(WithStmts::new_val(print_call)));
                 }
             }
@@ -1599,7 +1599,7 @@ impl Translation<'_> {
 
             let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
             let value = expr.to_expr();
-            let print_call = Box::new(syn::parse_quote! { ::xj_cio::printf_safe!(b"%c", #value) });
+            let print_call = Box::new(syn::parse_quote! { ::xj_cio::printf!(b"%c", #value) });
             return Ok(Some(WithStmts::new_val(print_call)));
         }
         Ok(None)
@@ -1619,7 +1619,7 @@ impl Translation<'_> {
             // print!("{}", FOO)
             let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
             let value = expr.to_expr();
-            let print_call = Box::new(syn::parse_quote! { ::xj_cio::printf_safe!(b"%c", #value) });
+            let print_call = Box::new(syn::parse_quote! { ::xj_cio::printf!(b"%c", #value) });
             return Ok(Some(WithStmts::new_val(print_call)));
         }
         Ok(None)
