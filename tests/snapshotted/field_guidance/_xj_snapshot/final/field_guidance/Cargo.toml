@@ -1,0 +1,22 @@
+
+[package]
+name = "field_guidance"
+authors = ["C2Rust"]
+version = "0.0.0"
+publish = false
+edition = "2021"
+autobins = false
+
+[lib]
+name = "field_guidance"
+path = "lib.rs"
+crate-type = ["rlib"]
+[[bin]]
+path = "src/field_guidance.rs"
+name = "field_guidance"
+[dependencies]
+
+
+
+[profile.release]
+strip = "debuginfo"

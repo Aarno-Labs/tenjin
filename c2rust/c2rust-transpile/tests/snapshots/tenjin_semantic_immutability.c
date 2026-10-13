@@ -1,3 +1,9 @@
+// xj-prepare-guidance output for `guided_pointer` and `AllGuided::guided`
+// guided as `&'static [u8]`, and `guided_raw_pointer_array` guided as an
+// array of raw pointers, with its header inlined.
+typedef const unsigned char *xj_ty_ref_slice_u8;
+typedef int *xj_ty_array_2_ptr_mut_c_int[2];
+
 typedef struct {
     int value;
 } Plain;
@@ -7,7 +13,7 @@ typedef struct {
 } HasRaw;
 
 typedef struct {
-    const unsigned char *guided;
+    xj_ty_ref_slice_u8 guided;
 } AllGuided;
 
 typedef union {
@@ -27,7 +33,8 @@ int plain_scalar;
 int forced_mut_scalar;
 int *raw_pointer;
 int *forced_immutable_raw_pointer;
-const unsigned char *guided_pointer = "";
+xj_ty_ref_slice_u8 guided_pointer = "";
+xj_ty_array_2_ptr_mut_c_int guided_raw_pointer_array;
 Plain plain_record;
 HasRaw raw_record;
 HasRawUnion raw_union;

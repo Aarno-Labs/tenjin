@@ -54,6 +54,9 @@ pub static forced_immutable_raw_pointer: *mut ::core::ffi::c_int =
 #[no_mangle]
 pub static guided_pointer: &'static [u8] = b"\0";
 #[no_mangle]
+pub static mut guided_raw_pointer_array: [*mut ::core::ffi::c_int; 2] =
+    [::core::ptr::null_mut::<::core::ffi::c_int>(); 2];
+#[no_mangle]
 pub static plain_record: Plain = Plain { value: 0 };
 #[no_mangle]
 pub static mut raw_record: HasRaw = HasRaw {
@@ -63,7 +66,7 @@ pub static mut raw_record: HasRaw = HasRaw {
 pub static mut raw_union: HasRawUnion = HasRawUnion { scalar: 0 };
 #[no_mangle]
 pub static guided_record: AllGuided = AllGuided {
-    guided: b"guided\0".as_ptr() as *const ::core::ffi::c_uchar,
+    guided: b"guided\0",
 };
 #[no_mangle]
 pub static mut nested_raw_record_array: NestedRaw = NestedRaw {
@@ -74,11 +77,9 @@ pub static mut nested_raw_record_array: NestedRaw = NestedRaw {
 #[no_mangle]
 pub static nested_guided_record_array: NestedGuided = NestedGuided {
     values: [
+        AllGuided { guided: b"first\0" },
         AllGuided {
-            guided: b"first\0".as_ptr() as *const ::core::ffi::c_uchar,
-        },
-        AllGuided {
-            guided: b"second\0".as_ptr() as *const ::core::ffi::c_uchar,
+            guided: b"second\0",
         },
     ],
 };

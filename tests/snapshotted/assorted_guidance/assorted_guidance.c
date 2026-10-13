@@ -196,6 +196,12 @@ int guided_mut_ref_neq(const char *xstr, const char *xstr2)
     return xstr != xstr2;
 }
 
+int guided_mut_ref_eq(const char *xstr, const char *xstr2)
+{
+    // XREF:guided_mut_ref_neq
+    return xstr == xstr2;
+}
+
 int guided_1d_slice(int *x, int index)
 {
     // XREF:guided_subscript_noderef

@@ -30,6 +30,10 @@ WANT = {
 
 XJ_GUIDANCE_FILENAME = "xj-guidance.json"
 
+# Marker typedefs and functions written by xj-prepare-guidance, relative to
+# the codebase root and force-included into every later compile.
+XJ_GUIDANCE_HEADER_FILENAME = "xj_guidance.h"
+
 # Results handed from xj-prepare-pointertransform to
 # xj-prepare-slicetransform. Keep in sync with
 PTR_INDEX_METADATA_FILENAME = "xj-ptrindex.json"

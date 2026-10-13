@@ -61,7 +61,19 @@ value for each key is either a variable specifier, or a list of specifiers.
 A variable specifier is a string like `foo:bar`, which indicates the `bar`
 parameter or local variable within the `foo` function. `*:bar` means every
 such variable named `bar` in every function. A bare `quux` refers to
-a global variable.
+a global variable. `Rec:field` refers to a field of the struct or union
+`Rec`. A specifier can be narrowed to a file and a line, written
+`file@fn:var#line`: `file` matches any path that ends with it, and `line` is
+the line of the declaration in the preprocessed (`.nolines.i`) file. When
+several specifiers match one declaration, the most specific wins (a named
+function over `*`, then one with a line, then one with a file), and among
+equally specific ones the first listed. A guided field's type may not borrow, except with `'static`:
+`&'static str` works but `&mut [u8]` does not, since the record would need
+a lifetime parameter. Such guidance is reported as `not-retyped` and the
+field keeps its C type. Guiding a declaration from a system header (a
+field of `struct stat`, a parameter of a libc prototype) keeps that
+header's text in the translated file, so Tenjin generates bindings for it
+rather than using the `libc` crate's (see `use_libc` below).
 * `vars_mut`: likewise, a dict mapping specifiers to boolean values
     indicating whether that declaration should be marked `mut` in Rust.
 * `fn_return_type` - a dict mapping function names to the Rust type they should be made to / assumed to return
@@ -84,7 +96,8 @@ For now, this is only  `libc::stat` and libc's supported `sys/stat.h`
 functions and mode constants on Linux x86-64 GNU.
 Unsupported layouts or uses (such as accessing reserved fields
 or taking the address of a whole timestamp subobject) keep the generated
-bindings for the entire input batch.
+bindings for the entire input batch, as does guidance (type or `ffi`) on
+`struct stat` or one of the substituted functions.
 Substitution uses declaration provenance,
 so project-defined declarations with matching names are left alone.
 * `ffi` - a dict whose keys are function names. Each entry is a dict from
@@ -178,6 +191,14 @@ correct program. Note that one may rationally want to produce an incorrect
 translation, if the cost of fixing the unhandled cases from "incorrect" guidance
 is lower than the cost of otherwise obtaining an acceptably correct translation.
 
+Type guidance is applied to the C before translation by
+[guidance instrumentation](passes/guidance_instrumentation.md). Incompatible
+occurrences the transpiler has no conversion for are emitted as
+`xj_unhandled_coercion(value, "<from> -> <to>")`, which keeps the value's type,
+and guidance the program cannot honour (for example, a guided slice that is
+still incremented) is listed under `guidance_diagnostics` in the prepared
+codebase's `xj-guidance.json`.
+
 ### FFI Guidance
 FFI guidance is at an early stage: at the moment, the following Rust types are not handled as targets (not exhaustive!):
 - Owned types (`Box`, `Vec`, `String`)
@@ -207,6 +228,7 @@ the `preparation_passes` list within [translation_preparation.py](/cli/translati
 Some notable passes:
 
 - [convert union bitcasts](passes/convert_union_bitcasts.md)
+- [guidance instrumentation](passes/guidance_instrumentation.md)
 - [K&R syntax elimination](passes/knr_elimination.md)
 - [mutable global localization](passes/mutable_global_localization.md)
 - [pointer arithmetic reduction & slice reshaping](passes/pointer_arithmetic_reduction.md)

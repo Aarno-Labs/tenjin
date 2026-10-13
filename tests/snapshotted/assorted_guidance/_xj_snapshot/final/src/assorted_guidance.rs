@@ -4,8 +4,6 @@ extern "C" {
 
     fn printf(fmt: *const u8, ...) -> ::core::ffi::c_int;
 
-    fn strlen(s: *const u8) -> size_t;
-
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
@@ -78,9 +76,11 @@ pub fn guided_array_vec() {
     print_owned_vec_u8(ovu8);
 }
 #[no_mangle]
-pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
+pub fn guided_immutable_u8_array_slice_decay_to_ptr() {
     let rsu8: &[u8] = b"";
-    strlen(&raw const rsu8 as *const ::core::ffi::c_uchar as *const u8);
+    (::std::ffi::CStr::from_bytes_until_nul(rsu8)
+        .unwrap()
+        .count_bytes());
 }
 #[no_mangle]
 pub fn guided_immutable_u8_pointer() {
@@ -107,7 +107,7 @@ pub fn guided_ret_ostr() -> String {
 }
 #[no_mangle]
 pub fn guided_condition_string_null_check_neq(mut ostr: String) -> ::core::ffi::c_int {
-    if true {
+    if !ostr.is_empty() {
         2
     } else {
         5
@@ -144,6 +144,10 @@ pub fn guided_vec_memset_zero_mulsizeof_deref(mut ovu8: Vec<u8>) {
 #[no_mangle]
 pub fn guided_mut_ref_neq(mut xstr: &mut str, mut xstr2: &mut str) -> ::core::ffi::c_int {
     1
+}
+#[no_mangle]
+pub fn guided_mut_ref_eq(mut xstr: &mut str, mut xstr2: &mut str) -> ::core::ffi::c_int {
+    0
 }
 #[no_mangle]
 pub fn guided_1d_slice(
@@ -253,7 +257,7 @@ pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
 }
 #[no_mangle]
 pub fn peek_slice(mut rsu8: &[u8]) {
-    let mut v = rsu8[0];
+    let mut v = rsu8[0_usize];
 }
 #[no_mangle]
 pub fn receive_slice(mut rsu8: &[u8]) {
