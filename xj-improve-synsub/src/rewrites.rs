@@ -3246,8 +3246,12 @@ impl Rewriter {
         {
             return None;
         }
-        if matches!(name.as_str(), "fread" | "fwrite") && call.args.len() == 4 {
-            let exclusive = name == "fread";
+        if matches!(
+            name.as_str(),
+            "fread" | "fwrite" | "fread_raw" | "fwrite_raw"
+        ) && call.args.len() == 4
+        {
+            let exclusive = matches!(name.as_str(), "fread" | "fread_raw");
             let pointer = expr_strip_casts(&call.args[0]);
             let buffer = if exclusive {
                 extract_slice_ptr_base(pointer, symbols)?

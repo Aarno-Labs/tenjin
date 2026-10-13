@@ -359,6 +359,9 @@ impl Rewriter {
         let namespace = namespace.as_str();
         let cio_adapter =
             namespace == "xj_cio" && segments.len() == 3 && segments[1].ident == "c_abi";
+        if cio_adapter && matches!(name.as_str(), "fwrite" | "perror") {
+            return None;
+        }
         if cio_adapter {
             let mode_index = match (name.as_str(), call.args.len()) {
                 ("fopen" | "fdopen" | "popen", 2) | ("freopen", 3) => Some(1),
@@ -383,15 +386,15 @@ impl Rewriter {
         }
         let input_indices: &[usize] = match (namespace, name.as_str()) {
             ("xj_cio", "fopen" | "popen" | "rename") => &[0, 1],
-            ("xj_cio", "fdopen" | "freopen" | "fscanf" | "fscanf_raw" | "vfscanf") => &[1],
+            ("xj_cio", "fdopen" | "freopen_raw" | "fscanf" | "fscanf_raw" | "vfscanf") => &[1],
             ("xj_cio", "sscanf_raw" | "vsscanf") => &[0, 1],
-            ("xj_cio", "freopen_") => &[0, 1],
-            ("xj_cio", "perror_") => &[0],
-            ("xj_cio", "fmemopen") => &[2],
-            ("xj_cio", "fmemopen_") => &[1],
+            ("xj_cio", "freopen") => &[0, 1],
+            ("xj_cio", "perror") => &[0],
+            ("xj_cio", "fmemopen_raw") => &[2],
+            ("xj_cio", "fmemopen") => &[1],
             (
                 "xj_cio",
-                "remove" | "fputs" | "puts" | "scanf" | "scanf_raw" | "vscanf" | "fwrite_"
+                "remove" | "fputs" | "puts" | "scanf" | "scanf_raw" | "vscanf" | "fwrite"
                 | "fwrite_items",
             ) => &[0],
             ("xj_atone", "atof" | "atoi" | "atol" | "atoll") => &[0],
@@ -426,6 +429,15 @@ impl Rewriter {
             ) => &[1],
             _ => return None,
         };
+        let input_indices: &[usize] = if cio_adapter {
+            match name.as_str() {
+                "freopen" => &[1],
+                "fmemopen" => &[2],
+                _ => input_indices,
+            }
+        } else {
+            input_indices
+        };
         let qualified_module = segments.len() == 3
             && matches!(
                 (namespace, segments[1].ident.to_string().as_str()),
@@ -436,9 +448,7 @@ impl Rewriter {
         }
         let mut result = call.clone();
         for &index in input_indices {
-            if namespace == "xj_cio"
-                && index == 0
-                && matches!(name.as_str(), "perror_" | "freopen_")
+            if namespace == "xj_cio" && index == 0 && matches!(name.as_str(), "perror" | "freopen")
             {
                 if let Expr::Call(optional) = unparen(call.args.get(index)?)
                     && optional.args.len() == 1
@@ -478,7 +488,11 @@ impl Rewriter {
             }
         }
         if cio_adapter {
-            let ident = &segments.last()?.ident;
+            let ident = if matches!(name.as_str(), "freopen" | "fmemopen") {
+                syn::Ident::new(&format!("{name}_raw"), segments.last()?.ident.span())
+            } else {
+                segments.last()?.ident.clone()
+            };
             result.func = Box::new(parse_quote! { ::xj_cio::#ident });
         }
         (result.to_token_stream().to_string() != call.to_token_stream().to_string())

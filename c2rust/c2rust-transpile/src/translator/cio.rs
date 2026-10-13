@@ -396,25 +396,35 @@ impl Translation<'_> {
                 (_, None) => arg.clone(),
             })
             .collect();
-        let direct_target = if let Some(view) = optional_view {
+        let safe_optional = optional_view.is_some() && !adapter;
+        if let Some(view) = optional_view {
             if adapter {
                 values[0] = cio_c_string_ptr(&view);
-                target.as_str()
             } else {
                 values[0] = Box::new(syn::parse_quote!(Some(#view)));
-                if target == "freopen" {
-                    "freopen_"
-                } else {
-                    "perror_"
-                }
             }
+        }
+        let direct_target = if !adapter
+            && !safe_optional
+            && matches!(
+                target.as_str(),
+                "fgets"
+                    | "getline"
+                    | "getdelim"
+                    | "tmpnam"
+                    | "ctermid"
+                    | "perror"
+                    | "freopen"
+                    | "fmemopen"
+            ) {
+            format!("{target}_raw")
         } else {
-            target.as_str()
+            target.clone()
         };
         let path = if adapter {
             vec!["xj_cio", "c_abi", target.as_str()]
         } else {
-            vec!["xj_cio", direct_target]
+            vec!["xj_cio", &direct_target]
         };
         self.use_crate(ExternCrate::XjCio);
         let mut call = mk().call_expr(mk().abs_path_expr(path), values);
