@@ -93,6 +93,122 @@ def add_immutable_dispositions_to_guidance(
     return added
 
 
+def require_context_reference_authorization(codebase: Path, guidance: dict) -> None:
+    """All context reference guidance, including user entries, needs v4 evidence."""
+    reference_types = [
+        ty
+        for ty, entries in guidance.get("vars_of_type", {}).items()
+        if entries
+        and re.search(
+            r"&(?:'\w+)?mut(?:::)?(?:\w+::)*XjGlobals\b",
+            re.sub(r"\s|[()]", "", ty),
+        )
+    ]
+    if not reference_types:
+        return
+    manifest_path = codebase / "pangs-disposition" / "pangs-manifest.json"
+    if not manifest_path.exists():
+        raise pangs_source.ContractViolation(
+            "&mut XjGlobals guidance requires a PANGS source-plan v4 localization"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    pangs_source.validate_plan(manifest, codebase)
+    if not manifest["context_rewrite"]["selected"]["fields"]:
+        raise pangs_source.ContractViolation(
+            "&mut XjGlobals guidance requires certified localized storage"
+        )
+
+
+def generate_context_guidance(
+    codebase: Path, compdb: compilation_database.CompileCommands | None
+) -> None:
+    """Use final C names; PANGS owns safety and this pass decides typing only."""
+    guidance_path = codebase / XJ_GUIDANCE_FILENAME
+    guidance = json.loads(guidance_path.read_text(encoding="utf-8"))
+    require_context_reference_authorization(codebase, guidance)
+    manifest_path = codebase / "pangs-disposition" / "pangs-manifest.json"
+    if not manifest_path.exists():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    pangs_source.validate_plan(manifest, codebase)
+    context_names: set[str] = set()
+    raw_names: set[str] = set()
+    if manifest["context_rewrite"]["selected"]["fields"] and compdb is not None:
+        tus = c_refact.parse_project(cindex_helpers.create_xj_clang_index(), compdb)
+        for tu in tus.values():
+            for cursor in tu.cursor.walk_preorder():
+                if cursor.kind != CursorKind.FUNCTION_DECL or not cursor.is_definition():
+                    continue
+                parameters = list(cursor.get_arguments())
+                parameter = parameters[0] if parameters else None
+                ty = parameter.type.get_canonical() if parameter else None
+                if (
+                    parameter is not None
+                    and parameter.spelling == "xjg"
+                    and ty is not None
+                    and ty.kind == TypeKind.POINTER
+                    and ty.get_pointee().get_declaration().spelling == "XjGlobals"
+                    and cursor.spelling != "main"
+                ):
+                    context_names.add(cursor.spelling)
+                else:
+                    raw_names.add(cursor.spelling)
+        # Name-keyed guidance covers every copy after un-uniquification. If any
+        # copy is a function value, preserve the raw signature for the group.
+        for tu in tus.values():
+            for ref, ancestors in cindex_helpers.yield_matching_cursors(
+                tu.cursor, [CursorKind.DECL_REF_EXPR]
+            ):
+                if (
+                    ref.spelling not in context_names
+                    or ref.referenced is None
+                    or ref.referenced.kind != CursorKind.FUNCTION_DECL
+                ):
+                    continue
+                parent = ref
+                while ancestors:
+                    parent, rest = ancestors
+                    if rest is None or not parent.kind.is_unexposed():
+                        break
+                    ancestors = rest
+                callee = next(parent.get_children(), None)
+                if (
+                    parent.kind != CursorKind.CALL_EXPR
+                    or callee is None
+                    or callee.spelling != ref.spelling
+                ):
+                    raw_names.add(ref.spelling)
+    # Track automatic entries so a rerun replaces them without deleting user
+    # guidance for unrelated bindings or accumulating obsolete function names.
+    previous = set(guidance.get("generated_context_guidance", []))
+    user_specs = {
+        spec
+        for ty, values in guidance.get("vars_of_type", {}).items()
+        for spec in ([values] if isinstance(values, str) else values)
+        if ty != "&mut XjGlobals" or spec not in previous
+    }
+    # Follow C2Rust's derived-name rule without adding a conflicting automatic
+    # type when the user has explicitly chosen one for the context parameter.
+    generated = sorted(
+        f"{name}:xjg"
+        for name in context_names - raw_names
+        if f"{name}:xjg" not in user_specs and f"{name.split('_xjtr', 1)[0]}:xjg" not in user_specs
+    )
+    if not generated and not previous:
+        return
+    vars_of_type = guidance.setdefault("vars_of_type", {})
+    entries = vars_of_type.get("&mut XjGlobals", [])
+    if isinstance(entries, str):
+        entries = [entries]
+    entries = sorted((set(entries) - previous) | set(generated))
+    if entries:
+        vars_of_type["&mut XjGlobals"] = entries
+    else:
+        vars_of_type.pop("&mut XjGlobals", None)
+    guidance["generated_context_guidance"] = generated
+    guidance_path.write_text(json.dumps(guidance, indent=2), encoding="utf-8")
+
+
 def _remap_path_prefix_in_argument(s: str, source: Path, dest: Path) -> str:
     """Remap absolute paths rooted at ``source`` inside a command argument."""
     # A compiler argument can be a bare path, a joined option such as
@@ -2488,6 +2604,13 @@ def run_preparation_passes(
         )
         # build_info now marked to use refolded files, for future steps
 
+    def prep_context_guidance(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+        all_targets = store.build_info.get_all_targets()
+        compdb = None
+        if len(all_targets) == 1 and all_targets[0].type == TargetType.EXECUTABLE:
+            compdb = store.build_info.compdb_for_target_within(all_targets[0].key, current_codebase)
+        generate_context_guidance(current_codebase, compdb)
+
     preparation_passes: list[
         tuple[str, Callable[[Path, Path, PrepPassResultStore], CompletedProcess | None]]
     ] = [
@@ -2508,6 +2631,7 @@ def run_preparation_passes(
         ("run_pangs_disposition", prep_run_pangs_disposition),
         ("localize_mutable_globals", prep_localize_mutable_globals),
         ("prep_un_uniquify_static_inline_fns", prep_un_uniquify_static_inline_fns),
+        ("context_guidance", prep_context_guidance),
     ]
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") != "0":

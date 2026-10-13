@@ -1001,21 +1001,21 @@ def test_tractor_b1_synthetic_023_app(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b1_synthetic_024_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/024_struct_and_static"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 5
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 6
 
 
 @pytest.mark.slow
 def test_tractor_b1_synthetic_025_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/025_struct_and_errno_and_static"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 6
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 7
 
 
 @pytest.mark.slow
 def test_tractor_b1_synthetic_026_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B01_synthetic/026_goto_and_static"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 1
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 2
 
 
 @pytest.mark.slow

@@ -31,9 +31,7 @@ import cindex_helpers
 from cindex_helpers import (
     create_xj_clang_index,
     render_declaration_sans_qualifiers,
-    yield_matching_cursors,
 )
-from constants import XJ_GUIDANCE_FILENAME
 import targets
 import tenj_types
 import pangs_source
@@ -1468,10 +1466,10 @@ def localize_mutable_globals(
                 )
         compdb.to_json_file(staged / "compile_commands.json")
         manifest["materialization"] = {
-            "tool": {"name": "tenjin", "version": "source-plan-2"},
+            "tool": {"name": "tenjin", "version": "source-plan-4"},
             "marker_inventory": [],
             "demotions": [],
-            "source_plan_version": 2,
+            "source_plan_version": manifest["context_rewrite"]["source"]["version"],
             "c_validation": ["clang-14", "clang-21"],
             "applied_source_edits": len(selected["source_edits"]),
         }
@@ -2315,48 +2313,4 @@ def _localize_mutable_globals_in_place(
             with open(tu_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
 
-    update_vars_of_type_guidance_for_xjg(current_codebase, nonmain_context_functions, tus)
-
     print("=" * 80)
-
-
-# Update the guidance to have the xjg parameter passed as &mut when possible.
-# Functions which are used in higher-order ways must remain as raw pointers.
-def update_vars_of_type_guidance_for_xjg(
-    current_codebase: Path,
-    nonmain_context_functions: set[str],
-    tus: dict[str, TranslationUnit],
-):
-    higher_order_context_functions = set()
-    for _tu_path, tu in tus.items():
-        assert tu.cursor is not None, f"Translation unit {tu.spelling} has no cursor!"
-        for v, ancestors in yield_matching_cursors(tu.cursor, [CursorKind.DECL_REF_EXPR]):
-            if v.spelling in nonmain_context_functions:
-                # Found a use of a context function; was it in a call position?
-                parent = v
-                while ancestors:
-                    parent, rest = ancestors
-                    if rest is None:
-                        break
-                    if not parent.kind.is_unexposed():
-                        break
-                    ancestors = rest
-                if parent.kind != CursorKind.CALL_EXPR:
-                    higher_order_context_functions.add(v.spelling)
-                else:
-                    # might be a callee, or a call arg
-                    callee = next(parent.get_children(), None)
-                    if callee and callee.spelling == v.spelling:
-                        # direct call, all good
-                        pass
-                    else:
-                        # passed as an argument
-                        higher_order_context_functions.add(v.spelling)
-    guidance: dict = json.load(open(current_codebase / XJ_GUIDANCE_FILENAME, "r", encoding="utf-8"))
-    can_take_mut_xjg = nonmain_context_functions - higher_order_context_functions
-    mut_specs = guidance.get("vars_of_type", {}).get("&mut XjGlobals", [])
-    for context_fn_name in sorted(can_take_mut_xjg):
-        mut_specs.append(f"{context_fn_name}:xjg")
-    guidance.setdefault("vars_of_type", {})["&mut XjGlobals"] = mut_specs
-    with open(current_codebase / XJ_GUIDANCE_FILENAME, "w", encoding="utf-8") as fh:
-        json.dump(guidance, fh, indent=2)
