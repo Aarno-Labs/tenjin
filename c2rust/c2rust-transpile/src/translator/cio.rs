@@ -284,11 +284,33 @@ fn cio_native_return_kind(target: &str) -> Option<CTypeKind> {
     }
 }
 
+/// Supply a stored NUL for a C ABI argument without adapting C literals.
+fn cio_c_string_ptr(view: &Expr) -> Box<Expr> {
+    match view {
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::ByteStr(bytes),
+            ..
+        }) if bytes.value().last() == Some(&0) => {
+            // C literals already have a terminator and static storage. Preserve
+            // all their bytes, including any bytes after an embedded NUL.
+            Box::new(syn::parse_quote!(#view.as_ptr().cast()))
+        }
+        // An unterminated ByteView needs an owned CString. Keep its owner in the
+        // call argument so that it remains live until the ABI call returns.
+        _ => Box::new(syn::parse_quote!(::xj_cio::to_c_str(#view).as_ptr().cast())),
+    }
+}
+
 impl Translation<'_> {
     /// Recover ByteView storage without reading through the translated pointer.
     fn cio_byte_view(&self, arg: &Expr, carg: CExprId) -> Option<Box<Expr>> {
-        if let Some(bytes) = self.printf_literal(carg) {
-            let literal = syn::LitByteStr::new(bytes, Span::call_site());
+        if let CExprKind::Literal(ty, CLiteral::String(bytes, 1)) =
+            &self.ast_context[self.c_strip_implicit_casts(carg)].kind
+        {
+            // Unlike the printf parser's literal view, retain the complete C
+            // literal storage, including its implicit terminating NUL.
+            let bytes = self.string_literal_bytes(ty.ctype, bytes, 1);
+            let literal = syn::LitByteStr::new(&bytes, Span::call_site());
             return Some(Box::new(syn::parse_quote!(#literal)));
         }
         let guided = self
@@ -370,19 +392,13 @@ impl Translation<'_> {
             .zip(views)
             .map(|(arg, view)| match (adapter, view) {
                 (false, Some(view)) => view,
-                // The ABI adapter needs a stored NUL, even for an unterminated
-                // ByteView. This temporary owner lives until the call returns.
-                (true, Some(view)) => Box::new(syn::parse_quote!(
-                    ::xj_cio::__cfmt::to_c_str(#view).as_ptr().cast()
-                )),
+                (true, Some(view)) => cio_c_string_ptr(&view),
                 (_, None) => arg.clone(),
             })
             .collect();
         let direct_target = if let Some(view) = optional_view {
             if adapter {
-                values[0] = Box::new(syn::parse_quote!(
-                    ::xj_cio::__cfmt::to_c_str(#view).as_ptr().cast()
-                ));
+                values[0] = cio_c_string_ptr(&view);
                 target.as_str()
             } else {
                 values[0] = Box::new(syn::parse_quote!(Some(#view)));

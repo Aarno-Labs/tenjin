@@ -88,6 +88,56 @@ fn unparen(mut expr: &Expr) -> &Expr {
     }
 }
 
+/// Recover a literal mode through the pointer decay emitted by c2rust.
+fn literal_mode(expr: &Expr) -> Option<syn::LitStr> {
+    let expr = unparen(expr);
+    match expr {
+        Expr::Reference(reference) if reference.mutability.is_none() => {
+            return literal_mode(&reference.expr);
+        }
+        Expr::Cast(cast) if matches!(&*cast.ty, Type::Ptr(_) | Type::Infer(_)) => {
+            return literal_mode(&cast.expr);
+        }
+        Expr::MethodCall(method)
+            if method.args.is_empty()
+                && ((method.turbofish.is_none()
+                    && matches!(method.method.to_string().as_str(), "as_ptr" | "as_mut_ptr"))
+                    || method.method == "cast") =>
+        {
+            return literal_mode(&method.receiver);
+        }
+        Expr::Call(call) if call.args.len() == 1 => {
+            if let Expr::Path(function) = &*call.func
+                && function.qself.is_none()
+                && function.path.segments.len() == 2
+                && matches!(
+                    function.path.segments[0].ident.to_string().as_str(),
+                    "xj_cio" | "xj_bytes" | "xj_cfmt" | "xj_zstr"
+                )
+                && function.path.segments[1].ident == "to_c_str"
+                && function.path.segments.iter().all(|s| s.arguments.is_none())
+            {
+                return literal_mode(&call.args[0]);
+            }
+        }
+        Expr::Lit(literal) => {
+            let (bytes, span) = match &literal.lit {
+                syn::Lit::Str(string) => (string.value().into_bytes(), string.span()),
+                syn::Lit::ByteStr(bytes) => (bytes.value(), bytes.span()),
+                syn::Lit::CStr(string) => (string.value().into_bytes_with_nul(), string.span()),
+                _ => return None,
+            };
+            // The mode consumer ignores the first NUL and everything after it.
+            // Unlike a general ByteView literal rewrite, only that prefix must
+            // be preserved, so b"r\0" can become the ordinary Rust string "r".
+            let text = std::str::from_utf8(xj_bytes::c_bytes(&bytes)).ok()?;
+            return Some(syn::LitStr::new(text, span));
+        }
+        _ => (),
+    }
+    None
+}
+
 fn view_type(ty: &Type, symbols: &SymbolTable, depth: usize, allow_os: bool) -> bool {
     if depth > symbols.type_aliases.len() + 8 {
         return false;
@@ -152,6 +202,47 @@ impl Rewriter {
         symbols: &SymbolTable,
         expr: &Expr,
     ) -> Option<(Expr, Depth)> {
+        if let Expr::Cast(cast) = expr
+            && let Type::Path(ty) = &*cast.ty
+            && ty.qself.is_none()
+            && ty.path.segments.len() == 2
+            && ty.path.segments[0].ident == "xj_cio"
+            && ty.path.segments[1].ident == "FILE_ptr"
+            && ty.path.segments.iter().all(|s| s.arguments.is_none())
+            && let Expr::Call(call) = unparen(&cast.expr)
+            && let Expr::Path(function) = &*call.func
+            && function.qself.is_none()
+            && function.path.segments.iter().all(|s| s.arguments.is_none())
+        {
+            let segments = &function.path.segments;
+            let open_call = segments.len() == 2
+                && segments[0].ident == "xj_cio"
+                && matches!(
+                    segments[1].ident.to_string().as_str(),
+                    "fopen"
+                        | "fdopen"
+                        | "freopen"
+                        | "popen"
+                        | "fmemopen"
+                        | "fopen_raw"
+                        | "fdopen_raw"
+                        | "freopen_raw"
+                        | "popen_raw"
+                        | "fmemopen_raw"
+                );
+            let abi_call = segments.len() == 3
+                && segments[0].ident == "xj_cio"
+                && segments[1].ident == "c_abi"
+                && matches!(
+                    segments[2].ident.to_string().as_str(),
+                    "fopen" | "fdopen" | "freopen" | "popen" | "fmemopen"
+                );
+            if open_call || abi_call {
+                // These functions already return xj_cio::FILE_ptr. Recurse into
+                // the call so the literal-mode rewrite can still select *_raw.
+                return Some((Expr::Call(call.clone()), Depth::Unlimited));
+            }
+        }
         if let Expr::MethodCall(method) = expr {
             if method.method == "view_bytes" && method.args.is_empty() && method.turbofish.is_none()
             {
@@ -266,6 +357,30 @@ impl Rewriter {
             }
         }
         let namespace = namespace.as_str();
+        let cio_adapter =
+            namespace == "xj_cio" && segments.len() == 3 && segments[1].ident == "c_abi";
+        if cio_adapter {
+            let mode_index = match (name.as_str(), call.args.len()) {
+                ("fopen" | "fdopen" | "popen", 2) | ("freopen", 3) => Some(1),
+                ("fmemopen", 3) => Some(2),
+                _ => None,
+            };
+            if let Some(index) = mode_index
+                && let Some(mode) = literal_mode(&call.args[index])
+                && (!matches!(name.as_str(), "fopen" | "popen")
+                    || self
+                        .coerce_byte_view_path_input(&call.args[0], symbols)
+                        .is_none())
+            {
+                // Preserve every raw argument and its evaluation exactly once.
+                // Known borrowed paths/commands use the ordinary APIs below.
+                let mut result = call.clone();
+                let ident = syn::Ident::new(&format!("{name}_raw"), segments.last()?.ident.span());
+                result.func = Box::new(parse_quote! { ::xj_cio::#ident });
+                result.args[index] = parse_quote! { #mode };
+                return Some((Expr::Call(result), Depth::Unlimited));
+            }
+        }
         let input_indices: &[usize] = match (namespace, name.as_str()) {
             ("xj_cio", "fopen" | "popen" | "rename") => &[0, 1],
             ("xj_cio", "fdopen" | "freopen" | "fscanf" | "fscanf_raw" | "vfscanf") => &[1],
@@ -302,8 +417,7 @@ impl Rewriter {
                 "strcmp" | "strncmp" | "memcmp" | "strspn" | "strcspn" | "strstr_idx"
                 | "strstr_ptr",
             ) => &[0, 1],
-            ("xj_cfmt" | "xj_bytes" | "xj_zstr", "to_c_str") => &[0],
-            ("xj_cio", "to_c_str") if segments.len() == 3 && segments[1].ident == "__cfmt" => &[0],
+            ("xj_cfmt" | "xj_bytes" | "xj_zstr" | "xj_cio", "to_c_str") => &[0],
             ("xj_cfmt", "RawBytes") => &[0],
             (
                 "xj_zstr",
@@ -312,17 +426,11 @@ impl Rewriter {
             ) => &[1],
             _ => return None,
         };
-        let cio_adapter =
-            namespace == "xj_cio" && segments.len() == 3 && segments[1].ident == "c_abi";
         let qualified_module = segments.len() == 3
             && matches!(
                 (namespace, segments[1].ident.to_string().as_str()),
                 ("xj_cstat", "c") | ("xj_zstr", "c") | ("xj_ctime", "compat")
-            )
-            || (namespace == "xj_cio"
-                && segments.len() == 3
-                && segments[1].ident == "__cfmt"
-                && name == "to_c_str");
+            );
         if !cio_adapter && segments.len() != 2 && !qualified_module {
             return None;
         }
