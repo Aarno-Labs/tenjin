@@ -27,6 +27,8 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
 
+#include <optional>
+
 namespace xj {
 
 class FlowInstrumenter {
@@ -49,26 +51,50 @@ private:
   MarkerFactory Markers;
 
   enum class Shape { Whole, Element, Suffix, Backward };
+  // A source that names a place in an array or a guided buffer.
   struct Place {
+    // The source without the casts that keep its value.
+    const clang::Expr *Core;
     Shape Kind;
     const clang::Expr *Base;
     const clang::Expr *Index;
+    bool ArrayBase = false;
+    bool GuidedBase = false;
   };
   enum class Demand { Element, Slice, Raw, None };
+  enum class PlaceOutcome {
+    // Not a place the sink takes as one; the value flows as it is.
+    NotAPlace,
+    Wrapped,
+    // A place no marker can take, reported and left as written.
+    Reported,
+  };
 
   void flow(const clang::Expr *Src, const Sink &K);
   void flowInit(const clang::Expr *Init, const Sink &K);
   void flowInitList(const clang::InitListExpr *ILE, const Sink &K);
-  bool placeFlow(const clang::Expr *Src, const Sink &K);
+  void flowArrayInit(const clang::InitListExpr *Sem,
+                     const clang::ArrayType *AT, const Sink &K);
+  void flowUnionInit(const clang::InitListExpr *Sem);
+  void flowStructInit(const clang::InitListExpr *Sem,
+                      const clang::RecordDecl *RD);
+  Sink fieldSink(const clang::FieldDecl *FD) const;
+
+  PlaceOutcome placeFlow(const clang::Expr *Src, const Sink &K);
+  std::optional<Place> classifyPlace(const clang::Expr *Src) const;
+  Demand demandOf(const Sink &K) const;
+  static Family familyFor(Shape Sh, Demand D);
+  clang::QualType basePointerType(const Place &P) const;
+  bool wrapPlace(const Place &P, Demand D, const Sink &K);
+
   void coerceFlow(const clang::Expr *Src, const Sink &K);
+  void nullFlow(const clang::Expr *Src, const Sink &K);
+  void valueFlow(const clang::Expr *Src, const Sink &K);
+  const MarkerKey *coercionMarker(const clang::Expr *Src, clang::QualType From,
+                                  XjType FX, const Sink &K);
   bool needsCoercion(XjType FX, clang::QualType Written, const Sink &K) const;
   bool retypesGuidedValue(XjType FX, clang::QualType Written,
                           const Sink &K) const;
-
-  Place placeOf(const clang::Expr *Core) const;
-  Demand demandOf(const Sink &K) const;
-  static Family familyFor(Shape Sh, Demand D);
-  void wrapPlace(const MarkerKey &M, const clang::Expr *Core, const Place &P);
 
   bool isGuidedPointer(const clang::Expr *E) const;
   void nullTest(const clang::Expr *Whole, const clang::Expr *Operand,

@@ -1998,7 +1998,7 @@ mod refactor_format {
                         }
                     }
 
-                    if let Some(g) = x.xj_type_of_expr(cexpr) {
+                    if let Some(g) = x.guided_type_of_expr(cexpr) {
                         if tenjin::type_is_string(&g.parsed) || tenjin::type_is_str_ref(&g.parsed) {
                             // For a variable that's already type String, we can leave it as is.
                             // XREF:guided_cast_str_of_owned_string
@@ -2988,7 +2988,7 @@ impl<'c> Translation<'c> {
         // Guidance replaces the C type, raw pointers included, but a record
         // the guided type holds (`Box<Node>`, `&'static [Node]`) keeps its
         // C fields.
-        if let Some(guided) = self.xj_type_of_ctype(ctype) {
+        if let Some(guided) = self.guided_type_of_ctype(ctype) {
             return markers::type_mentions_raw_pointer(&guided.parsed)
                 || self.guided_referent_contains_unguided_raw_pointer(ctype, visited_records);
         }
@@ -3935,7 +3935,7 @@ impl<'c> Translation<'c> {
 
                     let type_annotation = if self.tcfg.reduce_type_annotations
                         && !self.should_assign_type_annotation(typ.ctype, initializer)
-                        && self.xj_type_of_ctype(typ.ctype).is_none()
+                        && self.guided_type_of_ctype(typ.ctype).is_none()
                     {
                         None
                     } else {

@@ -76,6 +76,18 @@ bool Normalizer::isGuidedPointer(const Expr *E) const {
   return E->getType()->isPointerType() && Types.of(E).rust();
 }
 
+// The guided operand of `BO` when both operands are pointers; null when
+// either is not a pointer or neither is guided.
+const Expr *Normalizer::guidedPointerOperand(const BinaryOperator *BO) const {
+  const Expr *L = BO->getLHS();
+  const Expr *R = BO->getRHS();
+  if (!L->getType()->isPointerType() || !R->getType()->isPointerType())
+    return nullptr;
+  if (isGuidedPointer(L))
+    return L;
+  return isGuidedPointer(R) ? R : nullptr;
+}
+
 // A guided buffer held in a pointer, not an array.
 bool Normalizer::isPointerBuffer(const Expr *E) const {
   return Types.isBuffer(E) && stripValueCasts(E)->getType()->isPointerType();
@@ -87,19 +99,55 @@ bool Normalizer::isGuidedString(const Expr *E) const {
   return T && (T->stripRefs().isString() || T->stripRefs().isStr());
 }
 
-// `E` is read: C converts it from the place it names to its value.
-bool Normalizer::isRead(const Expr *E) const {
+// The statement or expression containing `E`, above any parentheses; null
+// when there is not exactly one.
+const Stmt *Normalizer::parentThroughParens(const Expr *E) const {
   while (true) {
     auto Parents = S.Ctx.getParents(*E);
     if (Parents.size() != 1)
-      return false;
-    if (const auto *PE = Parents[0].get<ParenExpr>()) {
-      E = PE;
-      continue;
-    }
-    const auto *ICE = Parents[0].get<ImplicitCastExpr>();
-    return ICE && ICE->getCastKind() == CK_LValueToRValue;
+      return nullptr;
+    const auto *PE = Parents[0].get<ParenExpr>();
+    if (!PE)
+      return Parents[0].get<Stmt>();
+    E = PE;
   }
+}
+
+// `E` is read: C converts it from the place it names to its value.
+bool Normalizer::isRead(const Expr *E) const {
+  const auto *ICE = dyn_cast_or_null<ImplicitCastExpr>(parentThroughParens(E));
+  return ICE && ICE->getCastKind() == CK_LValueToRValue;
+}
+
+// `Deref` is the `*p` of `&*p` for guided `p`, which visitAddrOf rewrites as
+// a whole.
+bool Normalizer::isCancelledByAddrOf(const UnaryOperator *Deref) const {
+  const auto *AddrOf =
+      dyn_cast_or_null<UnaryOperator>(parentThroughParens(Deref));
+  return AddrOf && AddrOf->getOpcode() == UO_AddrOf &&
+         Types.of(Deref->getSubExpr());
+}
+
+// `Node` reads or writes the element of guided `Base` at `Index` (null for
+// 0). A read of a string's character becomes `xj_char_at_<T>`, an element of
+// a buffer held in a pointer `(*xj_index_<T>(...))`, and an element of a
+// guided array a subscript, which `Node` may already be. False when `Base`
+// is none of these.
+bool Normalizer::normalizeElementAccess(const Expr *Node, const Expr *Base,
+                                        const Expr *Index) {
+  if (isGuidedString(Base) && isRead(Node)) {
+    addCharAtCall(Node, Base, Index);
+    return true;
+  }
+  if (isPointerBuffer(Base)) {
+    addIndexCall(Node, Base, Index);
+    return true;
+  }
+  if (!Types.isBuffer(Base))
+    return false;
+  if (!isa<ArraySubscriptExpr>(Node))
+    S.edit(Node, Edit::subscript(Base, Index));
+  return true;
 }
 
 // `M(Base, Index)` in place of `Node`, dereferenced when `Deref`; a null
@@ -195,52 +243,27 @@ void Normalizer::visitAddrOf(const UnaryOperator *UO) {
   if (!Deref || Deref->getOpcode() != UO_Deref)
     return;
   const Expr *Operand = Deref->getSubExpr();
-  if (!Types.of(Operand))
-    return;
-  if (S.edit(UO, Edit::keep(Operand)))
-    Consumed.insert(Deref);
+  if (Types.of(Operand))
+    S.edit(UO, Edit::keep(Operand));
 }
 
 void Normalizer::visitDeref(const UnaryOperator *UO) {
-  if (Consumed.count(UO))
+  if (isCancelledByAddrOf(UO))
     return;
   const Expr *Operand = UO->getSubExpr();
   const auto *Sum = dyn_cast<BinaryOperator>(Operand->IgnoreParenImpCasts());
   if (Sum && Sum->getOpcode() == BO_Add && Sum->getType()->isPointerType()) {
-    const Expr *Base = splitOffset(Sum).first;
-    const Expr *Index = splitOffset(Sum).second;
-    if (isGuidedString(Base) && isRead(UO)) {
-      addCharAtCall(UO, Base, Index);
+    auto [Base, Index] = splitOffset(Sum);
+    if (normalizeElementAccess(UO, Base, Index))
       return;
-    }
-    if (isPointerBuffer(Base)) {
-      addIndexCall(UO, Base, Index);
-      return;
-    }
-    if (Types.isBuffer(Base)) {
-      S.edit(UO, Edit::subscript(Base, Index));
-      return;
-    }
   }
-  if (isGuidedString(Operand) && isRead(UO))
-    addCharAtCall(UO, Operand, nullptr);
-  else if (isPointerBuffer(Operand))
-    addIndexCall(UO, Operand, nullptr);
-  else if (Types.isBuffer(Operand))
-    S.edit(UO, Edit::subscript(Operand, nullptr));
+  normalizeElementAccess(UO, Operand, nullptr);
 }
 
 void Normalizer::visitSubscript(const ArraySubscriptExpr *ASE) {
   const Expr *Base = ASE->getBase();
-  if (isGuidedString(Base) && isRead(ASE)) {
-    addCharAtCall(ASE, Base, ASE->getIdx());
-    return;
-  }
-  if (isPointerBuffer(Base)) {
-    addIndexCall(ASE, Base, ASE->getIdx());
-    return;
-  }
-  if (!Types.isSingleObject(Base))
+  if (normalizeElementAccess(ASE, Base, ASE->getIdx()) ||
+      !Types.isSingleObject(Base))
     return;
   Expr::EvalResult Index;
   bool IsZero = ASE->getIdx()->EvaluateAsInt(Index, S.Ctx) &&
@@ -264,48 +287,60 @@ void Normalizer::visitMotion(const UnaryOperator *UO) {
 }
 
 void Normalizer::visitBinary(const BinaryOperator *BO) {
+  if (BO->isAssignmentOp())
+    normalizeInPlaceMotion(BO);
+  else if (BO->getOpcode() == BO_Sub)
+    checkPointerSubtraction(BO);
+  else if (BO->isRelationalOp())
+    checkPointerOrdering(BO);
+}
+
+// `p += n`, `p -= n` and `p = q + n` on a guided pointer `p`. Only advancing a
+// shared slice by a statement of its own has a Rust counterpart; the rest is
+// reported.
+void Normalizer::normalizeInPlaceMotion(const BinaryOperator *BO) {
   const Expr *L = BO->getLHS();
   const Expr *R = BO->getRHS();
-  bool LGuided = isGuidedPointer(L);
-  bool BothPointers =
-      L->getType()->isPointerType() && R->getType()->isPointerType();
-  bool AnyGuided = LGuided || isGuidedPointer(R);
+  if (!isGuidedPointer(L))
+    return;
   switch (BO->getOpcode()) {
   case BO_AddAssign:
-    if (LGuided && !advanceSlice(BO, L, R))
+    if (!advanceSlice(BO, L, R))
       report("pointer-motion", BO, L, "a guided pointer is advanced in place");
     break;
   case BO_SubAssign:
-    if (LGuided)
-      report("pointer-motion", BO, L, "a guided pointer is moved back in place");
+    report("pointer-motion", BO, L, "a guided pointer is moved back in place");
     break;
   case BO_Assign: {
     const auto *Arith = dyn_cast<BinaryOperator>(R->IgnoreParenImpCasts());
-    if (LGuided && Arith && Arith->isAdditiveOp() &&
-        Arith->getType()->isPointerType())
+    if (Arith && Arith->isAdditiveOp() && Arith->getType()->isPointerType())
       report("pointer-motion", BO, L,
              "a guided pointer is reassigned from pointer arithmetic");
     break;
   }
-  case BO_Sub:
-    if (BothPointers && AnyGuided)
-      report("pointer-difference", BO, LGuided ? L : R,
-             "difference of pointers into a guided buffer");
-    else if (Types.isBuffer(L) && !BothPointers)
-      report("backward-offset", BO, L,
-             "a guided buffer is offset backwards; no base offset is known");
-    break;
-  case BO_LT:
-  case BO_GT:
-  case BO_LE:
-  case BO_GE:
-    if (BothPointers && AnyGuided)
-      report("pointer-ordering", BO, LGuided ? L : R,
-             "ordering comparison of guided pointers");
-    break;
   default:
     break;
   }
+}
+
+// `p - q` with either pointer guided, and `b - n` on a guided buffer `b`.
+void Normalizer::checkPointerSubtraction(const BinaryOperator *BO) {
+  const Expr *L = BO->getLHS();
+  if (BO->getRHS()->getType()->isIntegerType()) {
+    if (Types.isBuffer(L))
+      report("backward-offset", BO, L,
+             "a guided buffer is offset backwards; no base offset is known");
+  } else if (const Expr *Guided = guidedPointerOperand(BO)) {
+    report("pointer-difference", BO, Guided,
+           "difference of pointers into a guided buffer");
+  }
+}
+
+// `p < q` and the other orderings, with either pointer guided.
+void Normalizer::checkPointerOrdering(const BinaryOperator *BO) {
+  if (const Expr *Guided = guidedPointerOperand(BO))
+    report("pointer-ordering", BO, Guided,
+           "ordering comparison of guided pointers");
 }
 
 } // namespace xj

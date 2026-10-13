@@ -170,7 +170,7 @@ void FlowInstrumenter::visitExplicitCast(const CStyleCastExpr *CE) {
   const Expr *Operand = CE->getSubExpr();
   if (!CE->getType()->isPointerType() || !Types.of(Operand))
     return;
-  if (!placeFlow(Operand, {CE->getType(), {}}))
+  if (placeFlow(Operand, {CE->getType(), {}}) == PlaceOutcome::NotAPlace)
     coerceFlow(Operand, {valueType(Operand), {}});
 }
 
@@ -180,7 +180,7 @@ void FlowInstrumenter::flow(const Expr *Src, const Sink &K) {
     flow(CO->getFalseExpr(), K);
     return;
   }
-  if (!placeFlow(Src, K))
+  if (placeFlow(Src, K) == PlaceOutcome::NotAPlace)
     coerceFlow(Src, K);
 }
 
@@ -200,23 +200,32 @@ void FlowInstrumenter::flowInitList(const InitListExpr *ILE, const Sink &K) {
   if (!Sem)
     return;
   if (const ArrayType *AT = S.Ctx.getAsArrayType(K.Type)) {
-    Sink Elem{AT->getElementType(), Types.element(K.X)};
-    for (const Expr *E : Sem->inits())
-      flowInit(E, Elem);
+    flowArrayInit(Sem, AT, K);
     return;
   }
   const RecordDecl *RD = K.Type->getAsRecordDecl();
-  if (!RD)
-    return;
-  auto fieldSink = [&](const FieldDecl *FD) {
-    return Sink{FD->getType(), Types.ofDecl(FD)};
-  };
-  if (RD->isUnion()) {
-    if (const FieldDecl *FD = Sem->getInitializedFieldInUnion())
-      if (Sem->getNumInits() == 1)
-        flowInit(Sem->getInit(0), fieldSink(FD));
-    return;
-  }
+  if (RD && RD->isUnion())
+    flowUnionInit(Sem);
+  else if (RD)
+    flowStructInit(Sem, RD);
+}
+
+void FlowInstrumenter::flowArrayInit(const InitListExpr *Sem,
+                                     const ArrayType *AT, const Sink &K) {
+  Sink Elem{AT->getElementType(), Types.element(K.X)};
+  for (const Expr *E : Sem->inits())
+    flowInit(E, Elem);
+}
+
+void FlowInstrumenter::flowUnionInit(const InitListExpr *Sem) {
+  if (const FieldDecl *FD = Sem->getInitializedFieldInUnion())
+    if (Sem->getNumInits() == 1)
+      flowInit(Sem->getInit(0), fieldSink(FD));
+}
+
+// The semantic form has one initializer per named field, in order.
+void FlowInstrumenter::flowStructInit(const InitListExpr *Sem,
+                                      const RecordDecl *RD) {
   unsigned I = 0;
   for (const FieldDecl *FD : RD->fields()) {
     if (FD->isUnnamedBitField())
@@ -227,23 +236,39 @@ void FlowInstrumenter::flowInitList(const InitListExpr *ILE, const Sink &K) {
   }
 }
 
-FlowInstrumenter::Place FlowInstrumenter::placeOf(const Expr *Core) const {
-  if (const auto *UO = dyn_cast<UnaryOperator>(Core))
-    if (UO->getOpcode() == UO_AddrOf)
-      if (const auto *ASE =
-              dyn_cast<ArraySubscriptExpr>(UO->getSubExpr()->IgnoreParens()))
-        return {Shape::Element, ASE->getBase(), ASE->getIdx()};
-  if (const auto *BO = dyn_cast<BinaryOperator>(Core)) {
+Sink FlowInstrumenter::fieldSink(const FieldDecl *FD) const {
+  return Sink{FD->getType(), Types.ofDecl(FD)};
+}
+
+// `&b[i]`, `b + i` (or `i + b`), `b - i`, or else `b` itself; null when the
+// base is neither an array nor a guided buffer.
+std::optional<FlowInstrumenter::Place>
+FlowInstrumenter::classifyPlace(const Expr *Src) const {
+  const Expr *Core = stripValueCasts(Src);
+  Place P{Core, Shape::Whole, Core, nullptr};
+  if (const auto *UO = dyn_cast<UnaryOperator>(Core)) {
+    const auto *ASE =
+        dyn_cast<ArraySubscriptExpr>(UO->getSubExpr()->IgnoreParens());
+    if (UO->getOpcode() == UO_AddrOf && ASE)
+      P = {Core, Shape::Element, ASE->getBase(), ASE->getIdx()};
+  } else if (const auto *BO = dyn_cast<BinaryOperator>(Core)) {
     const Expr *L = BO->getLHS();
     const Expr *R = BO->getRHS();
     if (BO->getOpcode() == BO_Add && BO->getType()->isPointerType())
-      return L->getType()->isPointerType() ? Place{Shape::Suffix, L, R}
-                                           : Place{Shape::Suffix, R, L};
-    if (BO->getOpcode() == BO_Sub && L->getType()->isPointerType() &&
-        R->getType()->isIntegerType())
-      return {Shape::Backward, L, R};
+      P = L->getType()->isPointerType()
+              ? Place{Core, Shape::Suffix, L, R}
+              : Place{Core, Shape::Suffix, R, L};
+    else if (BO->getOpcode() == BO_Sub && L->getType()->isPointerType() &&
+             R->getType()->isIntegerType())
+      P = {Core, Shape::Backward, L, R};
   }
-  return {Shape::Whole, Core, nullptr};
+  QualType BaseType = stripValueCasts(P.Base)->getType();
+  P.ArrayBase =
+      BaseType->isConstantArrayType() || BaseType->isIncompleteArrayType();
+  P.GuidedBase = Types.isBuffer(P.Base);
+  if (!P.ArrayBase && !P.GuidedBase)
+    return std::nullopt;
+  return P;
 }
 
 FlowInstrumenter::Demand FlowInstrumenter::demandOf(const Sink &K) const {
@@ -265,54 +290,58 @@ Family FlowInstrumenter::familyFor(Shape Sh, Demand D) {
   return Family::SliceFrom;
 }
 
-bool FlowInstrumenter::placeFlow(const Expr *Src, const Sink &K) {
+FlowInstrumenter::PlaceOutcome FlowInstrumenter::placeFlow(const Expr *Src,
+                                                          const Sink &K) {
   Demand D = demandOf(K);
   if (D == Demand::None)
-    return false;
-  const Expr *Core = stripValueCasts(Src);
-  Place P = placeOf(Core);
-  const Expr *BaseCore = stripValueCasts(P.Base);
-  QualType BaseType = BaseCore->getType();
-  bool IsArray = BaseType->isConstantArrayType() ||
-                 BaseType->isIncompleteArrayType();
-  bool Guided = Types.isBuffer(P.Base);
-  if ((!IsArray && !Guided) || (D == Demand::Raw && !Guided))
-    return false;
+    return PlaceOutcome::NotAPlace;
+  std::optional<Place> P = classifyPlace(Src);
+  // An unguided array decays into a raw pointer as in C.
+  if (!P || (D == Demand::Raw && !P->GuidedBase))
+    return PlaceOutcome::NotAPlace;
   // The whole of a buffer already guided as the sink wants is the value
   // itself.
-  if (P.Kind == Shape::Whole && Types.of(P.Base).rustText() == K.X.rustText())
-    return false;
-  if (P.Kind == Shape::Backward) {
+  if (P->Kind == Shape::Whole &&
+      Types.of(P->Base).rustText() == K.X.rustText())
+    return PlaceOutcome::NotAPlace;
+  if (P->Kind == Shape::Backward) {
     // Guided bases were reported by the normalizer.
-    if (!Guided)
-      S.diagnose("backward-offset", Core->getExprLoc(), "<array>",
+    if (!P->GuidedBase)
+      S.diagnose("backward-offset", P->Core->getExprLoc(), "<array>",
                  "an array is offset backwards into a guided sink");
-    return true;
+    return PlaceOutcome::Reported;
   }
-  QualType BasePointer = IsArray ? S.Ctx.getArrayDecayedType(BaseType)
-                                 : valueType(P.Base).getUnqualifiedType();
-  BasePointer = constIfLiteral(S.Ctx, P.Base, BasePointer);
-  const MarkerKey *M =
-      Markers.place(familyFor(P.Kind, D), BasePointer, K, Core->getBeginLoc());
-  if (!M)
-    return false;
-  wrapPlace(*M, Core, P);
-  return true;
+  return wrapPlace(*P, D, K) ? PlaceOutcome::Wrapped : PlaceOutcome::NotAPlace;
 }
 
-void FlowInstrumenter::wrapPlace(const MarkerKey &M, const Expr *Core,
-                                 const Place &P) {
+// The pointer the marker takes the place's base as.
+QualType FlowInstrumenter::basePointerType(const Place &P) const {
+  QualType T =
+      P.ArrayBase
+          ? S.Ctx.getArrayDecayedType(stripValueCasts(P.Base)->getType())
+          : valueType(P.Base).getUnqualifiedType();
+  return constIfLiteral(S.Ctx, P.Base, T);
+}
+
+// False when no marker can be written for the place.
+bool FlowInstrumenter::wrapPlace(const Place &P, Demand D, const Sink &K) {
+  const MarkerKey *M = Markers.place(familyFor(P.Kind, D), basePointerType(P),
+                                     K, P.Core->getBeginLoc());
+  if (!M)
+    return false;
   if (P.Kind == Shape::Whole) {
-    S.edit(Core, Edit::wrapIn(M, M.F == Family::ElemRef ? "0" : ""));
-    return;
+    S.edit(P.Core, Edit::wrapIn(*M, M->F == Family::ElemRef ? "0" : ""));
+    return true;
   }
   // The marker takes `b[i]` from `&b[i]` itself, so the normalizer's
   // rewrite of `b[i]` goes with the `&`.
-  if (S.edit(Core, Edit::call(M, P.Base, P.Index)) && P.Kind == Shape::Element)
-    S.Edits.discard(cast<UnaryOperator>(Core)
+  if (S.edit(P.Core, Edit::call(*M, P.Base, P.Index)) &&
+      P.Kind == Shape::Element)
+    S.Edits.discard(cast<UnaryOperator>(P.Core)
                         ->getSubExpr()
                         ->IgnoreParens()
                         ->getSourceRange());
+  return true;
 }
 
 bool FlowInstrumenter::needsCoercion(XjType FX, QualType Written,
@@ -336,27 +365,49 @@ bool FlowInstrumenter::retypesGuidedValue(XjType FX, QualType Written,
 }
 
 void FlowInstrumenter::coerceFlow(const Expr *Src, const Sink &K) {
-  bool IsNull = K.Type->isPointerType() && isNullConstant(Src, S.Ctx);
-  XjType FX = IsNull ? XjType{} : Types.of(valueExpr(Src));
-  // A null constant takes the sink's pointer type, as C gives it.
-  QualType From = IsNull ? K.Type.getUnqualifiedType()
-                         : constIfLiteral(S.Ctx, Src, valueType(Src));
-  if (IsNull && K.X.rust() && K.X.rust()->isSingleObject())
+  if (K.Type->isPointerType() && isNullConstant(Src, S.Ctx))
+    nullFlow(Src, K);
+  else
+    valueFlow(Src, K);
+}
+
+// A null constant carries no guidance and takes the sink's pointer type, as
+// C gives it.
+void FlowInstrumenter::nullFlow(const Expr *Src, const Sink &K) {
+  if (K.X.rust() && K.X.rust()->isSingleObject())
     S.diagnose("null-into-reference", Src->getExprLoc(), K.X.rustText(),
                "a null pointer flows where a reference is guided");
-  if (!needsCoercion(FX, IsNull ? From : writtenType(Src), K))
+  QualType From = K.Type.getUnqualifiedType();
+  if (!needsCoercion(XjType{}, From, K))
     return;
-  const MarkerKey *M = Markers.coerce(From, FX, K, Src->getBeginLoc());
-  if (!M) {
-    S.diagnose("unhandled-coercion", Src->getExprLoc(), K.X.rustText(),
-               "no marker can be written between these C types");
+  if (const MarkerKey *M = coercionMarker(Src, From, XjType{}, K))
+    S.edit(Src, Edit::wrapIn(*M));
+}
+
+void FlowInstrumenter::valueFlow(const Expr *Src, const Sink &K) {
+  XjType FX = Types.of(valueExpr(Src));
+  if (!needsCoercion(FX, writtenType(Src), K))
     return;
-  }
-  if (!FX && !IsNull && From->isPointerType() && K.X.rust() &&
-      K.X.rust()->isSliceRef())
+  QualType From = constIfLiteral(S.Ctx, Src, valueType(Src));
+  const MarkerKey *M = coercionMarker(Src, From, FX, K);
+  if (!M)
+    return;
+  if (!FX && From->isPointerType() && K.X.rust() && K.X.rust()->isSliceRef())
     S.diagnose("unhandled-coercion", Src->getExprLoc(), K.X.rustText(),
                "an unguided pointer carries no length for a slice");
   S.edit(Src, Edit::wrapIn(*M));
+}
+
+// `xj_coerce_<from>_to_<to>` for `Src`; null, and reported, when none can be
+// written.
+const MarkerKey *FlowInstrumenter::coercionMarker(const Expr *Src,
+                                                  QualType From, XjType FX,
+                                                  const Sink &K) {
+  const MarkerKey *M = Markers.coerce(From, FX, K, Src->getBeginLoc());
+  if (!M)
+    S.diagnose("unhandled-coercion", Src->getExprLoc(), K.X.rustText(),
+               "no marker can be written between these C types");
+  return M;
 }
 
 bool FlowInstrumenter::isGuidedPointer(const Expr *E) const {

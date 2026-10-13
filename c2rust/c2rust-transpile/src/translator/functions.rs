@@ -24,28 +24,35 @@ impl<'c> Translation<'c> {
         {
             return true;
         }
-        self.ast_context.iter_decls().any(|(_, decl)| {
-            let CDeclKind::Function {
-                name,
-                typ,
-                parameters,
-                ..
-            } = &decl.kind
-            else {
-                return false;
-            };
-            let guided_return = match self.ast_context.resolve_type(*typ).kind {
-                CTypeKind::Function(return_type, ..) => {
-                    self.xj_type_of_ctype(return_type.ctype).is_some()
+        self.ast_context
+            .iter_decls()
+            .any(|(_, decl)| match &decl.kind {
+                CDeclKind::Function { name, .. } => {
+                    super::libc::is_stat_function(name) && self.has_guided_signature(decl)
                 }
                 _ => false,
-            };
-            super::libc::is_stat_function(name)
-                && (guided_return
-                    || parameters
-                        .iter()
-                        .any(|&id| self.xj_type_of_decl(id).is_some()))
-        })
+            })
+    }
+
+    /// A function declaration whose return type or a parameter carries type
+    /// guidance.
+    fn has_guided_signature(&self, decl: &CDecl) -> bool {
+        let CDeclKind::Function {
+            typ, parameters, ..
+        } = &decl.kind
+        else {
+            return false;
+        };
+        let guided_return = match self.ast_context.resolve_type(*typ).kind {
+            CTypeKind::Function(return_type, ..) => {
+                self.guided_type_of_ctype(return_type.ctype).is_some()
+            }
+            _ => false,
+        };
+        guided_return
+            || parameters
+                .iter()
+                .any(|&id| self.guided_type_of_decl(id).is_some())
     }
 
     pub fn convert_function(

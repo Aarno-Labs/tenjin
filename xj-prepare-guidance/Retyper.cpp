@@ -132,18 +132,17 @@ DeclFacts Retyper::factsOf(const DeclaratorDecl *D) const {
 }
 
 const RustType *Retyper::chooseType(const DeclFacts &F, SourceLocation Loc) {
-  const Rule<RustType> *Conflict = nullptr;
-  const Rule<RustType> *Rule = S.G.matchType(F, &Conflict);
-  if (!Rule)
+  TypeMatch M = S.G.matchType(F);
+  if (!M)
     return nullptr;
   if (S.Results)
-    S.Results->MatchedSpecs.insert(Rule->Spec.Text);
-  if (Conflict)
+    S.Results->MatchedSpecs.insert(M.Best->Spec.Text);
+  if (M.Conflict)
     S.diagnose("conflicting-guidance", Loc, F.Name,
-               "`" + Rule->Spec.Text + "` (" + Rule->Value.str() +
-                   ") and `" + Conflict->Spec.Text + "` (" +
-                   Conflict->Value.str() + ") both match; using the first");
-  return &Rule->Value;
+               "`" + M.Best->Spec.Text + "` (" + M.Best->Value.str() +
+                   ") and `" + M.Conflict->Spec.Text + "` (" +
+                   M.Conflict->Value.str() + ") both match; using the first");
+  return &M.Best->Value;
 }
 
 const RustType *Retyper::chooseType(const VarDecl *VD, const DeclFacts &F) {
@@ -189,13 +188,13 @@ void Retyper::considerFunction(const FunctionDecl *FD) {
   if (FD->isImplicit() || !S.inMainFile(FD->getLocation()) ||
       S.ReturnKeys.count(FD))
     return;
-  const auto *Entry = S.G.returnType(FD->getName());
-  if (!Entry)
+  const Rule<RustType> *Rule = S.G.returnType(FD->getName());
+  if (!Rule)
     return;
   if (S.Results)
-    S.Results->MatchedSpecs.insert(Entry->first);
+    S.Results->MatchedSpecs.insert(Rule->Spec.Text);
   for (const FunctionDecl *R : FD->redecls())
-    guideReturn(R, Entry->second);
+    guideReturn(R, Rule->Value);
 }
 
 void Retyper::guideParam(const ParmVarDecl *P, const RustType &Ty) {

@@ -88,13 +88,15 @@ struct TUState {
   void diagnose(llvm::StringRef Kind, clang::SourceLocation Loc,
                 llvm::StringRef Subject, llvm::StringRef Message);
   // Offset of the top-level declaration containing `Loc`.
-  unsigned topLevelOffset(clang::SourceLocation Loc);
+  unsigned topLevelOffset(clang::SourceLocation Loc) const;
   // Edits `St`; an edit that is refused is reported as `edit-refused`.
   bool edit(const clang::Stmt *St, Edit E);
   void placeLocal(const MarkerKey &K, clang::SourceLocation Use);
   void placeLocal(const TypedefKey &K, clang::SourceLocation Use);
 
 private:
+  // Main-file offset ranges of the top-level declarations, sorted and
+  // disjoint.
   std::vector<std::pair<unsigned, unsigned>> TopLevelRanges;
   void computeTopLevelRanges();
 };

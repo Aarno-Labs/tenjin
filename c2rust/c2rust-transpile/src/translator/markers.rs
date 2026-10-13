@@ -13,6 +13,7 @@ use super::*;
 use crate::convert_type::TypeConverter;
 use crate::translator::tenjin::{self, GuidedType};
 use quote::ToTokens;
+use std::cell::Ref;
 use std::str::FromStr;
 use syn::GenericArgument;
 
@@ -312,29 +313,27 @@ pub fn convert_marker_typedef(
 
 impl Translation<'_> {
     /// The Rust type a marker typedef declaration stands for.
-    pub fn marker_typedef(&self, decl: CDeclId) -> Option<GuidedType> {
-        match &self.ast_context.get_decl(&decl)?.kind {
-            CDeclKind::Typedef { name, .. } => self
-                .parsed_guidance
-                .borrow()
-                .marker_typedefs
-                .get(name)
-                .cloned(),
-            _ => None,
-        }
+    pub fn marker_typedef(&self, decl: CDeclId) -> Option<Ref<'_, GuidedType>> {
+        let CDeclKind::Typedef { name, .. } = &self.ast_context.get_decl(&decl)?.kind else {
+            return None;
+        };
+        Ref::filter_map(self.parsed_guidance.borrow(), |pg| {
+            pg.marker_typedefs.get(name)
+        })
+        .ok()
     }
 
     /// The Rust type named by the marker typedef in `ctype`'s sugar, or for a
     /// pointer to such a typedef, a raw pointer to it.
-    pub fn xj_type_of_ctype(&self, ctype: CTypeId) -> Option<GuidedType> {
-        if let Some(g) = self.xj_sugar(ctype) {
+    pub fn guided_type_of_ctype(&self, ctype: CTypeId) -> Option<GuidedType> {
+        if let Some(g) = self.marker_sugar(ctype) {
             return Some(g);
         }
         let pointee = match self.ast_context.resolve_type(ctype).kind {
             CTypeKind::Pointer(pointee) => pointee,
             _ => return None,
         };
-        let inner = self.xj_sugar(pointee.ctype)?;
+        let inner = self.marker_sugar(pointee.ctype)?;
         let ptr = if pointee.qualifiers.is_const {
             "*const"
         } else {
@@ -343,12 +342,12 @@ impl Translation<'_> {
         GuidedType::from_str(&format!("{ptr} {}", inner.pretty)).ok()
     }
 
-    fn xj_sugar(&self, mut ctype: CTypeId) -> Option<GuidedType> {
+    fn marker_sugar(&self, mut ctype: CTypeId) -> Option<GuidedType> {
         loop {
             ctype = match self.ast_context[ctype].kind {
                 CTypeKind::Typedef(decl) => {
                     if let Some(g) = self.marker_typedef(decl) {
-                        return Some(g);
+                        return Some(g.clone());
                     }
                     match self.ast_context[decl].kind {
                         CDeclKind::Typedef { typ, .. } => typ.ctype,
@@ -385,18 +384,18 @@ impl Translation<'_> {
     /// A value guided as something other than a raw pointer: the base of
     /// `p->f` is then the object itself, as in `s.f`.
     pub fn is_guided_object(&self, expr: CExprId) -> bool {
-        self.xj_type_of_expr(expr)
+        self.guided_type_of_expr(expr)
             .is_some_and(|g| !g.pretty.starts_with('*'))
     }
 
     /// The guidance an expression carries: its type's marker sugar, looking
     /// through parentheses and the casts that keep a value (clang drops the
     /// sugar at array decay).
-    pub fn xj_type_of_expr(&self, expr: CExprId) -> Option<GuidedType> {
+    pub fn guided_type_of_expr(&self, expr: CExprId) -> Option<GuidedType> {
         let mut current = expr;
         loop {
             let kind = &self.ast_context.index_unwrap_parens(current).kind;
-            if let Some(g) = kind.get_type().and_then(|t| self.xj_type_of_ctype(t)) {
+            if let Some(g) = kind.get_type().and_then(|t| self.guided_type_of_ctype(t)) {
                 return Some(g);
             }
             current = match *kind {
@@ -414,10 +413,10 @@ impl Translation<'_> {
 
     /// The guidance on a variable or field, read off the marker typedef in
     /// its declared type.
-    pub fn xj_type_of_decl(&self, decl: CDeclId) -> Option<GuidedType> {
+    pub fn guided_type_of_decl(&self, decl: CDeclId) -> Option<GuidedType> {
         match self.ast_context.get_decl(&decl)?.kind {
             CDeclKind::Variable { typ, .. } | CDeclKind::Field { typ, .. } => {
-                self.xj_type_of_ctype(typ.ctype)
+                self.guided_type_of_ctype(typ.ctype)
             }
             _ => None,
         }
@@ -492,7 +491,7 @@ impl Translation<'_> {
     /// conversions the markers stand for still apply.
     pub fn guided_arg(&self, arg: CExprId, pred: impl Fn(&GuidedType) -> bool) -> Option<CExprId> {
         let value = self.strip_identity_markers(arg);
-        self.xj_type_of_expr(value)
+        self.guided_type_of_expr(value)
             .is_some_and(|g| pred(&g))
             .then_some(value)
     }
@@ -535,22 +534,13 @@ impl Translation<'_> {
             }
             MarkerFamily::Index => self.convert_index_address(ctx, ret, cargs),
             MarkerFamily::CharAt => self.convert_char_at(ctx, ret, cargs),
-            MarkerFamily::Coerce => {
-                let from = self
-                    .xj_type_of_expr(cargs[0])
-                    .or_else(|| self.xj_type_of_ctype(params[0].ctype));
-                let to = self.xj_type_of_ctype(ret.ctype);
-                if matches!((&from, &to), (Some(f), Some(t)) if f.parsed == t.parsed) {
-                    return self.convert_guided_value(ctx, cargs[0]);
-                }
-                self.coerce_value(ctx, cargs[0], from.as_ref(), to.as_ref(), ret)
-            }
+            MarkerFamily::Coerce => self.convert_coerce_marker(ctx, params[0], ret, cargs[0]),
             MarkerFamily::IsNull => self.convert_is_null_marker(ctx, cargs[0]),
         }
     }
 
     fn place_sink(&self, ret: CQualTypeId) -> PlaceSink {
-        if let Some(g) = self.xj_type_of_ctype(ret.ctype) {
+        if let Some(g) = self.guided_type_of_ctype(ret.ctype) {
             return PlaceSink::Guided(Box::new(g));
         }
         let mutable = match self.ast_context.resolve_type(ret.ctype).kind {
@@ -577,7 +567,9 @@ impl Translation<'_> {
             Some(&i) => Some(self.convert_marker_index(ctx, i)?),
             None => None,
         };
-        let base_is_ref = self.xj_type_of_expr(base_id).is_some_and(|g| g.is_borrow());
+        let base_is_ref = self
+            .guided_type_of_expr(base_id)
+            .is_some_and(|g| g.is_borrow());
         let place = match index {
             None => base.map(|b| Self::whole_place(&sink, b, base_is_ref)),
             Some(index) => base
@@ -694,7 +686,7 @@ impl Translation<'_> {
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         let base_id = self.c_strip_noop_casts(cargs[0]);
         let shared = self
-            .xj_type_of_expr(base_id)
+            .guided_type_of_expr(base_id)
             .is_some_and(|g| g.is_shared_borrow());
         let const_pointee = match self.ast_context.resolve_type(ret.ctype).kind {
             CTypeKind::Pointer(pointee) => pointee.qualifiers.is_const,
@@ -744,19 +736,23 @@ impl Translation<'_> {
         let Type::Ptr(ref ptr) = *ret_ty else {
             return Ok(None);
         };
-        let element = match self.xj_type_of_expr(base_id) {
+        let element = match self.guided_type_of_expr(base_id) {
             Some(g) => type_buffer_element(&g.parsed).cloned().map(Box::new),
-            None => match self.ast_context[base_id].kind.get_type() {
-                Some(t) => match self.ast_context.resolve_type(t).kind.element_ty() {
-                    Some(elt) => Some(self.convert_type(elt)?),
-                    None => None,
-                },
-                None => None,
-            },
+            None => self.c_element_type(base_id)?,
         };
         Ok(element
             .filter(|e| !same_numeric_type(e, &ptr.elem))
             .map(|_| ret_ty.clone()))
+    }
+
+    /// The Rust type of the elements of an unguided array or pointer.
+    fn c_element_type(&self, expr: CExprId) -> TranslationResult<Option<Box<Type>>> {
+        self.ast_context[expr]
+            .kind
+            .get_type()
+            .and_then(|t| self.ast_context.resolve_type(t).kind.element_ty())
+            .map(|elt| self.convert_type(elt))
+            .transpose()
     }
 
     /// The base of a place, undecayed. A string literal base is its byte
@@ -833,6 +829,26 @@ impl Translation<'_> {
         }
     }
 
+    /// `xj_coerce_<from>_to_<to>(v)`: `v` converted from the guidance it
+    /// carries, or else its parameter's, to the guidance the marker returns.
+    /// Between equal guidance it is `v` itself.
+    fn convert_coerce_marker(
+        &self,
+        ctx: ExprContext,
+        param: CQualTypeId,
+        ret: CQualTypeId,
+        arg: CExprId,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let from = self
+            .guided_type_of_expr(arg)
+            .or_else(|| self.guided_type_of_ctype(param.ctype));
+        let to = self.guided_type_of_ctype(ret.ctype);
+        if matches!((&from, &to), (Some(f), Some(t)) if f.parsed == t.parsed) {
+            return self.convert_guided_value(ctx, arg);
+        }
+        self.coerce_value(ctx, arg, from.as_ref(), to.as_ref(), ret)
+    }
+
     /// `xj_is_null(p)`: what C's `p == 0` means for the guidance on `p`.
     /// An `Option` is `None`; a string, `Vec` or slice is empty; any other
     /// guided value (a reference, a `Box`) is never null, so the test is
@@ -843,7 +859,7 @@ impl Translation<'_> {
         ctx: ExprContext,
         arg: CExprId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let guided = self.xj_type_of_expr(arg);
+        let guided = self.guided_type_of_expr(arg);
         let val = self.convert_expr(ctx.used(), arg, None)?;
         Ok(val.map(|v| match guided {
             Some(g) if generic_arg_of(&g.parsed, "Option").is_some() => {
@@ -1177,7 +1193,7 @@ impl Translation<'_> {
         ctx: ExprContext,
         ty_id: CTypeId,
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
-        let Some(guided) = self.xj_type_of_ctype(ty_id) else {
+        let Some(guided) = self.guided_type_of_ctype(ty_id) else {
             return Ok(None);
         };
         let is_array = matches!(
@@ -1250,7 +1266,8 @@ impl Translation<'_> {
 
     fn holds_guided(&self, ty: CTypeId, pred: fn(&Type) -> bool) -> bool {
         self.holds(ty, &|t| {
-            self.xj_type_of_ctype(t).is_some_and(|g| pred(&g.parsed))
+            self.guided_type_of_ctype(t)
+                .is_some_and(|g| pred(&g.parsed))
         })
     }
 
@@ -1293,7 +1310,7 @@ impl Translation<'_> {
     }
 
     fn is_owned_guided(&self, ty: CTypeId) -> bool {
-        self.xj_type_of_ctype(ty).is_some_and(|g| {
+        self.guided_type_of_ctype(ty).is_some_and(|g| {
             tenjin::type_is_string(&g.parsed)
                 || tenjin::type_is_vec(&g.parsed)
                 || generic_arg_of(&g.parsed, "Box").is_some()
@@ -1305,7 +1322,7 @@ impl Translation<'_> {
             self.ast_context.resolve_type(ty).kind,
             CTypeKind::ConstantArray(..)
         ) && self
-            .xj_type_of_ctype(ty)
+            .guided_type_of_ctype(ty)
             .is_some_and(|g| tenjin::type_is_vec(&g.parsed))
     }
 
@@ -1319,7 +1336,7 @@ impl Translation<'_> {
         override_ty: Option<CQualTypeId>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         if let Some(typ) = override_ty {
-            if let Some(to) = self.xj_type_of_ctype(typ.ctype) {
+            if let Some(to) = self.guided_type_of_ctype(typ.ctype) {
                 let from = self.initializer_guidance(init);
                 if self.initializer_needs_coercion(init, from.as_ref(), &to) {
                     return self.coerce_value(ctx, init, from.as_ref(), Some(&to), typ);
@@ -1335,7 +1352,7 @@ impl Translation<'_> {
         let core = self.c_strip_implicit_casts(init);
         match self.ast_context.index_unwrap_parens(core).kind {
             CExprKind::InitList(..) | CExprKind::Literal(..) => None,
-            _ => self.xj_type_of_expr(init),
+            _ => self.guided_type_of_expr(init),
         }
     }
 

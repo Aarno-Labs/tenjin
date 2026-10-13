@@ -88,27 +88,26 @@ static const Rule<V> *bestMatch(const std::vector<Rule<V>> &Rules,
   return Best;
 }
 
-const Rule<RustType> *
-Guidance::matchType(const DeclFacts &D, const Rule<RustType> **Conflict) const {
-  const Rule<RustType> *Best = bestMatch(VarTypes, D);
-  if (!Best)
-    return nullptr;
+TypeMatch Guidance::matchType(const DeclFacts &D) const {
+  TypeMatch M;
+  M.Best = bestMatch(VarTypes, D);
+  if (!M.Best)
+    return M;
   for (const Rule<RustType> &R : VarTypes)
-    if (&R != Best && R.Spec.specificity() == Best->Spec.specificity() &&
-        R.Value.str() != Best->Value.str() && matches(R.Spec, D))
-      *Conflict = &R;
-  return Best;
+    if (&R != M.Best && R.Spec.specificity() == M.Best->Spec.specificity() &&
+        R.Value.str() != M.Best->Value.str() && matches(R.Spec, D))
+      M.Conflict = &R;
+  return M;
 }
 
 const Rule<bool> *Guidance::matchMut(const DeclFacts &D) const {
   return bestMatch(VarMut, D);
 }
 
-const std::pair<const std::string, RustType> *
-Guidance::returnType(StringRef FnName) const {
-  for (const auto &Entry : FnReturnTypes)
-    if (isDerivedName(Entry.first, FnName))
-      return &Entry;
+const Rule<RustType> *Guidance::returnType(StringRef FnName) const {
+  for (const Rule<RustType> &R : FnReturnTypes)
+    if (isDerivedName(R.Spec.Fn, FnName))
+      return &R;
   return nullptr;
 }
 
@@ -153,9 +152,16 @@ static void loadVarTypes(Guidance &G) {
 
 static void loadFnReturnTypes(Guidance &G) {
   const llvm::json::Object *O = G.Raw.getObject("fn_return_type");
-  for (const std::string &Fn : sortedKeys(O))
-    if (auto S = O->get(Fn)->getAsString())
-      G.FnReturnTypes.emplace(Fn, RustType::parse(*S));
+  unsigned Order = 0;
+  for (const std::string &Fn : sortedKeys(O)) {
+    auto S = O->get(Fn)->getAsString();
+    if (!S)
+      continue;
+    DeclSpec Spec;
+    Spec.Text = Fn;
+    Spec.Fn = Fn;
+    G.FnReturnTypes.push_back({Spec, RustType::parse(*S), Order++});
+  }
 }
 
 static void loadVarMut(Guidance &G) {

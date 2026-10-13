@@ -14,7 +14,6 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/JSON.h"
 
-#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -61,9 +60,19 @@ template <typename V> struct Rule {
   unsigned Order;
 };
 
+// The rule `Guidance::matchType` chose for a declaration.
+struct TypeMatch {
+  const Rule<RustType> *Best = nullptr;
+  // An equally specific rule naming a different type, if any.
+  const Rule<RustType> *Conflict = nullptr;
+
+  explicit operator bool() const { return Best != nullptr; }
+};
+
 struct Guidance {
   std::vector<Rule<RustType>> VarTypes;
-  std::map<std::string, RustType> FnReturnTypes;
+  // Specifiers name the function alone, in `Fn`.
+  std::vector<Rule<RustType>> FnReturnTypes;
   std::vector<Rule<bool>> VarMut;
   llvm::json::Object Raw;
 
@@ -72,14 +81,11 @@ struct Guidance {
   bool alreadyInstrumented() const;
   bool isEmpty() const;
 
-  // The most specific matching rule; ties are broken by JSON order. A tie
-  // between rules that disagree is reported through `Conflict`.
-  const Rule<RustType> *matchType(const DeclFacts &D,
-                                  const Rule<RustType> **Conflict) const;
+  // The most specific matching rule; ties are broken by JSON order.
+  TypeMatch matchType(const DeclFacts &D) const;
   const Rule<bool> *matchMut(const DeclFacts &D) const;
-  // The `fn_return_type` entry naming `FnName`.
-  const std::pair<const std::string, RustType> *
-  returnType(llvm::StringRef FnName) const;
+  // The `fn_return_type` rule naming `FnName`.
+  const Rule<RustType> *returnType(llvm::StringRef FnName) const;
 };
 
 } // namespace xj

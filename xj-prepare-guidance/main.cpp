@@ -59,8 +59,8 @@ void reportUnmatched(const xj::Guidance &G, xj::RunResults &Results) {
     Report(R.Spec.Text);
   for (const auto &R : G.VarMut)
     Report(R.Spec.Text);
-  for (const auto &[Fn, _] : G.FnReturnTypes)
-    Report(Fn);
+  for (const auto &R : G.FnReturnTypes)
+    Report(R.Spec.Text);
 }
 
 bool writeFile(llvm::StringRef Path, llvm::StringRef Text) {

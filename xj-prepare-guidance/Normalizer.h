@@ -34,7 +34,6 @@
 #include "XjTyper.h"
 
 #include "clang/AST/Expr.h"
-#include "llvm/ADT/DenseSet.h"
 
 namespace xj {
 
@@ -53,12 +52,17 @@ private:
   TUState &S;
   XjTyper Types;
   MarkerFactory Markers;
-  llvm::DenseSet<const clang::Expr *> Consumed;
 
   bool isGuidedPointer(const clang::Expr *E) const;
+  const clang::Expr *
+  guidedPointerOperand(const clang::BinaryOperator *BO) const;
   bool isPointerBuffer(const clang::Expr *E) const;
   bool isGuidedString(const clang::Expr *E) const;
+  const clang::Stmt *parentThroughParens(const clang::Expr *E) const;
   bool isRead(const clang::Expr *E) const;
+  bool isCancelledByAddrOf(const clang::UnaryOperator *Deref) const;
+  bool normalizeElementAccess(const clang::Expr *Node, const clang::Expr *Base,
+                              const clang::Expr *Index);
   void addMarkerCall(const clang::Expr *Node, const MarkerKey &M,
                      const clang::Expr *Base, const clang::Expr *Index,
                      bool Deref);
@@ -69,6 +73,9 @@ private:
   bool advanceSlice(const clang::Expr *Node, const clang::Expr *Operand,
                     const clang::Expr *Step);
   bool isStatement(const clang::Expr *E) const;
+  void normalizeInPlaceMotion(const clang::BinaryOperator *BO);
+  void checkPointerSubtraction(const clang::BinaryOperator *BO);
+  void checkPointerOrdering(const clang::BinaryOperator *BO);
   void report(llvm::StringRef Kind, const clang::Expr *Site,
               const clang::Expr *Operand, llvm::StringRef Message);
 };

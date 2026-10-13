@@ -520,8 +520,8 @@ impl Translation<'_> {
                         self.convert_pointer_is_null(ctx, lhs_type.ctype, lhs, is_null)?
                     }
                     (Some(lhs_expr_id), Some(rhs_expr_id)) => {
-                        let lhs_guided_type = self.xj_type_of_expr(lhs_expr_id);
-                        let rhs_guided_type = self.xj_type_of_expr(rhs_expr_id);
+                        let lhs_guided_type = self.guided_type_of_expr(lhs_expr_id);
+                        let rhs_guided_type = self.guided_type_of_expr(rhs_expr_id);
                         if lhs_guided_type.is_some_and(|g| tenjin::type_is_mut_ref(&g.parsed))
                             || rhs_guided_type.is_some_and(|g| tenjin::type_is_mut_ref(&g.parsed))
                         {

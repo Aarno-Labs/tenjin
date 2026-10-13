@@ -76,7 +76,9 @@ void LocalPlacement::emit(GuidanceEdits &Edits, const Registry &R) const {
 TUState::TUState(ASTContext &Ctx, const Guidance &G, Registry &R,
                  RunResults *Results)
     : Ctx(Ctx), SM(Ctx.getSourceManager()), G(G), Reg(R), Results(Results),
-      Speller(Ctx), Edits(Ctx.getSourceManager(), Ctx.getLangOpts(), R) {}
+      Speller(Ctx), Edits(Ctx.getSourceManager(), Ctx.getLangOpts(), R) {
+  computeTopLevelRanges();
+}
 
 bool TUState::inMainFile(SourceLocation Loc) const {
   return Loc.isValid() && SM.isWrittenInMainFile(SM.getFileLoc(Loc));
@@ -116,9 +118,7 @@ void TUState::computeTopLevelRanges() {
   TopLevelRanges = std::move(Merged);
 }
 
-unsigned TUState::topLevelOffset(SourceLocation Loc) {
-  if (TopLevelRanges.empty())
-    computeTopLevelRanges();
+unsigned TUState::topLevelOffset(SourceLocation Loc) const {
   unsigned Offset = SM.getFileOffset(SM.getFileLoc(Loc));
   auto It = std::upper_bound(
       TopLevelRanges.begin(), TopLevelRanges.end(), Offset,

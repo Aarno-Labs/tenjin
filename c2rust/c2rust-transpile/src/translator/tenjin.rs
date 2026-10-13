@@ -1012,7 +1012,7 @@ impl Translation<'_> {
 
     /// A `Vec<u8>` (or a reference to one) behind any identity marker.
     fn is_guided_byte_vec(&self, carg: CExprId) -> bool {
-        self.xj_type_of_expr(self.strip_identity_markers(carg))
+        self.guided_type_of_expr(self.strip_identity_markers(carg))
             .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
     }
 
@@ -2376,7 +2376,7 @@ impl Translation<'_> {
                 self.c_strip_implicit_casts(self.strip_identity_markers(cargs[0]));
 
             // XREF:guided_vec_memset_zero_mulsizeof
-            let mb_dst_guided_type = self.xj_type_of_expr(arg0_sans_casts);
+            let mb_dst_guided_type = self.guided_type_of_expr(arg0_sans_casts);
             if let Some(dst_guided_type) = mb_dst_guided_type {
                 if !type_is_vec(dst_guided_type.strip_refs()) {
                     return Ok(None);
