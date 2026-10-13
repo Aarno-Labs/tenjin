@@ -307,14 +307,14 @@ void FlowInstrumenter::wrapPlace(const MarkerKey &M, const Expr *Core,
   const MarkerKey *Key = &M;
   if (P.Kind == Shape::Whole) {
     std::string Offset = M.F == Family::ElemRef ? ", 0" : "";
-    S.Edits.addLayer(Core, [=](const std::string &Inner) {
+    S.wrap(Core, [=](const std::string &Inner) {
       return R->name(*Key) + "(" + Inner + Offset + ")";
     });
     return;
   }
   const Expr *Base = P.Base;
   const Expr *Index = P.Index;
-  S.Edits.addLayer(Core, [=](const std::string &) {
+  S.replace(Core, [=] {
     return R->name(*Key) + "(" + E->render(Base) + ", " + E->render(Index) +
            ")";
   });
@@ -361,7 +361,7 @@ void FlowInstrumenter::coerceFlow(const Expr *Src, const Sink &K) {
       K.X.rust()->isSliceRef())
     S.diagnose("unhandled-coercion", Src->getExprLoc(), K.X.rustText(),
                "an unguided pointer carries no length for a slice");
-  S.Edits.addLayer(Src, S.callLayer(*M));
+  S.wrap(Src, S.callLayer(*M));
 }
 
 bool FlowInstrumenter::isGuidedPointer(const Expr *E) const {
@@ -381,12 +381,14 @@ void FlowInstrumenter::nullTest(const Expr *Whole, const Expr *Operand,
   const Registry *R = &S.Reg;
   const EditSet *E = &S.Edits;
   const MarkerKey *Key = M;
-  bool Self = Whole == Operand;
-  S.Edits.addLayer(Whole, [=](const std::string &Inner) {
-    std::string Call =
-        R->name(*Key) + "(" + (Self ? Inner : E->render(Operand)) + ")";
+  auto Test = [=](const std::string &Arg) {
+    std::string Call = R->name(*Key) + "(" + Arg + ")";
     return Negate ? "(!" + Call + ")" : Call;
-  });
+  };
+  if (Whole == Operand)
+    S.wrap(Whole, Test);
+  else
+    S.replace(Whole, [=] { return Test(E->render(Operand)); });
 }
 
 void FlowInstrumenter::visitNullComparison(const BinaryOperator *BO) {

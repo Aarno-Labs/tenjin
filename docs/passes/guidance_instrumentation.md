@@ -179,11 +179,15 @@ Guidance the program cannot honour is reported on stderr and in the
 - `unhandled-coercion`: for example an unguided pointer, which has no length,
   flowing into a slice;
 - `not-retyped`: bit-fields, variably-modified types, declarations whose type
-  cannot be rewritten in place, and fields guided with a borrow that is not
-  `'static` (the record would need a lifetime parameter, which the transpiler
-  does not declare);
+  cannot be rewritten in place (including one declarator of `T *a, *b;`,
+  whose specifiers the others share), and fields guided with a borrow that is
+  not `'static` (the record would need a lifetime parameter, which the
+  transpiler does not declare);
 - `not-normalized`: a subscript of a guided buffer whose element type (an
   array, a function pointer) no index marker can return;
+- `edit-refused`: a rewrite the pass decided on could not be made, because
+  the expression is not written contiguously in the file (it straddles a
+  macro expansion) or because it overlaps a rewrite already made;
 - `conflicting-guidance`, `unmatched-specifier`.
 
 ## Other Notes

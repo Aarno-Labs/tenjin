@@ -286,6 +286,61 @@ void back(const unsigned char *p) { const unsigned char *b = p - 1; }
     assert "return r[1];" in text
 
 
+def test_motion_whose_value_is_used_is_not_resliced(root, tmp_codebase):
+    result = instrument(
+        root,
+        tmp_codebase,
+        {
+            "a.c": """\
+unsigned char first(const unsigned char *p) {
+    const unsigned char *q = p++;
+    return *q;
+}
+const unsigned char *next(const unsigned char *p) { return p++; }
+void loop(const unsigned char *p, int n) {
+    for (int i = 0; i < n; p++) { if (i) p++; else p += 2; i++; }
+}
+"""
+        },
+        {"vars_of_type": {"&[u8]": ["first:p", "first:q", "next:p", "loop:p"]}},
+    )
+
+    text = result.sources["a.c"]
+    assert "(p++);" in text
+    assert "return p++;" in text
+    assert result.diagnostic_kinds().count("pointer-motion") == 2
+    assert (
+        "for (int i = 0; i < n; p = xj_slice_from_ref_slice_u8(p, 1)) "
+        "{ if (i) p = xj_slice_from_ref_slice_u8(p, 1); "
+        "else p = xj_slice_from_ref_slice_u8(p, 2); i++; }"
+    ) in text
+
+
+def test_one_declarator_of_a_joined_declaration_is_not_retyped(root, tmp_codebase):
+    result = instrument(
+        root,
+        tmp_codebase,
+        {
+            "a.c": """\
+unsigned char *a, *b;
+unsigned char *c;
+struct Rec { char *x, *y; };
+void f(void) { char *l, *m = 0; }
+"""
+        },
+        {"vars_of_type": {"&[u8]": ["b", "c", "f:m"], "String": "Rec:y"}},
+    )
+
+    text = result.sources["a.c"]
+    not_retyped = [
+        d["subject"] for d in result.guidance["guidance_diagnostics"] if d["kind"] == "not-retyped"
+    ]
+    assert not_retyped == ["b: &[u8]", "y: String", "m: &[u8]"]
+    assert "unsigned char *a, *b;\nxj_ty_ref_slice_u8 c;" in text
+    assert "char *x, *y;" in text
+    assert "char *l, *m = 0;" in text
+
+
 MATRIX_SOURCE = """\
 struct S { unsigned char buf[8]; };
 void takes_slice(const unsigned char *s);
@@ -585,6 +640,24 @@ def test_names_agree_across_translation_units(root, tmp_codebase):
 
     assert shared_lines(result.sources["a.c"]) == shared_lines(result.sources["b.c"])
     assert len(shared_lines(result.sources["a.c"])) == 2
+
+
+def test_a_diagnostic_in_a_shared_header_is_reported_once(root, tmp_codebase):
+    tmp_codebase.mkdir(parents=True, exist_ok=True)
+    (tmp_codebase / "h.h").write_text("int takes(const char *s);\n", encoding="utf-8")
+    definition = '#include "h.h"\nint takes(const char *s) { return s[0]; }\n'
+    result = instrument(
+        root,
+        tmp_codebase,
+        {"a.c": definition, "b.c": definition},
+        {"vars_of_type": {"&str": "takes:s"}},
+    )
+
+    sites = [
+        d["site"] for d in result.guidance["guidance_diagnostics"] if d["kind"] == "not-retyped"
+    ]
+    assert len(sites) == 1
+    assert sites[0].endswith("h.h:1:23")
 
 
 def run_pointer_passes(root: Path, codebase: Path, source: Path) -> None:

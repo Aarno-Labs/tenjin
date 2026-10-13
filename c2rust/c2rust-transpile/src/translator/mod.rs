@@ -289,7 +289,9 @@ struct MacroExpansion {
     ty: CTypeId,
 }
 
-type ZeroInits = IndexMap<CDeclId, (WithStmts<Box<Expr>>, IndexSet<Import>)>;
+/// Zero initializers of records, by declaration and by whether they are for a
+/// constant, where guided defaults differ.
+type ZeroInits = IndexMap<(CDeclId, bool), (WithStmts<Box<Expr>>, IndexSet<Import>)>;
 
 #[allow(clippy::vec_box)]
 pub struct Translation<'c> {
@@ -2956,6 +2958,26 @@ impl<'c> Translation<'c> {
         })
     }
 
+    /// The record under the pointers and arrays of a guided C type, if any,
+    /// holds a raw pointer.
+    fn guided_referent_contains_unguided_raw_pointer(
+        &self,
+        mut ctype: CTypeId,
+        visited_records: &mut HashSet<CRecordId>,
+    ) -> bool {
+        use CTypeKind::*;
+        loop {
+            match self.ast_context.resolve_type(ctype).kind {
+                Pointer(pointee) => ctype = pointee.ctype,
+                ConstantArray(element, _) | IncompleteArray(element) => ctype = element,
+                Struct(record_id) | Union(record_id) => {
+                    return self.record_contains_unguided_raw_pointer(record_id, visited_records)
+                }
+                _ => return false,
+            }
+        }
+    }
+
     fn type_contains_unguided_raw_pointer_inner(
         &self,
         ctype: CTypeId,
@@ -2963,10 +2985,12 @@ impl<'c> Translation<'c> {
     ) -> bool {
         use CTypeKind::*;
 
-        // Guidance replaces the C type, raw pointers included; a pointer to a
-        // guided value is still a raw pointer.
+        // Guidance replaces the C type, raw pointers included, but a record
+        // the guided type holds (`Box<Node>`, `&'static [Node]`) keeps its
+        // C fields.
         if let Some(guided) = self.xj_type_of_ctype(ctype) {
-            return matches!(guided.parsed, Type::Ptr(_));
+            return markers::type_mentions_raw_pointer(&guided.parsed)
+                || self.guided_referent_contains_unguided_raw_pointer(ctype, visited_records);
         }
 
         match self.ast_context.resolve_type(ctype).kind.clone() {
@@ -2985,25 +3009,7 @@ impl<'c> Translation<'c> {
             VariableArray(..) | Reference(..) | BlockPointer(..) => true,
 
             Struct(record_id) | Union(record_id) => {
-                if !visited_records.insert(record_id) {
-                    return false;
-                }
-
-                let fields = match self.ast_context.index(record_id).kind.clone() {
-                    CDeclKind::Struct { fields, .. } | CDeclKind::Union { fields, .. } => fields,
-                    _ => unreachable!("record type points to a non-record declaration"),
-                };
-                let Some(fields) = fields else {
-                    return false;
-                };
-
-                fields.into_iter().any(|field_id| {
-                    let field_type = match self.ast_context.index(field_id).kind {
-                        CDeclKind::Field { typ, .. } => typ.ctype,
-                        _ => unreachable!("record contains a non-field declaration"),
-                    };
-                    self.type_contains_unguided_raw_pointer_inner(field_type, visited_records)
-                })
+                self.record_contains_unguided_raw_pointer(record_id, visited_records)
             }
 
             // Atomic lowering is handled specially for statics, but nested
@@ -3038,6 +3044,32 @@ impl<'c> Translation<'c> {
             // not currently support.
             TypeOfExpr(..) | UnhandledSveType => true,
         }
+    }
+
+    fn record_contains_unguided_raw_pointer(
+        &self,
+        record_id: CRecordId,
+        visited_records: &mut HashSet<CRecordId>,
+    ) -> bool {
+        if !visited_records.insert(record_id) {
+            return false;
+        }
+
+        let fields = match self.ast_context.index(record_id).kind.clone() {
+            CDeclKind::Struct { fields, .. } | CDeclKind::Union { fields, .. } => fields,
+            _ => unreachable!("record type points to a non-record declaration"),
+        };
+        let Some(fields) = fields else {
+            return false;
+        };
+
+        fields.into_iter().any(|field_id| {
+            let field_type = match self.ast_context.index(field_id).kind {
+                CDeclKind::Field { typ, .. } => typ.ctype,
+                _ => unreachable!("record contains a non-field declaration"),
+            };
+            self.type_contains_unguided_raw_pointer_inner(field_type, visited_records)
+        })
     }
 
     fn convert_decl(&self, ctx: ExprContext, decl_id: CDeclId) -> TranslationResult<ConvertedDecl> {
@@ -5661,10 +5693,12 @@ impl<'c> Translation<'c> {
         } else if let &CTypeKind::Pointer(_) = resolved_ty {
             self.null_ptr(resolved_ty_id).map(WithStmts::new_val)
         } else if let &CTypeKind::ConstantArray(elt, sz) = resolved_ty {
+            let elt_default = self.implicit_default_expr(ctx, elt)?;
+            if self.holds_non_copy_guidance(elt) {
+                return self.non_copy_array_default(ctx, elt, sz, elt_default);
+            }
             let sz = mk().lit_expr(mk().int_unsuffixed_lit(sz as u128));
-            Ok(self
-                .implicit_default_expr(ctx, elt)?
-                .map(|elt| mk().repeat_expr(elt, sz)))
+            Ok(elt_default.map(|elt| mk().repeat_expr(elt, sz)))
         } else if let &CTypeKind::IncompleteArray(_) = resolved_ty {
             // Incomplete arrays are translated to zero length arrays
             Ok(WithStmts::new_val(mk().array_expr(vec![])))
@@ -5698,7 +5732,8 @@ impl<'c> Translation<'c> {
         let name = name.as_deref().unwrap_or("???");
 
         // Look up the decl in the cache and return what we find (if we find anything)
-        if let Some((init, imports)) = self.zero_inits.borrow().get(&decl_id) {
+        let cache_key = (decl_id, ctx.is_const);
+        if let Some((init, imports)) = self.zero_inits.borrow().get(&cache_key) {
             self.add_imports(imports);
             log::debug!("looked up imports for {name}: {imports:?}");
             return Ok(init.clone());
@@ -5807,7 +5842,7 @@ impl<'c> Translation<'c> {
             log::debug!("saving imports for {name}: {imports:?}");
             self.zero_inits
                 .borrow_mut()
-                .insert(decl_id, (init.clone(), imports));
+                .insert(cache_key, (init.clone(), imports));
             Ok(init)
         } else {
             Err(TranslationError::generic(

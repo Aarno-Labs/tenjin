@@ -1224,9 +1224,9 @@ impl Translation<'_> {
         func: &Box<Expr>,
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
-        // Recognizers inspect the values the program passes, not the markers
-        // that fit them to C parameter types.
-        let cargs = &self.strip_identity_markers_all(cargs);
+        // Recognizers that rewrite a call for a guided argument look through
+        // the markers fitting it to its C parameter (`guided_arg`); the others
+        // convert the arguments as they are.
         if let Some(path) = tenjin::expr_get_path(func) {
             match () {
                 _ if tenjin::is_path_exactly_1(path, "exit") => {
@@ -1746,22 +1746,19 @@ impl Translation<'_> {
                 return Ok(None);
             }
 
-            if self
-                .xj_type_of_expr(cargs[0])
-                .is_some_and(|g| type_is_string(&g.parsed))
-            {
-                let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
+            if let Some(value) = self.guided_arg(cargs[0], |g| type_is_string(&g.parsed)) {
+                let expr = self.convert_expr(ctx.used(), value, None)?;
                 let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
                     self,
                     "%s".to_string(),
                     "print",
                     "println",
                     &[expr.to_expr()],
-                    &[cargs[0]],
+                    &[value],
                     None,
                     None,
                     self.ast_context
-                        .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
+                        .display_loc(&self.ast_context.index_unwrap_parens(value).loc),
                 ));
                 return Ok(Some(WithStmts::new_val(print_call)));
             }
@@ -1790,18 +1787,23 @@ impl Translation<'_> {
                 return Ok(None);
             }
 
-            let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
+            // A guided `char` prints as itself, without the marker fitting it
+            // to the `int` parameter.
+            let arg = self
+                .guided_arg(cargs[0], |g| type_is_char(&g.parsed))
+                .unwrap_or(cargs[0]);
+            let expr = self.convert_expr(ctx.used(), arg, None)?;
             let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
                 self,
                 "%c".to_string(),
                 "print",
                 "println",
                 &[expr.to_expr()],
-                &[cargs[0]],
+                &[arg],
                 None,
                 None,
                 self.ast_context
-                    .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
+                    .display_loc(&self.ast_context.index_unwrap_parens(arg).loc),
             ));
             return Ok(Some(WithStmts::new_val(print_call)));
         }
@@ -1820,18 +1822,23 @@ impl Translation<'_> {
             //    (when not used by the context)
             // should be translated to
             // print!("{}", FOO)
-            let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
+            // A guided `char` prints as itself, without the marker fitting it
+            // to the `int` parameter.
+            let arg = self
+                .guided_arg(cargs[0], |g| type_is_char(&g.parsed))
+                .unwrap_or(cargs[0]);
+            let expr = self.convert_expr(ctx.used(), arg, None)?;
             let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
                 self,
                 "%c".to_string(),
                 "print",
                 "println",
                 &[expr.to_expr()],
-                &[cargs[0]],
+                &[arg],
                 None,
                 None,
                 self.ast_context
-                    .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
+                    .display_loc(&self.ast_context.index_unwrap_parens(arg).loc),
             ));
             return Ok(Some(WithStmts::new_val(print_call)));
         }
@@ -1851,11 +1858,8 @@ impl Translation<'_> {
             // should be translated to
             // FOO.len() as size_t
             // XREF:guided_c_strlen
-            if self
-                .xj_type_of_expr(cargs[0])
-                .is_some_and(|g| type_is_string(&g.parsed))
-            {
-                let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
+            if let Some(value) = self.guided_arg(cargs[0], |g| type_is_string(&g.parsed)) {
+                let expr = self.convert_expr(ctx.used(), value, None)?;
                 let len_call = mk().method_call_expr(expr.to_expr(), "len", vec![]);
                 let len_call_as_size_t = mk().cast_expr(len_call, mk().path_ty(vec!["size_t"]));
                 return Ok(Some(WithStmts::new_val(len_call_as_size_t)));
@@ -1879,20 +1883,17 @@ impl Translation<'_> {
             // should be translated to
             // strcspn_str(&FOO, &BAR)
             // XREF:guided_strcspn
-            if self
-                .xj_type_of_expr(cargs[0])
-                .is_some_and(|g| type_is_string(&g.parsed))
-                && self
-                    .xj_type_of_expr(cargs[1])
-                    .is_some_and(|g| type_is_string(&g.parsed))
-            {
+            if let (Some(text), Some(set)) = (
+                self.guided_arg(cargs[0], |g| type_is_string(&g.parsed)),
+                self.guided_arg(cargs[1], |g| type_is_string(&g.parsed)),
+            ) {
                 self.with_cur_file_item_store(|item_store| {
                 item_store.add_item_str_once("fn strcspn_str(s: &str, chars: &str) -> usize { s.chars().take_while(|c| !chars.contains(*c)).count() }",
             );
         });
 
-                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
-                let expr_bar = self.convert_expr(ctx.used(), cargs[1], None)?;
+                let expr_foo = self.convert_expr(ctx.used(), text, None)?;
+                let expr_bar = self.convert_expr(ctx.used(), set, None)?;
                 let strcspn_call = mk().call_expr(
                     mk().path_expr(vec!["strcspn_str"]),
                     vec![
@@ -1917,10 +1918,7 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if cargs.len() == 1 {
             // XREF:guided_isalnum
-            if self
-                .xj_type_of_expr(cargs[0])
-                .is_some_and(|g| type_is_char(&g.parsed))
-            {
+            if let Some(value) = self.guided_arg(cargs[0], |g| type_is_char(&g.parsed)) {
                 let rust_helper_name = format!("{}_char_i", c_fn_name);
                 self.with_cur_file_item_store(|item_store| {
                     item_store.add_item_str_once(&format!(
@@ -1929,14 +1927,14 @@ impl Translation<'_> {
                     ));
                 });
 
-                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let expr_foo = self.convert_expr(ctx.used(), value, None)?;
                 let bare_foo: Box<Expr> =
                     Box::new(tenjin::expr_strip_casts(&(expr_foo.to_expr())).clone());
                 let call = mk().call_expr(mk().path_expr(vec![&rust_helper_name]), vec![bare_foo]);
                 return Ok(Some(WithStmts::new_val(call)));
             }
 
-            // Fallthrough: no guidance, or expr was not a simple variable.
+            // Fallthrough: no guidance; the argument keeps its markers.
             let rust_helper_name = format!("xj_{}", c_fn_name);
             self.with_cur_file_item_store(|item_store| {
             item_store.add_item_str_once(&format!(
@@ -1996,10 +1994,7 @@ impl Translation<'_> {
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "tolower") && cargs.len() == 1 {
             // XREF:guided_tolower
-            if self
-                .xj_type_of_expr(cargs[0])
-                .is_some_and(|g| type_is_char(&g.parsed))
-            {
+            if let Some(value) = self.guided_arg(cargs[0], |g| type_is_char(&g.parsed)) {
                 self.with_cur_file_item_store(|item_store| {
                 // For now we return an integer code rather than a bool,
                 // to better match the C function signature.
@@ -2008,7 +2003,7 @@ impl Translation<'_> {
                 );
             });
 
-                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let expr_foo = self.convert_expr(ctx.used(), value, None)?;
                 // Stripping casts is correct because we know the underlying type is char,
                 // which matches the argument of the function we're redirecting to.
                 let bare_foo: Box<Expr> =
@@ -2017,7 +2012,7 @@ impl Translation<'_> {
                     mk().call_expr(mk().path_expr(vec!["tolower_char_i"]), vec![bare_foo]);
                 return Ok(Some(WithStmts::new_val(tolower_call)));
             }
-            // Fallthrough: no guidance, or expr was not a simple variable.
+            // Fallthrough: no guidance; the argument keeps its markers.
 
             self.with_cur_file_item_store(|item_store| {
             item_store.add_item_str_once(
@@ -2042,10 +2037,7 @@ impl Translation<'_> {
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "toupper") && cargs.len() == 1 {
-            if self
-                .xj_type_of_expr(cargs[0])
-                .is_some_and(|g| type_is_char(&g.parsed))
-            {
+            if let Some(value) = self.guided_arg(cargs[0], |g| type_is_char(&g.parsed)) {
                 self.with_cur_file_item_store(|item_store| {
                 // For now we return an integer code rather than a bool,
                 // to better match the C function signature.
@@ -2054,7 +2046,7 @@ impl Translation<'_> {
                 );
             });
 
-                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let expr_foo = self.convert_expr(ctx.used(), value, None)?;
                 // Stripping casts is correct because we know the underlying type is char,
                 // which matches the argument of the function we're redirecting to.
                 let bare_foo: Box<Expr> =
@@ -2063,7 +2055,7 @@ impl Translation<'_> {
                     mk().call_expr(mk().path_expr(vec!["toupper_char_i"]), vec![bare_foo]);
                 return Ok(Some(WithStmts::new_val(toupper_call)));
             }
-            // Fallthrough: no guidance, or expr was not a simple variable.
+            // Fallthrough: no guidance; the argument keeps its markers.
 
             self.with_cur_file_item_store(|item_store| {
             item_store.add_item_str_once(
@@ -2088,17 +2080,14 @@ impl Translation<'_> {
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
         if tenjin::expr_is_ident(func, "toascii") && cargs.len() == 1 {
-            if self
-                .xj_type_of_expr(cargs[0])
-                .is_some_and(|g| type_is_char(&g.parsed))
-            {
+            if let Some(value) = self.guided_arg(cargs[0], |g| type_is_char(&g.parsed)) {
                 self.with_cur_file_item_store(|item_store| {
                 item_store.add_item_str_once(
                     "fn toascii_char_i(xjc: char) -> core::ffi::c_int { char::from_u32((xjc as u32) & 0x7f).unwrap() as core::ffi::c_int }",
                 );
             });
 
-                let expr_foo = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let expr_foo = self.convert_expr(ctx.used(), value, None)?;
                 // Stripping casts is correct because we know the underlying type is char,
                 // which matches the argument of the function we're redirecting to.
                 let bare_foo: Box<Expr> =
@@ -2107,7 +2096,7 @@ impl Translation<'_> {
                     mk().call_expr(mk().path_expr(vec!["toascii_char_i"]), vec![bare_foo]);
                 return Ok(Some(WithStmts::new_val(toascii_call)));
             }
-            // Fallthrough: no guidance, or expr was not a simple variable.
+            // Fallthrough: no guidance; the argument keeps its markers.
 
             self.with_cur_file_item_store(|item_store| {
                 item_store.add_item_str_once(
@@ -2331,10 +2320,7 @@ impl Translation<'_> {
             }
 
             // XREF:TENJIN-GUIDANCE-STRAWMAN
-            if self
-                .xj_type_of_expr(cargs[0])
-                .is_some_and(|g| type_is_string(&g.parsed))
-            {
+            if let Some(value) = self.guided_arg(cargs[0], |g| type_is_string(&g.parsed)) {
                 self.with_cur_file_item_store(|item_store| {
                     item_store.add_use(true, vec!["std".into(), "io".into()], "Read");
                     item_store.add_use(true, vec!["std".into(), "io".into()], "BufRead");
@@ -2347,7 +2333,7 @@ impl Translation<'_> {
                     );
                 });
 
-                let buf = self.convert_expr(ctx.used(), cargs[0], None)?;
+                let buf = self.convert_expr(ctx.used(), value, None)?;
                 let lim = self.convert_expr(ctx.used(), cargs[1], None)?;
                 let fgets_stdin_bool_call = mk().call_expr(
                     mk().path_expr(vec!["fgets_stdin_bool"]),
@@ -2387,7 +2373,8 @@ impl Translation<'_> {
                 return Ok(None);
             }
 
-            let arg0_sans_casts = self.c_strip_implicit_casts(cargs[0]);
+            let arg0_sans_casts =
+                self.c_strip_implicit_casts(self.strip_identity_markers(cargs[0]));
 
             // XREF:guided_vec_memset_zero_mulsizeof
             let mb_dst_guided_type = self.xj_type_of_expr(arg0_sans_casts);

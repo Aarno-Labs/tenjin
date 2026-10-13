@@ -15,6 +15,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace xj {
@@ -24,11 +25,16 @@ struct Diagnostic {
   std::string Site;
   std::string Subject;
   std::string Message;
+
+  auto tie() const { return std::tie(Kind, Site, Subject, Message); }
+  bool operator<(const Diagnostic &O) const { return tie() < O.tie(); }
 };
 
 // Collected by the rewriting sweep only, so each fact is reported once.
 struct RunResults {
   std::vector<Diagnostic> Diagnostics;
+  // Every TU including a header reports what is wrong in it.
+  std::set<Diagnostic> Reported;
   std::set<std::string> MatchedSpecs;
   std::map<std::string, bool> MutResolved;
 
@@ -83,6 +89,9 @@ struct TUState {
                 llvm::StringRef Subject, llvm::StringRef Message);
   // Offset of the top-level declaration containing `Loc`.
   unsigned topLevelOffset(clang::SourceLocation Loc);
+  // Edits `St`; an edit that is refused is reported as `edit-refused`.
+  bool wrap(const clang::Stmt *St, EditSet::Layer L);
+  bool replace(const clang::Stmt *St, EditSet::Replacement Text);
   // A layer that calls marker `K` on its argument text.
   EditSet::Layer callLayer(const MarkerKey &K) const;
   void placeLocal(const MarkerKey &K, clang::SourceLocation Use);
@@ -91,6 +100,7 @@ struct TUState {
 private:
   std::vector<std::pair<unsigned, unsigned>> TopLevelRanges;
   void computeTopLevelRanges();
+  bool made(EditSet::Result R, const clang::Stmt *St);
 };
 
 } // namespace xj

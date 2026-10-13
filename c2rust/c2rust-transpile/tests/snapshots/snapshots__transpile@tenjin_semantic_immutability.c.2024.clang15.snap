@@ -55,6 +55,9 @@ pub static forced_immutable_raw_pointer: *mut ::core::ffi::c_int =
 #[unsafe(no_mangle)]
 pub static guided_pointer: &'static [u8] = b"\0";
 #[unsafe(no_mangle)]
+pub static mut guided_raw_pointer_array: [*mut ::core::ffi::c_int; 2] =
+    [::core::ptr::null_mut::<::core::ffi::c_int>(); 2];
+#[unsafe(no_mangle)]
 pub static plain_record: Plain = Plain { value: 0 };
 #[unsafe(no_mangle)]
 pub static mut raw_record: HasRaw = HasRaw {

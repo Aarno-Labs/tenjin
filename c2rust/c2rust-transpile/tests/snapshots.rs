@@ -48,7 +48,8 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
     } else if c_path.ends_with("tenjin_semantic_immutability.c") {
         serde_json::json!({
             "marker_typedefs": {
-                "xj_ty_ref_slice_u8": "&'static [u8]"
+                "xj_ty_ref_slice_u8": "&'static [u8]",
+                "xj_ty_array_2_ptr_mut_c_int": "[*mut ::core::ffi::c_int; 2]"
             },
             "vars_mut_resolved": {
                 "forced_mut_scalar": true,
@@ -60,6 +61,7 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "raw_pointer",
                 "forced_immutable_raw_pointer",
                 "guided_pointer",
+                "guided_raw_pointer_array",
                 "plain_record",
                 "raw_record",
                 "raw_union",
@@ -96,6 +98,8 @@ fn guidance_for_file(c_path: &Path) -> serde_json::Value {
                 "xj_ty_String": "String",
                 "xj_ty_Vec_u8": "Vec<u8>",
                 "xj_ty_Vec_u8_1": "Vec<u8>",
+                "xj_ty_Vec_u8_2": "Vec<u8>",
+                "xj_ty_array_3_String": "[String; 3]",
                 "xj_ty_ref_str": "&str"
             },
             "markers": {

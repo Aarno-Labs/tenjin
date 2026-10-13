@@ -146,6 +146,10 @@ pub fn guided_mut_ref_neq(mut xstr: &mut str, mut xstr2: &mut str) -> ::core::ff
     1
 }
 #[no_mangle]
+pub fn guided_mut_ref_eq(mut xstr: &mut str, mut xstr2: &mut str) -> ::core::ffi::c_int {
+    0
+}
+#[no_mangle]
 pub fn guided_1d_slice(
     mut x: &[::core::ffi::c_int],
     mut index: ::core::ffi::c_int,

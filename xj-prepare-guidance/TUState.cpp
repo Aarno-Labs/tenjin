@@ -1,5 +1,7 @@
 #include "TUState.h"
 
+#include "clang/Lex/Lexer.h"
+
 #include <algorithm>
 
 using namespace clang;
@@ -90,9 +92,11 @@ std::string TUState::site(SourceLocation Loc) const {
 
 void TUState::diagnose(llvm::StringRef Kind, SourceLocation Loc,
                        llvm::StringRef Subject, llvm::StringRef Message) {
-  if (Results)
-    Results->Diagnostics.push_back(
-        {Kind.str(), site(Loc), Subject.str(), Message.str()});
+  if (!Results)
+    return;
+  Diagnostic D{Kind.str(), site(Loc), Subject.str(), Message.str()};
+  if (Results->Reported.insert(D).second)
+    Results->Diagnostics.push_back(std::move(D));
 }
 
 void TUState::computeTopLevelRanges() {
@@ -124,6 +128,25 @@ unsigned TUState::topLevelOffset(SourceLocation Loc) {
   if (It != TopLevelRanges.begin() && std::prev(It)->second > Offset)
     return std::prev(It)->first;
   return Offset;
+}
+
+bool TUState::wrap(const Stmt *St, EditSet::Layer L) {
+  return made(Edits.wrap(St->getSourceRange(), std::move(L)), St);
+}
+
+bool TUState::replace(const Stmt *St, EditSet::Replacement Text) {
+  return made(Edits.replace(St->getSourceRange(), std::move(Text)), St);
+}
+
+bool TUState::made(EditSet::Result R, const Stmt *St) {
+  if (R == EditSet::Result::Made)
+    return true;
+  llvm::StringRef Text = Lexer::getSourceText(
+      CharSourceRange::getTokenRange(St->getSourceRange()), SM,
+      Ctx.getLangOpts());
+  diagnose("edit-refused", St->getBeginLoc(),
+           Text.empty() ? "<expression>" : Text, EditSet::describe(R));
+  return false;
 }
 
 EditSet::Layer TUState::callLayer(const MarkerKey &K) const {

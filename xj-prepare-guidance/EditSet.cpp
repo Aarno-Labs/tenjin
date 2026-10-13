@@ -33,26 +33,44 @@ bool EditSet::crossesExisting(Range R) const {
   return false;
 }
 
-bool EditSet::addLayer(SourceRange SR, Layer L) {
+EditSet::Result EditSet::add(SourceRange SR, Layer L, bool Replaces) {
   auto R = offsets(SR);
-  if (!R || crossesExisting(*R))
-    return false;
+  if (!R)
+    return Result::OutsideMainFile;
+  if (crossesExisting(*R))
+    return Result::CrossesEdit;
+  if (Replaces && Nodes.count(*R))
+    return Result::DiscardsEdit;
   Nodes[*R].push_back(std::move(L));
-  return true;
+  return Result::Made;
+}
+
+EditSet::Result EditSet::wrap(SourceRange R, Layer L) {
+  return add(R, std::move(L), false);
+}
+
+EditSet::Result EditSet::replace(SourceRange R, Replacement Text) {
+  return add(
+      R, [Text = std::move(Text)](const std::string &) { return Text(); },
+      true);
+}
+
+llvm::StringRef EditSet::describe(Result R) {
+  switch (R) {
+  case Result::Made:
+    return "";
+  case Result::OutsideMainFile:
+    return "the expression is not written contiguously in the file";
+  case Result::CrossesEdit:
+    return "the rewrite overlaps a rewrite already made";
+  case Result::DiscardsEdit:
+    return "the rewrite would discard a rewrite already made";
+  }
+  llvm_unreachable("unknown edit result");
 }
 
 void EditSet::insertBefore(unsigned Offset, std::string Text) {
   Insertions[Offset] += Text;
-}
-
-bool EditSet::hasEdits(const Stmt *S) const {
-  auto R = offsets(S->getSourceRange());
-  if (!R)
-    return false;
-  for (const auto &[N, _] : Nodes)
-    if (R->first <= N.first && N.second <= R->second)
-      return true;
-  return false;
 }
 
 std::string EditSet::slice(unsigned Begin, unsigned End) const {

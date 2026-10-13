@@ -55,6 +55,19 @@ size_t skipParenGroup(llvm::StringRef Text, size_t I) {
   return I;
 }
 
+// `T *a, *b;`: `D` is one of several declarators sharing one specifier list,
+// which begins all of them. The joined-declaration splitter normally leaves
+// none behind.
+bool sharesSpecifiers(const DeclaratorDecl *D) {
+  if (isa<ParmVarDecl>(D))
+    return false;
+  for (const Decl *Other : D->getLexicalDeclContext()->decls())
+    if (Other != D && isa<DeclaratorDecl>(Other) &&
+        Other->getBeginLoc() == D->getBeginLoc())
+      return true;
+  return false;
+}
+
 } // namespace
 
 std::string keptSpecifiers(llvm::StringRef Text) {
@@ -219,6 +232,9 @@ bool Retyper::canRetype(const DeclaratorDecl *D, const RustType &Ty) {
                   "owned type");
   if (D->getType()->isVariablyModifiedType())
     return Refuse("variably-modified types cannot be typedef'd at file scope");
+  if (sharesSpecifiers(D))
+    return Refuse("the declaration declares other names with the same "
+                  "specifiers; retyping it would retype them too");
   return true;
 }
 
@@ -345,9 +361,16 @@ bool Retyper::replaceSpecifiers(SourceRange R, const Rewrite &W,
   std::string After = W.After;
   const Registry *Reg = &S.Reg;
   const TypedefKey *Key = &K;
-  return S.Edits.addLayer(R, [=](const std::string &) {
+  EditSet::Result Made = S.Edits.replace(R, [=] {
     return Before + Reg->resolve(typedefRef(Key->Id)) + After;
   });
+  if (Made != EditSet::Result::Made) {
+    S.diagnose("not-retyped", D->getLocation(),
+               D->getName().str() + ": " + K.Rust.str(),
+               EditSet::describe(Made));
+    return false;
+  }
+  return true;
 }
 
 bool Retyper::retype(const DeclaratorDecl *D, const TypedefKey &K,

@@ -122,6 +122,8 @@ int main(int argc, const char **argv) {
   Reg.finalize();
   xj::RunResults Results;
   RC |= runSweep(*Parser, {&*G, &Reg, &Results, Inplace});
+  if (Reg.sweepsDiverged())
+    RC = 1;
   reportUnmatched(*G, Results);
   printDiagnostics(Results);
 

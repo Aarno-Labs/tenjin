@@ -78,7 +78,9 @@ public:
   const TypedefKey *typedefById(llvm::StringRef Id) const;
 
   void finalize();
-  bool isFinal() const { return Final; }
+  // A key first seen after `finalize`: the sweeps disagreed, and a TU
+  // rewritten before the key appeared may name things differently.
+  bool sweepsDiverged() const { return Diverged; }
   bool empty() const { return Typedefs.empty() && Markers.empty(); }
 
   std::string name(const TypedefKey &K) const;
@@ -103,7 +105,9 @@ private:
   std::map<std::string, std::string> Names;
   std::set<std::string> Taken;
   bool Final = false;
+  bool Diverged = false;
 
+  const std::string &nameOf(const std::string &Id) const;
   void nameLate(const std::string &Id, const std::string &Base);
   std::string freeName(const std::string &Base);
   void appendHeaderTypedef(const TypedefKey &K, std::set<std::string> &Done,

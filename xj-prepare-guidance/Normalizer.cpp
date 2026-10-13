@@ -119,7 +119,7 @@ void Normalizer::addMarkerCall(const Expr *Node, const MarkerKey &M,
   const EditSet *Edits = &S.Edits;
   const Registry *R = &S.Reg;
   const MarkerKey *Key = &M;
-  S.Edits.addLayer(Node, [=](const std::string &) {
+  S.replace(Node, [=] {
     std::string I = Index ? Edits->render(Index) : "0";
     std::string Call =
         R->name(*Key) + "(" + Edits->render(Base) + ", " + I + ")";
@@ -171,7 +171,7 @@ bool Normalizer::advanceSlice(const Expr *Node, const Expr *Operand,
     return false;
   const EditSet *Edits = &S.Edits;
   const Registry *R = &S.Reg;
-  S.Edits.addLayer(Node, [=](const std::string &) {
+  S.replace(Node, [=] {
     std::string P = Edits->render(Operand);
     std::string N = Step ? Edits->render(Step) : "1";
     return P + " = " + R->name(*M) + "(" + P + ", " + N + ")";
@@ -179,12 +179,31 @@ bool Normalizer::advanceSlice(const Expr *Node, const Expr *Operand,
   return true;
 }
 
-// `E` is evaluated for its effect alone.
+// `E` is evaluated for its effect alone: an expression statement, or the
+// init or increment of a `for`. An initializer, a returned value or a
+// condition uses its value.
 bool Normalizer::isStatement(const Expr *E) const {
-  for (const DynTypedNode &P : S.Ctx.getParents(*E))
-    if (P.get<Expr>())
-      return false;
-  return true;
+  auto Parents = S.Ctx.getParents(*E);
+  if (Parents.size() != 1)
+    return false;
+  const DynTypedNode &P = Parents[0];
+  if (P.get<CompoundStmt>())
+    return true;
+  if (const auto *If = P.get<IfStmt>())
+    return E == If->getThen() || E == If->getElse();
+  if (const auto *While = P.get<WhileStmt>())
+    return E == While->getBody();
+  if (const auto *Do = P.get<DoStmt>())
+    return E == Do->getBody();
+  if (const auto *For = P.get<ForStmt>())
+    return E == For->getInit() || E == For->getInc() || E == For->getBody();
+  if (const auto *Switch = P.get<SwitchStmt>())
+    return E == Switch->getBody();
+  if (const auto *Case = P.get<SwitchCase>())
+    return E == Case->getSubStmt();
+  if (const auto *Label = P.get<LabelStmt>())
+    return E == Label->getSubStmt();
+  return false;
 }
 
 void Normalizer::report(llvm::StringRef Kind, const Expr *Site,
@@ -200,11 +219,9 @@ void Normalizer::visitAddrOf(const UnaryOperator *UO) {
   const Expr *Operand = Deref->getSubExpr();
   if (!Types.of(Operand))
     return;
-  Consumed.insert(Deref);
   const EditSet *Edits = &S.Edits;
-  S.Edits.addLayer(UO, [=](const std::string &) {
-    return Edits->render(Operand);
-  });
+  if (S.replace(UO, [=] { return Edits->render(Operand); }))
+    Consumed.insert(Deref);
 }
 
 void Normalizer::visitDeref(const UnaryOperator *UO) {
@@ -225,7 +242,7 @@ void Normalizer::visitDeref(const UnaryOperator *UO) {
       return;
     }
     if (Types.isBuffer(Base)) {
-      S.Edits.addLayer(UO, [=](const std::string &) {
+      S.replace(UO, [=] {
         return postfixOperand(*Edits, Base) + "[" + Edits->render(Index) + "]";
       });
       return;
@@ -236,7 +253,7 @@ void Normalizer::visitDeref(const UnaryOperator *UO) {
   else if (isPointerBuffer(Operand))
     addIndexLayer(UO, Operand, nullptr);
   else if (Types.isBuffer(Operand))
-    S.Edits.addLayer(UO, [=](const std::string &) {
+    S.replace(UO, [=] {
       return postfixOperand(*Edits, Operand) + "[0]";
     });
 }
@@ -262,7 +279,7 @@ void Normalizer::visitSubscript(const ArraySubscriptExpr *ASE) {
     return;
   }
   const EditSet *Edits = &S.Edits;
-  S.Edits.addLayer(ASE, [=](const std::string &) {
+  S.replace(ASE, [=] {
     return "(*" + Edits->render(Base) + ")";
   });
 }

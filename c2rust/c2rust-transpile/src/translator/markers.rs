@@ -43,6 +43,14 @@ impl MarkerFamily {
         }
     }
 
+    /// The number of parameters every marker of the family declares.
+    fn arity(self) -> usize {
+        match self {
+            Self::SliceAll | Self::Coerce | Self::IsNull => 1,
+            Self::SliceFrom | Self::ElemRef | Self::Index | Self::CharAt => 2,
+        }
+    }
+
     /// Markers whose argument is the value itself, which a recognizer that
     /// looks at the value may see through.
     fn is_identity(self) -> bool {
@@ -77,6 +85,54 @@ pub fn type_buffer_element(ty: &Type) -> Option<&Type> {
             _ => None,
         }),
     }
+}
+
+/// `pred` holds for `ty` or a type it is built from, looking through
+/// references and raw pointers only when `through_refs`.
+fn type_any(ty: &Type, through_refs: bool, pred: &dyn Fn(&Type) -> bool) -> bool {
+    if pred(ty) {
+        return true;
+    }
+    let any = |t: &Type| type_any(t, through_refs, pred);
+    match ty {
+        Type::Reference(r) => through_refs && any(&r.elem),
+        Type::Ptr(p) => through_refs && any(&p.elem),
+        Type::Slice(s) => any(&s.elem),
+        Type::Array(a) => any(&a.elem),
+        Type::Paren(p) => any(&p.elem),
+        Type::Group(g) => any(&g.elem),
+        Type::Tuple(t) => t.elems.iter().any(any),
+        Type::Path(p) => p.path.segments.iter().any(|seg| match &seg.arguments {
+            syn::PathArguments::AngleBracketed(args) => args
+                .args
+                .iter()
+                .any(|arg| matches!(arg, GenericArgument::Type(t) if any(t))),
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
+/// `ty` holds a raw pointer anywhere in it: `*const T`, `Vec<*mut T>`,
+/// `[*const c_char; N]`, `Option<*mut T>`.
+pub fn type_mentions_raw_pointer(ty: &Type) -> bool {
+    type_any(ty, true, &|t| matches!(t, Type::Ptr(_)))
+}
+
+/// `ty` owns what it holds (`String`, `Vec`, `Box`), or holds an exclusive
+/// reference, so it is not `Copy`.
+fn type_is_not_copy(ty: &Type) -> bool {
+    type_any(ty, false, &|t| {
+        tenjin::type_is_string(t)
+            || tenjin::type_is_vec(t)
+            || tenjin::type_is_exactly_1_path(t, "Box")
+            || tenjin::type_is_mut_ref(t)
+    })
+}
+
+/// `ty` holds an exclusive reference, so it is not `Clone`.
+fn type_is_not_clone(ty: &Type) -> bool {
+    type_any(ty, false, &tenjin::type_is_mut_ref)
 }
 
 /// `T` of a one-argument generic path `name<T>`.
@@ -305,21 +361,19 @@ impl Translation<'_> {
     }
 
     /// Drops the `Copy` and `Clone` derives a record's guided fields rule
-    /// out: owned guidance is not `Copy`, and an exclusive reference is
-    /// neither.
+    /// out, directly or through the records and arrays they hold: owned
+    /// guidance is not `Copy`, and an exclusive reference is neither.
     pub fn drop_guided_derives(&self, fields: &[CDeclId], derives: &mut Vec<syn::Meta>) {
-        let (mut copy, mut clone) = (true, true);
-        for guided in fields.iter().filter_map(|f| self.xj_type_of_decl(*f)) {
-            let ty = &guided.parsed;
-            if guided.is_exclusive_borrow() {
-                (copy, clone) = (false, false);
-            } else if tenjin::type_is_string(ty)
-                || tenjin::type_is_vec(ty)
-                || tenjin::type_is_exactly_1_path(ty, "Box")
-            {
-                copy = false;
-            }
-        }
+        let field_types: Vec<CTypeId> = fields
+            .iter()
+            .filter_map(|&f| match self.ast_context[f].kind {
+                CDeclKind::Field { typ, .. } => Some(typ.ctype),
+                _ => None,
+            })
+            .collect();
+        let any_field =
+            |pred: fn(&Type) -> bool| field_types.iter().any(|&t| self.holds_guided(t, pred));
+        let (copy, clone) = (!any_field(type_is_not_copy), !any_field(type_is_not_clone));
         derives.retain(|d| {
             let is = |name| d.path().is_ident(name);
             (copy || !is("Copy")) && (clone || !is("Clone"))
@@ -380,10 +434,18 @@ impl Translation<'_> {
         let CExprKind::DeclRef(_, decl, _) = self.ast_context.index_unwrap_parens(fexp).kind else {
             return None;
         };
-        match &self.ast_context[decl].kind {
-            CDeclKind::Function { name, .. } => Some((self.marker_family(name)?, decl)),
-            _ => None,
-        }
+        Some((self.marker_function(decl)?, decl))
+    }
+
+    /// The family of a marker function declaration. A program function that
+    /// happens to share a marker's name, but not its arity, is not one.
+    fn marker_function(&self, decl: CDeclId) -> Option<MarkerFamily> {
+        let CDeclKind::Function { name, .. } = &self.ast_context[decl].kind else {
+            return None;
+        };
+        let family = self.marker_family(name)?;
+        let (params, _) = self.marker_signature(decl)?;
+        (params.len() == family.arity()).then_some(family)
     }
 
     /// A marker typedef or marker function declaration. It has no Rust item:
@@ -391,7 +453,7 @@ impl Translation<'_> {
     pub fn is_marker_decl(&self, decl: CDeclId) -> bool {
         match &self.ast_context[decl].kind {
             CDeclKind::Typedef { .. } => self.marker_typedef(decl).is_some(),
-            CDeclKind::Function { name, .. } => self.marker_family(name).is_some(),
+            CDeclKind::Function { .. } => self.marker_function(decl).is_some(),
             _ => false,
         }
     }
@@ -420,11 +482,15 @@ impl Translation<'_> {
         }
     }
 
-    pub fn strip_identity_markers_all(&self, exprs: &[CExprId]) -> Vec<CExprId> {
-        exprs
-            .iter()
-            .map(|e| self.strip_identity_markers(*e))
-            .collect()
+    /// `arg` without its identity markers, if the value it holds is guided
+    /// with a type satisfying `pred`. A recognizer rewrites a call for that
+    /// value; one that keeps the call converts `arg` itself, so the
+    /// conversions the markers stand for still apply.
+    pub fn guided_arg(&self, arg: CExprId, pred: impl Fn(&GuidedType) -> bool) -> Option<CExprId> {
+        let value = self.strip_identity_markers(arg);
+        self.xj_type_of_expr(value)
+            .is_some_and(|g| pred(&g))
+            .then_some(value)
     }
 
     /// Parameter types and return type of a marker function.
@@ -448,6 +514,14 @@ impl Translation<'_> {
         let (params, ret) = self
             .marker_signature(callee)
             .ok_or_else(|| format_err!("marker function without a prototype"))?;
+        if cargs.len() != family.arity() {
+            return Err(format_err!(
+                "marker call with {} arguments, expected {}",
+                cargs.len(),
+                family.arity()
+            )
+            .into());
+        }
         match family {
             MarkerFamily::SliceAll | MarkerFamily::SliceFrom | MarkerFamily::ElemRef => {
                 self.convert_place_marker(ctx, family, ret, cargs)
@@ -763,9 +837,11 @@ impl Translation<'_> {
             Some(g) if is_str_or_string(tenjin::type_strip_refs(&g.parsed)) => {
                 ref_method(v, mk().path_expr(vec!["str", "is_empty"]), "is_empty")
             }
-            Some(g) if type_buffer_element(&g.parsed).is_some() => {
-                ref_method(v, Box::new(syn::parse_quote! { <[_]>::is_empty }), "is_empty")
-            }
+            Some(g) if type_buffer_element(&g.parsed).is_some() => ref_method(
+                v,
+                Box::new(syn::parse_quote! { <[_]>::is_empty }),
+                "is_empty",
+            ),
             Some(_) => mk().lit_expr(mk().bool_lit(false)),
             None => method(v, "is_null"),
         }))
@@ -1050,7 +1126,9 @@ impl Translation<'_> {
 
     /// The default of a guided type C leaves zeroed: `String::new()`, an
     /// empty `Vec`, `None`; a `Vec` in place of a C array keeps the array's
-    /// length, since code indexes into it later.
+    /// length, since code indexes into it later. A constant cannot allocate,
+    /// so there the `Vec` is empty: constants of such types are only the
+    /// placeholders of statics that `c2rust_run_static_initializers` assigns.
     pub fn guided_implicit_default(
         &self,
         ctx: ExprContext,
@@ -1063,7 +1141,7 @@ impl Translation<'_> {
             self.ast_context.resolve_type(ty_id).kind,
             CTypeKind::ConstantArray(..)
         );
-        if tenjin::type_is_vec(&guided.parsed) && is_array {
+        if tenjin::type_is_vec(&guided.parsed) && is_array && !ctx.is_const {
             // The resolved type has no marker sugar, so this is the C array.
             let array_ty = self.ast_context.resolve_type_id(ty_id);
             let array = self.implicit_default_expr(ctx, array_ty)?;
@@ -1086,20 +1164,51 @@ impl Translation<'_> {
     }
 
     /// What a static holds until `c2rust_run_static_initializers` assigns
-    /// it: C's default, except that a guided value is its empty form, which
-    /// is a constant.
+    /// it: C's default as a constant, in which guided values are empty.
     pub fn static_default_expr(
         &self,
         ctx: ExprContext,
         ty_id: CTypeId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        match self
-            .xj_type_of_ctype(ty_id)
-            .and_then(|g| Self::guided_empty(&g))
-        {
-            Some(empty) => Ok(WithStmts::new_val(empty)),
-            None => self.implicit_default_expr(ctx, ty_id),
+        self.implicit_default_expr(ctx.const_(), ty_id)
+    }
+
+    /// `[elt_default; len]` for an element that is not `Copy`, which a
+    /// repeat expression only accepts as a named constant: one in a
+    /// constant, and `core::array::from_fn` elsewhere, where the default may
+    /// allocate.
+    pub(super) fn non_copy_array_default(
+        &self,
+        ctx: ExprContext,
+        elt: CTypeId,
+        len: usize,
+        elt_default: WithStmts<Box<Expr>>,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        if !ctx.is_const {
+            return Ok(
+                elt_default.map(|e| Box::new(syn::parse_quote! { ::core::array::from_fn(|_| #e) }))
+            );
         }
+        let elt_ty = self.convert_type(elt)?;
+        let len = mk().lit_expr(mk().int_unsuffixed_lit(len as u128));
+        Ok(elt_default.map(|e| {
+            Box::new(syn::parse_quote! {{
+                const XJ_ELEMENT: #elt_ty = #e;
+                [XJ_ELEMENT; #len]
+            }})
+        }))
+    }
+
+    /// `ty`, or a record or array it holds by value, is guided with a type
+    /// that does not implement `Copy`.
+    pub fn holds_non_copy_guidance(&self, ty: CTypeId) -> bool {
+        self.holds_guided(ty, type_is_not_copy)
+    }
+
+    fn holds_guided(&self, ty: CTypeId, pred: fn(&Type) -> bool) -> bool {
+        self.holds(ty, &|t| {
+            self.xj_type_of_ctype(t).is_some_and(|g| pred(&g.parsed))
+        })
     }
 
     /// `pred` holds for `ty` or for an element or field it holds by value.

@@ -240,7 +240,12 @@ fn guided_stat_parameters_preserve_owned_and_borrowed_member_access() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let c = format!("#include <sys/stat.h>\ntypedef struct stat *{typedef};\nlong inspect({typedef} s) {{ return s->st_size + s->st_mtim.tv_sec; }}");
-        let rust = translate(dir.path(), &[("guided.c", &c)], serde_json::json!({"marker_typedefs": {typedef: ty}})).remove(0);
+        let rust = translate(
+            dir.path(),
+            &[("guided.c", &c)],
+            serde_json::json!({"marker_typedefs": {typedef: ty}}),
+        )
+        .remove(0);
         assert!(!rust.contains("pub struct stat"), "{rust}");
         compile_and_run(dir.path(), &format!("{rust}\nfn main() {{ let mut s: libc::stat = unsafe {{ core::mem::zeroed() }}; s.st_size = 4; s.st_mtime = 5; unsafe {{ assert_eq!(inspect({argument}), 9); }} }}"));
     }

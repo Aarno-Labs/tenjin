@@ -27,6 +27,8 @@ public:
       return;
     }
     TUState S(Ctx, *C.G, *C.Reg, C.Results);
+    // The order matters: a normalizer rewrite replaces its expression, and
+    // a replacement must come before the flow markers that wrap it.
     Retyper(S).run();
     Normalizer(S).run();
     FlowInstrumenter(S).run();

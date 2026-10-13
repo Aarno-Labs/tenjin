@@ -166,6 +166,10 @@ pub unsafe fn guided_mut_ref_neq(mut xstr: &mut str, mut xstr2: &mut str) -> ::c
     return 1 as ::core::ffi::c_int;
 }
 #[no_mangle]
+pub unsafe fn guided_mut_ref_eq(mut xstr: &mut str, mut xstr2: &mut str) -> ::core::ffi::c_int {
+    return 0 as ::core::ffi::c_int;
+}
+#[no_mangle]
 pub unsafe fn guided_1d_slice(
     mut x: &[::core::ffi::c_int],
     mut index: ::core::ffi::c_int,
@@ -228,7 +232,7 @@ pub unsafe fn struct_guided_ptr_with_guided_members(mut gm_ptr: &mut StructWithM
     *gm_ptr.uptr.offset(0 as isize) = 42 as ::core::ffi::c_uchar;
     gm_ptr.zu8 = 43 as ::core::ffi::c_uchar;
 }
-unsafe fn __tenjin_bvm_167_7_float_to_unsigned_int(
+unsafe fn __tenjin_bvm_171_7_float_to_unsigned_int(
     mut x: ::core::ffi::c_float,
     mut out: *mut ::core::ffi::c_uint,
 ) {
@@ -247,7 +251,7 @@ pub unsafe fn guided_union_float_int_bitcast(mut f: ::core::ffi::c_float) -> ::c
     __tenjin_tmp_out_u = __tenjin_tmp_in_u.to_bits() as ::core::ffi::c_uint;
     return __tenjin_tmp_out_u;
 }
-unsafe fn __tenjin_bvm_167_7_unsigned_int_to_float(
+unsafe fn __tenjin_bvm_171_7_unsigned_int_to_float(
     mut x: ::core::ffi::c_uint,
     mut out: *mut ::core::ffi::c_float,
 ) {

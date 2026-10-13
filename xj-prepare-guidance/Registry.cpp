@@ -1,5 +1,6 @@
 #include "Registry.h"
 
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -93,23 +94,29 @@ std::string Registry::freeName(const std::string &Base) {
   }
 }
 
-// A key the first sweep did not see means the two sweeps disagreed; the
-// name is still unique, only chosen out of order.
+// A key the first sweep did not see means the two sweeps disagreed. The
+// name is unique, but chosen out of order, so another key may have taken
+// the name this one would get in a run where the sweeps agree.
 void Registry::nameLate(const std::string &Id, const std::string &Base) {
   Names[Id] = Taken.insert(Base).second ? Base : freeName(Base);
-  llvm::errs() << "xj-prepare-guidance: warning: late key " << Names[Id]
-               << "\n";
+  Diverged = true;
+  llvm::errs() << "xj-prepare-guidance: error: the sweeps disagree: "
+               << Names[Id] << " was first seen while rewriting\n";
 }
 
-std::string Registry::name(const TypedefKey &K) const {
-  auto It = Names.find(K.Id);
-  return It == Names.end() ? "xj_ty_unnamed" : It->second;
+// Every key is named once interned after `finalize`, and names are asked
+// for only then.
+const std::string &Registry::nameOf(const std::string &Id) const {
+  auto It = Names.find(Id);
+  if (It == Names.end())
+    llvm::report_fatal_error("xj-prepare-guidance: no name for key " +
+                             llvm::Twine(Id));
+  return It->second;
 }
 
-std::string Registry::name(const MarkerKey &K) const {
-  auto It = Names.find(K.Id);
-  return It == Names.end() ? "xj_marker_unnamed" : It->second;
-}
+std::string Registry::name(const TypedefKey &K) const { return nameOf(K.Id); }
+
+std::string Registry::name(const MarkerKey &K) const { return nameOf(K.Id); }
 
 std::string Registry::resolve(StringRef Text) const {
   std::string Out;
@@ -119,8 +126,7 @@ std::string Registry::resolve(StringRef Text) const {
       return Out + Text.str();
     size_t Close = Text.find(RefClose, Open);
     Out += Text.take_front(Open);
-    auto It = Names.find(Text.slice(Open + 1, Close).str());
-    Out += It == Names.end() ? "xj_ty_unnamed" : It->second;
+    Out += nameOf(Text.slice(Open + 1, Close).str());
     Text = Text.drop_front(Close + 1);
   }
 }
