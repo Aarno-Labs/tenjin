@@ -345,29 +345,22 @@ SourceLocation Retyper::declaratorEnd(const DeclaratorDecl *D) const {
 // keeps outside a typedef.
 bool Retyper::replaceSpecifiers(SourceRange R, const Rewrite &W,
                                 const TypedefKey &K, const NamedDecl *D) {
-  auto Offsets = S.Edits.offsets(R);
+  auto File = S.Edits.mainFileRange(R);
   llvm::StringRef Text =
-      Offsets ? S.SM.getBufferData(S.SM.getMainFileID())
-                    .slice(Offsets->first, Offsets->second)
-              : "";
+      File ? S.SM.getBufferData(File->File).slice(File->Begin, File->End) : "";
   // A tag defined inside the declaration would be deleted with the type.
-  if (!Offsets || Text.contains('{')) {
+  if (!File || Text.contains('{')) {
     S.diagnose("not-retyped", D->getLocation(),
                D->getName().str() + ": " + K.Rust.str(),
                "declaration's type cannot be rewritten in place");
     return false;
   }
-  std::string Before = keptSpecifiers(Text) + W.Quals;
-  std::string After = W.After;
-  const Registry *Reg = &S.Reg;
-  const TypedefKey *Key = &K;
-  EditSet::Result Made = S.Edits.replace(R, [=] {
-    return Before + Reg->resolve(typedefRef(Key->Id)) + After;
-  });
-  if (Made != EditSet::Result::Made) {
+  GuidanceEdits::Result Made =
+      S.Edits.add(R, Edit::retype(K, keptSpecifiers(Text) + W.Quals, W.After));
+  if (Made != GuidanceEdits::Result::Made) {
     S.diagnose("not-retyped", D->getLocation(),
                D->getName().str() + ": " + K.Rust.str(),
-               EditSet::describe(Made));
+               GuidanceEdits::describe(Made));
     return false;
   }
   return true;

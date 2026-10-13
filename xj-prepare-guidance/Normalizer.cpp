@@ -68,15 +68,6 @@ std::string describe(const Expr *E, XjType X) {
 
 } // namespace
 
-std::string postfixOperand(const EditSet &Edits, const Expr *E) {
-  std::string Text = Edits.render(E);
-  const Expr *Inner = E->IgnoreImpCasts();
-  if (isa<DeclRefExpr, MemberExpr, ArraySubscriptExpr, CallExpr, ParenExpr>(
-          Inner))
-    return Text;
-  return "(" + Text + ")";
-}
-
 void Normalizer::run() {
   OperatorVisitor(*this).TraverseDecl(S.Ctx.getTranslationUnitDecl());
 }
@@ -116,20 +107,13 @@ bool Normalizer::isRead(const Expr *E) const {
 void Normalizer::addMarkerCall(const Expr *Node, const MarkerKey &M,
                                const Expr *Base, const Expr *Index,
                                bool Deref) {
-  const EditSet *Edits = &S.Edits;
-  const Registry *R = &S.Reg;
-  const MarkerKey *Key = &M;
-  S.replace(Node, [=] {
-    std::string I = Index ? Edits->render(Index) : "0";
-    std::string Call =
-        R->name(*Key) + "(" + Edits->render(Base) + ", " + I + ")";
-    return Deref ? "(*" + Call + ")" : Call;
-  });
+  S.edit(Node, Edit::call(M, Base, Index, "0")
+                   .around(Deref ? Edit::Around::Deref : Edit::Around::None));
 }
 
 // `(*xj_index_<b>(Base, Index))` in place of `Node`.
-void Normalizer::addIndexLayer(const Expr *Node, const Expr *Base,
-                               const Expr *Index) {
+void Normalizer::addIndexCall(const Expr *Node, const Expr *Base,
+                              const Expr *Index) {
   XjType BaseX = Types.of(Base);
   const MarkerKey *M =
       Markers.index(stripValueCasts(Base)->getType(), BaseX,
@@ -143,8 +127,8 @@ void Normalizer::addIndexLayer(const Expr *Node, const Expr *Base,
 }
 
 // `xj_char_at_<s>(Base, Index)` in place of the read `Node`.
-void Normalizer::addCharAtLayer(const Expr *Node, const Expr *Base,
-                                const Expr *Index) {
+void Normalizer::addCharAtCall(const Expr *Node, const Expr *Base,
+                               const Expr *Index) {
   const MarkerKey *M = Markers.charAt(stripValueCasts(Base)->getType(),
                                       Types.of(Base), Node->getBeginLoc());
   if (!M) {
@@ -169,13 +153,7 @@ bool Normalizer::advanceSlice(const Expr *Node, const Expr *Operand,
                     {Operand->getType(), X}, Node->getBeginLoc());
   if (!M)
     return false;
-  const EditSet *Edits = &S.Edits;
-  const Registry *R = &S.Reg;
-  S.replace(Node, [=] {
-    std::string P = Edits->render(Operand);
-    std::string N = Step ? Edits->render(Step) : "1";
-    return P + " = " + R->name(*M) + "(" + P + ", " + N + ")";
-  });
+  S.edit(Node, Edit::advance(*M, Operand, Step));
   return true;
 }
 
@@ -219,8 +197,7 @@ void Normalizer::visitAddrOf(const UnaryOperator *UO) {
   const Expr *Operand = Deref->getSubExpr();
   if (!Types.of(Operand))
     return;
-  const EditSet *Edits = &S.Edits;
-  if (S.replace(UO, [=] { return Edits->render(Operand); }))
+  if (S.edit(UO, Edit::keep(Operand)))
     Consumed.insert(Deref);
 }
 
@@ -228,44 +205,39 @@ void Normalizer::visitDeref(const UnaryOperator *UO) {
   if (Consumed.count(UO))
     return;
   const Expr *Operand = UO->getSubExpr();
-  const EditSet *Edits = &S.Edits;
   const auto *Sum = dyn_cast<BinaryOperator>(Operand->IgnoreParenImpCasts());
   if (Sum && Sum->getOpcode() == BO_Add && Sum->getType()->isPointerType()) {
     const Expr *Base = splitOffset(Sum).first;
     const Expr *Index = splitOffset(Sum).second;
     if (isGuidedString(Base) && isRead(UO)) {
-      addCharAtLayer(UO, Base, Index);
+      addCharAtCall(UO, Base, Index);
       return;
     }
     if (isPointerBuffer(Base)) {
-      addIndexLayer(UO, Base, Index);
+      addIndexCall(UO, Base, Index);
       return;
     }
     if (Types.isBuffer(Base)) {
-      S.replace(UO, [=] {
-        return postfixOperand(*Edits, Base) + "[" + Edits->render(Index) + "]";
-      });
+      S.edit(UO, Edit::subscript(Base, Index));
       return;
     }
   }
   if (isGuidedString(Operand) && isRead(UO))
-    addCharAtLayer(UO, Operand, nullptr);
+    addCharAtCall(UO, Operand, nullptr);
   else if (isPointerBuffer(Operand))
-    addIndexLayer(UO, Operand, nullptr);
+    addIndexCall(UO, Operand, nullptr);
   else if (Types.isBuffer(Operand))
-    S.replace(UO, [=] {
-      return postfixOperand(*Edits, Operand) + "[0]";
-    });
+    S.edit(UO, Edit::subscript(Operand, nullptr));
 }
 
 void Normalizer::visitSubscript(const ArraySubscriptExpr *ASE) {
   const Expr *Base = ASE->getBase();
   if (isGuidedString(Base) && isRead(ASE)) {
-    addCharAtLayer(ASE, Base, ASE->getIdx());
+    addCharAtCall(ASE, Base, ASE->getIdx());
     return;
   }
   if (isPointerBuffer(Base)) {
-    addIndexLayer(ASE, Base, ASE->getIdx());
+    addIndexCall(ASE, Base, ASE->getIdx());
     return;
   }
   if (!Types.isSingleObject(Base))
@@ -278,10 +250,7 @@ void Normalizer::visitSubscript(const ArraySubscriptExpr *ASE) {
            "a reference or box names one object; only index 0 has a meaning");
     return;
   }
-  const EditSet *Edits = &S.Edits;
-  S.replace(ASE, [=] {
-    return "(*" + Edits->render(Base) + ")";
-  });
+  S.edit(ASE, Edit::deref(Base));
 }
 
 void Normalizer::visitMotion(const UnaryOperator *UO) {

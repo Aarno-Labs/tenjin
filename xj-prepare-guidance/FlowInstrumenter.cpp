@@ -302,22 +302,17 @@ bool FlowInstrumenter::placeFlow(const Expr *Src, const Sink &K) {
 
 void FlowInstrumenter::wrapPlace(const MarkerKey &M, const Expr *Core,
                                  const Place &P) {
-  const Registry *R = &S.Reg;
-  const EditSet *E = &S.Edits;
-  const MarkerKey *Key = &M;
   if (P.Kind == Shape::Whole) {
-    std::string Offset = M.F == Family::ElemRef ? ", 0" : "";
-    S.wrap(Core, [=](const std::string &Inner) {
-      return R->name(*Key) + "(" + Inner + Offset + ")";
-    });
+    S.edit(Core, Edit::wrapIn(M, M.F == Family::ElemRef ? "0" : ""));
     return;
   }
-  const Expr *Base = P.Base;
-  const Expr *Index = P.Index;
-  S.replace(Core, [=] {
-    return R->name(*Key) + "(" + E->render(Base) + ", " + E->render(Index) +
-           ")";
-  });
+  // The marker takes `b[i]` from `&b[i]` itself, so the normalizer's
+  // rewrite of `b[i]` goes with the `&`.
+  if (S.edit(Core, Edit::call(M, P.Base, P.Index)) && P.Kind == Shape::Element)
+    S.Edits.discard(cast<UnaryOperator>(Core)
+                        ->getSubExpr()
+                        ->IgnoreParens()
+                        ->getSourceRange());
 }
 
 bool FlowInstrumenter::needsCoercion(XjType FX, QualType Written,
@@ -361,7 +356,7 @@ void FlowInstrumenter::coerceFlow(const Expr *Src, const Sink &K) {
       K.X.rust()->isSliceRef())
     S.diagnose("unhandled-coercion", Src->getExprLoc(), K.X.rustText(),
                "an unguided pointer carries no length for a slice");
-  S.wrap(Src, S.callLayer(*M));
+  S.edit(Src, Edit::wrapIn(*M));
 }
 
 bool FlowInstrumenter::isGuidedPointer(const Expr *E) const {
@@ -378,17 +373,10 @@ void FlowInstrumenter::nullTest(const Expr *Whole, const Expr *Operand,
   if (X.rust()->isSingleObject())
     S.diagnose("null-test-of-reference", Operand->getExprLoc(), X.rustText(),
                "a reference is never null; the test is constant");
-  const Registry *R = &S.Reg;
-  const EditSet *E = &S.Edits;
-  const MarkerKey *Key = M;
-  auto Test = [=](const std::string &Arg) {
-    std::string Call = R->name(*Key) + "(" + Arg + ")";
-    return Negate ? "(!" + Call + ")" : Call;
-  };
-  if (Whole == Operand)
-    S.wrap(Whole, Test);
-  else
-    S.replace(Whole, [=] { return Test(E->render(Operand)); });
+  Edit Test =
+      Whole == Operand ? Edit::wrapIn(*M) : Edit::call(*M, Operand, nullptr);
+  S.edit(Whole, std::move(Test).around(Negate ? Edit::Around::Not
+                                              : Edit::Around::None));
 }
 
 void FlowInstrumenter::visitNullComparison(const BinaryOperator *BO) {

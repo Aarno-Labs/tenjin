@@ -188,6 +188,8 @@ Guidance the program cannot honour is reported on stderr and in the
 - `edit-refused`: a rewrite the pass decided on could not be made, because
   the expression is not written contiguously in the file (it straddles a
   macro expansion) or because it overlaps a rewrite already made;
+- `edit-lost`: a rewrite that a later rewrite containing it would silently
+  drop. This is a bug in the pass, and the file is left unchanged;
 - `conflicting-guidance`, `unmatched-specifier`.
 
 ## Other Notes

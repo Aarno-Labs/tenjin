@@ -50,7 +50,7 @@ static void emitTypedef(const TypedefKey &K, const Registry &R,
   Out += R.definition(K) + "\n";
 }
 
-void LocalPlacement::emit(EditSet &Edits, const Registry &R) const {
+void LocalPlacement::emit(GuidanceEdits &Edits, const Registry &R) const {
   std::map<unsigned, std::set<std::string>> TypedefsAt;
   for (const auto &[Id, Placed] : Typedefs)
     TypedefsAt[Placed.first].insert(Id);
@@ -76,7 +76,7 @@ void LocalPlacement::emit(EditSet &Edits, const Registry &R) const {
 TUState::TUState(ASTContext &Ctx, const Guidance &G, Registry &R,
                  RunResults *Results)
     : Ctx(Ctx), SM(Ctx.getSourceManager()), G(G), Reg(R), Results(Results),
-      Speller(Ctx), Edits(Ctx.getSourceManager(), Ctx.getLangOpts()) {}
+      Speller(Ctx), Edits(Ctx.getSourceManager(), Ctx.getLangOpts(), R) {}
 
 bool TUState::inMainFile(SourceLocation Loc) const {
   return Loc.isValid() && SM.isWrittenInMainFile(SM.getFileLoc(Loc));
@@ -101,8 +101,8 @@ void TUState::diagnose(llvm::StringRef Kind, SourceLocation Loc,
 
 void TUState::computeTopLevelRanges() {
   for (const Decl *D : Ctx.getTranslationUnitDecl()->decls())
-    if (auto R = Edits.offsets(D->getSourceRange()))
-      TopLevelRanges.push_back(*R);
+    if (auto R = Edits.mainFileRange(D->getSourceRange()))
+      TopLevelRanges.push_back({R->Begin, R->End});
   std::sort(TopLevelRanges.begin(), TopLevelRanges.end());
   // `typedef struct {...} T;` is a record and a typedef whose ranges
   // overlap; the declaration starts where the outer one does.
@@ -130,31 +130,16 @@ unsigned TUState::topLevelOffset(SourceLocation Loc) {
   return Offset;
 }
 
-bool TUState::wrap(const Stmt *St, EditSet::Layer L) {
-  return made(Edits.wrap(St->getSourceRange(), std::move(L)), St);
-}
-
-bool TUState::replace(const Stmt *St, EditSet::Replacement Text) {
-  return made(Edits.replace(St->getSourceRange(), std::move(Text)), St);
-}
-
-bool TUState::made(EditSet::Result R, const Stmt *St) {
-  if (R == EditSet::Result::Made)
+bool TUState::edit(const Stmt *St, Edit E) {
+  GuidanceEdits::Result R = Edits.add(St->getSourceRange(), std::move(E));
+  if (R == GuidanceEdits::Result::Made)
     return true;
-  llvm::StringRef Text = Lexer::getSourceText(
-      CharSourceRange::getTokenRange(St->getSourceRange()), SM,
-      Ctx.getLangOpts());
+  llvm::StringRef Text =
+      Lexer::getSourceText(CharSourceRange::getTokenRange(St->getSourceRange()),
+                           SM, Ctx.getLangOpts());
   diagnose("edit-refused", St->getBeginLoc(),
-           Text.empty() ? "<expression>" : Text, EditSet::describe(R));
+           Text.empty() ? "<expression>" : Text, GuidanceEdits::describe(R));
   return false;
-}
-
-EditSet::Layer TUState::callLayer(const MarkerKey &K) const {
-  const Registry *R = &Reg;
-  const MarkerKey *M = &K;
-  return [R, M](const std::string &Inner) {
-    return R->name(*M) + "(" + Inner + ")";
-  };
 }
 
 void TUState::placeLocal(const TypedefKey &K, SourceLocation Use) {

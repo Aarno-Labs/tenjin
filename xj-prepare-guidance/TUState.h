@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include "EditSet.h"
 #include "Guidance.h"
+#include "GuidanceEdits.h"
 #include "Registry.h"
 #include "TypeSpeller.h"
 
@@ -60,7 +60,7 @@ class LocalPlacement {
 public:
   void placeTypedef(const TypedefKey &K, unsigned Offset);
   void placeMarker(const MarkerKey &K, unsigned Offset);
-  void emit(EditSet &Edits, const Registry &R) const;
+  void emit(GuidanceEdits &Edits, const Registry &R) const;
 
 private:
   std::map<std::string, std::pair<unsigned, const TypedefKey *>> Typedefs;
@@ -78,7 +78,7 @@ struct TUState {
   // Null while collecting keys.
   RunResults *Results;
   TypeSpeller Speller;
-  EditSet Edits;
+  GuidanceEdits Edits;
   LocalPlacement Local;
   llvm::DenseMap<const clang::Decl *, const TypedefKey *> DeclKeys;
   llvm::DenseMap<const clang::FunctionDecl *, const TypedefKey *> ReturnKeys;
@@ -90,17 +90,13 @@ struct TUState {
   // Offset of the top-level declaration containing `Loc`.
   unsigned topLevelOffset(clang::SourceLocation Loc);
   // Edits `St`; an edit that is refused is reported as `edit-refused`.
-  bool wrap(const clang::Stmt *St, EditSet::Layer L);
-  bool replace(const clang::Stmt *St, EditSet::Replacement Text);
-  // A layer that calls marker `K` on its argument text.
-  EditSet::Layer callLayer(const MarkerKey &K) const;
+  bool edit(const clang::Stmt *St, Edit E);
   void placeLocal(const MarkerKey &K, clang::SourceLocation Use);
   void placeLocal(const TypedefKey &K, clang::SourceLocation Use);
 
 private:
   std::vector<std::pair<unsigned, unsigned>> TopLevelRanges;
   void computeTopLevelRanges();
-  bool made(EditSet::Result R, const clang::Stmt *St);
 };
 
 } // namespace xj

@@ -6,6 +6,7 @@
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -46,24 +47,24 @@ private:
 
   void write(TUState &S) {
     S.Local.emit(S.Edits, S.Reg);
-    if (S.Edits.empty())
+    Rewriter RW(S.SM, S.Ctx.getLangOpts());
+    std::vector<GuidanceEdits::Lost> Lost = S.Edits.apply(RW);
+    // A bug in this tool, not in the input: writing the file anyway would
+    // drop an edit.
+    for (const GuidanceEdits::Lost &L : Lost)
+      S.diagnose("edit-lost", L.Loc, L.Text.empty() ? "<expression>" : L.Text,
+                 std::string("the rewrite ") + L.What +
+                     "; the file is left unchanged");
+    const auto *Buffer = RW.getRewriteBufferFor(S.SM.getMainFileID());
+    if (!Lost.empty() || !Buffer)
       return;
-    std::string Text = S.Edits.renderFile();
     if (!C.Inplace) {
-      llvm::outs() << Text;
+      Buffer->write(llvm::outs());
       return;
     }
-    // Written to a temporary and renamed: the source buffer may be a
-    // mapping of the file being replaced.
-    llvm::Error E = llvm::writeToOutput(
-        mainFileName(S.SM), [&](llvm::raw_ostream &OS) {
-          OS << Text;
-          return llvm::Error::success();
-        });
-    if (E)
-      llvm::errs() << "xj-prepare-guidance: cannot write "
-                   << mainFileName(S.SM) << ": "
-                   << llvm::toString(std::move(E)) << "\n";
+    if (RW.overwriteChangedFiles())
+      llvm::errs() << "xj-prepare-guidance: cannot write " << mainFileName(S.SM)
+                   << "\n";
   }
 };
 

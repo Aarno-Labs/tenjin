@@ -62,18 +62,15 @@ private:
   void addMarkerCall(const clang::Expr *Node, const MarkerKey &M,
                      const clang::Expr *Base, const clang::Expr *Index,
                      bool Deref);
-  void addIndexLayer(const clang::Expr *Node, const clang::Expr *Base,
+  void addIndexCall(const clang::Expr *Node, const clang::Expr *Base,
+                    const clang::Expr *Index);
+  void addCharAtCall(const clang::Expr *Node, const clang::Expr *Base,
                      const clang::Expr *Index);
-  void addCharAtLayer(const clang::Expr *Node, const clang::Expr *Base,
-                      const clang::Expr *Index);
   bool advanceSlice(const clang::Expr *Node, const clang::Expr *Operand,
                     const clang::Expr *Step);
   bool isStatement(const clang::Expr *E) const;
   void report(llvm::StringRef Kind, const clang::Expr *Site,
               const clang::Expr *Operand, llvm::StringRef Message);
 };
-
-// Text of `E` usable as the operand of a postfix operator.
-std::string postfixOperand(const EditSet &Edits, const clang::Expr *E);
 
 } // namespace xj
