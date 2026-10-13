@@ -192,8 +192,12 @@ Guidance the program cannot honour is reported on stderr and in the
   components are matched against locations in those files.
 - A field (`Rec:field`) is guided as a variable is: its declaration is
   retyped, and since `s.field` and `p->field` then have the marker type,
-  every use gets the same markers. Fields of records declared outside the
-  translation unit (system headers) are not retyped.
+  every use gets the same markers.
+- System headers are part of the `.nolines.i`, so their declarations can be
+  guided too. Refolding cannot carry the edit back into the header, so the
+  edited text stays in the `.c`, and the transpiler then treats it as the
+  codebase's own declaration: guiding a field of `struct stat` gives a
+  generated `stat` with that field's type instead of `libc::stat`.
 - A coercion the transpiler's table does not know is emitted as
   `xj_unhandled_coercion(value, "<from> -> <to>")`, an identity function that
   keeps the value's type (so rustc still reports the mismatch) and keeps the

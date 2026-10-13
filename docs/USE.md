@@ -62,11 +62,13 @@ A variable specifier is a string like `foo:bar`, which indicates the `bar`
 parameter or local variable within the `foo` function. `*:bar` means every
 such variable named `bar` in every function. A bare `quux` refers to
 a global variable. `Rec:field` refers to a field of the struct or union
-`Rec`; only records declared in the codebase can have guided fields, not
-those from system headers. A guided field's type may not borrow, except
-with `'static`: `&'static str` works but `&mut [u8]` does not, since the
-record would need a lifetime parameter. Such guidance is reported as
-`not-retyped` and the field keeps its C type.
+`Rec`. A guided field's type may not borrow, except with `'static`:
+`&'static str` works but `&mut [u8]` does not, since the record would need
+a lifetime parameter. Such guidance is reported as `not-retyped` and the
+field keeps its C type. Guiding a declaration from a system header (a
+field of `struct stat`, a parameter of a libc prototype) keeps that
+header's text in the translated file, so Tenjin generates bindings for it
+rather than using the `libc` crate's (see `use_libc` below).
 * `vars_mut`: likewise, a dict mapping specifiers to boolean values
     indicating whether that declaration should be marked `mut` in Rust.
 * `fn_return_type` - a dict mapping function names to the Rust type they should be made to / assumed to return
@@ -89,7 +91,8 @@ For now, this is only  `libc::stat` and libc's supported `sys/stat.h`
 functions and mode constants on Linux x86-64 GNU.
 Unsupported layouts or uses (such as accessing reserved fields
 or taking the address of a whole timestamp subobject) keep the generated
-bindings for the entire input batch.
+bindings for the entire input batch, as does guidance (type or `ffi`) on
+`struct stat` or one of the substituted functions.
 Substitution uses declaration provenance,
 so project-defined declarations with matching names are left alone.
 * `ffi` - a dict whose keys are function names. Each entry is a dict from

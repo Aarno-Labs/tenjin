@@ -283,17 +283,10 @@ pub(crate) fn timestamp_prefix(name: &str) -> Option<&'static str> {
     }
 }
 
-fn compatible_function(
-    ast: &TypedAstContext,
-    typ: CTypeId,
-    name: &str,
-    records: &HashSet<CDeclId>,
-) -> bool {
-    use CTypeKind::*;
-    let Function(ret, args, false, false, true) = &ast.resolve_type(typ).kind else {
-        return false;
-    };
-    let signature: &[&str] = match name {
+/// The parameter kinds of the `sys/stat.h` function `name`, if it is one this
+/// module substitutes.
+fn stat_function_signature(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
         "stat" | "lstat" => &["path", "stat"],
         "fstat" => &["int", "stat"],
         "fstatat" => &["int", "path", "stat", "int"],
@@ -304,7 +297,26 @@ fn compatible_function(
         "mknod" => &["path", "mode", "dev"],
         "mknodat" => &["int", "path", "mode", "dev"],
         "umask" => &["mode"],
-        _ => return false,
+        _ => return None,
+    })
+}
+
+pub(crate) fn is_stat_function(name: &str) -> bool {
+    stat_function_signature(name).is_some()
+}
+
+fn compatible_function(
+    ast: &TypedAstContext,
+    typ: CTypeId,
+    name: &str,
+    records: &HashSet<CDeclId>,
+) -> bool {
+    use CTypeKind::*;
+    let Function(ret, args, false, false, true) = &ast.resolve_type(typ).kind else {
+        return false;
+    };
+    let Some(signature) = stat_function_signature(name) else {
+        return false;
     };
     matches!(ast.resolve_type(ret.ctype).kind, UInt) == (name == "umask")
         && (name == "umask" || matches!(ast.resolve_type(ret.ctype).kind, Int))

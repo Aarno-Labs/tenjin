@@ -7,15 +7,31 @@ use proc_macro2::{TokenStream, TokenTree};
 
 impl<'c> Translation<'c> {
     /// Explicit guidance takes precedence over automatic system bindings.
-    /// Type guidance reaches here as marker typedefs, which C redeclarations
-    /// of the libc functions can carry.
+    /// Type guidance reaches here as marker typedefs, which xj-prepare-guidance
+    /// may also have written into the system header's expanded text. Refolding
+    /// keeps such an edited declaration in the codebase file, so it is no
+    /// longer discovered as a system one: a retyped `stat` prototype would
+    /// otherwise translate as the codebase's own function while `struct stat`
+    /// is still substituted. Look for stat functions by name instead.
     pub(crate) fn libc_guidance_requires_fallback(&self) -> bool {
-        for (&id, name) in &self.libc_replacements.functions {
+        let guidance = self.parsed_guidance.borrow();
+        if self
+            .libc_replacements
+            .functions
+            .values()
+            .any(|name| guidance.ffi_conversions.contains_key(name))
+        {
+            return true;
+        }
+        self.ast_context.iter_decls().any(|(_, decl)| {
             let CDeclKind::Function {
-                typ, parameters, ..
-            } = &self.ast_context[id].kind
+                name,
+                typ,
+                parameters,
+                ..
+            } = &decl.kind
             else {
-                continue;
+                return false;
             };
             let guided_return = match self.ast_context.resolve_type(*typ).kind {
                 CTypeKind::Function(return_type, ..) => {
@@ -23,22 +39,12 @@ impl<'c> Translation<'c> {
                 }
                 _ => false,
             };
-            if guided_return
-                || self
-                    .parsed_guidance
-                    .borrow()
-                    .ffi_conversions
-                    .contains_key(name)
-                || parameters
-                    .iter()
-                    .any(|&id| self.xj_type_of_decl(id).is_some())
-            {
-                return true;
-            }
-        }
-        // The `stat` record's fields are declared in a system header, which
-        // xj-prepare-guidance does not rewrite, so they never carry guidance.
-        false
+            super::libc::is_stat_function(name)
+                && (guided_return
+                    || parameters
+                        .iter()
+                        .any(|&id| self.xj_type_of_decl(id).is_some()))
+        })
     }
 
     pub fn convert_function(

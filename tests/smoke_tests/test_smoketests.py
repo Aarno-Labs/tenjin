@@ -402,3 +402,45 @@ def test_example_P02_configuration(test_dir, test_tmp_dir, tenjin_fixtures):
     )
 
     assert full_output.stdout == c_full_output.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or platform.machine() != "x86_64",
+    reason="libc `stat` substitution is only done on Linux x86-64.",
+)
+@pytest.mark.parametrize(
+    "guidance, guided",
+    [
+        ('{"vars_of_type": {"i64": "stat:st_size"}}', "pub st_size: i64,"),
+        ('{"vars_of_type": {"&mut stat": "stat:__buf"}}', "__buf: &mut stat"),
+    ],
+    ids=["field", "parameter"],
+)
+def test_guided_stat_declarations_keep_generated_bindings(
+    test_dir, tenjin_fixtures, guidance, guided
+):
+    # Guidance on a `sys/stat.h` declaration retypes it in the header's
+    # expanded text, which refolding then keeps in the `.c`. As with explicit
+    # guidance on main, the whole stat API keeps its generated bindings, with
+    # the guided type, rather than half of it using `libc`.
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    translation_preparation.copy_codebase(test_dir / "guided_stat" / "main.c", tmp_codebase)
+
+    translation.do_translate(
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            tmp_codebase,
+            tmp_resultsdir,
+            cratename="guided_stat",
+        ),
+        guidance_path_or_literal=guidance,
+    )
+
+    rust = "\n".join(
+        p.read_text(encoding="utf-8") for p in (tmp_resultsdir / "final").rglob("src/*.rs")
+    )
+    assert "pub struct stat" in rust
+    assert guided in rust
+    assert "::libc::stat" not in rust
+    output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)
+    assert output.stdout == b"0\n"
