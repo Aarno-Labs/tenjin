@@ -1,5 +1,6 @@
 #include "RustType.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 
@@ -379,6 +380,16 @@ bool RustType::isSingleObject() const {
     return false;
   const RustType &Target = Args[0];
   return !Target.isBuffer() && !Target.isStr() && !Target.isString();
+}
+
+bool RustType::borrowsNonStatic() const {
+  if (K == Kind::Ref && Lifetime != "'static")
+    return true;
+  // A lifetime argument is kept as a path named by the lifetime.
+  if (K == Kind::Path && StringRef(Name).starts_with("'"))
+    return Name != "'static";
+  return llvm::any_of(Args,
+                      [](const RustType &A) { return A.borrowsNonStatic(); });
 }
 
 bool RustType::isGuidedLike() const {

@@ -213,6 +213,10 @@ bool Retyper::canRetype(const DeclaratorDecl *D, const RustType &Ty) {
     return Refuse("declaration is not written in the translation unit");
   if (const auto *FD = dyn_cast<FieldDecl>(D); FD && FD->isBitField())
     return Refuse("bit-fields cannot be typedef'd");
+  if (isa<FieldDecl>(D) && Ty.borrowsNonStatic())
+    return Refuse("a borrowed field needs a lifetime parameter on its record, "
+                  "which is not supported; use a `'static` borrow or an "
+                  "owned type");
   if (D->getType()->isVariablyModifiedType())
     return Refuse("variably-modified types cannot be typedef'd at file scope");
   return true;

@@ -212,6 +212,20 @@ fn method(val: Box<Expr>, name: &str) -> Box<Expr> {
     mk().method_call_expr(val, name, Vec::<Box<Expr>>::new())
 }
 
+/// `val.name()` for a `&self` method `name`, or `f(&val)` with `f` naming it
+/// by its type (`str::is_empty`) when `val` is not a plain variable. Called
+/// as a method on a field reached through a raw pointer, `val` would need an
+/// explicit borrow, which `cargo clippy --fix` removes as needless on
+/// toolchains that predate `dangerous_implicit_autorefs`. Deref and unsize
+/// coercion fit `&val` to the parameter whether `val` is owned or a borrow.
+fn ref_method(val: Box<Expr>, f: Box<Expr>, name: &str) -> Box<Expr> {
+    if matches!(*val, Expr::Path(_)) {
+        method(val, name)
+    } else {
+        mk().call_expr(f, vec![borrow(val, false)])
+    }
+}
+
 fn as_ptr(val: Box<Expr>, mutable: bool) -> Box<Expr> {
     method(val, if mutable { "as_mut_ptr" } else { "as_ptr" })
 }
@@ -743,12 +757,14 @@ impl Translation<'_> {
         let guided = self.xj_type_of_expr(arg);
         let val = self.convert_expr(ctx.used(), arg, None)?;
         Ok(val.map(|v| match guided {
-            Some(g) if generic_arg_of(&g.parsed, "Option").is_some() => method(v, "is_none"),
-            Some(g)
-                if type_buffer_element(&g.parsed).is_some()
-                    || is_str_or_string(tenjin::type_strip_refs(&g.parsed)) =>
-            {
-                method(v, "is_empty")
+            Some(g) if generic_arg_of(&g.parsed, "Option").is_some() => {
+                ref_method(v, mk().path_expr(vec!["Option", "is_none"]), "is_none")
+            }
+            Some(g) if is_str_or_string(tenjin::type_strip_refs(&g.parsed)) => {
+                ref_method(v, mk().path_expr(vec!["str", "is_empty"]), "is_empty")
+            }
+            Some(g) if type_buffer_element(&g.parsed).is_some() => {
+                ref_method(v, Box::new(syn::parse_quote! { <[_]>::is_empty }), "is_empty")
             }
             Some(_) => mk().lit_expr(mk().bool_lit(false)),
             None => method(v, "is_null"),
@@ -943,13 +959,13 @@ impl Translation<'_> {
             return Some(reborrow(val, mutable));
         }
         if tenjin::type_is_string(t) && (tenjin::type_is_str_ref(f) || tenjin::type_is_char(f)) {
-            return Some(method(val, "to_string"));
+            return Some(method(Self::borrowed_base(val, false), "to_string"));
         }
         if tenjin::type_is_string(t) && tenjin::type_is_string(tenjin::type_strip_refs(f)) {
-            return Some(method(val, "clone"));
+            return Some(method(Self::borrowed_base(val, false), "clone"));
         }
         if tenjin::type_is_vec(t) && from.is_borrow() && type_buffer_element(f).is_some() {
-            return Some(method(val, "to_vec"));
+            return Some(method(Self::borrowed_base(val, false), "to_vec"));
         }
         if generic_arg_of(t, "Option") == Some(f) {
             return Some(mk().call_expr(mk().path_expr(vec!["Some"]), vec![val]));
@@ -991,7 +1007,7 @@ impl Translation<'_> {
         };
         let to_mut = to_ptr.mutability.is_some();
         if type_buffer_element(f).is_some() {
-            return mk().cast_expr(as_ptr(val, to_mut), to);
+            return mk().cast_expr(as_ptr(Self::borrowed_base(val, to_mut), to_mut), to);
         }
         if let Type::Ptr(_) = f {
             return mk().cast_expr(val, to);

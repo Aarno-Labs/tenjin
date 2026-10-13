@@ -69,6 +69,11 @@ struct RustType {
   // Whether a borrowed element sink (`&T`, `&mut T`) can take a place.
   bool isElementRef() const { return isRef() && isSingleObject(); }
 
+  // Holds a borrow that is not `'static`: a `&T` without `'static`, or a
+  // lifetime argument such as `Cow<'a, str>`. A record field of such a type
+  // would need a lifetime parameter on the record.
+  bool borrowsNonStatic() const;
+
   // Carries guidance of its own, so a nested C pointer needs a typedef:
   // references, buffers, strings, boxes and options. Scalars, raw pointers
   // and plain record names do not.

@@ -179,7 +179,9 @@ Guidance the program cannot honour is reported on stderr and in the
 - `unhandled-coercion`: for example an unguided pointer, which has no length,
   flowing into a slice;
 - `not-retyped`: bit-fields, variably-modified types, declarations whose type
-  cannot be rewritten in place;
+  cannot be rewritten in place, and fields guided with a borrow that is not
+  `'static` (the record would need a lifetime parameter, which the transpiler
+  does not declare);
 - `not-normalized`: a subscript of a guided buffer whose element type (an
   array, a function pointer) no index marker can return;
 - `conflicting-guidance`, `unmatched-specifier`.
@@ -188,12 +190,21 @@ Guidance the program cannot honour is reported on stderr and in the
 
 - The pass runs on the `.nolines.i` files, so `#line` and `@file` specifier
   components are matched against locations in those files.
+- A field (`Rec:field`) is guided as a variable is: its declaration is
+  retyped, and since `s.field` and `p->field` then have the marker type,
+  every use gets the same markers. Fields of records declared outside the
+  translation unit (system headers) are not retyped.
 - A coercion the transpiler's table does not know is emitted as
   `xj_unhandled_coercion(value, "<from> -> <to>")`, an identity function that
   keeps the value's type (so rustc still reports the mismatch) and keeps the
   site greppable.
 - A null test of a `String`, `Vec`, or slice becomes `.is_empty()`, which
-  differs from C when the value can be empty and non-null.
+  differs from C when the value can be empty and non-null. On anything but a
+  plain variable it is written `str::is_empty(&e)` (`<[_]>::is_empty`,
+  `Option::is_none`): a method call on a field reached through a raw pointer
+  needs an explicit borrow, which `cargo clippy --fix` on the pinned
+  toolchain removes, and the newer toolchain then rejects the implicit one
+  (`dangerous_implicit_autorefs`).
 - Rerunning the pass on instrumented input (the guidance already has
   `marker_typedefs`) changes nothing.
 - A guided pointer that still moves after the pointer passes is a diagnostic,

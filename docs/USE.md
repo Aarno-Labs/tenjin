@@ -61,7 +61,12 @@ value for each key is either a variable specifier, or a list of specifiers.
 A variable specifier is a string like `foo:bar`, which indicates the `bar`
 parameter or local variable within the `foo` function. `*:bar` means every
 such variable named `bar` in every function. A bare `quux` refers to
-a global variable.
+a global variable. `Rec:field` refers to a field of the struct or union
+`Rec`; only records declared in the codebase can have guided fields, not
+those from system headers. A guided field's type may not borrow, except
+with `'static`: `&'static str` works but `&mut [u8]` does not, since the
+record would need a lifetime parameter. Such guidance is reported as
+`not-retyped` and the field keeps its C type.
 * `vars_mut`: likewise, a dict mapping specifiers to boolean values
     indicating whether that declaration should be marked `mut` in Rust.
 * `fn_return_type` - a dict mapping function names to the Rust type they should be made to / assumed to return

@@ -526,6 +526,34 @@ def test_unmatched_specifiers_are_reported(root, tmp_codebase):
     assert unmatched == ["g:nothing"]
 
 
+def test_fields_guided_with_non_static_borrows_are_not_retyped(root, tmp_codebase):
+    result = instrument(
+        root,
+        tmp_codebase,
+        {"a.c": "struct Rec { int *a; int *b; const char *c; int *d; };\n"},
+        {
+            "vars_of_type": {
+                "&mut [::core::ffi::c_int]": "Rec:a",
+                "&'a mut [::core::ffi::c_int]": "Rec:b",
+                "&'static str": "Rec:c",
+                "Vec<::core::ffi::c_int>": "Rec:d",
+            }
+        },
+    )
+    text = result.sources["a.c"]
+
+    not_retyped = [
+        d["subject"] for d in result.guidance["guidance_diagnostics"] if d["kind"] == "not-retyped"
+    ]
+    assert not_retyped == [
+        "a: &mut [::core::ffi::c_int]",
+        "b: &'a mut [::core::ffi::c_int]",
+    ]
+    assert "int *a; int *b;" in text
+    assert "xj_ty_ref_str c;" in text
+    assert "xj_ty_Vec_c_int d;" in text
+
+
 def test_a_second_run_changes_nothing(root, tmp_codebase):
     result = instrument(
         root,

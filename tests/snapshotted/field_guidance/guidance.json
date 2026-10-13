@@ -1,0 +1,7 @@
+{
+    "vars_of_type": {
+        "&'static str": "Rec:name",
+        "[u8; 8]": "Rec:buf",
+        "&'static [::core::ffi::c_int]": "Rec:vals"
+    }
+}

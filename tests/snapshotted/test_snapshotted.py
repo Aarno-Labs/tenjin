@@ -142,6 +142,24 @@ def test_assorted_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
     run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
 
 
+def test_field_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
+    src_dir = test_dir / "field_guidance"
+    cmd_args = [
+        (root / "cli" / "10j").as_posix(),
+        "translate",
+        "--codebase",
+        (src_dir / "field_guidance.c").as_posix(),
+        "--resultsdir",
+        tmp_resultsdir.as_posix(),
+        "--guidance",
+        (src_dir / "guidance.json").as_posix(),
+    ]
+    run_snapshotted(root, src_dir, cmd_args, tmp_resultsdir)
+    # Guided fields must behave as the C does, not just compile.
+    cp = run_cargo_on_final(tmp_resultsdir / "final", ["run", "--quiet"], capture_output=True)
+    assert cp.stdout.decode("utf-8") == "i 8 6 2 2\n"
+
+
 def test_ffi_guidance(root: Path, test_dir: Path, tmp_resultsdir: Path):
     src_dir = test_dir / "ffi_guidance"
     cmd_args = [
