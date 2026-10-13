@@ -57,8 +57,8 @@ def validate_plan(manifest: dict, root: Path) -> dict:
     Return the validated source metadata from the manifest.
     """
     source = manifest.get("context_rewrite", {}).get("source", {})
-    if source.get("version") != 3 or source.get("complete") is not True:
-        raise ValueError("Tenjin requires PANGS source-complete plan version 3; rerun analysis")
+    if source.get("version") != 4 or source.get("complete") is not True:
+        raise ValueError("Tenjin requires PANGS source-complete plan version 4; rerun analysis")
     if source.get("retention") != {
         "policy": "c2rust-declaration-dependencies",
         "version": 1,

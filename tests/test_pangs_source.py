@@ -47,7 +47,7 @@ def contract(root, source, edits=None):
         ],
         "context_rewrite": {
             "source": {
-                "version": 3,
+                "version": 4,
                 "emitter": "tenjin-c2rust-default-v1",
                 "retention": {
                     "policy": "c2rust-declaration-dependencies",
@@ -90,6 +90,71 @@ def test_plan_rejects_legacy_conflicting_and_escaping_edits(tmp_path):
 def test_plan_validation_needs_only_manifest_metadata(tmp_path):
     manifest = contract(tmp_path, tmp_path / "test.i")
     assert pangs_source.validate_plan(manifest, tmp_path) == manifest["context_rewrite"]["source"]
+
+
+@pytest.mark.parametrize("version", [None, 3])
+@pytest.mark.parametrize(
+    "type_name", ["&mut XjGlobals", "&mut ::src::XjGlobals", "&'a mut ( ::src :: XjGlobals )"]
+)
+def test_context_reference_guidance_requires_v4(tmp_path, version, type_name):
+    guidance = {"vars_of_type": {type_name: ["fillinfo:xjg"]}}
+    if version is not None:
+        manifest = contract(tmp_path, tmp_path / "test.i")
+        manifest["context_rewrite"]["source"]["version"] = version
+        directory = tmp_path / "pangs-disposition"
+        directory.mkdir()
+        (directory / "pangs-manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match=r"v4|version 4"):
+        translation_preparation.require_context_reference_authorization(tmp_path, guidance)
+
+
+@pytest.mark.parametrize("function_value", [False, True])
+@pytest.mark.parametrize("user_raw", [False, True])
+def test_context_guidance_uses_final_names_and_keeps_function_value_groups_raw(
+    tmp_path, function_value, user_raw
+):
+    header = "struct XjGlobals { int g; };\n"
+    definition = "static int shared(struct XjGlobals *xjg){return ++xjg->g;}\n"
+    sources = {
+        "a.i": header + definition + "int a(void){struct XjGlobals g={0};return shared(&g);}\n",
+        "b.i": header
+        + definition
+        + ("int (*dispatch)(struct XjGlobals *) = shared;\n" if function_value else "")
+        + "int main(void){struct XjGlobals g={0};return shared(&g);}\n",
+    }
+    commands = []
+    for name, code in sources.items():
+        source = tmp_path / name
+        source.write_text(code)
+        commands.extend(
+            compilation_database.synthetic_compile_commands_for_c_file(source, tmp_path).commands
+        )
+    compdb = compilation_database.CompileCommands(commands)
+    manifest = contract(tmp_path, tmp_path / "a.i")
+    directory = tmp_path / "pangs-disposition"
+    directory.mkdir()
+    (directory / "pangs-manifest.json").write_text(json.dumps(manifest))
+    guidance_path = tmp_path / "xj-guidance.json"
+    original_guidance = {
+        "vars_of_type": {"&mut XjGlobals": ["old_xjtr_0:xjg", "user:other"]},
+        "generated_context_guidance": ["old_xjtr_0:xjg"],
+    }
+    if user_raw:
+        original_guidance["vars_of_type"]["*mut XjGlobals"] = "shared:xjg"
+    guidance_path.write_text(json.dumps(original_guidance))
+    translation_preparation.generate_context_guidance(tmp_path, compdb)
+    first = guidance_path.read_text()
+    translation_preparation.generate_context_guidance(tmp_path, compdb)
+    assert guidance_path.read_text() == first
+    guidance = json.loads(first)
+    assert guidance["vars_of_type"]["&mut XjGlobals"] == (
+        ["user:other"] if function_value or user_raw else ["shared:xjg", "user:other"]
+    )
+    assert guidance["generated_context_guidance"] == (
+        [] if function_value or user_raw else ["shared:xjg"]
+    )
+    if user_raw:
+        assert guidance["vars_of_type"]["*mut XjGlobals"] == "shared:xjg"
 
 
 def test_plan_consumes_final_edits_without_interpreting_wrapper_recipes(tmp_path):
@@ -288,6 +353,108 @@ def analyze_sources(source_pangs, root, sources, *, localize_only=True, leave_gl
         env_ext={"XJ_USE_LLVM14": "1"},
     )
     return compdb, root / "pangs-disposition" / "pangs-manifest.json"
+
+
+@pytest.mark.parametrize("case", ["write", "read", "nested", "libc"])
+def test_exclusive_globals_actual_translation(tmp_path, source_pangs, case):
+    if case == "libc":
+        code = (
+            "typedef unsigned long size_t;\n"
+            "extern void *memset(void*,int,size_t);\n"
+            "extern char *strcpy(char*,const char*);\n"
+            "static char info[8];static int counter;\n"
+            "static int fillinfo(void){++counter;memset(&info,0,sizeof(info));"
+            "strcpy(info,\"A\");return info[0]!='A';}\n"
+            "int main(void){return fillinfo()!=0 || counter!=1;}\n"
+        )
+    elif case == "nested":
+        code = (
+            "static int counter;\n"
+            "static int increment(int n){counter+=n;return counter;}\n"
+            "static int recur(int n){if(n)return recur(n-1);return ++counter;}\n"
+            "int main(void){int(*fn)(int)=increment;return fn(1)+recur(2)==3?0:1;}\n"
+        )
+    else:
+        body = (
+            "info[0]='A';out[0]='B';return info[0];"
+            if case == "write"
+            else "info[0]='A';return out[0];"
+        )
+        qualifier = "" if case == "write" else "const "
+        expected = "B" if case == "write" else "A"
+        code = (
+            "static unsigned char info[4];static int counter;\n"
+            f"static int fillinfo({qualifier}unsigned char *out){{++counter;{body}}}\n"
+            f"int main(void){{{qualifier}unsigned char *p=info;"
+            f"return fillinfo(p)=='{expected}' && counter==1 ? 0:1;}}\n"
+        )
+    root = tmp_path / "project"
+    _, compdb, manifest_path = analyze(source_pangs, root, code)
+    manifest = json.loads(manifest_path.read_text())
+    globals_ = {g["meta"]["llvm_name"]: g for g in manifest["globals"]}
+    assert globals_["counter"]["disposition"]["chosen"] == "localize"
+    if case in ("write", "read"):
+        assert globals_["info"]["facts"]["localization"]["verdict"] == "blocked"
+        assert globals_["info"]["disposition"]["chosen"] != "localize"
+    c_refact.localize_mutable_globals(manifest_path, compdb, root)
+    translation_preparation.generate_context_guidance(root, compdb)
+    guidance = json.loads((root / "xj-guidance.json").read_text())
+    expected_function = "recur" if case == "nested" else "fillinfo"
+    assert f"{expected_function}:xjg" in guidance["vars_of_type"]["&mut XjGlobals"]
+    rust = tmp_path / "rust"
+    hermetic.run(
+        [
+            repo_root.find_repo_root_dir_Path()
+            / "c2rust"
+            / "target"
+            / os.environ.get("XJ_BUILD_RS_PROFILE", "debug")
+            / "c2rust",
+            "transpile",
+            root / "compile_commands.json",
+            "-o",
+            rust,
+            "--emit-build-files",
+            "--binary",
+            "test_nolines",
+            "--disable-refactoring",
+            "--guidance",
+            root / "xj-guidance.json",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    emitted = "\n".join(p.read_text() for p in rust.rglob("*.rs"))
+    assert "xjg: &mut XjGlobals" in emitted
+    if case in ("write", "read"):
+        assert re.search(r"static\s+mut\s+info\s*:", emitted)
+    elif case == "libc":
+        assert not re.search(r"static\s+mut\s+info\s*:", emitted)
+        assert "pub info:" in emitted
+    hermetic.run(
+        ["cargo", "run", "--offline", "--quiet", "--manifest-path", rust / "Cargo.toml"],
+        cwd=rust,
+        check=True,
+        capture_output=True,
+    )
+    # Opt in for integration runs with an installed Miri toolchain and sysroot.
+    if toolchain := os.environ.get("XJ_TEST_MIRI_TOOLCHAIN"):
+        for flags in ["", "-Zmiri-tree-borrows"]:
+            hermetic.run(
+                [
+                    "cargo",
+                    f"+{toolchain}",
+                    "miri",
+                    "run",
+                    "--offline",
+                    "--quiet",
+                    "--manifest-path",
+                    rust / "Cargo.toml",
+                ],
+                cwd=rust,
+                check=True,
+                capture_output=True,
+                env_ext={"MIRIFLAGS": flags},
+            )
 
 
 def test_source_plan_materializes_indirect_mixed_targets_and_preserves_behavior(
@@ -1201,7 +1368,7 @@ def test_contract_failure_never_retries_or_changes_disposition(tmp_path, source_
             'static char *default_colorblind_safe[2]={"black","white"};'
             "int main(int n,char **v){char **p=n&1?default_colors:default_colorblind_safe;"
             "return p[n&1][0];}",
-            {"default_colors": "localize", "default_colorblind_safe": "localize"},
+            {"default_colors": "unhandled", "default_colorblind_safe": "unhandled"},
         ),
         (
             "static int g=7; int main(void){if(0) g=9;return g;}",

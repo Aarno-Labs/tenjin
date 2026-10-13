@@ -22,7 +22,7 @@ import static_measurements_rust
 from tenj_types import ResolvedPath, style_path, UserFacingError
 from c_refact_identify_mains import find_main_translation_units
 from fixup_rs_mod_collision import CrateRootNotFound, inject_tu_includes
-from translation_preparation import run_preparation_passes
+from translation_preparation import run_preparation_passes, require_context_reference_authorization
 from translation_improvement import copy_translation_output, run_improvement_passes
 from translation_types import TranslationFlags
 from constants import XJ_GUIDANCE_FILENAME
@@ -288,13 +288,16 @@ def do_translate_with_tracker(
     if not saw_binaries:
         c2rust_transpile_flags.extend(["--emit-build-files"])
 
-    # Preparation passes can modify the guidance, so we re-load it here.
+    # Preparation passes can modify guidance. Recheck the authorization at the
+    # translation boundary as well as in the guidance-generation pass.
+    final_guidance = json.load((final_prepared_codebase / XJ_GUIDANCE_FILENAME).open())
+    require_context_reference_authorization(final_prepared_codebase, final_guidance)
     xj_c2rust_transpile_flags = [
         *c2rust_transpile_flags,
         "--log-level",
         "INFO",
         "--guidance",
-        json.dumps(json.load((final_prepared_codebase / XJ_GUIDANCE_FILENAME).open())),
+        json.dumps(final_guidance),
     ]
 
     # The crate name that c2rust uses is based on the directory stem,
