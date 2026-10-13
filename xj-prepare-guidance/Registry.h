@@ -59,7 +59,7 @@ llvm::StringRef familyName(Family F);
 struct MarkerKey {
   std::string Id;
   Family F;
-  // `R` of `static inline R name(P)`.
+  // `R` of `static __inline__ R name(P)`.
   Spelling Ret;
   // The parameter declarator, `P b`.
   Spelling Param;

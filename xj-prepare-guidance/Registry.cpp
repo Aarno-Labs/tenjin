@@ -172,7 +172,7 @@ static StringRef extraParams(Family F) {
 std::string Registry::definition(const MarkerKey &K) const {
   std::string Ret = resolve(K.Ret.Text);
   std::string Space = StringRef(Ret).ends_with("*") ? "" : " ";
-  return "static inline " + Ret + Space + name(K) + "(" +
+  return "static __inline__ " + Ret + Space + name(K) + "(" +
          resolve(K.Param.Text) + extraParams(K.F).str() + ") { return " +
          resolve(K.Body) + "; }";
 }
