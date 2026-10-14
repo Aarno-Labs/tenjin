@@ -111,7 +111,7 @@ const Rule<RustType> *Guidance::returnType(StringRef FnName) const {
   return nullptr;
 }
 
-bool Guidance::alreadyInstrumented() const {
+bool Guidance::alreadyApplied() const {
   return Raw.get("marker_typedefs") != nullptr;
 }
 

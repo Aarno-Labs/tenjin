@@ -112,7 +112,7 @@ int main(int argc, const char **argv) {
                  << "\n";
     return 1;
   }
-  if (G->alreadyInstrumented()) {
+  if (G->alreadyApplied()) {
     llvm::errs() << "xj-prepare-guidance: guidance is already applied\n";
     return 0;
   }

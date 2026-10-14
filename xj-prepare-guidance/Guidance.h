@@ -78,7 +78,7 @@ struct Guidance {
 
   static llvm::Expected<Guidance> load(llvm::StringRef Path);
 
-  bool alreadyInstrumented() const;
+  bool alreadyApplied() const;
 
   // The most specific matching rule; ties are broken by JSON order.
   TypeMatch matchType(const DeclFacts &D) const;

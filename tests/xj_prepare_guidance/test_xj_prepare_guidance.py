@@ -8,7 +8,7 @@ import pytest
 
 
 @dataclass
-class Instrumented:
+class Prepared:
     sources: dict[str, str]
     header: str | None
     guidance: dict
@@ -82,7 +82,7 @@ def check_syntax(root: Path, codebase: Path, sources: list[Path]) -> None:
         )
 
 
-def instrument(root: Path, codebase: Path, sources: dict[str, str], guidance: dict) -> Instrumented:
+def prepare(root: Path, codebase: Path, sources: dict[str, str], guidance: dict) -> Prepared:
     codebase.mkdir(parents=True, exist_ok=True)
     paths = []
     for name, text in sources.items():
@@ -96,7 +96,7 @@ def instrument(root: Path, codebase: Path, sources: dict[str, str], guidance: di
     check_syntax(root, codebase, paths)
     header = codebase / "xj_guidance.h"
     guidance_text = guidance_path.read_text(encoding="utf-8")
-    return Instrumented(
+    return Prepared(
         sources={p.name: p.read_text(encoding="utf-8") for p in paths},
         header=header.read_text(encoding="utf-8") if header.exists() else None,
         guidance=json.loads(guidance_text),
@@ -104,7 +104,7 @@ def instrument(root: Path, codebase: Path, sources: dict[str, str], guidance: di
     )
 
 
-def typedef_named(result: Instrumented, rust: str) -> str:
+def typedef_named(result: Prepared, rust: str) -> str:
     names = [n for n, t in result.guidance["marker_typedefs"].items() if t == rust]
     assert len(names) == 1, f"expected one typedef for {rust}, got {names}"
     return names[0]
@@ -112,7 +112,7 @@ def typedef_named(result: Instrumented, rust: str) -> str:
 
 def test_empty_guidance_is_a_no_op(root, tmp_codebase):
     source = "int f(const char *s) { return s[0]; }\n"
-    result = instrument(root, tmp_codebase, {"a.c": source}, {"public_api": []})
+    result = prepare(root, tmp_codebase, {"a.c": source}, {"public_api": []})
 
     assert result.sources["a.c"] == source
     assert result.header is None
@@ -120,7 +120,7 @@ def test_empty_guidance_is_a_no_op(root, tmp_codebase):
 
 
 def test_retypes_every_redeclaration_and_resolves_mutability(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -162,7 +162,7 @@ int takes(const char *str) {
 
 
 def test_record_typedefs_are_placed_in_the_translation_unit(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {"a.c": "struct Node { int v; };\nint get(struct Node *n) { return n->v; }\n"},
@@ -175,7 +175,7 @@ def test_record_typedefs_are_placed_in_the_translation_unit(root, tmp_codebase):
 
 
 def test_nested_buffers_get_element_typedefs(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {"a.c": "int at(int **rows, int i, int j) { return rows[i][j]; }\n"},
@@ -196,7 +196,7 @@ def test_nested_buffers_get_element_typedefs(root, tmp_codebase):
 
 
 def test_arrays_sized_by_their_initializer_keep_the_completed_type(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {"a.c": 'void f(void) { char s[] = "abc"; }\n'},
@@ -209,7 +209,7 @@ def test_arrays_sized_by_their_initializer_keep_the_completed_type(root, tmp_cod
 
 
 def test_pointer_operators_on_guided_operands_are_normalized(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -244,7 +244,7 @@ int array(int i) { unsigned char a[4] = {0}; return *a + a[i]; }
 
 
 def test_reads_of_guided_strings_use_char_at_markers(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -308,14 +308,14 @@ POINTER_MOTION_CASES = [
 def test_pointer_motion_and_bad_offsets_are_reported(
     root, tmp_codebase, source, vars_of_type, kinds, expected
 ):
-    result = instrument(root, tmp_codebase, {"a.c": source + "\n"}, {"vars_of_type": vars_of_type})
+    result = prepare(root, tmp_codebase, {"a.c": source + "\n"}, {"vars_of_type": vars_of_type})
 
     assert result.diagnostic_kinds() == kinds
     assert expected in result.sources["a.c"]
 
 
 def test_motion_whose_value_is_used_is_not_resliced(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -345,7 +345,7 @@ void loop(const unsigned char *p, int n) {
 
 
 def test_one_declarator_of_a_joined_declaration_is_not_retyped(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -441,13 +441,13 @@ PLACE_CASES = [
 
 @pytest.mark.parametrize("call,expected", PLACE_CASES, ids=[call for call, _ in PLACE_CASES])
 def test_place_markers_follow_source_shape_and_sink_demand(root, tmp_codebase, call, expected):
-    result = instrument(root, tmp_codebase, {"a.c": place_source(call)}, PLACE_GUIDANCE)
+    result = prepare(root, tmp_codebase, {"a.c": place_source(call)}, PLACE_GUIDANCE)
 
     assert f"    {expected};\n" in result.sources["a.c"]
 
 
 def test_unguided_pointer_into_a_slice_is_reported(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -465,7 +465,7 @@ void pass(const unsigned char *raw) { takes_slice(raw); }
 
 
 def test_representation_changes_are_wrapped_in_coercion_markers(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -498,7 +498,7 @@ void view(const char *owned) { const char *borrowed = owned; }
 
 
 def test_equal_guidance_on_different_c_types_is_an_identity_coercion(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -532,7 +532,7 @@ void pass(unsigned char *p, const unsigned char *q) {
 
 
 def test_names_say_the_types_and_are_suffixed_only_on_clashes(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -568,7 +568,7 @@ void f(void) {
 
 
 def test_null_tests_of_guided_values_use_is_null_markers(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -590,7 +590,7 @@ int test(const char *s) {
 
 
 def test_variadic_arguments_and_constant_initializers_are_not_wrapped(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -609,7 +609,7 @@ void say(const char *s) { printf("%s\\n", s); }
 
 
 def test_unmatched_specifiers_are_reported(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {"a.c": "int f(int x) { return x; }\n"},
@@ -625,7 +625,7 @@ def test_unmatched_specifiers_are_reported(root, tmp_codebase):
 
 
 def test_fields_guided_with_non_static_borrows_are_not_retyped(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {"a.c": "struct Rec { int *a; int *b; const char *c; int *d; };\n"},
@@ -653,7 +653,7 @@ def test_fields_guided_with_non_static_borrows_are_not_retyped(root, tmp_codebas
 
 
 def test_a_second_run_changes_nothing(root, tmp_codebase):
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {"a.c": "int f(const char *s) { return *s; }\n"},
@@ -668,7 +668,7 @@ def test_a_second_run_changes_nothing(root, tmp_codebase):
 
 def test_names_agree_across_translation_units(root, tmp_codebase):
     shared = "int takes(const char *s);\nstruct Node { int v; };\nint get(struct Node *n);\n"
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {
@@ -689,7 +689,7 @@ def test_a_diagnostic_in_a_shared_header_is_reported_once(root, tmp_codebase):
     tmp_codebase.mkdir(parents=True, exist_ok=True)
     (tmp_codebase / "h.h").write_text("int takes(const char *s);\n", encoding="utf-8")
     definition = '#include "h.h"\nint takes(const char *s) { return s[0]; }\n'
-    result = instrument(
+    result = prepare(
         root,
         tmp_codebase,
         {"a.c": definition, "b.c": definition},

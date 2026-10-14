@@ -2358,7 +2358,7 @@ def run_preparation_passes(
         guidance = json.loads(guidance_path.read_text(encoding="utf-8"))
         return any(guidance.get(key) for key in ("vars_of_type", "fn_return_type", "vars_mut"))
 
-    def prep_guidance_markers(prev: Path, current_codebase: Path, store: PrepPassResultStore):
+    def prep_xj_prepare_guidance(prev: Path, current_codebase: Path, store: PrepPassResultStore):
         """Apply type guidance in the C: marker typedefs and marker functions."""
         builddir = hermetic.xj_prepare_guidance_build_dir(repo_root.localdir())
         assert builddir.exists(), (
@@ -2578,7 +2578,7 @@ def run_preparation_passes(
         ("run_pangs_disposition", prep_run_pangs_disposition),
         ("localize_mutable_globals", prep_localize_mutable_globals),
         ("prep_un_uniquify_static_inline_fns", prep_un_uniquify_static_inline_fns),
-        ("guidance_markers", prep_guidance_markers),
+        ("xj_prepare_guidance", prep_xj_prepare_guidance),
     ]
 
     if os.environ.get("XJ_EXTRA_PREPARATION_PASSES") != "0":

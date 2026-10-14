@@ -1,10 +1,10 @@
-# Guidance Instrumentation
+# xj-prepare-guidance
 
 ## Where
 
 - [xj-prepare-guidance](/xj-prepare-guidance) (the C-to-C pass)
 - [markers.rs](/c2rust/c2rust-transpile/src/translator/markers.rs) (the transpiler side)
-- `prep_guidance_markers` in [translation_preparation.py](/cli/translation_preparation.py)
+- `prep_xj_prepare_guidance` in [translation_preparation.py](/cli/translation_preparation.py)
 
 ## What
 
@@ -82,7 +82,7 @@ void f(int i) {
 }
 ```
 
-After instrumentation (`xj_guidance.h` holds the typedefs and markers):
+After xj-prepare-guidance (`xj_guidance.h` holds the typedefs and markers):
 
 ```c
 unsigned char take(xj_ty_ref_slice_u8 s);
@@ -229,5 +229,5 @@ The kinds are:
   site greppable.
 - A null test of a `String`, `Vec`, or slice becomes `.is_empty()`, which
   differs from C when the value can be empty and non-null.
-- Rerunning the pass on instrumented input (the guidance already has
+- Rerunning xj-prepare-guidance on its own output (the guidance already has
   `marker_typedefs`) changes nothing.
