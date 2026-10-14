@@ -27,7 +27,13 @@ import static_measurements_rust
 
 
 def run_built_workspace_binary(
-    root: Path, workspace_dir: str, binary_name: str, args: list[str], dir: Path
+    root: Path,
+    workspace_dir: str,
+    binary_name: str,
+    args: list[str],
+    dir: Path,
+    *,
+    env_ext: dict[str, str | bytes] | None = None,
 ) -> CompletedProcess:
     default_profile = "debug" if binary_name != "xj-improve-lift-call-args" else "release"
     target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", default_profile)
@@ -35,6 +41,7 @@ def run_built_workspace_binary(
         [binary_name, *args, dir],
         cwd=dir,
         env_ext={
+            **(env_ext or {}),
             "PATH": os.pathsep.join([
                 str(root / workspace_dir / "target" / target_subdir),
                 os.environ["PATH"],
@@ -135,6 +142,9 @@ def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> Comple
     #
     # This produces, as an ephemeral intermediate state, code that does not
     # type check, but the lifted calls within the arguments can still be analyzed.
+    # Match the subsequent translated-code Cargo check so rust-analyzer's
+    # dependency builds can be reused rather than rebuilt with different flags.
+    rustflags = os.environ.get("RUSTFLAGS_FOR_TRANSLATED_CODE", "")
     try:
         rewrite_print_macros_as_calls(dir)
         lift_cp = run_built_workspace_binary(
@@ -143,6 +153,10 @@ def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> Comple
             "xj-improve-lift-call-args",
             args,
             dir,
+            env_ext={
+                "RUSTFLAGS": rustflags,
+                **hermetic.cargo_encoded_rustflags_env_ext(dir, rustflags),
+            },
         )
     finally:
         restore_print_macros(dir)
