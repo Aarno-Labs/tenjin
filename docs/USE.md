@@ -62,18 +62,7 @@ A variable specifier is a string like `foo:bar`, which indicates the `bar`
 parameter or local variable within the `foo` function. `*:bar` means every
 such variable named `bar` in every function. A bare `quux` refers to
 a global variable. `Rec:field` refers to a field of the struct or union
-`Rec`. A specifier can be narrowed to a file and a line, written
-`file@fn:var#line`: `file` matches any path that ends with it, and `line` is
-the line of the declaration in the preprocessed (`.nolines.i`) file. When
-several specifiers match one declaration, the most specific wins (a named
-function over `*`, then one with a line, then one with a file), and among
-equally specific ones the first listed. A guided field's type may not borrow, except with `'static`:
-`&'static str` works but `&mut [u8]` does not, since the record would need
-a lifetime parameter. Such guidance is reported as `not-retyped` and the
-field keeps its C type. Guiding a declaration from a system header (a
-field of `struct stat`, a parameter of a libc prototype) keeps that
-header's text in the translated file, so Tenjin generates bindings for it
-rather than using the `libc` crate's (see `use_libc` below).
+`Rec`. 
 * `vars_mut`: likewise, a dict mapping specifiers to boolean values
     indicating whether that declaration should be marked `mut` in Rust.
 * `fn_return_type` - a dict mapping function names to the Rust type they should be made to / assumed to return
