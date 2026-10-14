@@ -4,10 +4,10 @@
 //! function/method call and applies the lift-subexpressions algorithm.
 //! Either prints the rewritten files to stdout or rewrites them in place.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use ra_ap_base_db::EditionedFileId;
 use ra_ap_ide::AnalysisHost;
@@ -15,7 +15,7 @@ use ra_ap_syntax::ast::AstNode;
 
 use xj_improve_lift_call_args::access::SubexprId;
 use xj_improve_lift_call_args::analysis::{
-    CallAnalysis, Workspace, analyze_file, file_path, file_source, statement_insertion_point,
+    CallAnalysis, Workspace, analyze_file, file_source, statement_insertion_point,
 };
 use xj_improve_lift_call_args::emit::{EmitInput, InsertSite, LiftSnippet, emit_edits};
 use xj_improve_lift_call_args::lift::{Diagnostic, PlannedLift, plan_lifts};
@@ -45,126 +45,72 @@ fn main() -> Result<()> {
     let _ = tracing_subscriber::fmt::try_init();
     let args = Args::parse();
 
-    let workspace = Workspace::load(&args.workspace_root)
+    let mut workspace = Workspace::load(&args.workspace_root)
         .with_context(|| format!("loading workspace at {}", args.workspace_root.display()))?;
 
     let mut counter = NameCounter::default();
     let mut diagnostics: Vec<(PathBuf, Diagnostic)> = Vec::new();
-    let mut per_file_edits: HashMap<PathBuf, TextEdit> = HashMap::new();
+    let mut per_file_text = Vec::new();
 
     for (path, file_id) in workspace.files()? {
-        let analyses = analyze_file(&workspace.host, file_id)?;
+        let mut analyses = analyze_file(&workspace.host, file_id)?;
         if analyses.is_empty() {
             continue;
         }
+        let original = file_source(&workspace.host, file_id)?;
+        let mut source = original.clone();
+        // Retries should work outward through the original call nesting.
+        // Bound them by the initial call count to catch endlessly growing
+        // rewrites as well as the unchanged-source check below.
+        let max_rounds = analyses.len().saturating_add(1);
+        let mut round = 0;
 
-        let source = file_source(&workspace.host, file_id)?;
-        let db = workspace.host.raw_database();
-        let editioned = EditionedFileId::current_edition(db, file_id);
-        let parsed = editioned.parse(db);
-        let syntax = parsed.tree();
-
-        let mut acc_edit: Option<TextEdit> = None;
-        for CallAnalysis {
-            call_span,
-            accesses,
-            shapes,
-            snippets,
-        } in analyses
-        {
-            // Step 1-5 in one shot. The shape_of closure also yields the
-            // OUTER expression's span, which plan_lifts uses to plant the
-            // lift on the whole containing argument when the chosen
-            // access is a sub-expression of a nested call.
-            let shapes_map = shapes;
-            let snippets_for_span = &snippets;
-            let lift_result = plan_lifts(call_span, &accesses, |sid| {
-                let shape = shapes_map.get(&sid)?;
-                let span = snippets_for_span.get(&sid).map(|s| s.span)?;
-                Some((shape.clone(), span))
-            });
-
-            let plan = match lift_result {
-                Ok(plan) if plan.lifts.is_empty() => continue,
-                Ok(plan) => plan,
-                Err(diag) => {
-                    diagnostics.push((path.clone(), *diag));
-                    continue;
-                }
-            };
-
-            // Look up the original call node for insertion-point logic.
-            let call_node = match syntax
-                .syntax()
-                .descendants()
-                .find(|n| n.text_range() == call_span)
-            {
-                Some(n) => n,
-                None => continue,
-            };
-
-            let insert = match statement_insertion_point(&call_node) {
-                Some(pos) => InsertSite::BeforeStmt { pos },
-                None => InsertSite::WrapInBlock { call_span },
-            };
-
-            // Build the snippet map keyed by SubexprId for the emitter.
-            let snippets_for_emit: BTreeMap<SubexprId, LiftSnippet> = snippets
-                .into_iter()
-                .map(|(k, snip)| {
-                    (
-                        k,
-                        LiftSnippet {
-                            original_text: snip.original_text,
-                            inner_place_text: snip.inner_place_text,
-                            inner_place_span: snip.inner_place_span,
-                        },
-                    )
-                })
-                .collect();
-
-            let mut name_for = |lift: &PlannedLift| -> String { counter.fresh(lift) };
-
-            let input = EmitInput {
-                source: &source,
-                call_span,
-                insert,
-                plan: &plan,
-                snippets: snippets_for_emit,
-                name_for: &mut name_for,
-            };
-
-            if let Some(edit) = emit_edits(input) {
-                match acc_edit.as_mut() {
-                    None => acc_edit = Some(edit),
-                    Some(existing) => {
-                        if existing.union(edit.clone()).is_err() {
-                            // Overlapping edits within one file — keep the
-                            // earliest, drop the rest. This only happens
-                            // when two call sites share text, which the
-                            // algorithm should not produce, but defend
-                            // anyway.
-                            eprintln!(
-                                "xj-improve-lift-call-args: overlapping edits in {}; \
-                                 dropping later edits at {:?}",
-                                path.display(),
-                                call_span
-                            );
-                        }
-                    }
-                }
+        loop {
+            round += 1;
+            ensure!(
+                round <= max_rounds,
+                "overlapping call-argument rewrites did not converge in {} after {} rounds",
+                path.display(),
+                max_rounds
+            );
+            let result = plan_file_edits(&workspace.host, file_id, &source, analyses, &mut counter);
+            if let Some(edit) = result.edit {
+                let mut rewritten = source.clone();
+                edit.apply(&mut rewritten);
+                ensure!(
+                    !result.deferred || rewritten != source,
+                    "overlapping call-argument rewrites made no progress in {}",
+                    path.display()
+                );
+                source = rewritten;
+                workspace.update_file(file_id, source.clone());
+            } else {
+                ensure!(
+                    !result.deferred,
+                    "overlapping call-argument rewrites made no progress in {}",
+                    path.display()
+                );
             }
+            if !result.deferred {
+                diagnostics.extend(
+                    result
+                        .diagnostics
+                        .into_iter()
+                        .map(|diag| (path.clone(), diag)),
+                );
+                break;
+            }
+            analyses = analyze_file(&workspace.host, file_id)?;
         }
 
-        if let Some(edit) = acc_edit {
-            per_file_edits.insert(path.clone(), edit);
+        if source != original {
+            per_file_text.push((path, source));
         }
     }
 
-    // Apply edits.
-    for (path, edit) in per_file_edits {
-        let mut text = file_source_for_path(&workspace.host, &workspace.vfs, &path)?;
-        edit.apply(&mut text);
+    // Publish only completed rewrites, once per file. Retry rounds update
+    // the analysis database in memory, including in stdout-only mode.
+    for (path, text) in per_file_text {
         if args.modify_in_place {
             std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
             eprintln!("xj-improve-lift-call-args rewrote {}", path.display());
@@ -196,21 +142,117 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn file_source_for_path(
+struct RewriteRound {
+    edit: Option<TextEdit>,
+    deferred: bool,
+    diagnostics: Vec<Diagnostic>,
+}
+
+/// Plan against one immutable source snapshot. Deferred enclosing calls
+/// must be planned again after the accepted inner edits have been applied.
+fn plan_file_edits(
     host: &AnalysisHost,
-    vfs: &ra_ap_vfs::Vfs,
-    path: &PathBuf,
-) -> Result<String> {
-    // Find the file id corresponding to `path` and read its source.
-    for (file_id, vfs_path) in vfs.iter() {
-        if let Some(p) = file_path(vfs, file_id)
-            && p == *path
+    file_id: ra_ap_vfs::FileId,
+    source: &str,
+    analyses: Vec<CallAnalysis>,
+    counter: &mut NameCounter,
+) -> RewriteRound {
+    let db = host.raw_database();
+    let editioned = EditionedFileId::current_edition(db, file_id);
+    let parsed = editioned.parse(db);
+    let syntax = parsed.tree();
+
+    let mut acc_edit: Option<TextEdit> = None;
+    let mut deferred = false;
+    let mut diagnostics = Vec::new();
+    for CallAnalysis {
+        call_span,
+        accesses,
+        shapes,
+        snippets,
+    } in analyses
+    {
+        // Step 1-5 in one shot. The shape_of closure also yields the
+        // OUTER expression's span, which plan_lifts uses to plant the
+        // lift on the whole containing argument when the chosen
+        // access is a sub-expression of a nested call.
+        let shapes_map = shapes;
+        let snippets_for_span = &snippets;
+        let lift_result = plan_lifts(call_span, &accesses, |sid| {
+            let shape = shapes_map.get(&sid)?;
+            let span = snippets_for_span.get(&sid).map(|s| s.span)?;
+            Some((shape.clone(), span))
+        });
+
+        let plan = match lift_result {
+            Ok(plan) if plan.lifts.is_empty() => continue,
+            Ok(plan) => plan,
+            Err(diag) => {
+                diagnostics.push(*diag);
+                continue;
+            }
+        };
+
+        // Look up the original call node for insertion-point logic.
+        let call_node = match syntax
+            .syntax()
+            .descendants()
+            .find(|n| n.text_range() == call_span)
         {
-            return file_source(host, file_id);
+            Some(n) => n,
+            None => continue,
+        };
+
+        let insert = match statement_insertion_point(&call_node) {
+            Some(pos) => InsertSite::BeforeStmt { pos },
+            None => InsertSite::WrapInBlock { call_span },
+        };
+
+        // Build the snippet map keyed by SubexprId for the emitter.
+        let snippets_for_emit: BTreeMap<SubexprId, LiftSnippet> = snippets
+            .into_iter()
+            .map(|(k, snip)| {
+                (
+                    k,
+                    LiftSnippet {
+                        original_text: snip.original_text,
+                        inner_place_text: snip.inner_place_text,
+                        inner_place_span: snip.inner_place_span,
+                    },
+                )
+            })
+            .collect();
+
+        let mut name_for = |lift: &PlannedLift| -> String { counter.fresh(lift) };
+
+        let input = EmitInput {
+            source,
+            call_span,
+            insert,
+            plan: &plan,
+            snippets: snippets_for_emit,
+            name_for: &mut name_for,
+        };
+
+        if let Some(edit) = emit_edits(input) {
+            match acc_edit.as_mut() {
+                None => acc_edit = Some(edit),
+                Some(existing) => {
+                    if existing.union(edit).is_err() {
+                        // Inner plans have already claimed this text. Apply
+                        // them first, then reanalyze the updated source before
+                        // planning this enclosing call again.
+                        deferred = true;
+                    }
+                }
+            }
         }
-        let _ = vfs_path;
     }
-    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+    RewriteRound {
+        edit: acc_edit,
+        deferred,
+        diagnostics,
+    }
 }
 
 #[derive(Default)]
