@@ -295,7 +295,7 @@ pub fn snprintf_example_01(mut x: ::core::ffi::c_int) -> bool {
 pub fn snprintf_example_02(mut x: ::core::ffi::c_int) {
     let mut buf: [::core::ffi::c_uchar; 9] = [0, 0, 0, 0, 0, 0, 0, 0, 0];
     ::xj_cio::snprintf!(buf, (9 as size_t), "%08d", x);
-    ::xj_cio::printf!("%s\n", &buf[..]);
+    ::xj_cio::printf!("%s\n", &(buf));
 }
 fn xj_isalnum(xjc: core::ffi::c_int) -> core::ffi::c_int {
     if xjc == -1 {

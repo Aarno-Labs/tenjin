@@ -673,7 +673,10 @@ fn string_arg(expr: &Expr, symbols: &SymbolTable, as_view: bool) -> Option<Expr>
         }
         // Preserve pointer receivers by borrowing rather than moving their storage.
         return Some(match storage(&ty)? {
-            Storage::Bytes => parse_quote!(&(#base)[..]),
+            // SafeAdapt accepts arrays, slices, and Vec directly. Slicing here
+            // would implicitly borrow the receiver, triggering
+            // dangerous_implicit_autorefs for fields behind raw pointers.
+            Storage::Bytes => parse_quote!(&(#base)),
             Storage::Text | Storage::CString => parse_quote!((#base).as_bytes()),
             Storage::CStr => parse_quote!((#base).to_bytes()),
             Storage::ZStr => parse_quote!((#base).as_bytes_with_nul()),

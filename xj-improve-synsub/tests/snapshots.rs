@@ -1839,6 +1839,37 @@ fn cio_bulk_io_preserves_item_counts_and_zero_sizes() {
 }
 
 #[test]
+fn c_printf_borrows_byte_storage_without_implicit_autorefs() {
+    let mut rw = Rewriter::new();
+    rw.add_macro_rewrite(Rewriter::rewrite_c_printf_safe);
+    check(
+        &rw,
+        r#"struct Globals {
+            outfile: xj_cio::FILE_ptr,
+            info: [u8; 512],
+        }
+        unsafe fn demo(xjg: *mut Globals, mut array: [u8; 8], slice: &[u8], vec: Vec<u8>) {
+            xj_cio::fprintf_raw!((*xjg).outfile, "%s  ", (*xjg).info.as_ptr());
+            xj_cio::fprintf_raw!((*xjg).outfile, "%s", (*xjg).info.as_mut_ptr());
+            xj_cio::fprintf_raw!((*xjg).outfile, "%s", (&raw const (*xjg).info).cast::<u8>());
+            xj_cio::printf_raw!("%s %s %s", array.as_mut_ptr(), slice.as_ptr(), vec.as_ptr());
+        }"#,
+        expect![[r#"
+            struct Globals {
+                outfile: xj_cio::FILE_ptr,
+                info: [u8; 512],
+            }
+            unsafe fn demo(xjg: *mut Globals, mut array: [u8; 8], slice: &[u8], vec: Vec<u8>) {
+                xj_cio::fprintf!((* xjg).outfile, "%s  ", & ((* xjg).info));
+                xj_cio::fprintf!((* xjg).outfile, "%s", & ((* xjg).info));
+                xj_cio::fprintf!((* xjg).outfile, "%s", & ((* xjg).info));
+                xj_cio::printf!("%s %s %s", & (array), & (slice), & (vec));
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn c_format_macros_rewrite_arguments_and_destinations() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
