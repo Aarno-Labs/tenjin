@@ -58,13 +58,16 @@ struct XjType {
 // unit, before the first top-level declaration that needs it.
 class LocalPlacement {
 public:
-  void placeTypedef(const TypedefKey &K, unsigned Offset);
-  void placeMarker(const MarkerKey &K, unsigned Offset);
+  // Places `K` at `Offset`, or keeps the earlier offset it already has.
+  void place(const TypedefKey &K, unsigned Offset);
+  void place(const MarkerKey &K, unsigned Offset);
   void emit(GuidanceEdits &Edits, const Registry &R) const;
 
 private:
-  std::map<std::string, std::pair<unsigned, const TypedefKey *>> Typedefs;
-  std::map<std::string, std::pair<unsigned, const MarkerKey *>> Markers;
+  template <typename Key>
+  using Placed = std::map<std::string, std::pair<unsigned, const Key *>>;
+  Placed<TypedefKey> Typedefs;
+  Placed<MarkerKey> Markers;
 };
 
 struct TUState {
@@ -99,6 +102,8 @@ private:
   // disjoint.
   std::vector<std::pair<unsigned, unsigned>> TopLevelRanges;
   void computeTopLevelRanges();
+  // The local typedefs among `Ids` and their dependencies, at `Offset`.
+  void placeLocalTypedefs(const std::set<std::string> &Ids, unsigned Offset);
 };
 
 } // namespace xj

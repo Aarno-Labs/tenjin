@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "ExprShape.h"
 #include "TUState.h"
 
 #include "clang/AST/Expr.h"
@@ -29,6 +30,8 @@ public:
   bool isBuffer(const clang::Expr *E) const;
   // Guided as one object behind a reference or box.
   bool isSingleObject(const clang::Expr *E) const;
+  // A pointer value that carries guidance of its own.
+  bool isGuidedPointer(const clang::Expr *E) const;
 
 private:
   const TUState &S;
@@ -37,9 +40,5 @@ private:
   XjType ofConditional(const clang::ConditionalOperator *CO) const;
   XjType ofUnary(const clang::UnaryOperator *UO) const;
 };
-
-// `E` without parentheses and the implicit casts that keep its value:
-// lvalue-to-rvalue, decay, qualification, and bit casts between pointers.
-const clang::Expr *stripValueCasts(const clang::Expr *E);
 
 } // namespace xj

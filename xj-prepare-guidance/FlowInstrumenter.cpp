@@ -1,32 +1,28 @@
 #include "FlowInstrumenter.h"
 
-#include "clang/AST/RecursiveASTVisitor.h"
-
 using namespace clang;
 
 namespace xj {
 
 namespace {
 
-class FlowVisitor : public RecursiveASTVisitor<FlowVisitor> {
+class FlowVisitor : public EvaluatedCodeVisitor<FlowVisitor> {
+  using Base = EvaluatedCodeVisitor<FlowVisitor>;
+
 public:
   explicit FlowVisitor(FlowInstrumenter &F) : F(F) {}
 
   bool TraverseFunctionDecl(FunctionDecl *FD) {
     const FunctionDecl *Saved = Current;
     Current = FD;
-    bool Continue = RecursiveASTVisitor::TraverseFunctionDecl(FD);
+    bool Continue = Base::TraverseFunctionDecl(FD);
     Current = Saved;
     return Continue;
   }
   // Static initializers are constant expressions and stay as written.
   bool TraverseVarDecl(VarDecl *VD) {
-    return VD->hasGlobalStorage() || RecursiveASTVisitor::TraverseVarDecl(VD);
+    return VD->hasGlobalStorage() || Base::TraverseVarDecl(VD);
   }
-  bool TraverseUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *) {
-    return true;
-  }
-  bool TraverseGenericSelectionExpr(GenericSelectionExpr *) { return true; }
 
   bool VisitCallExpr(CallExpr *CE) {
     F.visitCall(CE);
@@ -108,27 +104,6 @@ static QualType constIfLiteral(ASTContext &Ctx, const Expr *E, QualType T) {
   return Ctx.getPointerType(T->getPointeeType().withConst());
 }
 
-const Expr *valueExpr(const Expr *E) {
-  while (const auto *ICE = dyn_cast<ImplicitCastExpr>(E->IgnoreParens())) {
-    CastKind K = ICE->getCastKind();
-    if (K == CK_LValueToRValue || K == CK_ArrayToPointerDecay ||
-        K == CK_FunctionToPointerDecay)
-      return ICE;
-    E = ICE->getSubExpr();
-  }
-  return E->IgnoreParens();
-}
-
-QualType valueType(const Expr *E) { return valueExpr(E)->getType(); }
-
-QualType writtenType(const Expr *E) {
-  const Expr *V = valueExpr(E);
-  if (const auto *ICE = dyn_cast<ImplicitCastExpr>(V))
-    if (ICE->getCastKind() == CK_ArrayToPointerDecay)
-      return ICE->getSubExpr()->getType();
-  return V->getType();
-}
-
 void FlowInstrumenter::run() {
   FlowVisitor(*this).TraverseDecl(S.Ctx.getTranslationUnitDecl());
 }
@@ -174,6 +149,8 @@ void FlowInstrumenter::visitExplicitCast(const CStyleCastExpr *CE) {
     coerceFlow(Operand, {valueType(Operand), {}});
 }
 
+// A conversion of a conditional applies to each arm, so each arm flows into
+// the sink under whatever implicit casts surround the whole.
 void FlowInstrumenter::flow(const Expr *Src, const Sink &K) {
   if (const auto *CO = dyn_cast<ConditionalOperator>(Src->IgnoreParenImpCasts())) {
     flow(CO->getTrueExpr(), K);
@@ -251,15 +228,13 @@ FlowInstrumenter::classifyPlace(const Expr *Src) const {
         dyn_cast<ArraySubscriptExpr>(UO->getSubExpr()->IgnoreParens());
     if (UO->getOpcode() == UO_AddrOf && ASE)
       P = {Core, Shape::Element, ASE->getBase(), ASE->getIdx()};
+  } else if (std::optional<PointerSum> Sum = asPointerSum(Core)) {
+    P = {Core, Shape::Suffix, Sum->Base, Sum->Index};
   } else if (const auto *BO = dyn_cast<BinaryOperator>(Core)) {
     const Expr *L = BO->getLHS();
     const Expr *R = BO->getRHS();
-    if (BO->getOpcode() == BO_Add && BO->getType()->isPointerType())
-      P = L->getType()->isPointerType()
-              ? Place{Core, Shape::Suffix, L, R}
-              : Place{Core, Shape::Suffix, R, L};
-    else if (BO->getOpcode() == BO_Sub && L->getType()->isPointerType() &&
-             R->getType()->isIntegerType())
+    if (BO->getOpcode() == BO_Sub && L->getType()->isPointerType() &&
+        R->getType()->isIntegerType())
       P = {Core, Shape::Backward, L, R};
   }
   QualType BaseType = stripValueCasts(P.Base)->getType();
@@ -410,10 +385,6 @@ const MarkerKey *FlowInstrumenter::coercionMarker(const Expr *Src,
   return M;
 }
 
-bool FlowInstrumenter::isGuidedPointer(const Expr *E) const {
-  return valueType(E)->isPointerType() && Types.of(E).rust();
-}
-
 void FlowInstrumenter::nullTest(const Expr *Whole, const Expr *Operand,
                                 bool Negate) {
   XjType X = Types.of(Operand);
@@ -436,17 +407,17 @@ void FlowInstrumenter::visitNullComparison(const BinaryOperator *BO) {
   const Expr *Operand = isNullConstant(R, S.Ctx)   ? L
                         : isNullConstant(L, S.Ctx) ? R
                                                    : nullptr;
-  if (Operand && isGuidedPointer(Operand))
+  if (Operand && Types.isGuidedPointer(Operand))
     nullTest(BO, Operand, BO->getOpcode() == BO_NE);
 }
 
 void FlowInstrumenter::visitLogicalNot(const UnaryOperator *UO) {
-  if (isGuidedPointer(UO->getSubExpr()))
+  if (Types.isGuidedPointer(UO->getSubExpr()))
     nullTest(UO, UO->getSubExpr(), false);
 }
 
 void FlowInstrumenter::visitCondition(const Expr *Cond) {
-  if (Cond && isGuidedPointer(Cond))
+  if (Cond && Types.isGuidedPointer(Cond))
     nullTest(Cond, Cond, true);
 }
 

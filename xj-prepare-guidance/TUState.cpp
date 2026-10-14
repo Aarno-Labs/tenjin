@@ -27,27 +27,19 @@ std::string XjType::rustText() const {
   return Out + Key->Rust.str();
 }
 
-void LocalPlacement::placeTypedef(const TypedefKey &K, unsigned Offset) {
-  auto [It, Inserted] = Typedefs.try_emplace(K.Id, Offset, &K);
+template <typename Key, typename Map>
+static void placeEarliest(Map &Placed, const Key &K, unsigned Offset) {
+  auto [It, Inserted] = Placed.try_emplace(K.Id, Offset, &K);
   if (!Inserted)
     It->second.first = std::min(It->second.first, Offset);
 }
 
-void LocalPlacement::placeMarker(const MarkerKey &K, unsigned Offset) {
-  auto [It, Inserted] = Markers.try_emplace(K.Id, Offset, &K);
-  if (!Inserted)
-    It->second.first = std::min(It->second.first, Offset);
+void LocalPlacement::place(const TypedefKey &K, unsigned Offset) {
+  placeEarliest(Typedefs, K, Offset);
 }
 
-static void emitTypedef(const TypedefKey &K, const Registry &R,
-                        const std::set<std::string> &AtOffset,
-                        std::set<std::string> &Done, std::string &Out) {
-  if (!AtOffset.count(K.Id) || !Done.insert(K.Id).second)
-    return;
-  for (const std::string &Id : K.Decl.Typedefs)
-    if (const TypedefKey *Inner = R.typedefById(Id))
-      emitTypedef(*Inner, R, AtOffset, Done, Out);
-  Out += R.definition(K) + "\n";
+void LocalPlacement::place(const MarkerKey &K, unsigned Offset) {
+  placeEarliest(Markers, K, Offset);
 }
 
 void LocalPlacement::emit(GuidanceEdits &Edits, const Registry &R) const {
@@ -58,11 +50,13 @@ void LocalPlacement::emit(GuidanceEdits &Edits, const Registry &R) const {
   for (const auto &[Id, Placed] : Markers)
     MarkersAt[Placed.first][R.name(*Placed.second)] = Placed.second;
 
+  // A typedef's dependencies are placed no later than it is, so those not
+  // at this offset are already defined above it.
   for (const auto &[Offset, Ids] : TypedefsAt) {
     std::string Text;
-    std::set<std::string> Done;
-    for (const std::string &Id : Ids)
-      emitTypedef(*R.typedefById(Id), R, Ids, Done, Text);
+    for (const TypedefKey *K : R.withDependencies(Ids))
+      if (Ids.count(K->Id))
+        Text += R.definition(*K) + "\n";
     Edits.insertBefore(Offset, Text);
   }
   for (const auto &[Offset, ByName] : MarkersAt) {
@@ -142,26 +136,25 @@ bool TUState::edit(const Stmt *St, Edit E) {
   return false;
 }
 
-void TUState::placeLocal(const TypedefKey &K, SourceLocation Use) {
-  if (Reg.isHeaderSafe(K))
-    return;
-  unsigned Offset = topLevelOffset(Use);
-  Spelling Self;
-  Self.Typedefs.insert(K.Id);
-  for (const TypedefKey *T : Reg.typedefClosure(Self))
+void TUState::placeLocalTypedefs(const std::set<std::string> &Ids,
+                                 unsigned Offset) {
+  for (const TypedefKey *T : Reg.withDependencies(Ids))
     if (!Reg.isHeaderSafe(*T))
-      Local.placeTypedef(*T, Offset);
+      Local.place(*T, Offset);
+}
+
+void TUState::placeLocal(const TypedefKey &K, SourceLocation Use) {
+  if (!Reg.isHeaderSafe(K))
+    placeLocalTypedefs({K.Id}, topLevelOffset(Use));
 }
 
 void TUState::placeLocal(const MarkerKey &K, SourceLocation Use) {
   if (Reg.isHeaderSafe(K))
     return;
   unsigned Offset = topLevelOffset(Use);
-  for (const Spelling *S : {&K.Ret, &K.Param})
-    for (const TypedefKey *T : Reg.typedefClosure(*S))
-      if (!Reg.isHeaderSafe(*T))
-        Local.placeTypedef(*T, Offset);
-  Local.placeMarker(K, Offset);
+  placeLocalTypedefs(K.Ret.Typedefs, Offset);
+  placeLocalTypedefs(K.Param.Typedefs, Offset);
+  Local.place(K, Offset);
 }
 
 } // namespace xj

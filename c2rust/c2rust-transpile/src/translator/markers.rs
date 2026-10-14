@@ -11,11 +11,12 @@
 
 use super::*;
 use crate::convert_type::TypeConverter;
-use crate::translator::tenjin::{self, GuidedType};
+use crate::translator::tenjin::{
+    self, same_numeric_type, type_buffer_element, type_is_not_clone, type_is_not_copy, GuidedType,
+    Shape,
+};
 use quote::ToTokens;
 use std::cell::Ref;
-use std::str::FromStr;
-use syn::GenericArgument;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkerFamily {
@@ -59,155 +60,27 @@ impl MarkerFamily {
     }
 }
 
-/// What a place marker's result is fitted to.
-enum PlaceSink {
-    /// A guided sink (`&[T]`, `&mut T`, ...). Only its mutability is read:
-    /// the result is a borrow of the place.
+/// Where a converted value goes: a place whose type carries guidance, or an
+/// unguided C one.
+pub enum Sink {
     Guided(Box<GuidedType>),
-    /// An unguided raw pointer, `*mut` when `mutable`.
+    C(CQualTypeId),
+}
+
+/// What a place marker's result is fitted to: a borrow of the place for a
+/// guided sink (`&[T]`, `&mut T`, ...), a raw pointer for an unguided one.
+#[derive(Clone, Copy)]
+enum PlaceSink {
+    Borrow { mutable: bool },
     Raw { mutable: bool },
 }
 
 impl PlaceSink {
-    fn is_mutable(&self) -> bool {
+    fn is_mutable(self) -> bool {
         match self {
-            Self::Guided(g) => g.is_exclusive_borrow(),
-            Self::Raw { mutable } => *mutable,
+            Self::Borrow { mutable } | Self::Raw { mutable } => mutable,
         }
     }
-}
-
-/// The element of a buffer type: `[T]`, `[T; N]`, `Vec<T>` or `Box<[T]>`,
-/// possibly behind references.
-pub fn type_buffer_element(ty: &Type) -> Option<&Type> {
-    match tenjin::type_strip_refs(ty) {
-        Type::Slice(slice) => Some(&slice.elem),
-        Type::Array(array) => Some(&array.elem),
-        t if tenjin::type_is_vec(t) => tenjin::try_type_vec_of(t),
-        t => generic_arg_of(t, "Box").and_then(|inner| match inner {
-            Type::Slice(slice) => Some(&*slice.elem),
-            _ => None,
-        }),
-    }
-}
-
-/// `pred` holds for `ty` or a type it is built from, looking through
-/// references and raw pointers only when `through_refs`.
-fn type_any(ty: &Type, through_refs: bool, pred: &dyn Fn(&Type) -> bool) -> bool {
-    if pred(ty) {
-        return true;
-    }
-    let any = |t: &Type| type_any(t, through_refs, pred);
-    match ty {
-        Type::Reference(r) => through_refs && any(&r.elem),
-        Type::Ptr(p) => through_refs && any(&p.elem),
-        Type::Slice(s) => any(&s.elem),
-        Type::Array(a) => any(&a.elem),
-        Type::Paren(p) => any(&p.elem),
-        Type::Group(g) => any(&g.elem),
-        Type::Tuple(t) => t.elems.iter().any(any),
-        Type::Path(p) => p.path.segments.iter().any(|seg| match &seg.arguments {
-            syn::PathArguments::AngleBracketed(args) => args
-                .args
-                .iter()
-                .any(|arg| matches!(arg, GenericArgument::Type(t) if any(t))),
-            _ => false,
-        }),
-        _ => false,
-    }
-}
-
-/// `ty` holds a raw pointer anywhere in it: `*const T`, `Vec<*mut T>`,
-/// `[*const c_char; N]`, `Option<*mut T>`.
-pub fn type_mentions_raw_pointer(ty: &Type) -> bool {
-    type_any(ty, true, &|t| matches!(t, Type::Ptr(_)))
-}
-
-/// `ty` owns what it holds (`String`, `Vec`, `Box`), or holds an exclusive
-/// reference, so it is not `Copy`.
-fn type_is_not_copy(ty: &Type) -> bool {
-    type_any(ty, false, &|t| {
-        tenjin::type_is_string(t)
-            || tenjin::type_is_vec(t)
-            || tenjin::type_is_exactly_1_path(t, "Box")
-            || tenjin::type_is_mut_ref(t)
-    })
-}
-
-/// `ty` holds an exclusive reference, so it is not `Clone`.
-fn type_is_not_clone(ty: &Type) -> bool {
-    type_any(ty, false, &tenjin::type_is_mut_ref)
-}
-
-/// `T` of a one-argument generic path `name<T>`.
-fn generic_arg_of<'a>(ty: &'a Type, name: &str) -> Option<&'a Type> {
-    let path = tenjin::type_get_bare_path(ty)?;
-    if !tenjin::is_path_exactly_1(path, name) {
-        return None;
-    }
-    match tenjin::path_get_1_segment(path).and_then(tenjin::segment_get_1_bracket_argument)? {
-        GenericArgument::Type(arg) => Some(arg),
-        _ => None,
-    }
-}
-
-/// Rust primitive numbers and C's numeric aliases (`c_int`, `size_t`, ...).
-pub fn type_is_numeric(ty: &Type) -> bool {
-    let Some(path) = tenjin::type_get_bare_path(ty) else {
-        return false;
-    };
-    let Some(last) = path.segments.last() else {
-        return false;
-    };
-    let name = last.ident.to_string();
-    let primitive = matches!(
-        name.as_str(),
-        "u8" | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "isize"
-            | "f32"
-            | "f64"
-            | "bool"
-            | "size_t"
-            | "ssize_t"
-    );
-    primitive || (name.starts_with("c_") && name != "c_void")
-}
-
-/// The primitive a C numeric alias names on the LP64 targets Tenjin supports.
-/// `c_char` is left out: its signedness differs between targets.
-fn primitive_of_alias(name: &str) -> &str {
-    match name {
-        "c_schar" => "i8",
-        "c_uchar" => "u8",
-        "c_short" => "i16",
-        "c_ushort" => "u16",
-        "c_int" => "i32",
-        "c_uint" => "u32",
-        "c_long" | "c_longlong" => "i64",
-        "c_ulong" | "c_ulonglong" => "u64",
-        "c_float" => "f32",
-        "c_double" => "f64",
-        other => other,
-    }
-}
-
-/// `a` and `b` are the same type, looking through C numeric aliases.
-fn same_numeric_type(a: &Type, b: &Type) -> bool {
-    let last = |t: &Type| {
-        tenjin::type_get_bare_path(t)
-            .and_then(|p| p.segments.last())
-            .map(|s| primitive_of_alias(&s.ident.to_string()).to_string())
-    };
-    a == b || (type_is_numeric(a) && type_is_numeric(b) && last(a) == last(b))
 }
 
 /// `vec![a, b]` from `[a, b]` and `vec![x; n]` from `[x; n]`.
@@ -225,11 +98,6 @@ fn vec_of_array(val: &Expr) -> Option<Box<Expr>> {
         tokens,
         MacroDelimiter::Bracket(Default::default()),
     )))
-}
-
-/// The `T` of `&T`, `&mut T` or `Box<T>`.
-fn referent(g: &GuidedType) -> Option<&Type> {
-    tenjin::type_of_ref(&g.parsed).or_else(|| generic_arg_of(&g.parsed, "Box"))
 }
 
 fn type_text(ty: &Type) -> String {
@@ -334,12 +202,21 @@ impl Translation<'_> {
             _ => return None,
         };
         let inner = self.marker_sugar(pointee.ctype)?;
-        let ptr = if pointee.qualifiers.is_const {
-            "*const"
+        let (ptr, builder) = if pointee.qualifiers.is_const {
+            ("*const", mk())
         } else {
-            "*mut"
+            ("*mut", mk().mutbl())
         };
-        GuidedType::from_str(&format!("{ptr} {}", inner.pretty)).ok()
+        Some(GuidedType::new(
+            format!("{ptr} {}", inner.pretty),
+            *builder.ptr_ty(Box::new(inner.parsed)),
+        ))
+    }
+
+    /// Where a value of C type `ty` goes, with the guidance its sugar names.
+    fn sink_of(&self, ty: CQualTypeId) -> Sink {
+        self.guided_type_of_ctype(ty.ctype)
+            .map_or(Sink::C(ty), |g| Sink::Guided(Box::new(g)))
     }
 
     fn marker_sugar(&self, mut ctype: CTypeId) -> Option<GuidedType> {
@@ -385,7 +262,7 @@ impl Translation<'_> {
     /// `p->f` is then the object itself, as in `s.f`.
     pub fn is_guided_object(&self, expr: CExprId) -> bool {
         self.guided_type_of_expr(expr)
-            .is_some_and(|g| !g.pretty.starts_with('*'))
+            .is_some_and(|g| !matches!(g.shape(), Shape::Ptr(_)))
     }
 
     /// The guidance an expression carries: its type's marker sugar, looking
@@ -470,17 +347,27 @@ impl Translation<'_> {
         }
     }
 
+    /// The family and arguments of a marker call `expr`, through parentheses
+    /// and implicit casts.
+    fn marker_call(&self, expr: CExprId) -> Option<(MarkerFamily, &[CExprId])> {
+        let mut current = expr;
+        loop {
+            match self.ast_context.index_unwrap_parens(current).kind {
+                CExprKind::ImplicitCast(_, inner, _, _, _) => current = inner,
+                CExprKind::Call(_, func, ref args) => {
+                    let (family, _) = self.marker_callee(func)?;
+                    return (args.len() == family.arity()).then_some((family, args.as_slice()));
+                }
+                _ => return None,
+            }
+        }
+    }
+
     /// `expr` without an enclosing identity marker, so a recognizer that
     /// inspects an argument sees the value the program wrote.
     pub fn strip_identity_markers(&self, expr: CExprId) -> CExprId {
-        let stripped = self.c_strip_implicit_casts(expr);
-        match self.ast_context.index_unwrap_parens(stripped).kind {
-            CExprKind::Call(_, func, ref args) if args.len() == 1 => {
-                match self.marker_callee(func) {
-                    Some((family, _)) if family.is_identity() => args[0],
-                    _ => expr,
-                }
-            }
+        match self.marker_call(expr) {
+            Some((family, args)) if family.is_identity() => args[0],
             _ => expr,
         }
     }
@@ -540,14 +427,22 @@ impl Translation<'_> {
     }
 
     fn place_sink(&self, ret: CQualTypeId) -> PlaceSink {
-        if let Some(g) = self.guided_type_of_ctype(ret.ctype) {
-            return PlaceSink::Guided(Box::new(g));
+        match self.sink_of(ret) {
+            Sink::Guided(g) => PlaceSink::Borrow {
+                mutable: g.is_exclusive_borrow(),
+            },
+            Sink::C(ret) => PlaceSink::Raw {
+                mutable: !self.points_to_const(ret),
+            },
         }
-        let mutable = match self.ast_context.resolve_type(ret.ctype).kind {
-            CTypeKind::Pointer(pointee) => !pointee.qualifiers.is_const,
-            _ => false,
-        };
-        PlaceSink::Raw { mutable }
+    }
+
+    /// `ty` is a pointer to a const-qualified type.
+    fn points_to_const(&self, ty: CQualTypeId) -> bool {
+        matches!(
+            self.ast_context.resolve_type(ty.ctype).kind,
+            CTypeKind::Pointer(pointee) if pointee.qualifiers.is_const
+        )
     }
 
     /// `xj_slice_all(b)`, `xj_slice_from(b, i)`, `xj_elem_ref(b, i)`: the
@@ -571,36 +466,25 @@ impl Translation<'_> {
             .guided_type_of_expr(base_id)
             .is_some_and(|g| g.is_borrow());
         let place = match index {
-            None => base.map(|b| Self::whole_place(&sink, b, base_is_ref)),
+            None => base.map(|b| Self::whole_place(sink, b, base_is_ref)),
             Some(index) => base
                 .zip(index)
-                .map(|(b, i)| Self::offset_place(family, &sink, b, i)),
+                .map(|(b, i)| Self::offset_place(family, sink, b, i)),
         };
-        match (&sink, self.raw_place_cast(base_id, ret)?) {
+        match (sink, self.raw_place_cast(base_id, ret)?) {
             (PlaceSink::Raw { .. }, Some(ty)) => Ok(place.map(|p| mk().cast_expr(p, ty))),
             _ => Ok(place),
         }
     }
 
-    /// A marker's `long i` argument as a Rust index. An enum is a newtype,
-    /// so its integer is taken out by a C conversion to `size_t`.
+    /// A marker's `long i` argument as a Rust index, without C's conversion
+    /// to `long`.
     fn convert_marker_index(
         &self,
         ctx: ExprContext,
         index: CExprId,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let index = self.c_strip_implicit_casts(index);
-        let is_enum = self.ast_context[index]
-            .kind
-            .get_type()
-            .is_some_and(|t| matches!(self.ast_context.resolve_type(t).kind, CTypeKind::Enum(_)));
-        if is_enum {
-            let size = self.ast_context.type_for_kind(&CTypeKind::Size);
-            return self.convert_expr_with_cast(ctx.used(), CQualTypeId::new(size), index);
-        }
-        Ok(self
-            .convert_expr(ctx.used(), index, None)?
-            .map(|i| cast_int(i, "usize", false)))
+        self.convert_index_operand(ctx.used(), self.c_strip_implicit_casts(index), false)
     }
 
     /// The value of a guided expression without the C conversions around
@@ -616,52 +500,18 @@ impl Translation<'_> {
     /// The base and index of a call `xj_index_<T>(b, i)`, through parentheses
     /// and implicit casts.
     pub fn index_marker_operands(&self, expr: CExprId) -> Option<(CExprId, CExprId)> {
-        let mut current = expr;
-        loop {
-            match self.ast_context.index_unwrap_parens(current).kind {
-                CExprKind::ImplicitCast(_, inner, _, _, _) => current = inner,
-                CExprKind::Call(_, func, ref args) if args.len() == 2 => {
-                    let (family, _) = self.marker_callee(func)?;
-                    return (family == MarkerFamily::Index).then(|| (args[0], args[1]));
-                }
-                _ => return None,
-            }
+        match self.marker_call(expr)? {
+            (MarkerFamily::Index, args) => Some((args[0], args[1])),
+            _ => None,
         }
     }
 
     /// `TypedAstContext::is_expr_pure`, except that a marker call is pure when
     /// its arguments are, so `(*xj_index_<T>(p, i)) += 1` names its place
-    /// directly. Covers the forms an lvalue is built from; anything else is
-    /// left to `is_expr_pure`.
+    /// directly.
     pub fn is_pure_with_markers(&self, expr: CExprId) -> bool {
-        let pure = |e| self.is_pure_with_markers(e);
-        match self.ast_context[expr].kind {
-            CExprKind::Call(_, func, ref args) if self.marker_callee(func).is_some() => {
-                args.iter().all(|&a| pure(a))
-            }
-            CExprKind::Paren(_, e)
-            | CExprKind::ImplicitCast(_, e, _, _, _)
-            | CExprKind::ExplicitCast(_, e, _, _, _)
-            | CExprKind::Member(_, e, _, _, _) => pure(e),
-            CExprKind::Unary(_, op, e, _)
-                if !matches!(
-                    op,
-                    CUnOp::PreIncrement
-                        | CUnOp::PostIncrement
-                        | CUnOp::PreDecrement
-                        | CUnOp::PostDecrement
-                ) =>
-            {
-                pure(e)
-            }
-            CExprKind::ArraySubscript(_, lhs, rhs, _) => pure(lhs) && pure(rhs),
-            CExprKind::Binary(_, op, lhs, rhs, _, _)
-                if op != CBinOp::Assign && op.underlying_assignment().is_none() =>
-            {
-                pure(lhs) && pure(rhs)
-            }
-            _ => self.ast_context.is_expr_pure(expr),
-        }
+        self.ast_context
+            .is_expr_pure_with(expr, &|func| self.marker_callee(func).is_some())
     }
 
     /// `(*xj_index_<T>(b, i))`: element `i` of the buffer `b`.
@@ -688,18 +538,14 @@ impl Translation<'_> {
         let shared = self
             .guided_type_of_expr(base_id)
             .is_some_and(|g| g.is_shared_borrow());
-        let const_pointee = match self.ast_context.resolve_type(ret.ctype).kind {
-            CTypeKind::Pointer(pointee) => pointee.qualifiers.is_const,
-            _ => false,
-        };
         let sink = PlaceSink::Raw {
-            mutable: !const_pointee && !shared,
+            mutable: !self.points_to_const(ret) && !shared,
         };
         let base = self.convert_guided_value(ctx, base_id)?;
         let index = self.convert_marker_index(ctx, cargs[1])?;
         let place = base
             .zip(index)
-            .map(|(b, i)| Self::offset_place(MarkerFamily::ElemRef, &sink, b, i));
+            .map(|(b, i)| Self::offset_place(MarkerFamily::ElemRef, sink, b, i));
         match self.raw_place_cast(base_id, ret)? {
             Some(ty) => Ok(place.map(|p| mk().cast_expr(p, ty))),
             None => Ok(place),
@@ -775,12 +621,14 @@ impl Translation<'_> {
 
     /// A reference base, or a byte string literal, is already a reference;
     /// the sink is a coercion site, which reborrows it implicitly.
-    fn whole_place(sink: &PlaceSink, base: Box<Expr>, base_is_ref: bool) -> Box<Expr> {
+    fn whole_place(sink: PlaceSink, base: Box<Expr>, base_is_ref: bool) -> Box<Expr> {
         let mutable = sink.is_mutable();
         match sink {
             PlaceSink::Raw { .. } => as_ptr(Self::borrowed_base(base, mutable), mutable),
-            PlaceSink::Guided(_) if base_is_ref || tenjin::expr_is_lit_str_or_bytes(&base) => base,
-            PlaceSink::Guided(_) => borrow(base, mutable),
+            PlaceSink::Borrow { .. } if base_is_ref || tenjin::expr_is_lit_str_or_bytes(&base) => {
+                base
+            }
+            PlaceSink::Borrow { .. } => borrow(base, mutable),
         }
     }
 
@@ -802,7 +650,7 @@ impl Translation<'_> {
     /// otherwise.
     fn offset_place(
         family: MarkerFamily,
-        sink: &PlaceSink,
+        sink: PlaceSink,
         base: Box<Expr>,
         index: Box<Expr>,
     ) -> Box<Expr> {
@@ -811,7 +659,7 @@ impl Translation<'_> {
         if family == MarkerFamily::ElemRef {
             let elem = mk().index_expr(base, index);
             return match sink {
-                PlaceSink::Guided(_) => borrow(elem, mutable),
+                PlaceSink::Borrow { .. } => borrow(elem, mutable),
                 PlaceSink::Raw { .. } => {
                     let mutbl = if mutable {
                         Mutability::Mutable
@@ -824,7 +672,7 @@ impl Translation<'_> {
         }
         let suffix = mk().index_expr(base, mk().range_expr(Some(index), None));
         match sink {
-            PlaceSink::Guided(_) => borrow(suffix, mutable),
+            PlaceSink::Borrow { .. } => borrow(suffix, mutable),
             PlaceSink::Raw { .. } => as_ptr(suffix, mutable),
         }
     }
@@ -842,11 +690,11 @@ impl Translation<'_> {
         let from = self
             .guided_type_of_expr(arg)
             .or_else(|| self.guided_type_of_ctype(param.ctype));
-        let to = self.guided_type_of_ctype(ret.ctype);
-        if matches!((&from, &to), (Some(f), Some(t)) if f.parsed == t.parsed) {
+        let to = self.sink_of(ret);
+        if matches!((&from, &to), (Some(f), Sink::Guided(t)) if f.parsed == t.parsed) {
             return self.convert_guided_value(ctx, arg);
         }
-        self.coerce_value(ctx, arg, from.as_ref(), to.as_ref(), ret)
+        self.coerce_value(ctx, arg, from.as_ref(), &to)
     }
 
     /// `xj_is_null(p)`: what C's `p == 0` means for the guidance on `p`.
@@ -862,7 +710,7 @@ impl Translation<'_> {
         let guided = self.guided_type_of_expr(arg);
         let val = self.convert_expr(ctx.used(), arg, None)?;
         Ok(val.map(|v| match guided {
-            Some(g) if generic_arg_of(&g.parsed, "Option").is_some() => {
+            Some(g) if matches!(g.shape(), Shape::Option(_)) => {
                 ref_method(v, mk().path_expr(vec!["Option", "is_none"]), "is_none")
             }
             Some(g) if is_str_or_string(tenjin::type_strip_refs(&g.parsed)) => {
@@ -878,8 +726,7 @@ impl Translation<'_> {
         }))
     }
 
-    /// Fits the value of `arg` to `to` (or to the unguided C type `to_cty`).
-    /// Used by `xj_coerce` markers and by initializers the C pass could not
+    /// Fits the value of `arg` to `to`. Used by `xj_coerce` markers and by initializers the C pass could not
     /// wrap (constant contexts, array initializers).
     ///
     /// | from | to | Rust |
@@ -908,21 +755,21 @@ impl Translation<'_> {
         ctx: ExprContext,
         arg: CExprId,
         from: Option<&GuidedType>,
-        to: Option<&GuidedType>,
-        to_cty: CQualTypeId,
+        to: &Sink,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        if let Some(to) = to {
-            if let Some(val) = self.coerce_constant(arg, to) {
-                return Ok(WithStmts::new_val(val));
-            }
-            if let Some(inner) = self.address_of_operand(arg) {
-                return self.coerce_address_of(ctx, inner, from, to);
-            }
-        }
-        let val = self.convert_expr(ctx.used(), arg, None)?;
         match to {
-            Some(to) => Ok(val.map(|v| self.coerce_to_guided(v, from, to))),
-            None => {
+            Sink::Guided(to) => {
+                if let Some(val) = self.coerce_constant(arg, to) {
+                    return Ok(WithStmts::new_val(val));
+                }
+                if let Some(inner) = self.address_of_operand(arg) {
+                    return self.coerce_address_of(ctx, inner, from, to);
+                }
+                let val = self.convert_expr(ctx.used(), arg, None)?;
+                Ok(val.map(|v| self.coerce_to_guided(v, from, to)))
+            }
+            Sink::C(to_cty) => {
+                let val = self.convert_expr(ctx.used(), arg, None)?;
                 let to_ty = self.convert_type(to_cty.ctype)?;
                 let same_pointee = self.ast_context[arg]
                     .kind
@@ -955,24 +802,15 @@ impl Translation<'_> {
 
     /// The value a guided type takes for C's null pointer.
     fn guided_empty(to: &GuidedType) -> Option<Box<Expr>> {
-        let ty = &to.parsed;
         let call = |path: Vec<&str>| Some(mk().call_expr(mk().path_expr(path), vec![]));
-        if tenjin::type_is_string(ty) {
-            return call(vec!["String", "new"]);
+        match to.shape() {
+            Shape::String => call(vec!["String", "new"]),
+            Shape::Vec(_) => call(vec!["Vec", "new"]),
+            Shape::Option(_) => Some(mk().path_expr(vec!["None"])),
+            Shape::StrRef => Some(mk().lit_expr("")),
+            Shape::SliceRef(_) => Some(borrow(mk().array_expr(vec![]), to.is_exclusive_borrow())),
+            _ => None,
         }
-        if tenjin::type_is_vec(ty) {
-            return call(vec!["Vec", "new"]);
-        }
-        if generic_arg_of(ty, "Option").is_some() {
-            return Some(mk().path_expr(vec!["None"]));
-        }
-        if tenjin::type_is_str_ref(ty) {
-            return Some(mk().lit_expr(""));
-        }
-        if tenjin::type_of_slice_ref(ty).is_some() {
-            return Some(borrow(mk().array_expr(vec![]), to.is_exclusive_borrow()));
-        }
-        None
     }
 
     fn guided_string_literal(
@@ -1053,62 +891,52 @@ impl Translation<'_> {
     /// An unguided C value into guided `to`, or `None` when there is no
     /// conversion.
     fn raw_to_guided(val: Box<Expr>, to: &GuidedType) -> Option<Box<Expr>> {
-        let ty = &to.parsed;
-        if tenjin::type_is_vec(ty) {
-            return vec_of_array(&val);
-        }
-        if matches!(ty, Type::Array(_)) {
-            return Some(val);
-        }
-        if type_is_numeric(ty) {
-            return Some(mk().cast_expr(val, Box::new(ty.clone())));
-        }
-        if to.is_borrow() && type_buffer_element(ty).is_none() && !tenjin::type_is_str_ref(ty) {
-            let opt = method(
-                val,
-                if to.is_exclusive_borrow() {
+        match to.shape() {
+            Shape::Vec(_) => vec_of_array(&val),
+            Shape::Array(_) => Some(val),
+            Shape::Number => Some(mk().cast_expr(val, Box::new(to.parsed.clone()))),
+            // A pointer to one object; a buffer has no length to borrow with.
+            Shape::Ref(referent) if type_buffer_element(referent).is_none() => {
+                let as_ref = if to.is_exclusive_borrow() {
                     "as_mut"
                 } else {
                     "as_ref"
-                },
-            );
-            return Some(method(opt, "unwrap"));
+                };
+                Some(method(method(val, as_ref), "unwrap"))
+            }
+            Shape::Char => {
+                let byte = mk().cast_expr(val, mk().path_ty(vec!["u8"]));
+                Some(mk().cast_expr(byte, mk().path_ty(vec!["char"])))
+            }
+            _ => None,
         }
-        if tenjin::type_is_char(ty) {
-            let byte = mk().cast_expr(val, mk().path_ty(vec!["u8"]));
-            return Some(mk().cast_expr(byte, mk().path_ty(vec!["char"])));
-        }
-        None
     }
 
     /// A value guided `from` into guided `to`, or `None` when there is no
-    /// conversion. The first rule that applies wins.
+    /// conversion. The first arm that applies wins.
     fn guided_to_guided(val: Box<Expr>, from: &GuidedType, to: &GuidedType) -> Option<Box<Expr>> {
-        let (f, t) = (&from.parsed, &to.parsed);
-        let mutable = to.is_exclusive_borrow();
-        if to.is_borrow() && !from.is_borrow() {
+        let owned_method = |val, name| Some(method(Self::borrowed_base(val, false), name));
+        match (from.shape(), to.shape()) {
             // An owned value into a borrow of itself, or of what it derefs to.
-            return Some(borrow(val, mutable));
+            (f, t) if t.is_borrow() && !f.is_borrow() => {
+                Some(borrow(val, to.is_exclusive_borrow()))
+            }
+            (_, t) if t.is_borrow() => Some(reborrow(val, to.is_exclusive_borrow())),
+            (Shape::StrRef | Shape::Char, Shape::String) => owned_method(val, "to_string"),
+            (_, Shape::String) if tenjin::type_is_string(from.strip_refs()) => {
+                owned_method(val, "clone")
+            }
+            (f, Shape::Vec(_)) if f.is_borrow() && type_buffer_element(&from.parsed).is_some() => {
+                owned_method(val, "to_vec")
+            }
+            (_, Shape::Option(inner)) if *inner == from.parsed => {
+                Some(mk().call_expr(mk().path_expr(vec!["Some"]), vec![val]))
+            }
+            (Shape::Char, _) | (_, Shape::Char) => {
+                Some(mk().cast_expr(val, Box::new(to.parsed.clone())))
+            }
+            _ => None,
         }
-        if to.is_borrow() && from.is_borrow() {
-            return Some(reborrow(val, mutable));
-        }
-        if tenjin::type_is_string(t) && (tenjin::type_is_str_ref(f) || tenjin::type_is_char(f)) {
-            return Some(method(Self::borrowed_base(val, false), "to_string"));
-        }
-        if tenjin::type_is_string(t) && tenjin::type_is_string(tenjin::type_strip_refs(f)) {
-            return Some(method(Self::borrowed_base(val, false), "clone"));
-        }
-        if tenjin::type_is_vec(t) && from.is_borrow() && type_buffer_element(f).is_some() {
-            return Some(method(Self::borrowed_base(val, false), "to_vec"));
-        }
-        if generic_arg_of(t, "Option") == Some(f) {
-            return Some(mk().call_expr(mk().path_expr(vec!["Some"]), vec![val]));
-        }
-        if tenjin::type_is_char(t) || tenjin::type_is_char(f) {
-            return Some(mk().cast_expr(val, Box::new(t.clone())));
-        }
-        None
     }
 
     /// Both are pointers to the same C type.
@@ -1132,23 +960,22 @@ impl Translation<'_> {
         let Some(from) = from else {
             return val;
         };
-        let f = &from.parsed;
+        let shape = from.shape();
+        let is_buffer = type_buffer_element(&from.parsed).is_some();
         let Type::Ptr(ref to_ptr) = *to else {
-            if from.is_borrow() || is_str_or_string(f) || type_buffer_element(f).is_some() {
+            if shape.is_borrow() || matches!(shape, Shape::String) || is_buffer {
                 return unhandled_coercion(self, val, &from.pretty, &type_text(&to));
             }
             // Scalars, including Rust `char`, convert with `as`.
             return mk().cast_expr(val, to);
         };
         let to_mut = to_ptr.mutability.is_some();
-        if type_buffer_element(f).is_some() {
-            return mk().cast_expr(as_ptr(Self::borrowed_base(val, to_mut), to_mut), to);
-        }
-        if let Type::Ptr(_) = f {
-            return mk().cast_expr(val, to);
-        }
-        match referent(from) {
-            Some(target) if !tenjin::type_is_exactly_1_path(target, "str") => {
+        match shape {
+            _ if is_buffer => mk().cast_expr(as_ptr(Self::borrowed_base(val, to_mut), to_mut), to),
+            Shape::Ptr(_) => mk().cast_expr(val, to),
+            Shape::Ref(target) | Shape::Box(target)
+                if !tenjin::type_is_exactly_1_path(target, "str") =>
+            {
                 Self::ref_to_raw(val, from, target, to, same_pointee)
             }
             _ => unhandled_coercion(self, val, &from.pretty, &type_text(&to)),
@@ -1165,7 +992,7 @@ impl Translation<'_> {
         to: Box<Type>,
         same_pointee: bool,
     ) -> Box<Expr> {
-        let mutable = from.is_exclusive_borrow() || generic_arg_of(&from.parsed, "Box").is_some();
+        let mutable = from.is_exclusive_borrow() || matches!(from.shape(), Shape::Box(_));
         let to_mut = matches!(*to, Type::Ptr(ref p) if p.mutability.is_some());
         let val = if from.is_borrow() {
             val
@@ -1310,11 +1137,8 @@ impl Translation<'_> {
     }
 
     fn is_owned_guided(&self, ty: CTypeId) -> bool {
-        self.guided_type_of_ctype(ty).is_some_and(|g| {
-            tenjin::type_is_string(&g.parsed)
-                || tenjin::type_is_vec(&g.parsed)
-                || generic_arg_of(&g.parsed, "Box").is_some()
-        })
+        self.guided_type_of_ctype(ty)
+            .is_some_and(|g| g.shape().is_owned())
     }
 
     fn is_vec_in_place_of_array(&self, ty: CTypeId) -> bool {
@@ -1336,10 +1160,11 @@ impl Translation<'_> {
         override_ty: Option<CQualTypeId>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         if let Some(typ) = override_ty {
-            if let Some(to) = self.guided_type_of_ctype(typ.ctype) {
+            let to = self.sink_of(typ);
+            if let Sink::Guided(ref guided) = to {
                 let from = self.initializer_guidance(init);
-                if self.initializer_needs_coercion(init, from.as_ref(), &to) {
-                    return self.coerce_value(ctx, init, from.as_ref(), Some(&to), typ);
+                if self.initializer_needs_coercion(init, from.as_ref(), guided) {
+                    return self.coerce_value(ctx, init, from.as_ref(), &to);
                 }
             }
         }
@@ -1373,9 +1198,9 @@ impl Translation<'_> {
                     kind.is_integral_type() || kind.is_floating_type()
                 })
             },
-            |f| type_is_numeric(&f.parsed),
+            |f| matches!(f.shape(), Shape::Number),
         );
-        !(init_is_numeric && type_is_numeric(&to.parsed))
+        !(init_is_numeric && matches!(to.shape(), Shape::Number))
     }
 
     /// Runs `f` with marker typedefs converted as the C types behind them,

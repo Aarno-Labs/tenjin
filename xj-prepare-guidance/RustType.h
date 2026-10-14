@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <string>
@@ -79,6 +80,9 @@ struct RustType {
   // and plain record names do not.
   bool isGuidedLike() const;
 };
+
+// A character that can appear in a C or Rust identifier.
+inline bool isIdentChar(char C) { return llvm::isAlnum(C) || C == '_'; }
 
 // `Text` with each run of characters that cannot appear in a C identifier
 // replaced by `_`, and without leading or trailing `_`.

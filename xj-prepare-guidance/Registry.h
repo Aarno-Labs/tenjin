@@ -8,9 +8,14 @@
 // Names must agree across translation units, because refolding moves an
 // edit into a shared header only when every TU made the same edit. So names
 // are not handed out as keys are met: the first sweep interns every key,
-// `finalize` names them, and the second sweep asks for the names. Spellings
-// may mention a typedef before it has a name; such references are written
-// as placeholders and resolved on output.
+// `finalize` names them, and the second sweep asks for the names.
+//
+// Key texts therefore hold two kinds of placeholder, both filled in on
+// output:
+//   - `typedefRef(Id)` (`\x01Id\x02`) stands for the name of another
+//     typedef, which may not be named yet; `resolve` replaces it.
+//   - `@NAME@`, in a typedef's own declarator only, stands for the name of
+//     the typedef being declared; `definition` replaces it.
 
 #pragma once
 
@@ -87,6 +92,9 @@ public:
   std::string name(const MarkerKey &K) const;
   std::string resolve(llvm::StringRef Text) const;
 
+  // Valid at the top of the force-included header: mentions only builtins
+  // and typedefs that are themselves header-safe.
+  bool isHeaderSafe(const Spelling &S) const;
   bool isHeaderSafe(const TypedefKey &K) const;
   bool isHeaderSafe(const MarkerKey &K) const;
   std::string definition(const TypedefKey &K) const;
@@ -96,9 +104,10 @@ public:
   llvm::json::Object markerTypedefsJson() const;
   llvm::json::Object markersJson() const;
 
-  // Local typedefs a local definition depends on, transitively, in no
-  // particular order.
-  std::vector<const TypedefKey *> typedefClosure(const Spelling &S) const;
+  // The typedefs `Ids` names and those they depend on, transitively, each
+  // after the typedefs it depends on.
+  std::vector<const TypedefKey *>
+  withDependencies(const std::set<std::string> &Ids) const;
 
 private:
   std::map<std::string, TypedefKey> Typedefs;
@@ -111,8 +120,8 @@ private:
   const std::string &nameOf(const std::string &Id) const;
   void nameLate(const std::string &Id, const std::string &Base);
   std::string freeName(const std::string &Base);
-  void appendHeaderTypedef(const TypedefKey &K, std::set<std::string> &Done,
-                           std::string &Out) const;
+  void appendWithDependencies(const TypedefKey &K, std::set<std::string> &Done,
+                              std::vector<const TypedefKey *> &Out) const;
 };
 
 } // namespace xj

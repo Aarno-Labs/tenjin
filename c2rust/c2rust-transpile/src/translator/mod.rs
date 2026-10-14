@@ -2989,7 +2989,7 @@ impl<'c> Translation<'c> {
         // the guided type holds (`Box<Node>`, `&'static [Node]`) keeps its
         // C fields.
         if let Some(guided) = self.guided_type_of_ctype(ctype) {
-            return markers::type_mentions_raw_pointer(&guided.parsed)
+            return tenjin::type_mentions_raw_pointer(&guided.parsed)
                 || self.guided_referent_contains_unguided_raw_pointer(ctype, visited_records);
         }
 

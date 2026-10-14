@@ -96,15 +96,8 @@ private:
   bool retypesGuidedValue(XjType FX, clang::QualType Written,
                           const Sink &K) const;
 
-  bool isGuidedPointer(const clang::Expr *E) const;
   void nullTest(const clang::Expr *Whole, const clang::Expr *Operand,
                 bool Negate);
 };
-
-// `E` before the conversions that fit it to its sink, and that value's type.
-const clang::Expr *valueExpr(const clang::Expr *E);
-clang::QualType valueType(const clang::Expr *E);
-// The type of that value as written, before array decay.
-clang::QualType writtenType(const clang::Expr *E);
 
 } // namespace xj

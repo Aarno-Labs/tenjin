@@ -56,6 +56,9 @@ private:
   clang::SourceLocation declaratorEnd(const clang::DeclaratorDecl *D) const;
   bool replaceSpecifiers(clang::SourceRange R, const Rewrite &W,
                          const TypedefKey &K, const clang::NamedDecl *D);
+  // Reports that `D` keeps its C type although guided as `Ty`.
+  void refuse(const clang::NamedDecl *D, const RustType &Ty,
+              llvm::StringRef Why);
 };
 
 // Storage classes, function specifiers and attributes in a declaration's

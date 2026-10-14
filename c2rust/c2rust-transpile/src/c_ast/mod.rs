@@ -1065,13 +1065,20 @@ impl TypedAstContext {
     /// Pessimistically try to check if an expression has side effects. If it does, or we can't tell
     /// that it doesn't, return `false`.
     pub fn is_expr_pure(&self, expr: CExprId) -> bool {
+        self.is_expr_pure_with(expr, &|_| false)
+    }
+
+    /// `is_expr_pure`, except that a call is pure when `pure_callee` holds for
+    /// its callee and its arguments are pure.
+    pub fn is_expr_pure_with(&self, expr: CExprId, pure_callee: &dyn Fn(CExprId) -> bool) -> bool {
         use CExprKind::*;
-        let pure = |expr| self.is_expr_pure(expr);
+        let pure = |expr| self.is_expr_pure_with(expr, pure_callee);
         match self[expr].kind {
+            Call(_, func, ref args) => pure_callee(func) && args.iter().all(|&arg| pure(arg)),
+
             BadExpr |
             ShuffleVector(..) |
             ConvertVector(..) |
-            Call(..) |
             Unary(_, CUnOp::PreIncrement, _, _) |
             Unary(_, CUnOp::PostIncrement, _, _) |
             Unary(_, CUnOp::PreDecrement, _, _) |

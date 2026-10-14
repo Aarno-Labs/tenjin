@@ -115,10 +115,6 @@ bool Guidance::alreadyInstrumented() const {
   return Raw.get("marker_typedefs") != nullptr;
 }
 
-bool Guidance::isEmpty() const {
-  return VarTypes.empty() && FnReturnTypes.empty() && VarMut.empty();
-}
-
 static std::vector<std::string> sortedKeys(const llvm::json::Object *O) {
   std::vector<std::string> Keys;
   if (O)

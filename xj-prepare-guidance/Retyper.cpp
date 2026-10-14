@@ -29,8 +29,6 @@ private:
   Retyper &R;
 };
 
-bool isIdentChar(char C) { return std::isalnum(C) || C == '_'; }
-
 // Index just past the parenthesized group starting at or after `I`.
 size_t skipParenGroup(llvm::StringRef Text, size_t I) {
   while (I < Text.size() && Text[I] != '(')
@@ -215,9 +213,8 @@ void Retyper::guideRedecls(const VarDecl *VD, const RustType &Ty) {
 }
 
 bool Retyper::canRetype(const DeclaratorDecl *D, const RustType &Ty) {
-  std::string Subject = D->getName().str() + ": " + Ty.str();
   auto Refuse = [&](llvm::StringRef Why) {
-    S.diagnose("not-retyped", D->getLocation(), Subject, Why);
+    refuse(D, Ty, Why);
     return false;
   };
   if (D->isImplicit() || !D->getTypeSourceInfo() ||
@@ -254,9 +251,7 @@ void Retyper::guide(const DeclaratorDecl *D, const RustType &Ty) {
   QualType Written = retypedType(D);
   const TypedefKey *K = keyFor(Ty, Written.getLocalUnqualifiedType());
   if (!K) {
-    S.diagnose("not-retyped", D->getLocation(),
-               D->getName().str() + ": " + Ty.str(),
-               "type mentions a name local to a function");
+    refuse(D, Ty, "type mentions a name local to a function");
     return;
   }
   if (!retype(D, *K, Written.getLocalQualifiers()))
@@ -349,17 +344,13 @@ bool Retyper::replaceSpecifiers(SourceRange R, const Rewrite &W,
       File ? S.SM.getBufferData(File->File).slice(File->Begin, File->End) : "";
   // A tag defined inside the declaration would be deleted with the type.
   if (!File || Text.contains('{')) {
-    S.diagnose("not-retyped", D->getLocation(),
-               D->getName().str() + ": " + K.Rust.str(),
-               "declaration's type cannot be rewritten in place");
+    refuse(D, K.Rust, "declaration's type cannot be rewritten in place");
     return false;
   }
   GuidanceEdits::Result Made =
       S.Edits.add(R, Edit::retype(K, keptSpecifiers(Text) + W.Quals, W.After));
   if (Made != GuidanceEdits::Result::Made) {
-    S.diagnose("not-retyped", D->getLocation(),
-               D->getName().str() + ": " + K.Rust.str(),
-               GuidanceEdits::describe(Made));
+    refuse(D, K.Rust, GuidanceEdits::describe(Made));
     return false;
   }
   return true;
@@ -377,13 +368,17 @@ bool Retyper::retypeReturn(const FunctionDecl *FD, const TypedefKey &K) {
   SourceRange Ret = FD->getReturnTypeSourceRange();
   if (Ret.isInvalid() ||
       !S.SM.isBeforeInTranslationUnit(Ret.getEnd(), FD->getLocation())) {
-    S.diagnose("not-retyped", FD->getLocation(),
-               FD->getName().str() + ": " + K.Rust.str(),
-               "return type is not written before the function name");
+    refuse(FD, K.Rust, "return type is not written before the function name");
     return false;
   }
   return replaceSpecifiers(SourceRange(FD->getBeginLoc(), Ret.getEnd()),
                            {"", " "}, K, FD);
+}
+
+void Retyper::refuse(const NamedDecl *D, const RustType &Ty,
+                     llvm::StringRef Why) {
+  S.diagnose("not-retyped", D->getLocation(),
+             D->getName().str() + ": " + Ty.str(), Why);
 }
 
 } // namespace xj

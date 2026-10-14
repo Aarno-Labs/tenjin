@@ -10,6 +10,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 
 add_executable(xj-prepare-guidance
     main.cpp
+    ExprShape.cpp
     FlowInstrumenter.cpp
     Guidance.cpp
     GuidanceAction.cpp

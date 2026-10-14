@@ -53,13 +53,10 @@ private:
   XjTyper Types;
   MarkerFactory Markers;
 
-  bool isGuidedPointer(const clang::Expr *E) const;
   const clang::Expr *
   guidedPointerOperand(const clang::BinaryOperator *BO) const;
   bool isPointerBuffer(const clang::Expr *E) const;
   bool isGuidedString(const clang::Expr *E) const;
-  const clang::Stmt *parentThroughParens(const clang::Expr *E) const;
-  bool isRead(const clang::Expr *E) const;
   bool isCancelledByAddrOf(const clang::UnaryOperator *Deref) const;
   bool normalizeElementAccess(const clang::Expr *Node, const clang::Expr *Base,
                               const clang::Expr *Index);
@@ -72,7 +69,6 @@ private:
                      const clang::Expr *Index);
   bool advanceSlice(const clang::Expr *Node, const clang::Expr *Operand,
                     const clang::Expr *Step);
-  bool isStatement(const clang::Expr *E) const;
   void normalizeInPlaceMotion(const clang::BinaryOperator *BO);
   void checkPointerSubtraction(const clang::BinaryOperator *BO);
   void checkPointerOrdering(const clang::BinaryOperator *BO);

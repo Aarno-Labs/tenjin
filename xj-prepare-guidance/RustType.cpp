@@ -4,7 +4,6 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 
-#include <cctype>
 #include <optional>
 
 using llvm::StringRef;
@@ -23,15 +22,14 @@ struct Token {
 std::vector<Token> tokenize(StringRef S) {
   std::vector<Token> Toks;
   size_t I = 0;
-  auto isIdentChar = [](char C) { return std::isalnum(C) || C == '_'; };
   while (I < S.size()) {
     char C = S[I];
-    if (std::isspace(C)) {
+    if (llvm::isSpace(C)) {
       ++I;
       continue;
     }
     size_t Begin = I;
-    if (std::isalpha(C) || C == '_' || std::isdigit(C)) {
+    if (isIdentChar(C)) {
       while (I < S.size() && isIdentChar(S[I]))
         ++I;
       Toks.push_back({Token::Ident, S.slice(Begin, I).str(), Begin});
@@ -231,7 +229,7 @@ std::string collapseSpaces(StringRef S) {
   std::string Out;
   bool PendingSpace = false;
   for (char C : S.trim()) {
-    if (std::isspace(C)) {
+    if (llvm::isSpace(C)) {
       PendingSpace = true;
       continue;
     }
@@ -287,7 +285,7 @@ std::string RustType::str() const {
 std::string identifierFragment(StringRef Text) {
   std::string Out;
   for (char C : Text) {
-    if (llvm::isAlnum(C) || C == '_')
+    if (isIdentChar(C))
       Out += C;
     else if (!Out.empty() && Out.back() != '_')
       Out += '_';

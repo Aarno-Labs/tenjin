@@ -4,25 +4,6 @@ using namespace clang;
 
 namespace xj {
 
-const Expr *stripValueCasts(const Expr *E) {
-  while (true) {
-    E = E->IgnoreParens();
-    const auto *ICE = dyn_cast<ImplicitCastExpr>(E);
-    if (!ICE)
-      return E;
-    switch (ICE->getCastKind()) {
-    case CK_LValueToRValue:
-    case CK_ArrayToPointerDecay:
-    case CK_NoOp:
-    case CK_BitCast:
-      E = ICE->getSubExpr();
-      break;
-    default:
-      return E;
-    }
-  }
-}
-
 XjType XjTyper::ofDecl(const Decl *D) const {
   auto It = S.DeclKeys.find(D);
   return It == S.DeclKeys.end() ? XjType{} : XjType{It->second, 0};
@@ -59,9 +40,8 @@ XjType XjTyper::ofUnary(const UnaryOperator *UO) const {
   case UO_Deref:
     return element(of(UO->getSubExpr()));
   case UO_AddrOf: {
-    const auto *Inner = dyn_cast<UnaryOperator>(UO->getSubExpr()->IgnoreParens());
-    if (Inner && Inner->getOpcode() == UO_Deref)
-      return of(Inner->getSubExpr());
+    if (const UnaryOperator *Deref = cancelledDeref(UO))
+      return of(Deref->getSubExpr());
     XjType X = of(UO->getSubExpr());
     if (X)
       ++X.AddrOf;
@@ -73,13 +53,9 @@ XjType XjTyper::ofUnary(const UnaryOperator *UO) const {
 }
 
 XjType XjTyper::of(const Expr *E) const {
-  E = E->IgnoreParens();
-  if (const auto *ICE = dyn_cast<ImplicitCastExpr>(E)) {
-    CastKind K = ICE->getCastKind();
-    bool KeepsValue =
-        K == CK_LValueToRValue || K == CK_NoOp || K == CK_ArrayToPointerDecay;
-    return KeepsValue ? of(ICE->getSubExpr()) : XjType{};
-  }
+  E = stripGuidanceCasts(E);
+  if (isa<ImplicitCastExpr>(E))
+    return {};
   if (const auto *DRE = dyn_cast<DeclRefExpr>(E))
     return ofDecl(DRE->getDecl());
   if (const auto *ME = dyn_cast<MemberExpr>(E))
@@ -103,6 +79,10 @@ bool XjTyper::isBuffer(const Expr *E) const {
 bool XjTyper::isSingleObject(const Expr *E) const {
   XjType X = of(E);
   return X.rust() && X.rust()->isSingleObject();
+}
+
+bool XjTyper::isGuidedPointer(const Expr *E) const {
+  return valueType(E)->isPointerType() && of(E).rust();
 }
 
 } // namespace xj

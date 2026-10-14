@@ -30,13 +30,6 @@ impl GuidedType {
         GuidedType { pretty, parsed }
     }
 
-    pub fn from_type(ty: Type) -> Self {
-        GuidedType {
-            pretty: quote::quote!(#ty).to_string(),
-            parsed: ty,
-        }
-    }
-
     pub fn strip_refs(&self) -> &Type {
         type_strip_refs(&self.parsed)
     }
@@ -51,6 +44,10 @@ impl GuidedType {
 
     pub fn is_shared_borrow(&self) -> bool {
         self.is_borrow() && !self.is_exclusive_borrow()
+    }
+
+    pub fn shape(&self) -> Shape<'_> {
+        type_shape(&self.parsed)
     }
 }
 
@@ -382,18 +379,20 @@ pub fn type_is_str_ref(ty: &Type) -> bool {
     type_of_ref(ty).is_some_and(|inner| type_is_exactly_1_path(inner, "str"))
 }
 
-pub fn try_type_vec_of(ty: &Type) -> Option<&Type> {
-    if let Some(path) = type_get_bare_path(ty) {
-        if is_path_exactly_1(path, "Vec") {
-            return path_get_1_segment(path)
-                .and_then(segment_get_1_bracket_argument)
-                .and_then(|ga| match ga {
-                    GenericArgument::Type(arg) => Some(arg),
-                    _ => None,
-                });
-        }
+/// `T` of a one-argument generic path `name<T>`.
+pub fn try_type_generic_of<'a>(ty: &'a Type, name: &str) -> Option<&'a Type> {
+    let path = type_get_bare_path(ty)?;
+    if !is_path_exactly_1(path, name) {
+        return None;
     }
-    None
+    match path_get_1_segment(path).and_then(segment_get_1_bracket_argument)? {
+        GenericArgument::Type(arg) => Some(arg),
+        _ => None,
+    }
+}
+
+pub fn try_type_vec_of(ty: &Type) -> Option<&Type> {
+    try_type_generic_of(ty, "Vec")
 }
 
 pub fn type_is_vec_of_1_path(ty: &Type, a: &str) -> bool {
@@ -465,6 +464,187 @@ pub fn type_strip_refs(t: &Type) -> &Type {
     }
 }
 
+/// What a guided type is, as far as converting values into and out of it
+/// goes.
+#[derive(Clone, Copy, Debug)]
+pub enum Shape<'a> {
+    String,
+    /// `&str` or `&mut str`.
+    StrRef,
+    Char,
+    /// A Rust primitive number or a C numeric alias (`c_int`, `size_t`).
+    Number,
+    Vec(&'a Type),
+    /// `[T; N]`.
+    Array(&'a Type),
+    Box(&'a Type),
+    Option(&'a Type),
+    /// `&[T]` or `&mut [T]`.
+    SliceRef(&'a Type),
+    /// `&T` or `&mut T` for any other `T`.
+    Ref(&'a Type),
+    /// `*const T` or `*mut T`.
+    Ptr(&'a Type),
+    /// Anything else: a record name, a tuple.
+    Other,
+}
+
+impl Shape<'_> {
+    pub fn is_borrow(self) -> bool {
+        matches!(self, Self::StrRef | Self::SliceRef(_) | Self::Ref(_))
+    }
+
+    /// Owns what it holds, so it is not `Copy`.
+    pub fn is_owned(self) -> bool {
+        matches!(self, Self::String | Self::Vec(_) | Self::Box(_))
+    }
+}
+
+pub fn type_shape(ty: &Type) -> Shape<'_> {
+    match ty {
+        Type::Reference(r) => match &*r.elem {
+            Type::Slice(slice) => Shape::SliceRef(&slice.elem),
+            elem if type_is_exactly_1_path(elem, "str") => Shape::StrRef,
+            elem => Shape::Ref(elem),
+        },
+        Type::Ptr(ptr) => Shape::Ptr(&ptr.elem),
+        Type::Array(array) => Shape::Array(&array.elem),
+        _ if type_is_string(ty) => Shape::String,
+        _ if type_is_char(ty) => Shape::Char,
+        _ if type_is_numeric(ty) => Shape::Number,
+        _ => {
+            let generic = |name| try_type_generic_of(ty, name);
+            if let Some(elem) = generic("Vec") {
+                Shape::Vec(elem)
+            } else if let Some(inner) = generic("Box") {
+                Shape::Box(inner)
+            } else if let Some(inner) = generic("Option") {
+                Shape::Option(inner)
+            } else {
+                Shape::Other
+            }
+        }
+    }
+}
+
+/// The element of a buffer type: `[T]`, `[T; N]`, `Vec<T>` or `Box<[T]>`,
+/// possibly behind references.
+pub fn type_buffer_element(ty: &Type) -> Option<&Type> {
+    match type_strip_refs(ty) {
+        Type::Slice(slice) => Some(&slice.elem),
+        Type::Array(array) => Some(&array.elem),
+        t => match type_shape(t) {
+            Shape::Vec(elem) => Some(elem),
+            Shape::Box(Type::Slice(slice)) => Some(&slice.elem),
+            _ => None,
+        },
+    }
+}
+
+/// `pred` holds for `ty` or a type it is built from, looking through
+/// references and raw pointers only when `through_refs`.
+fn type_any(ty: &Type, through_refs: bool, pred: &dyn Fn(&Type) -> bool) -> bool {
+    if pred(ty) {
+        return true;
+    }
+    let any = |t: &Type| type_any(t, through_refs, pred);
+    match ty {
+        Type::Reference(r) => through_refs && any(&r.elem),
+        Type::Ptr(p) => through_refs && any(&p.elem),
+        Type::Slice(s) => any(&s.elem),
+        Type::Array(a) => any(&a.elem),
+        Type::Paren(p) => any(&p.elem),
+        Type::Group(g) => any(&g.elem),
+        Type::Tuple(t) => t.elems.iter().any(any),
+        Type::Path(p) => p.path.segments.iter().any(|seg| match &seg.arguments {
+            syn::PathArguments::AngleBracketed(args) => args
+                .args
+                .iter()
+                .any(|arg| matches!(arg, GenericArgument::Type(t) if any(t))),
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
+/// `ty` holds a raw pointer anywhere in it: `*const T`, `Vec<*mut T>`,
+/// `[*const c_char; N]`, `Option<*mut T>`.
+pub fn type_mentions_raw_pointer(ty: &Type) -> bool {
+    type_any(ty, true, &|t| matches!(t, Type::Ptr(_)))
+}
+
+/// `ty` owns what it holds (`String`, `Vec`, `Box`), or holds an exclusive
+/// reference, so it is not `Copy`.
+pub fn type_is_not_copy(ty: &Type) -> bool {
+    type_any(ty, false, &|t| {
+        type_shape(t).is_owned() || type_is_mut_ref(t)
+    })
+}
+
+/// `ty` holds an exclusive reference, so it is not `Clone`.
+pub fn type_is_not_clone(ty: &Type) -> bool {
+    type_any(ty, false, &type_is_mut_ref)
+}
+
+/// Rust primitive numbers and C's numeric aliases (`c_int`, `size_t`, ...).
+pub fn type_is_numeric(ty: &Type) -> bool {
+    let Some(path) = type_get_bare_path(ty) else {
+        return false;
+    };
+    let Some(last) = path.segments.last() else {
+        return false;
+    };
+    let name = last.ident.to_string();
+    let primitive = matches!(
+        name.as_str(),
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "size_t"
+            | "ssize_t"
+    );
+    primitive || (name.starts_with("c_") && name != "c_void")
+}
+
+/// The primitive a C numeric alias names on the LP64 targets Tenjin supports.
+/// `c_char` is left out: its signedness differs between targets.
+fn primitive_of_alias(name: &str) -> &str {
+    match name {
+        "c_schar" => "i8",
+        "c_uchar" => "u8",
+        "c_short" => "i16",
+        "c_ushort" => "u16",
+        "c_int" => "i32",
+        "c_uint" => "u32",
+        "c_long" | "c_longlong" => "i64",
+        "c_ulong" | "c_ulonglong" => "u64",
+        "c_float" => "f32",
+        "c_double" => "f64",
+        other => other,
+    }
+}
+
+/// `a` and `b` are the same type, looking through C numeric aliases.
+pub fn same_numeric_type(a: &Type, b: &Type) -> bool {
+    let last = |t: &Type| {
+        type_get_bare_path(t)
+            .and_then(|p| p.segments.last())
+            .map(|s| primitive_of_alias(&s.ident.to_string()).to_string())
+    };
+    a == b || (type_is_numeric(a) && type_is_numeric(b) && last(a) == last(b))
+}
+
 pub fn expr_get_path(expr: &Expr) -> Option<&Path> {
     if let Expr::Path(ref path) = *expr {
         Some(&path.path)
@@ -522,10 +702,6 @@ pub fn expr_is_lit_str_only(expr: &Expr) -> bool {
         }
     }
     false
-}
-
-pub fn expr_is_borrow(expr: &Expr) -> bool {
-    matches!(expr, Expr::Reference(_))
 }
 
 pub fn expr_strip_casts(expr: &Expr) -> &Expr {
@@ -2656,31 +2832,6 @@ impl Translation<'_> {
             return Some(mk().lit_expr(s));
         }
         None
-    }
-
-    /// A pointer offset as `isize`, cast with `as`. An enum is a newtype, so
-    /// it takes C's conversion to get its integer out.
-    pub fn convert_expr_as_offset(
-        &self,
-        ctx: ExprContext,
-        target: CQualTypeId,
-        expr: CExprId,
-    ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let is_enum = self.ast_context[expr]
-            .kind
-            .get_qual_type()
-            .is_some_and(|t| {
-                matches!(
-                    self.ast_context.resolve_type(t.ctype).kind,
-                    CTypeKind::Enum(_)
-                )
-            });
-        if is_enum {
-            return self.convert_expr_with_cast(ctx, target, expr);
-        }
-        Ok(self
-            .convert_expr(ctx, expr, None)?
-            .map(|offset| cast_int(offset, "isize", false)))
     }
 
     /// A C function's return type as a Rust one; `void` is omitted.

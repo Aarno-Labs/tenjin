@@ -440,12 +440,8 @@ impl<'c> Translation<'c> {
             // LHS must be ref decayed for the offset method call's self param
             let pointer_rs =
                 self.convert_expr(ctx.used().not_needs_address().decay_ref(), pointer_id, None)?;
-            let target_type_id = self.ast_context.type_for_kind(&CTypeKind::SSize);
-            let offset_rs = self.convert_expr_as_offset(
-                ctx.used().not_needs_address(),
-                CQualTypeId::new(target_type_id),
-                offset_id,
-            )?;
+            let offset_rs =
+                self.convert_index_operand(ctx.used().not_needs_address(), offset_id, true)?;
 
             let mut val = pointer_rs
                 .zip(offset_rs)
@@ -478,6 +474,34 @@ impl<'c> Translation<'c> {
 
             Ok(val)
         }
+    }
+
+    /// An integer used as a pointer offset (`isize`, when `signed`) or an
+    /// index (`usize`), cast with `as`. An enum is a newtype, so its integer
+    /// is taken out by C's conversion to `ssize_t` or `size_t`.
+    pub fn convert_index_operand(
+        &self,
+        ctx: ExprContext,
+        expr: CExprId,
+        signed: bool,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let is_enum = self.ast_context[expr]
+            .kind
+            .get_type()
+            .is_some_and(|t| matches!(self.ast_context.resolve_type(t).kind, CTypeKind::Enum(_)));
+        if is_enum {
+            let c_kind = if signed {
+                CTypeKind::SSize
+            } else {
+                CTypeKind::Size
+            };
+            let target = CQualTypeId::new(self.ast_context.type_for_kind(&c_kind));
+            return self.convert_expr_with_cast(ctx, target, expr);
+        }
+        let rust_ty = if signed { "isize" } else { "usize" };
+        Ok(self
+            .convert_expr(ctx, expr, None)?
+            .map(|i| cast_int(i, rust_ty, false)))
     }
 
     /// Pointer offset that casts its argument to isize

@@ -1,22 +1,14 @@
 #include "Normalizer.h"
 
-#include "clang/AST/ParentMapContext.h"
-#include "clang/AST/RecursiveASTVisitor.h"
-
 using namespace clang;
 
 namespace xj {
 
 namespace {
 
-class OperatorVisitor : public RecursiveASTVisitor<OperatorVisitor> {
+class OperatorVisitor : public EvaluatedCodeVisitor<OperatorVisitor> {
 public:
   explicit OperatorVisitor(Normalizer &N) : N(N) {}
-
-  bool TraverseUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *) {
-    return true;
-  }
-  bool TraverseGenericSelectionExpr(GenericSelectionExpr *) { return true; }
 
   bool VisitUnaryOperator(UnaryOperator *UO) {
     switch (UO->getOpcode()) {
@@ -50,13 +42,6 @@ private:
   Normalizer &N;
 };
 
-// The pointer and integer operands of `p + i` or `i + p`.
-std::pair<const Expr *, const Expr *> splitOffset(const BinaryOperator *BO) {
-  if (BO->getLHS()->getType()->isPointerType())
-    return {BO->getLHS(), BO->getRHS()};
-  return {BO->getRHS(), BO->getLHS()};
-}
-
 std::string describe(const Expr *E, XjType X) {
   std::string Name = "<expression>";
   if (const auto *DRE = dyn_cast<DeclRefExpr>(stripValueCasts(E)))
@@ -72,10 +57,6 @@ void Normalizer::run() {
   OperatorVisitor(*this).TraverseDecl(S.Ctx.getTranslationUnitDecl());
 }
 
-bool Normalizer::isGuidedPointer(const Expr *E) const {
-  return E->getType()->isPointerType() && Types.of(E).rust();
-}
-
 // The guided operand of `BO` when both operands are pointers; null when
 // either is not a pointer or neither is guided.
 const Expr *Normalizer::guidedPointerOperand(const BinaryOperator *BO) const {
@@ -83,9 +64,9 @@ const Expr *Normalizer::guidedPointerOperand(const BinaryOperator *BO) const {
   const Expr *R = BO->getRHS();
   if (!L->getType()->isPointerType() || !R->getType()->isPointerType())
     return nullptr;
-  if (isGuidedPointer(L))
+  if (Types.isGuidedPointer(L))
     return L;
-  return isGuidedPointer(R) ? R : nullptr;
+  return Types.isGuidedPointer(R) ? R : nullptr;
 }
 
 // A guided buffer held in a pointer, not an array.
@@ -99,32 +80,12 @@ bool Normalizer::isGuidedString(const Expr *E) const {
   return T && (T->stripRefs().isString() || T->stripRefs().isStr());
 }
 
-// The statement or expression containing `E`, above any parentheses; null
-// when there is not exactly one.
-const Stmt *Normalizer::parentThroughParens(const Expr *E) const {
-  while (true) {
-    auto Parents = S.Ctx.getParents(*E);
-    if (Parents.size() != 1)
-      return nullptr;
-    const auto *PE = Parents[0].get<ParenExpr>();
-    if (!PE)
-      return Parents[0].get<Stmt>();
-    E = PE;
-  }
-}
-
-// `E` is read: C converts it from the place it names to its value.
-bool Normalizer::isRead(const Expr *E) const {
-  const auto *ICE = dyn_cast_or_null<ImplicitCastExpr>(parentThroughParens(E));
-  return ICE && ICE->getCastKind() == CK_LValueToRValue;
-}
-
 // `Deref` is the `*p` of `&*p` for guided `p`, which visitAddrOf rewrites as
 // a whole.
 bool Normalizer::isCancelledByAddrOf(const UnaryOperator *Deref) const {
   const auto *AddrOf =
-      dyn_cast_or_null<UnaryOperator>(parentThroughParens(Deref));
-  return AddrOf && AddrOf->getOpcode() == UO_AddrOf &&
+      dyn_cast_or_null<UnaryOperator>(parentThroughParens(S.Ctx, Deref));
+  return AddrOf && cancelledDeref(AddrOf) == Deref &&
          Types.of(Deref->getSubExpr());
 }
 
@@ -135,7 +96,7 @@ bool Normalizer::isCancelledByAddrOf(const UnaryOperator *Deref) const {
 // is none of these.
 bool Normalizer::normalizeElementAccess(const Expr *Node, const Expr *Base,
                                         const Expr *Index) {
-  if (isGuidedString(Base) && isRead(Node)) {
+  if (isGuidedString(Base) && isRead(S.Ctx, Node)) {
     addCharAtCall(Node, Base, Index);
     return true;
   }
@@ -193,7 +154,7 @@ bool Normalizer::advanceSlice(const Expr *Node, const Expr *Operand,
                               const Expr *Step) {
   XjType X = Types.of(Operand);
   const RustType *T = X.rust();
-  if (!T || !T->isSliceRef() || T->Mut || !isStatement(Node) ||
+  if (!T || !T->isSliceRef() || T->Mut || !isStatement(S.Ctx, Node) ||
       Operand->HasSideEffects(S.Ctx))
     return false;
   const MarkerKey *M =
@@ -205,33 +166,6 @@ bool Normalizer::advanceSlice(const Expr *Node, const Expr *Operand,
   return true;
 }
 
-// `E` is evaluated for its effect alone: an expression statement, or the
-// init or increment of a `for`. An initializer, a returned value or a
-// condition uses its value.
-bool Normalizer::isStatement(const Expr *E) const {
-  auto Parents = S.Ctx.getParents(*E);
-  if (Parents.size() != 1)
-    return false;
-  const DynTypedNode &P = Parents[0];
-  if (P.get<CompoundStmt>())
-    return true;
-  if (const auto *If = P.get<IfStmt>())
-    return E == If->getThen() || E == If->getElse();
-  if (const auto *While = P.get<WhileStmt>())
-    return E == While->getBody();
-  if (const auto *Do = P.get<DoStmt>())
-    return E == Do->getBody();
-  if (const auto *For = P.get<ForStmt>())
-    return E == For->getInit() || E == For->getInc() || E == For->getBody();
-  if (const auto *Switch = P.get<SwitchStmt>())
-    return E == Switch->getBody();
-  if (const auto *Case = P.get<SwitchCase>())
-    return E == Case->getSubStmt();
-  if (const auto *Label = P.get<LabelStmt>())
-    return E == Label->getSubStmt();
-  return false;
-}
-
 void Normalizer::report(llvm::StringRef Kind, const Expr *Site,
                         const Expr *Operand, llvm::StringRef Message) {
   S.diagnose(Kind, Site->getExprLoc(), describe(Operand, Types.of(Operand)),
@@ -239,8 +173,8 @@ void Normalizer::report(llvm::StringRef Kind, const Expr *Site,
 }
 
 void Normalizer::visitAddrOf(const UnaryOperator *UO) {
-  const auto *Deref = dyn_cast<UnaryOperator>(UO->getSubExpr()->IgnoreParens());
-  if (!Deref || Deref->getOpcode() != UO_Deref)
+  const UnaryOperator *Deref = cancelledDeref(UO);
+  if (!Deref)
     return;
   const Expr *Operand = Deref->getSubExpr();
   if (Types.of(Operand))
@@ -251,12 +185,9 @@ void Normalizer::visitDeref(const UnaryOperator *UO) {
   if (isCancelledByAddrOf(UO))
     return;
   const Expr *Operand = UO->getSubExpr();
-  const auto *Sum = dyn_cast<BinaryOperator>(Operand->IgnoreParenImpCasts());
-  if (Sum && Sum->getOpcode() == BO_Add && Sum->getType()->isPointerType()) {
-    auto [Base, Index] = splitOffset(Sum);
-    if (normalizeElementAccess(UO, Base, Index))
+  if (std::optional<PointerSum> Sum = asPointerSum(stripValueCasts(Operand)))
+    if (normalizeElementAccess(UO, Sum->Base, Sum->Index))
       return;
-  }
   normalizeElementAccess(UO, Operand, nullptr);
 }
 
@@ -278,7 +209,7 @@ void Normalizer::visitSubscript(const ArraySubscriptExpr *ASE) {
 
 void Normalizer::visitMotion(const UnaryOperator *UO) {
   const Expr *Operand = UO->getSubExpr();
-  if (!isGuidedPointer(Operand))
+  if (!Types.isGuidedPointer(Operand))
     return;
   if (UO->isIncrementOp() && advanceSlice(UO, Operand, nullptr))
     return;
@@ -301,7 +232,7 @@ void Normalizer::visitBinary(const BinaryOperator *BO) {
 void Normalizer::normalizeInPlaceMotion(const BinaryOperator *BO) {
   const Expr *L = BO->getLHS();
   const Expr *R = BO->getRHS();
-  if (!isGuidedPointer(L))
+  if (!Types.isGuidedPointer(L))
     return;
   switch (BO->getOpcode()) {
   case BO_AddAssign:
@@ -312,7 +243,7 @@ void Normalizer::normalizeInPlaceMotion(const BinaryOperator *BO) {
     report("pointer-motion", BO, L, "a guided pointer is moved back in place");
     break;
   case BO_Assign: {
-    const auto *Arith = dyn_cast<BinaryOperator>(R->IgnoreParenImpCasts());
+    const auto *Arith = dyn_cast<BinaryOperator>(stripValueCasts(R));
     if (Arith && Arith->isAdditiveOp() && Arith->getType()->isPointerType())
       report("pointer-motion", BO, L,
              "a guided pointer is reassigned from pointer arithmetic");
