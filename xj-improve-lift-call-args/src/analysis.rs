@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use ra_ap_base_db::SourceDatabase;
-use ra_ap_hir::{Access as RaAccess, LangItem, Semantics, Trait, Type, attach_db};
+use ra_ap_hir::{
+    Access as RaAccess, ChangeWithProcMacros, LangItem, Semantics, Trait, Type, attach_db,
+};
 use ra_ap_hir_def::lang_item; // unused but documents the lookup path
 use ra_ap_ide::{AnalysisHost, RootDatabase};
 use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace_at};
@@ -43,6 +45,14 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Reparse and reinfer the next rewrite round without reloading Cargo
+    /// or publishing intermediate source files to disk.
+    pub fn update_file(&mut self, file_id: ra_ap_vfs::FileId, source: String) {
+        let mut change = ChangeWithProcMacros::default();
+        change.change_file(file_id, Some(source));
+        self.host.apply_change(change);
+    }
+
     /// Load the workspace whose `Cargo.toml` (or workspace root) is at
     /// `manifest_dir`.
     pub fn load(manifest_dir: &Path) -> Result<Self> {
@@ -134,7 +144,7 @@ pub struct SnippetData {
     pub inner_place_span: Option<TextRange>,
 }
 
-/// Walk a single file and produce one `CallAnalysis` per top-level call
+/// Walk a single file and produce one `CallAnalysis` per call
 /// site. Method calls and free-function calls are both included; nested
 /// calls inside an argument are folded into the outer call's access set
 /// per Step 1.3 of the spec.
@@ -160,8 +170,9 @@ pub fn analyze_file(host: &AnalysisHost, file_id: ra_ap_vfs::FileId) -> Result<V
         // of an inner call is detected even when that inner call is
         // itself an argument to an outer call (where the merged accesses
         // would otherwise be silenced by the intra-arg-pair rule). Order
-        // matters for `Step 5` purposes: process innermost-first so that
-        // textual edits from inner lifts are sequenced before outer ones.
+        // matters for emission: process innermost-first so that an inner
+        // plan claims overlapping text first. The driver retries deferred
+        // enclosing calls against the source after those edits are applied.
         for node in syntax.descendants() {
             if !matches!(
                 node.kind(),
@@ -173,12 +184,8 @@ pub fn analyze_file(host: &AnalysisHost, file_id: ra_ap_vfs::FileId) -> Result<V
                 out.push(analysis);
             }
         }
-        // Sort by nesting: innermost first (longest start offset, then
-        // shortest range). This keeps edits ordered so that text changes
-        // from an inner call land in the source before its enclosing call
-        // is re-evaluated (which never actually re-runs in this pass —
-        // but it keeps emit order deterministic and matches the spec's
-        // "innermost first" guidance).
+        // Sort innermost first (longest start offset, then shortest range)
+        // so enclosing plans can be deferred to a later rewrite round.
         out.sort_by_key(|a| (std::cmp::Reverse(a.call_span.start()), a.call_span.len()));
         out
     }))
