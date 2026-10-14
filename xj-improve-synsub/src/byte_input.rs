@@ -88,15 +88,16 @@ fn unparen(mut expr: &Expr) -> &Expr {
     }
 }
 
-/// Recover a literal mode through the pointer decay emitted by c2rust.
-fn literal_mode(expr: &Expr) -> Option<syn::LitStr> {
+/// Recover a C string literal through the pointer decay emitted by c2rust.
+/// Only literal storage is accepted; preserve arbitrary bytes before the first NUL.
+fn literal_c_string(expr: &Expr) -> Option<syn::LitCStr> {
     let expr = unparen(expr);
     match expr {
         Expr::Reference(reference) if reference.mutability.is_none() => {
-            return literal_mode(&reference.expr);
+            return literal_c_string(&reference.expr);
         }
         Expr::Cast(cast) if matches!(&*cast.ty, Type::Ptr(_) | Type::Infer(_)) => {
-            return literal_mode(&cast.expr);
+            return literal_c_string(&cast.expr);
         }
         Expr::MethodCall(method)
             if method.args.is_empty()
@@ -104,7 +105,7 @@ fn literal_mode(expr: &Expr) -> Option<syn::LitStr> {
                     && matches!(method.method.to_string().as_str(), "as_ptr" | "as_mut_ptr"))
                     || method.method == "cast") =>
         {
-            return literal_mode(&method.receiver);
+            return literal_c_string(&method.receiver);
         }
         Expr::Call(call) if call.args.len() == 1 => {
             if let Expr::Path(function) = &*call.func
@@ -117,7 +118,7 @@ fn literal_mode(expr: &Expr) -> Option<syn::LitStr> {
                 && function.path.segments[1].ident == "to_c_str"
                 && function.path.segments.iter().all(|s| s.arguments.is_none())
             {
-                return literal_mode(&call.args[0]);
+                return literal_c_string(&call.args[0]);
             }
         }
         Expr::Lit(literal) => {
@@ -127,15 +128,19 @@ fn literal_mode(expr: &Expr) -> Option<syn::LitStr> {
                 syn::Lit::CStr(string) => (string.value().into_bytes_with_nul(), string.span()),
                 _ => return None,
             };
-            // The mode consumer ignores the first NUL and everything after it.
-            // Unlike a general ByteView literal rewrite, only that prefix must
-            // be preserved, so b"r\0" can become the ordinary Rust string "r".
-            let text = std::str::from_utf8(xj_bytes::c_bytes(&bytes)).ok()?;
-            return Some(syn::LitStr::new(text, span));
+            let string = std::ffi::CString::new(xj_bytes::c_bytes(&bytes)).ok()?;
+            return Some(syn::LitCStr::new(&string, span));
         }
         _ => (),
     }
     None
+}
+
+/// Mode APIs accept Rust strings and consume only the prefix before the first NUL.
+fn literal_mode(expr: &Expr) -> Option<syn::LitStr> {
+    let literal = literal_c_string(expr)?;
+    let string = literal.value();
+    Some(syn::LitStr::new(string.to_str().ok()?, literal.span()))
 }
 
 fn view_type(ty: &Type, symbols: &SymbolTable, depth: usize, allow_os: bool) -> bool {
@@ -345,7 +350,7 @@ impl Rewriter {
                     return Some((result, Depth::Unlimited));
                 }
                 "nan" | "nanf" if call.args.len() == 1 => {
-                    let input = self.coerce_byte_view_input(&call.args[0], symbols)?;
+                    let input = literal_c_string(&call.args[0])?;
                     let ident = &segments.last()?.ident;
                     self.add_dep("xj_cmath");
                     return Some((
@@ -357,6 +362,18 @@ impl Rewriter {
             }
         }
         let namespace = namespace.as_str();
+        if namespace == "xj_cmath"
+            && segments.len() == 2
+            && matches!(name.as_str(), "nan" | "nanf")
+            && call.args.len() == 1
+        {
+            // These wrappers require &CStr, rather than a general ByteView.
+            let input = literal_c_string(&call.args[0])?;
+            let mut result = call.clone();
+            result.args[0] = parse_quote! { #input };
+            return (result.to_token_stream().to_string() != call.to_token_stream().to_string())
+                .then_some((Expr::Call(result), Depth::Unlimited));
+        }
         let cio_adapter =
             namespace == "xj_cio" && segments.len() == 3 && segments[1].ident == "c_abi";
         if cio_adapter && matches!(name.as_str(), "fwrite" | "perror") {
@@ -398,7 +415,6 @@ impl Rewriter {
                 | "fwrite_items",
             ) => &[0],
             ("xj_atone", "atof" | "atoi" | "atol" | "atoll") => &[0],
-            ("xj_cmath", "nan" | "nanf") => &[0],
             ("xj_atone", name) if name.starts_with("strto") => &[0],
             ("xj_cstat", "stat" | "lstat" | "stat64" | "lstat64") => &[0],
             ("xj_ctime", "strftime") if segments.len() == 3 && segments[1].ident == "compat" => {
