@@ -47,7 +47,7 @@ def copy_snapshot_tree(src: Path, dst: Path):
         src=src,
         dst=dst,
         dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns("Cargo.lock"),
+        ignore=shutil.ignore_patterns("Cargo.lock", "target"),
     )
 
 
