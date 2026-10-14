@@ -76,17 +76,6 @@ zlib are retargeted to the pure-Rust `libz_rs_sys`) and
 point is retargeted, `libbz2-rs-sys` also drops `-lbz2` from the
 generated `build.rs`; `libz-rs-sys` covers only part of zlib's API,
 so `-lz` is still emitted.
-* `use_libc` - On applicable platforms, use
-selected functions, constants, and types from the `libc` crate.
-Defaults to `true`.
-Set this to `false` to keep generated bindings.
-For now, this is only  `libc::stat` and libc's supported `sys/stat.h`
-functions and mode constants on Linux x86-64 GNU.
-Unsupported layouts or uses (such as accessing reserved fields
-or taking the address of a whole timestamp subobject) keep the generated
-bindings for the entire input batch.
-Substitution uses declaration provenance,
-so project-defined declarations with matching names are left alone.
 * `ffi` - a dict whose keys are function names. Each entry is a dict from
 argument names (or the special `$return` string, which denotes the return value)
 to an ffi conversion specifier. When any argument or the return value of a
@@ -137,7 +126,32 @@ See FFI Guidance below for more information and examples.
     (`mutable: true`).
   * `{ "method": "from-ref", "mutable": <bool> }` lowers a reference back to a
     raw pointer via a cast (`as *const _` / `as *mut _`).
-* `no_math_errno` - mostly for debugging/testing. Currently asserts
+
+### Internal/debugging guidance
+
+These elements shouldn't usually be needed, but may be useful to
+fine-tune Tenjin's behavior in corner cases.
+
+* `use_libc` - On applicable platforms, use
+selected functions, constants, and types from the `libc` crate.
+Defaults to `true`.
+Set this to `false` to keep generated bindings.
+For now, this is only  `libc::stat` and libc's supported `sys/stat.h`
+functions and mode constants on Linux x86-64 GNU.
+Unsupported layouts or uses (such as accessing reserved fields
+or taking the address of a whole timestamp subobject) keep the generated
+bindings for the entire input batch.
+Substitution uses declaration provenance,
+so project-defined declarations with matching names are left alone.
+* `stdio_header_roots` - a list of trusted system include directories for
+stdio declarations, in addition to `/usr/include` and the Clang sysroot.
+For example, `{"stdio_header_roots": ["/opt/musl/include"]}` permits stdio
+replacement from that sysroot. Ordinary project include paths do not grant
+this trust. Tenjin checks all translation units before replacing `FILE`,
+streams, or functions; unrecognized stdio headers stop translation with a
+diagnostic requesting explicit trusted roots. Project definitions with libc
+names retain their identity across the input batch.
+* `no_math_errno` - Currently asserts
 that no functions in the entire translated codebase make of use
 `errno` in the math stdlib.
 
