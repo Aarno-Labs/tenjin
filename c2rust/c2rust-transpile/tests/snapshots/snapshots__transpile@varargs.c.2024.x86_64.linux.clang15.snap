@@ -86,9 +86,7 @@ pub unsafe extern "C" fn my_printf(mut fmt: *const u8, mut c2rust_args: ...) {
                             ::xj_cio::printf!(b"%f", ap.arg::<::core::ffi::c_double>());
                         }
                         115 => {
-                            ::xj_cio::cprintf!(b"{:>}", {
-                                xj_cstr_from_ptr(ap.arg::<*mut u8>() as *const u8)
-                            });
+                            ::xj_cio::printf_raw!(b"%s", ap.arg::<*mut u8>());
                         }
                         _ => {}
                     }
@@ -277,38 +275,41 @@ mod xj_cio_varargs {
             Arg,
             cformat::{Length, Requirement},
         };
-        i += 1;
-        out.push(match conv {
-            b'd' | b'i' => Arg::I(unsafe {
-                match length {
-                    0 => ap.arg::<core::ffi::c_int>() as i64,
-                    1 => ap.arg::<core::ffi::c_long>() as i64,
-                    _ => ap.arg::<core::ffi::c_longlong>() as i64,
+        plan.requirements
+            .iter()
+            .map(|r| match r {
+                Requirement::Int => Arg::I(ap.arg::<core::ffi::c_int>() as i64),
+                Requirement::UInt | Requirement::WideChar => {
+                    Arg::U(ap.arg::<core::ffi::c_uint>() as u64)
                 }
-            }),
-            b'u' | b'o' | b'x' | b'X' => Arg::U(unsafe {
-                match length {
-                    0 => ap.arg::<core::ffi::c_uint>() as u64,
-                    1 => ap.arg::<core::ffi::c_ulong>() as u64,
-                    _ => ap.arg::<core::ffi::c_ulonglong>() as u64,
+                Requirement::Long => Arg::I(ap.arg::<core::ffi::c_long>() as i64),
+                Requirement::ULong => Arg::U(ap.arg::<core::ffi::c_ulong>() as u64),
+                Requirement::LongLong => Arg::I(ap.arg::<core::ffi::c_longlong>() as i64),
+                Requirement::ULongLong => Arg::U(ap.arg::<core::ffi::c_ulonglong>() as u64),
+                Requirement::IntMax => Arg::I(ap.arg::<xj_cio::__libc::intmax_t>() as i64),
+                Requirement::UIntMax => Arg::U(ap.arg::<xj_cio::__libc::uintmax_t>() as u64),
+                Requirement::SignedSize => Arg::I(ap.arg::<xj_cio::__libc::ssize_t>() as i64),
+                Requirement::PtrDiff => Arg::I(ap.arg::<xj_cio::__libc::ptrdiff_t>() as i64),
+                Requirement::Size | Requirement::UnsignedPtrDiff => {
+                    Arg::U(ap.arg::<usize>() as u64)
                 }
-            }),
-            b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => {
-                Arg::F(unsafe { ap.arg::<f64>() })
-            }
-            b's' => Arg::S(unsafe { ap.arg::<*const core::ffi::c_char>() }),
-            b'c' => Arg::C(unsafe { ap.arg::<core::ffi::c_int>() }),
-            b'p' => Arg::P(unsafe { ap.arg::<*const core::ffi::c_void>() }),
-            b'n' => Arg::OutN(unsafe { ap.arg::<*mut core::ffi::c_int>() }),
-            _ => return out,
-        });
-    }
-    out
-}
-unsafe fn xj_cstr_from_ptr<'a>(ptr: *const u8) -> &'a core::ffi::CStr {
-    if ptr.is_null() {
-        c"(null)"
-    } else {
-        unsafe { core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char) }
+                Requirement::Double => Arg::F(ap.arg::<f64>()),
+                Requirement::String => {
+                    Arg::Raw(ap.arg::<*const core::ffi::c_char>().cast_mut().cast())
+                }
+                Requirement::Pointer => Arg::Raw(ap.arg::<*mut core::ffi::c_void>()),
+                Requirement::Count(length) => Arg::Raw(match length {
+                    Length::Hh => ap.arg::<*mut i8>().cast(),
+                    Length::H => ap.arg::<*mut core::ffi::c_short>().cast(),
+                    Length::None => ap.arg::<*mut core::ffi::c_int>().cast(),
+                    Length::L => ap.arg::<*mut core::ffi::c_long>().cast(),
+                    Length::Ll => ap.arg::<*mut core::ffi::c_longlong>().cast(),
+                    Length::J => ap.arg::<*mut xj_cio::__libc::intmax_t>().cast(),
+                    Length::Z => ap.arg::<*mut xj_cio::__libc::ssize_t>().cast(),
+                    Length::T => ap.arg::<*mut xj_cio::__libc::ptrdiff_t>().cast(),
+                    Length::BigL => unreachable!(),
+                }),
+            })
+            .collect()
     }
 }

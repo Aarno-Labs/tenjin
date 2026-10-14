@@ -1,15 +1,12 @@
 use ::bytemuck::{Pod, Zeroable};
-use std::io::Write;
 extern "C" {
-
-    fn printf(fmt: *const u8, ...) -> ::core::ffi::c_int;
 
     fn strlen(s: *const u8) -> size_t;
 
     static mut extern_int_unguided: ::core::ffi::c_int;
     static extern_int_nonmutbl: ::core::ffi::c_int;
 }
-pub type size_t = ::core::ffi::c_ulong;
+pub type size_t = usize;
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct StructWithMembersA {
@@ -42,24 +39,28 @@ pub unsafe fn use_global_ints() {
 }
 #[no_mangle]
 pub fn print_owned_String(mut ostr: String) {
-    println!("{ostr:>}");
+    ::xj_cio::printf!("%s\n", ostr);
 }
 #[no_mangle]
 pub unsafe fn print_unguided_ptr(mut ptr: *const u8) {
-    println!("{:>}", { xj_str_from_ptr(ptr as *const u8) });
+    ::xj_cio::printf_raw!("%s\n", ptr);
+}
+#[no_mangle]
+pub unsafe fn forward_unguided_ptr(mut ptr: *const u8) {
+    print_unguided_ptr(ptr);
 }
 #[no_mangle]
 pub fn print_shared_vec_u8(mut rvu8: &Vec<u8>) {
-    println!("{:>}", String::from_utf8_lossy(rvu8));
+    ::xj_cio::printf!("%s\n", rvu8);
 }
 #[no_mangle]
 pub fn print_owned_vec_u8(mut ovu8: Vec<u8>) {
-    println!("{:>}", String::from_utf8_lossy(&ovu8));
+    ::xj_cio::printf!("%s\n", ovu8);
 }
 #[no_mangle]
 pub fn sprint_into_mutref_vec_u8(mut xvu8: &mut Vec<u8>) {
-    xj_sprintf_Vec_u8(xvu8, Some(24), format!("{:}", 42));
-    xj_sprintf_Vec_u8(xvu8, None, format!("{:}", 42));
+    ::xj_cio::snprintf!(xvu8, (24 as size_t), "%d\n", 42);
+    ::xj_cio::sprintf!(xvu8, "%d\n", 42);
 }
 #[no_mangle]
 pub fn guided_str_init_lit() {
@@ -85,9 +86,7 @@ pub unsafe fn guided_immutable_u8_array_slice_decay_to_ptr() {
 #[no_mangle]
 pub fn guided_immutable_u8_pointer() {
     let mut rsu8: &[u8] = b"";
-    (::std::ffi::CStr::from_bytes_until_nul(rsu8)
-        .unwrap()
-        .count_bytes());
+    ::xj_zstr::strlen(rsu8);
 }
 #[no_mangle]
 pub fn recognize_call_exit() {
@@ -97,7 +96,7 @@ pub fn recognize_call_exit() {
 pub fn recognize_int_float_bitcast() {
     let mut ui = 0x40490fdb as ::core::ffi::c_int as ::core::ffi::c_uint;
     let mut f = f32::from_bits(ui);
-    println!("float f = {:.6}", { f as ::core::ffi::c_double });
+    ::xj_cio::printf!("float f = %f\n", f as ::core::ffi::c_double);
 }
 #[no_mangle]
 pub fn guided_static() {}
@@ -118,7 +117,7 @@ pub fn guided_c_assignment_string_pop(mut ostr: String) {
     ostr.pop();
 }
 #[no_mangle]
-pub fn guided_c_strlen(mut ostr: String) -> ::core::ffi::c_ulong {
+pub fn guided_c_strlen(mut ostr: String) -> size_t {
     ostr.len() as size_t
 }
 #[no_mangle]
@@ -230,23 +229,23 @@ pub fn guided_union_int_float_bitcast(mut ui: ::core::ffi::c_uint) -> ::core::ff
 }
 #[no_mangle]
 pub fn unguided_int_putchar(mut c: ::core::ffi::c_int) {
-    ::std::io::stdout().write_all(&[(c as u8)]);
+    ::xj_cio::printf!("%c", c);
 }
 #[no_mangle]
 pub fn guided_int_putchar(mut oc: char) {
-    ::std::io::stdout().write_all(&[(oc as u8)]);
+    ::xj_cio::printf!("%c", oc);
 }
 #[no_mangle]
 pub fn unguided_char_putchar(mut c: u8) {
-    ::std::io::stdout().write_all(&[(c as ::core::ffi::c_int as u8)]);
+    ::xj_cio::printf!("%c", c as ::core::ffi::c_int);
 }
 #[no_mangle]
 pub fn use_pod_structs(mut png: PodNotGuided, mut pg: PodGuided) -> ::core::ffi::c_int {
     png.a + pg.a + png.b + pg.b
 }
 #[no_mangle]
-pub unsafe fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
-    if printf(b"%s\n\0".as_ptr(), ostr) < 0 {
+pub fn printf_in_cond(mut ostr: String) -> ::core::ffi::c_int {
+    if ::xj_cio::printf!("%s\n", ostr) < 0 {
         return 42;
     }
     0
@@ -268,28 +267,35 @@ pub fn pass_slice_offset(mut idx: ::core::ffi::c_int) {
     ];
     receive_slice(&arr[(idx + 2) as usize..]);
 }
-unsafe fn xj_str_from_ptr<'a>(ptr: *const u8) -> &'a str {
-    if ptr.is_null() {
-        "(null)"
-    } else {
-        core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char)
-            .to_str()
-            .unwrap()
-    }
+#[no_mangle]
+pub fn strncmp_idiom_01(mut rsu8: &[u8]) -> bool {
+    (::xj_zstr::strncmp(rsu8, "prefix\0", (6 as size_t))) as ::core::ffi::c_int != 0
 }
-fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
-    if lim == Some(0) {
-        return 0;
+#[no_mangle]
+pub fn strncmp_idiom_02(mut rsu8: &[u8]) -> bool {
+    (::xj_zstr::strncmp(rsu8, "prefix\0", b"prefix".len())) as ::core::ffi::c_int != 0
+}
+#[no_mangle]
+pub fn strlen_idiom_01(mut rsu8: &[u8]) -> u8 {
+    rsu8[::xj_zstr::strlen(rsu8).wrapping_sub(1)]
+}
+#[no_mangle]
+pub fn strlen_idiom_02(mut rsu8: &[u8]) -> u8 {
+    if ::xj_zstr::strlen(rsu8) < 2 {
+        return b'\0';
     }
-    let bytes = val.as_bytes();
-    let to_copy = if let Some(lim) = lim {
-        std::cmp::min(lim - 1, bytes.len())
-    } else {
-        bytes.len()
-    };
-    dest.clear();
-    dest.extend_from_slice(&bytes[..to_copy]);
-    to_copy
+    rsu8[::xj_zstr::strlen(rsu8).wrapping_sub(2)]
+}
+#[no_mangle]
+pub fn snprintf_example_01(mut x: ::core::ffi::c_int) -> bool {
+    let mut buf: [::core::ffi::c_uchar; 9] = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    (::xj_cio::snprintf!(buf, (9 as size_t), "%08d", x) >= 0)
+}
+#[no_mangle]
+pub fn snprintf_example_02(mut x: ::core::ffi::c_int) {
+    let mut buf: [::core::ffi::c_uchar; 9] = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    ::xj_cio::snprintf!(buf, (9 as size_t), "%08d", x);
+    ::xj_cio::printf!("%s\n", &buf[..]);
 }
 fn xj_isalnum(xjc: core::ffi::c_int) -> core::ffi::c_int {
     if xjc == -1 {

@@ -1,3 +1,8 @@
+extern "C" {
+
+    fn puts(_: *const u8) -> ::core::ffi::c_int;
+
+}
 pub const STDIN_FILENO: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 pub const STDOUT_FILENO: ::core::ffi::c_int = 1 as ::core::ffi::c_int;
 pub const STDERR_FILENO: ::core::ffi::c_int = 2 as ::core::ffi::c_int;
@@ -14,13 +19,11 @@ pub extern "C" fn isatty_stdin() -> ::core::ffi::c_int {
     atty::is(atty::Stream::Stdin) as ::core::ffi::c_int
 }
 #[no_mangle]
-pub extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
-    println!("{:>}", {
-        if cond != 0 {
-            "true"
-        } else {
-            "false"
-        }
+pub unsafe extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
+    puts(if cond != 0 {
+        b"true\0".as_ptr()
+    } else {
+        b"false\0".as_ptr()
     });
 }
 #[no_mangle]
