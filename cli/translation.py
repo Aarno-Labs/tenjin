@@ -2,6 +2,7 @@ from pathlib import Path
 from subprocess import CompletedProcess, CalledProcessError
 import json
 import pprint
+import shutil
 import time
 import uuid
 from platform import platform
@@ -378,8 +379,16 @@ def do_translate_with_tracker(
 
         print("Translation finished.")
         print("Collecting static code quality measurements...")
-        xj_start_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "00_out")
-        xj_final_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "final")
+        try:
+            xj_start_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "00_out")
+            xj_final_metrics = static_measurements_rust.static_rust_metrics(resultsdir / "final")
+        finally:
+            # Measurements rebuild 00_out's cache after it was moved through the
+            # improvement passes. Neither snapshot needs build artifacts now.
+            for dirname in ("00_out", "final"):
+                build_cache = resultsdir / dirname / "target"
+                if build_cache.is_dir():
+                    shutil.rmtree(build_cache)
 
         print("Tenjin's initial, un-improved Rust output:")
         pprint.pprint(xj_start_metrics)

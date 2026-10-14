@@ -13,7 +13,9 @@ the framework will look for a fixture named `a`, execute it
 value as the value for `a` within `test_foo`.
 """
 
+from collections.abc import Iterator
 from pathlib import Path
+import shutil
 import pytest
 
 import cli_subcommands
@@ -49,11 +51,19 @@ def tmp_codebase(test_tmp_dir) -> Path:
 
 
 @pytest.fixture
-def tmp_resultsdir(test_tmp_dir) -> Path:
+def tmp_resultsdir(test_tmp_dir) -> Iterator[Path]:
     """A results directory that has already been created"""
     resultsdir = test_tmp_dir / "resultsdir"
     resultsdir.mkdir()
-    return resultsdir
+    try:
+        yield resultsdir
+    finally:
+        # Tests can rebuild the translated crate after translation removes its
+        # build cache. Keep those artifacts only until the test has finished.
+        for dirname in ("00_out", "final"):
+            target = resultsdir / dirname / "target"
+            if target.is_dir():
+                shutil.rmtree(target)
 
 
 @pytest.fixture
