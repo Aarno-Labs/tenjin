@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import hermetic
+import pytest
 
 
 @dataclass
@@ -61,12 +62,21 @@ def run_tool(root: Path, codebase: Path, sources: list[Path]) -> None:
     )
 
 
+# A marker whose parameter or return type does not fit what flows through it
+# is only a warning in C; these make it an error.
+MARKER_TYPING_ERRORS = [
+    "-Werror=incompatible-pointer-types",
+    "-Werror=incompatible-pointer-types-discards-qualifiers",
+    "-Werror=int-conversion",
+]
+
+
 def check_syntax(root: Path, codebase: Path, sources: list[Path]) -> None:
     header = codebase / "xj_guidance.h"
     include = ["-include", header.as_posix()] if header.exists() else []
     for source in sources:
         hermetic.run(
-            [clang(root), "-std=c11", "-fsyntax-only", "-Wno-everything", *include, source],
+            [clang(root), "-std=c11", "-fsyntax-only", *MARKER_TYPING_ERRORS, *include, source],
             check=True,
             capture_output=True,
         )
@@ -135,14 +145,14 @@ int takes(const char *str) {
         },
     )
     text = result.sources["a.c"]
-    view = [n for n, t in result.guidance["marker_typedefs"].items() if t == "&str"]
-    owned = [n for n, t in result.guidance["marker_typedefs"].items() if t == "String"]
 
-    assert any(f"int takes({n} s);" in text for n in view)
-    assert any(f"int takes({n} str) {{" in text for n in view)
-    assert any(f"extern {n} g_msg;" in text for n in view)
-    assert any(f"{n} name;" in text for n in owned)
-    assert sum(text.count(f"{n} make(void)") for n in owned) == 2
+    assert typedef_named(result, "&str") == "xj_ty_ref_str"
+    assert typedef_named(result, "String") == "xj_ty_String"
+    assert "int takes(xj_ty_ref_str s);" in text
+    assert "int takes(xj_ty_ref_str str) {" in text
+    assert "extern xj_ty_ref_str g_msg;" in text
+    assert "xj_ty_String name;" in text
+    assert text.count("xj_ty_String make(void)") == 2
     assert "const char *local = 0;" in text
     assert result.guidance["vars_mut_resolved"] == {
         "takes:local": False,
@@ -254,36 +264,54 @@ void put(char *o) { o[0] = 'x'; }
     assert result.guidance["markers"]["xj_char_at_String"]["family"] == "char_at"
 
 
-def test_pointer_motion_and_bad_offsets_are_reported(root, tmp_codebase):
-    result = instrument(
-        root,
-        tmp_codebase,
-        {
-            "a.c": """\
-void walk(const unsigned char *p) { p++; p += 2; }
-void retreat(const unsigned char *p) { p--; }
-long span(const unsigned char *p, const unsigned char *q) { return q - p; }
-int second(int *r) { return r[1]; }
-void back(const unsigned char *p) { const unsigned char *b = p - 1; }
-"""
-        },
-        {
-            "vars_of_type": {
-                "&[u8]": ["walk:p", "retreat:p", "span:p", "span:q", "back:p"],
-                "&i32": "second:r",
-            }
-        },
-    )
+POINTER_MOTION_CASES = [
+    # (source, vars_of_type, diagnostic kinds, expected text)
+    pytest.param(
+        "void walk(const unsigned char *p) { p++; p += 2; }",
+        {"&[u8]": "walk:p"},
+        [],
+        "p = xj_slice_from_ref_slice_u8(p, 1); p = xj_slice_from_ref_slice_u8(p, 2);",
+        id="forward-motion-is-resliced",
+    ),
+    pytest.param(
+        "void retreat(const unsigned char *p) { p--; }",
+        {"&[u8]": "retreat:p"},
+        ["pointer-motion"],
+        "p--;",
+        id="backward-motion",
+    ),
+    pytest.param(
+        "long span(const unsigned char *p, const unsigned char *q) { return q - p; }",
+        {"&[u8]": ["span:p", "span:q"]},
+        ["pointer-difference"],
+        "return q - p;",
+        id="pointer-difference",
+    ),
+    pytest.param(
+        "int second(int *r) { return r[1]; }",
+        {"&i32": "second:r"},
+        ["subscript-of-single-object"],
+        "return r[1];",
+        id="subscript-of-single-object",
+    ),
+    pytest.param(
+        "void back(const unsigned char *p) { const unsigned char *b = p - 1; }",
+        {"&[u8]": "back:p"},
+        ["backward-offset"],
+        "const unsigned char *b = p - 1;",
+        id="backward-offset",
+    ),
+]
 
-    text = result.sources["a.c"]
-    kinds = result.diagnostic_kinds()
-    assert kinds.count("pointer-motion") == 1
-    assert "pointer-difference" in kinds
-    assert "subscript-of-single-object" in kinds
-    assert "backward-offset" in kinds
-    assert "p = xj_slice_from_ref_slice_u8(p, 1); p = xj_slice_from_ref_slice_u8(p, 2);" in text
-    assert "p--;" in text
-    assert "return r[1];" in text
+
+@pytest.mark.parametrize("source,vars_of_type,kinds,expected", POINTER_MOTION_CASES)
+def test_pointer_motion_and_bad_offsets_are_reported(
+    root, tmp_codebase, source, vars_of_type, kinds, expected
+):
+    result = instrument(root, tmp_codebase, {"a.c": source + "\n"}, {"vars_of_type": vars_of_type})
+
+    assert result.diagnostic_kinds() == kinds
+    assert expected in result.sources["a.c"]
 
 
 def test_motion_whose_value_is_used_is_not_resliced(root, tmp_codebase):
@@ -341,66 +369,81 @@ void f(void) { char *l, *m = 0; }
     assert "char *l, *m = 0;" in text
 
 
-MATRIX_SOURCE = """\
-struct S { unsigned char buf[8]; };
-void takes_slice(const unsigned char *s);
-void takes_elem(const unsigned char *e);
-void takes_raw(const unsigned char *r);
-void matrix(const unsigned char *gp, int i, struct S *st) {
-    unsigned char arr[8] = {0};
-    unsigned char garr[8] = {0};
-    takes_slice(arr); takes_slice(&arr[i]); takes_slice(arr + i);
-    takes_elem(arr); takes_elem(&arr[i]); takes_elem(arr + i);
-    takes_raw(arr); takes_raw(&arr[i]); takes_raw(arr + i);
-    takes_slice(garr); takes_slice(&garr[i]); takes_slice(garr + i);
-    takes_elem(garr); takes_elem(&garr[i]); takes_elem(garr + i);
-    takes_raw(garr); takes_raw(&garr[i]); takes_raw(garr + i);
-    takes_slice(gp); takes_slice(&gp[i]); takes_slice(gp + i);
-    takes_elem(gp); takes_elem(&gp[i]); takes_elem(gp + i);
-    takes_raw(gp); takes_raw(&gp[i]); takes_raw(gp + i);
-    takes_slice(st->buf); takes_slice(&st->buf[i]); takes_slice(st->buf + i);
-    takes_elem(st->buf); takes_elem(&st->buf[i]); takes_elem(st->buf + i);
-    takes_raw(st->buf); takes_raw(&st->buf[i]); takes_raw(st->buf + i);
-}
-"""
-
-
-def test_place_markers_follow_source_shape_and_sink_demand(root, tmp_codebase):
-    result = instrument(
-        root,
-        tmp_codebase,
-        {"a.c": MATRIX_SOURCE},
-        {
-            "vars_of_type": {
-                "&[u8]": ["takes_slice:s", "matrix:gp"],
-                "&u8": "takes_elem:e",
-                "[u8; 8]": "matrix:garr",
-                "Vec<u8>": "S:buf",
-            }
-        },
+def place_source(call: str) -> str:
+    return (
+        "struct S { unsigned char buf[8]; };\n"
+        "void takes_slice(const unsigned char *s);\n"
+        "void takes_elem(const unsigned char *e);\n"
+        "void takes_raw(const unsigned char *r);\n"
+        "void matrix(const unsigned char *gp, int i, struct S *st) {\n"
+        "    unsigned char arr[8] = {0};\n"
+        "    unsigned char garr[8] = {0};\n"
+        f"    {call};\n"
+        "}\n"
     )
-    text = result.sources["a.c"]
 
-    def expect(sink: str, marker: str, *args: str) -> None:
-        call = rf"{sink}\({marker}(?:_\d+)?\({re.escape(', '.join(args))}\)\);"
-        assert re.search(call, text), f"missing {sink}({marker}({', '.join(args)}))"
 
-    for base in ("arr", "garr", "gp", "st->buf"):
-        expect("takes_slice", "xj_slice_from_ref_slice_u8", base, "i")
-        expect("takes_elem", "xj_elem_ref_ref_u8", base, "0")
-        expect("takes_elem", "xj_elem_ref_ref_u8", base, "i")
-    for base in ("arr", "garr", "st->buf"):
-        expect("takes_slice", "xj_slice_all_ref_slice_u8", base)
-    raw = "ptr_const_unsigned_char"
-    for base in ("garr", "gp", "st->buf"):
-        expect("takes_raw", f"xj_slice_all_{raw}", base)
-        expect("takes_raw", f"xj_elem_ref_{raw}", base, "i")
-        expect("takes_raw", f"xj_slice_from_{raw}", base, "i")
+PLACE_GUIDANCE = {
+    "vars_of_type": {
+        "&[u8]": ["takes_slice:s", "matrix:gp"],
+        "&u8": "takes_elem:e",
+        "[u8; 8]": "matrix:garr",
+        "Vec<u8>": "S:buf",
+    }
+}
 
-    # A guided slice into a slice sink is already the value; an unguided
-    # array into a raw pointer is plain C decay.
-    assert "takes_slice(gp);" in text
-    assert "takes_raw(arr); takes_raw(&arr[i]); takes_raw(arr + i);" in text
+RAW = "ptr_const_unsigned_char"
+
+# Each base (an unguided array, a guided array, a guided slice and a guided
+# field) in each source shape (`b`, `&b[i]`, `b + i`) into each sink (a slice,
+# an element reference and a raw pointer): (call as written, call after).
+PLACE_CASES = [
+    ("takes_slice(arr)", "takes_slice(xj_slice_all_ref_slice_u8(arr))"),
+    ("takes_slice(&arr[i])", "takes_slice(xj_slice_from_ref_slice_u8(arr, i))"),
+    ("takes_slice(arr + i)", "takes_slice(xj_slice_from_ref_slice_u8(arr, i))"),
+    ("takes_elem(arr)", "takes_elem(xj_elem_ref_ref_u8(arr, 0))"),
+    ("takes_elem(&arr[i])", "takes_elem(xj_elem_ref_ref_u8(arr, i))"),
+    ("takes_elem(arr + i)", "takes_elem(xj_elem_ref_ref_u8(arr, i))"),
+    # An unguided array into a raw pointer is plain C decay.
+    ("takes_raw(arr)", "takes_raw(arr)"),
+    ("takes_raw(&arr[i])", "takes_raw(&arr[i])"),
+    ("takes_raw(arr + i)", "takes_raw(arr + i)"),
+    ("takes_slice(garr)", "takes_slice(xj_slice_all_ref_slice_u8(garr))"),
+    ("takes_slice(&garr[i])", "takes_slice(xj_slice_from_ref_slice_u8(garr, i))"),
+    ("takes_slice(garr + i)", "takes_slice(xj_slice_from_ref_slice_u8(garr, i))"),
+    ("takes_elem(garr)", "takes_elem(xj_elem_ref_ref_u8(garr, 0))"),
+    ("takes_elem(&garr[i])", "takes_elem(xj_elem_ref_ref_u8(garr, i))"),
+    ("takes_elem(garr + i)", "takes_elem(xj_elem_ref_ref_u8(garr, i))"),
+    ("takes_raw(garr)", f"takes_raw(xj_slice_all_{RAW}(garr))"),
+    ("takes_raw(&garr[i])", f"takes_raw(xj_elem_ref_{RAW}(garr, i))"),
+    ("takes_raw(garr + i)", f"takes_raw(xj_slice_from_{RAW}(garr, i))"),
+    # A guided slice into a slice sink is already the value.
+    ("takes_slice(gp)", "takes_slice(gp)"),
+    ("takes_slice(&gp[i])", "takes_slice(xj_slice_from_ref_slice_u8(gp, i))"),
+    ("takes_slice(gp + i)", "takes_slice(xj_slice_from_ref_slice_u8(gp, i))"),
+    ("takes_elem(gp)", "takes_elem(xj_elem_ref_ref_u8(gp, 0))"),
+    ("takes_elem(&gp[i])", "takes_elem(xj_elem_ref_ref_u8(gp, i))"),
+    ("takes_elem(gp + i)", "takes_elem(xj_elem_ref_ref_u8(gp, i))"),
+    ("takes_raw(gp)", f"takes_raw(xj_slice_all_{RAW}(gp))"),
+    ("takes_raw(&gp[i])", f"takes_raw(xj_elem_ref_{RAW}(gp, i))"),
+    ("takes_raw(gp + i)", f"takes_raw(xj_slice_from_{RAW}(gp, i))"),
+    ("takes_slice(st->buf)", "takes_slice(xj_slice_all_ref_slice_u8(st->buf))"),
+    ("takes_slice(&st->buf[i])", "takes_slice(xj_slice_from_ref_slice_u8(st->buf, i))"),
+    ("takes_slice(st->buf + i)", "takes_slice(xj_slice_from_ref_slice_u8(st->buf, i))"),
+    ("takes_elem(st->buf)", "takes_elem(xj_elem_ref_ref_u8(st->buf, 0))"),
+    ("takes_elem(&st->buf[i])", "takes_elem(xj_elem_ref_ref_u8(st->buf, i))"),
+    ("takes_elem(st->buf + i)", "takes_elem(xj_elem_ref_ref_u8(st->buf, i))"),
+    ("takes_raw(st->buf)", f"takes_raw(xj_slice_all_{RAW}(st->buf))"),
+    ("takes_raw(&st->buf[i])", f"takes_raw(xj_elem_ref_{RAW}(st->buf, i))"),
+    ("takes_raw(st->buf + i)", f"takes_raw(xj_slice_from_{RAW}(st->buf, i))"),
+]
+
+
+@pytest.mark.parametrize("call,expected", PLACE_CASES, ids=[call for call, _ in PLACE_CASES])
+def test_place_markers_follow_source_shape_and_sink_demand(root, tmp_codebase, call, expected):
+    result = instrument(root, tmp_codebase, {"a.c": place_source(call)}, PLACE_GUIDANCE)
+
+    assert f"    {expected};\n" in result.sources["a.c"]
 
 
 def test_unguided_pointer_into_a_slice_is_reported(root, tmp_codebase):
