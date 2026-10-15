@@ -6,6 +6,7 @@ import platform
 import re
 import subprocess
 import sys
+import textwrap
 
 import pytest
 
@@ -2757,7 +2758,13 @@ def test_howerj_lisp(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-def brotli_run_upstream_tests(brotli_bin: Path, codebase: Path, workdir: Path) -> dict[str, bytes]:
+def brotli_run_upstream_tests(
+    brotli_bin: Path,
+    codebase: Path,
+    workdir: Path,
+    *,
+    exclude_fclose_swap: bool = False,
+) -> dict[str, bytes]:
     """Run brotli's own tests against the CLI binary `brotli_bin`, reading inputs
     from the pristine clone `codebase` and writing only under `workdir`.
     Returns the compressed output of each roundtrip test, keyed by test name."""
@@ -2874,12 +2881,42 @@ def brotli_run_upstream_tests(brotli_bin: Path, codebase: Path, workdir: Path) -
 
     # tests/regression/t01 is a unittest suite that takes the CLI binary as its argument.
     # It works in its own temporary directories.
+    regression_cmd = [
+        sys.executable,
+        str(codebase / "tests" / "regression" / "t01" / "copystat_regression_test.py"),
+        str(brotli_bin),
+    ]
+    if exclude_fclose_swap:
+        # These two cases inject their attack by interposing libc fclose.
+        # xj_cio closes Rust-owned file descriptors without calling fclose,
+        # so the attack never fires. Run every other case without changing
+        # the upstream sources or treating unexpected skips as successes.
+        regression_cmd[1:1] = [
+            "-c",
+            textwrap.dedent(
+                """\
+                from pathlib import Path
+                import runpy
+                import sys
+                import unittest
+
+                namespace = runpy.run_path(sys.argv[1])
+                case = namespace["CopyStatRegressionTest"]
+                case.brotli = Path(sys.argv[2]).resolve()
+                excluded = {
+                    "test_fclose_swap_does_not_redirect_copystat",
+                    "test_fclose_swap_with_no_copy_stat_leaves_target_unchanged",
+                }
+                names = unittest.defaultTestLoader.getTestCaseNames(case)
+                assert excluded <= set(names), "upstream fclose-swap cases changed"
+                suite = unittest.TestSuite(case(name) for name in names if name not in excluded)
+                result = unittest.TextTestRunner().run(suite)
+                sys.exit(0 if result.wasSuccessful() else 1)
+                """
+            ),
+        ]
     cp = hermetic.run(
-        [
-            sys.executable,
-            str(codebase / "tests" / "regression" / "t01" / "copystat_regression_test.py"),
-            str(brotli_bin),
-        ],
+        regression_cmd,
         check=False,
         capture_output=True,
     )
@@ -2943,7 +2980,9 @@ def test_google_brotli(tenjin_fixtures: TenjinFixtures):
 
     # The C binary must pass first, which also validates the single-`cc` build.
     c_outputs = brotli_run_upstream_tests(c_brotli, codebase, tmp_resultsdir / "xj_upstream_c")
-    rs_outputs = brotli_run_upstream_tests(rs_brotli, codebase, tmp_resultsdir / "xj_upstream_rs")
+    rs_outputs = brotli_run_upstream_tests(
+        rs_brotli, codebase, tmp_resultsdir / "xj_upstream_rs", exclude_fclose_swap=True
+    )
 
     # The encoder is deterministic, so beyond round-tripping through itself,
     # the Rust build should produce exactly the bytes the C build does.
