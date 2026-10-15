@@ -223,7 +223,7 @@ fn unparen(mut expr: &Expr) -> &Expr {
     }
 }
 
-fn literal_bytes(expr: &Expr) -> Option<Vec<u8>> {
+pub(crate) fn literal_bytes(expr: &Expr) -> Option<Vec<u8>> {
     match unparen(expr) {
         Expr::Lit(lit) => match &lit.lit {
             syn::Lit::ByteStr(s) => Some(s.value()),
@@ -323,6 +323,14 @@ pub(crate) fn expr_type(expr: &Expr, symbols: &SymbolTable) -> Option<Type> {
             let Expr::Path(p) = unparen(&c.func) else {
                 return None;
             };
+            if p.qself.is_none()
+                && p.path.segments.len() == 3
+                && p.path.segments[0].ident == "xj_ctime"
+                && p.path.segments[1].ident == "ByteView"
+                && p.path.segments[2].ident == "view_bytes"
+            {
+                return Some(parse_quote!(&[u8]));
+            }
             if p.qself.is_none()
                 && p.path.segments.len() == 1
                 && !symbols.has(&p.path.segments[0].ident.to_string())

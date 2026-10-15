@@ -2104,7 +2104,7 @@ impl Translation<'_> {
             let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
             let e2 = self.convert_expr(ctx.used(), cargs[1], None)?;
             let difftime_call = mk().call_expr(
-                mk().path_expr(vec!["xj_ctime", "compat", "difftime"]),
+                mk().path_expr(vec!["xj_ctime", "c_abi", "difftime"]),
                 vec![e1.to_expr(), e2.to_expr()],
             );
             return Ok(Some(WithStmts::new_val(difftime_call)));

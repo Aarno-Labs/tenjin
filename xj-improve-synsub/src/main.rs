@@ -20,6 +20,10 @@ struct Args {
     #[arg(long)]
     depth: Option<u32>,
 
+    /// Keep C time calls at the raw C ABI (for translation validation).
+    #[arg(long)]
+    ctime_abi_only: bool,
+
     /// Write results back to the source files instead of stdout.
     #[arg(long)]
     modify_in_place: bool,
@@ -30,6 +34,7 @@ fn main() -> Result<()> {
 
     let mut crates = collect_workspace_files(&args.workspace_root)?;
     let mut rw = Rewriter::new();
+    rw.enable_ctime(!args.ctime_abi_only);
 
     rw.add_expr_rewrite(Rewriter::rewrite_errno_access);
     rw.add_expr_rewrite(Rewriter::rewrite_cio_buffers);
@@ -59,7 +64,6 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_byte_view_calls);
     rw.add_expr_rewrite(Rewriter::rewrite_libm_call_to_cmath);
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
-    rw.add_expr_rewrite(Rewriter::rewrite_ctime_time);
     rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
     rw.add_expr_rewrite(Rewriter::rewrite_str_from_ptr_of_zstr);
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
@@ -129,6 +133,21 @@ fn add_deps_to_manifest(
         if !deps_table.contains_key(dep) {
             deps_table.insert(dep, value(dep_version(dep)));
             changed = true;
+        } else if dep == "xj_ctime" {
+            let existing = deps_table.get_mut(dep).expect("existing dependency");
+            if existing.as_str().is_some_and(|version| version != "0.2.0") {
+                *existing = value("0.2.0");
+                changed = true;
+            } else if let Some(table) = existing.as_table_like_mut() {
+                if table
+                    .get("version")
+                    .and_then(Item::as_str)
+                    .is_some_and(|version| version != "0.2.0")
+                {
+                    table.insert("version", value("0.2.0"));
+                    changed = true;
+                }
+            }
         }
     }
 
@@ -143,7 +162,8 @@ fn add_deps_to_manifest(
 
 fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
-        "xj_ctime" | "xj_cio" => "0.1.1",
+        "xj_ctime" => "0.2.0",
+        "xj_cio" => "0.1.1",
         "xj_cstat" | "xj_cfmt" | "xj_bytes" => "0.1.0",
         "xj_cstr" => "0.1.4",
         "xj_atone" => "0.1.1",

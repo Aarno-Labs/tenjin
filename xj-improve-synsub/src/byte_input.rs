@@ -255,25 +255,6 @@ impl Rewriter {
                 result.receiver = Box::new(prefer_string_literal(&method.receiver)?);
                 return Some((Expr::MethodCall(result), Depth::Unlimited));
             }
-            if method.method == "format"
-                && method.args.len() == 1
-                && method.turbofish.is_none()
-                && let Some(ty) = symbols.type_of_expr(&method.receiver)
-            {
-                let mut ty = &ty;
-                while let Type::Reference(reference) = ty {
-                    ty = &reference.elem;
-                }
-                if matches!(ty, Type::Path(p) if p.qself.is_none()
-                    && (p.path.is_ident("Tm") || (p.path.segments.len() == 2
-                        && p.path.segments[0].ident == "xj_ctime" && p.path.segments[1].ident == "Tm")))
-                {
-                    let mut result = method.clone();
-                    result.args[0] = prefer_string_literal(&method.args[0])?;
-                    return Some((Expr::MethodCall(result), Depth::Unlimited));
-                }
-            }
-            return None;
         }
         let Expr::Call(call) = expr else { return None };
         let Expr::Path(function) = &*call.func else {
@@ -417,8 +398,12 @@ impl Rewriter {
             ("xj_atone", "atof" | "atoi" | "atol" | "atoll") => &[0],
             ("xj_atone", name) if name.starts_with("strto") => &[0],
             ("xj_cstat", "stat" | "lstat" | "stat64" | "lstat64") => &[0],
-            ("xj_ctime", "strftime") if segments.len() == 3 && segments[1].ident == "compat" => {
-                &[1]
+            ("xj_ctime", "strftime") if segments.len() == 3 && segments[1].ident == "c" => &[1],
+            ("xj_ctime", "strftime_raw") if segments.len() == 3 && segments[1].ident == "c" => &[2],
+            ("xj_ctime", "strptime" | "strptime_raw")
+                if segments.len() == 3 && segments[1].ident == "c" =>
+            {
+                &[0, 1]
             }
             (
                 "xj_zstr",
@@ -457,7 +442,7 @@ impl Rewriter {
         let qualified_module = segments.len() == 3
             && matches!(
                 (namespace, segments[1].ident.to_string().as_str()),
-                ("xj_cstat", "c") | ("xj_zstr", "c") | ("xj_ctime", "compat")
+                ("xj_cstat", "c") | ("xj_zstr", "c") | ("xj_ctime", "c")
             );
         if !cio_adapter && segments.len() != 2 && !qualified_module {
             return None;

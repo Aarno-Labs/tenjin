@@ -14,6 +14,7 @@
 //! arguments and let-bindings are added as the visitor enters scopes.
 
 mod byte_input;
+mod ctime;
 mod printf;
 pub mod rewrites;
 mod scanf;
@@ -420,6 +421,7 @@ impl ItemStore {
 /// traversal: globals are collected in a pre-pass, then function
 /// arguments and let-bindings are added as the visitor enters scopes.
 pub struct Rewriter {
+    ctime_lift: Option<bool>,
     deps: RefCell<BTreeSet<String>>,
     expr_rewrites: Vec<ExprRewrite>,
     stmt_rewrites: Vec<StmtRewrite>,
@@ -439,6 +441,7 @@ impl Rewriter {
     /// Create a new rewriter with no registered rewrites.
     pub fn new() -> Self {
         Self {
+            ctime_lift: None,
             deps: RefCell::new(BTreeSet::new()),
             expr_rewrites: Vec::new(),
             stmt_rewrites: Vec::new(),
@@ -447,6 +450,12 @@ impl Rewriter {
             root_file: RefCell::new(None),
             cur_file: RefCell::new(None),
         }
+    }
+
+    /// Map C time records and calls to xj_ctime 0.2. When `lift` is false,
+    /// stop at the raw C ABI for independent L0 validation.
+    pub fn enable_ctime(&mut self, lift: bool) {
+        self.ctime_lift = Some(lift);
     }
 
     /// Register an expression rewrite.
@@ -492,6 +501,9 @@ impl Rewriter {
         for (_, file) in files.iter_mut() {
             AtomicTypeNormalizer.visit_file_mut(file);
         }
+        if let Some(lift) = self.ctime_lift {
+            ctime::prepare(self, files, lift);
+        }
         let globals = SymbolTable::from_files(files);
         let root_path = files.first().map(|(path, _)| path.clone());
         *self.root_file.borrow_mut() = root_path;
@@ -515,6 +527,11 @@ impl Rewriter {
     /// Globals are collected from this file only.
     pub fn rewrite_file(&self, file: &mut syn::File, depth: Depth) {
         AtomicTypeNormalizer.visit_file_mut(file);
+        if let Some(lift) = self.ctime_lift {
+            let mut files = [(PathBuf::new(), file.clone())];
+            ctime::prepare(self, &mut files, lift);
+            *file = files.into_iter().next().unwrap().1;
+        }
         let globals = SymbolTable::from_file(file);
         self.root_file.borrow_mut().take();
         self.cur_file.borrow_mut().take();

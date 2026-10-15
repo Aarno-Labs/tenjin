@@ -260,7 +260,7 @@ impl ExternCrate {
             Memoffset => ExternCrateDetails::external("memoffset", "0.5", true),
             Libc => ExternCrateDetails::external("libc", "0.2", false),
             Hexfloat2 => ExternCrateDetails::external("xj_hexfloat", "0.1.1", false),
-            XjCtime => ExternCrateDetails::external("xj_ctime", "0.1.1", false),
+            XjCtime => ExternCrateDetails::external("xj_ctime", "0.2.0", false),
             XjCmath => ExternCrateDetails::external("xj_cmath", "0.1.0", false),
             XjZstr => {
                 ExternCrateDetails::external("xj_zstr", "0.1", false).with_features(vec!["cfmt"])
