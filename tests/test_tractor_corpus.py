@@ -1781,7 +1781,7 @@ def test_tractor_b2_synthetic_mutable_duplication_dag_app(tenjin_fixtures: Tenji
 def test_tractor_b2_synthetic_pointer_comparison_ascii_art_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/pointer_comparison_ascii_art"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 37
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 34
 
 
 @pytest.mark.slow

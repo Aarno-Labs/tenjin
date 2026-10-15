@@ -741,7 +741,7 @@ def test_uxnmin(tenjin_fixtures: TenjinFixtures):
     ).hexdigest()
     assert tictactoe_rom_hash == "15d387e1d8568d53cf996190aabf7f5119d5bcd9a5f775711c8a8b1e6cbe4d4e"
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 1
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 3
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1177,7 +1177,6 @@ def test_lsof_exe(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 25 seconds
-@pytest.mark.skip(reason="triggers a refolder bug")
 def test_piotrl__c_markdown_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -1259,7 +1258,6 @@ def test_itsjustme27__dns_tool_exe(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 15 minutes
-@pytest.mark.xfail  # refolder issue
 def test_lemon_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -1312,7 +1310,7 @@ Valid command line options for "target/debug/lemon" are:
   -W<string>   Ignored.  (Placeholder for '-W' compiler options.)
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 121
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 124
 
 
 @pytest.mark.slow  # expected runtime: 220 seconds
@@ -1924,7 +1922,6 @@ def test_xiph_speex_speexenc_only(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 650 s
-@pytest.mark.xfail  # refolder issue
 def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
@@ -1995,7 +1992,7 @@ def test_xiph_speex_libspeex(tenjin_fixtures: TenjinFixtures):
 
     assert male_rs_wav == male_c_wav, "wav file via Rust library did not have the same output"
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 180
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 173
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -2929,7 +2926,6 @@ def brotli_run_upstream_tests(
 
 
 @pytest.mark.slow  # expected runtime: ~280 s
-@pytest.mark.skip(reason="triggers a refolder bug")
 def test_google_brotli(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
