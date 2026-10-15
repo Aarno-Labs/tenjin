@@ -53,3 +53,10 @@ llvm-static = ["c2rust-ast-exporter/llvm-static"]
 [dev-dependencies]
 fs-err = "3.3.0"
 insta = { version = "1.46.3", features = ["glob", "json"] }
+# Not used directly: tests/cio.rs compiles translated code against these with
+# `cargo --offline`, so listing them here ensures they are locked and fetched.
+# (The tests enable xj_cio's nightly-only `c_variadic` feature themselves.)
+libc = "0.2"
+xj_cfmt = "0.1.0"
+xj_cio = "0.1.0"
+xj_zstr = { version = "0.1.0", features = ["cfmt"] }
