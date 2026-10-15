@@ -161,7 +161,7 @@ fn stdio_and_formatting_check() {
     let package = dir.path().join("runtime");
     fs::create_dir_all(package.join("src")).unwrap();
     fs::write(package.join("Cargo.toml"),
-        "[package]\nname = \"cio-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {version = \"0.1.0\", features = [\"c_variadic\"]}\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
+        "[package]\nname = \"cio-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {version = \"0.1.1\", features = [\"c_variadic\"]}\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
     fs::write(package.join("src/main.rs"), rust).unwrap();
     let output = Command::new("cargo")
         .env(
@@ -193,7 +193,7 @@ fn formatting_guided_zstr_uses_byte_views() {
     fs::write(&source, "#include <stdio.h>\n#include <stdarg.h>\nvoid demo(const char *s, char *out, size_t n) { printf(\"%5.3s\", s); snprintf(out, n, \"%s\", s); }\nvoid demo_v(char *out, size_t n, const char *fmt, va_list ap) { vsnprintf(out, n, fmt, ap); }").unwrap();
     let mut cfg = common::config(
         Edition2024,
-        serde_json::json!({"vars_of_type": {
+        serde_json::json!({"public_api": [], "vars_of_type": {
             "&ZStr": ["demo:s", "demo_v:fmt"], "&mut ZStr": ["demo:out", "demo_v:out"]
         }}),
     );
@@ -206,7 +206,7 @@ fn formatting_guided_zstr_uses_byte_views() {
     assert!(rust.contains("::xj_cio::snprintf_plan_("), "{rust}");
     assert!(!rust.contains("to_string_lossy"), "{rust}");
     fs::write(dir.path().join("translated/Cargo.toml"),
-        "[package]\nname = \"cio-guided-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[lib]\npath = \"src/guided.rs\"\n[dependencies]\nxj_cio = \"0.1.0\"\nxj_zstr = {version = \"0.1.0\", features = [\"cfmt\"]}\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
+        "[package]\nname = \"cio-guided-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[lib]\npath = \"src/guided.rs\"\n[dependencies]\nxj_cio = \"0.1.1\"\nxj_zstr = {version = \"0.1.0\", features = [\"cfmt\"]}\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
     let output = Command::new("cargo")
         .env(
             "CARGO_TARGET_DIR",
@@ -482,7 +482,7 @@ fn scanf_family_matches_native() {
     let package = dir.path().join("runtime");
     fs::create_dir_all(package.join("src")).unwrap();
     fs::write(package.join("Cargo.toml"),
-        "[package]\nname = \"cio-scan-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {version = \"0.1.0\", features = [\"c_variadic\"]}\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
+        "[package]\nname = \"cio-scan-runtime\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nxj_cio = {version = \"0.1.1\", features = [\"c_variadic\"]}\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
     fs::write(package.join("src/main.rs"), rust).unwrap();
     let output = Command::new("cargo")
         .env(
