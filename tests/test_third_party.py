@@ -1197,7 +1197,7 @@ def test_piotrl__c_markdown_exe(tenjin_fixtures: TenjinFixtures):
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
 
     lists_output: bytes = hermetic.run(
-        ["target/debug/main", tmp_codebase / "tests" / "lists.txt"],
+        ["target/debug/main", tmp_codebase / "tests" / "lists.txt", "."],
         capture_output=True,
         cwd=tmp_resultsdir / "final",
     ).stdout
