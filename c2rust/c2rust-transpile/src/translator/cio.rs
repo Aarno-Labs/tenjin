@@ -74,22 +74,39 @@ pub(crate) fn is_stdio_function(name: &str) -> bool {
     )
 }
 
-fn system_stdio_header(ast: &TypedAstContext, decl: &CDecl, tcfg: &TranspilerConfig) -> bool {
+/// Include roots whose stdio headers are trusted. Clang reports canonical
+/// header paths, so each root is also matched in canonical form (e.g. macOS
+/// `/var` -> `/private/var`, or a symlinked sysroot). Computed once per pass
+/// rather than per declaration to avoid a filesystem lookup for every decl.
+fn trusted_stdio_roots(tcfg: &TranspilerConfig) -> Vec<PathBuf> {
+    let sysroot = std::env::var_os("CLANG_PATH").and_then(|p| {
+        let p = PathBuf::from(p);
+        Some(p.parent()?.parent()?.join("sysroot/usr/include"))
+    });
+    let configured = tcfg.guidance_json["stdio_header_roots"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.as_str())
+        .map(PathBuf::from);
+    let mut roots = Vec::new();
+    for root in std::iter::once(PathBuf::from("/usr/include"))
+        .chain(sysroot)
+        .chain(configured)
+    {
+        if let Ok(canonical) = std::fs::canonicalize(&root) {
+            if canonical != root {
+                roots.push(canonical);
+            }
+        }
+        roots.push(root);
+    }
+    roots
+}
+
+fn system_stdio_header(ast: &TypedAstContext, decl: &CDecl, roots: &[PathBuf]) -> bool {
     ast.get_source_path(decl).is_some_and(|path| {
-        let sysroot = std::env::var_os("CLANG_PATH").and_then(|p| {
-            let p = PathBuf::from(p);
-            Some(p.parent()?.parent()?.join("sysroot/usr/include"))
-        });
-        (path.starts_with("/usr/include")
-            || sysroot.is_some_and(|p| path.starts_with(p))
-            || tcfg.guidance_json["stdio_header_roots"]
-                .as_array()
-                .is_some_and(|roots| {
-                    roots
-                        .iter()
-                        .filter_map(|r| r.as_str())
-                        .any(|root| path.starts_with(root))
-                }))
+        roots.iter().any(|root| path.starts_with(root))
             && (path.ends_with("stdio.h")
                 || path.ends_with("bits/stdio.h")
                 || path.ends_with("bits/types/struct_FILE.h")
@@ -109,6 +126,7 @@ pub(crate) fn stdio_project_definitions(
     ast: &TypedAstContext,
     tcfg: &TranspilerConfig,
 ) -> HashSet<String> {
+    let roots = trusted_stdio_roots(tcfg);
     ast.iter_decls()
         .filter_map(|(_, decl)| match &decl.kind {
             CDeclKind::Function {
@@ -116,7 +134,7 @@ pub(crate) fn stdio_project_definitions(
                 body: Some(_),
                 is_global: true,
                 ..
-            } if is_stdio_function(name) && !system_stdio_header(ast, decl, tcfg) => {
+            } if is_stdio_function(name) && !system_stdio_header(ast, decl, &roots) => {
                 Some(name.clone())
             }
             _ => None,
@@ -136,11 +154,12 @@ pub(crate) fn stdio_discovery_error(
     ast: &TypedAstContext,
     tcfg: &TranspilerConfig,
 ) -> Option<String> {
+    let roots = trusted_stdio_roots(tcfg);
     for (&id, decl) in ast.iter_decls() {
         let Some(path) = ast.get_source_path(decl) else {
             continue;
         };
-        if !path.ends_with("stdio.h") || system_stdio_header(ast, decl, tcfg) {
+        if !path.ends_with("stdio.h") || system_stdio_header(ast, decl, &roots) {
             continue;
         }
         let target = &ast[canonical_stdio_decl(ast, id)];
@@ -155,8 +174,9 @@ pub(crate) fn stdio_discovery_error(
 impl CioReplacements {
     pub(crate) fn discover(ast: &TypedAstContext, tcfg: &TranspilerConfig) -> Self {
         let mut result = Self::default();
+        let roots = trusted_stdio_roots(tcfg);
         for (&id, decl) in ast.iter_decls() {
-            if !system_stdio_header(ast, decl, tcfg) {
+            if !system_stdio_header(ast, decl, &roots) {
                 continue;
             }
             let id = canonical_stdio_decl(ast, id);
@@ -164,7 +184,7 @@ impl CioReplacements {
             // A project definition supersedes system prototypes. Header inline
             // definitions remain eligible because their provenance is trusted.
             if matches!(target_decl.kind, CDeclKind::Function { body: Some(_), .. })
-                && !system_stdio_header(ast, target_decl, tcfg)
+                && !system_stdio_header(ast, target_decl, &roots)
             {
                 continue;
             }
