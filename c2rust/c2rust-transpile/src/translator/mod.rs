@@ -1365,6 +1365,11 @@ pub fn translate(
 
         t.cio_replacements = cio::CioReplacements::discover(&t.ast_context, tcfg);
         t.type_converter.borrow_mut().cio_file_records = t.cio_replacements.records.clone();
+        t.cio_replacements.field_macros = cio::discover_field_macros(
+            &t.ast_context,
+            &t.cio_replacements.records,
+            &t.parent_expr_map,
+        );
         if !t.cio_replacements.functions.is_empty() || !t.cio_replacements.streams.is_empty() {
             t.use_crate(ExternCrate::XjCio);
         }
@@ -4416,6 +4421,10 @@ impl<'c> Translation<'c> {
             expr_id,
             self.ast_context[expr_id]
         );
+
+        if let Some(converted) = self.convert_cio_field_macro(ctx, expr_id, override_ty)? {
+            return Ok(converted);
+        }
 
         if let Some(converted) = self.convert_const_macro_expansion(ctx, expr_id, override_ty)? {
             return Ok(converted);

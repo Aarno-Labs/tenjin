@@ -6,6 +6,9 @@ pub(crate) struct CioReplacements {
     pub(crate) records: HashSet<CDeclId>,
     pub(crate) functions: HashMap<CDeclId, String>,
     pub(crate) streams: HashMap<CDeclId, &'static str>,
+    /// Roots of header macro expansions that use FILE's private fields in
+    /// project code, with the xj_cio function and stream argument they denote.
+    pub(crate) field_macros: HashMap<CExprId, (&'static str, CExprId)>,
 }
 
 pub(crate) fn is_stdio_function(name: &str) -> bool {
@@ -199,6 +202,11 @@ impl CioReplacements {
                     name: Some(name), ..
                 } if matches!(name.as_str(), "_IO_FILE" | "__sFILE") => {
                     result.records.insert(id);
+                }
+                // macOS putc_unlocked expands to this inline helper over FILE's
+                // fields; its arguments match putc.
+                CDeclKind::Function { name, .. } if name == "__sputc" => {
+                    result.functions.insert(id, "putc".to_owned());
                 }
                 CDeclKind::Function { name, .. }
                     if is_stdio_function(name) && !project_stdio_binding(tcfg, name) =>
@@ -991,5 +999,154 @@ impl Translation<'_> {
         Ok(Box::new(syn::parse_quote! {
             ::xj_cio::#mac!(#(#prefix,)* #format #(, #values)*)
         }))
+    }
+}
+
+/// macOS defines getc_unlocked, getchar_unlocked, feof_unlocked,
+/// ferror_unlocked, clearerr_unlocked and fileno_unlocked as macros that use
+/// FILE's private fields directly in project code:
+///
+/// ```c
+/// #define __sgetc(p) (--(p)->_r < 0 ? __srget(p) : (int)(*(p)->_p++))
+/// #define __sfeof(p) (((p)->_flags & __SEOF) != 0)
+/// #define __sferror(p) (((p)->_flags & __SERR) != 0)
+/// #define __sclearerr(p) ((void)((p)->_flags &= ~(__SERR|__SEOF)))
+/// #define __sfileno(p) ((p)->_file)
+/// ```
+///
+/// The replaced FILE has no such fields. Find each expansion's root so that it
+/// can be translated as the equivalent call. Every node in an expansion starts
+/// at the macro call site, which bounds the search together with the shapes;
+/// the exporter's macro invocation records are incomplete for nested
+/// expansions such as `putchar_unlocked(getchar_unlocked())`.
+pub(crate) fn discover_field_macros(
+    ast: &TypedAstContext,
+    records: &HashSet<CDeclId>,
+    parents: &HashMap<CExprId, CExprId>,
+) -> HashMap<CExprId, (&'static str, CExprId)> {
+    const SEOF: u64 = 0x20;
+    const SERR: u64 = 0x40;
+    let mut result = HashMap::new();
+    if records.is_empty() {
+        return result;
+    }
+    for (&member_id, member) in ast.iter_exprs() {
+        let CExprKind::Member(_, base, field, MemberKind::Arrow, _) = member.kind else {
+            continue;
+        };
+        let Some(&record) = ast.parents.get(&field) else {
+            continue;
+        };
+        if !records.contains(&canonical_stdio_decl(ast, record)) {
+            continue;
+        }
+        let CDeclKind::Field { name: field, .. } = &ast[field].kind else {
+            continue;
+        };
+        // Only the start is reliable: inner nodes of an expansion lack an end.
+        let start = |id: CExprId| {
+            ast[id]
+                .loc
+                .map(|l| (l.fileid, l.begin_line, l.begin_column))
+        };
+        let same_span = |id: &CExprId| start(*id) == start(member_id);
+        // Innermost ancestor in the expansion that has a known macro shape.
+        let mut node = member_id;
+        let found = loop {
+            let target = match ast[node].kind {
+                CExprKind::Member(..) if node == member_id && field == "_file" => Some("fileno"),
+                CExprKind::Conditional(..) if field == "_r" || field == "_p" => Some("getc"),
+                CExprKind::Binary(_, CBinOp::NotEqual, lhs, rhs, _, _)
+                    if field == "_flags" && integer_literal(ast, rhs) == Some(0) =>
+                {
+                    match ast.index_unwrap_parens(lhs).kind {
+                        CExprKind::Binary(_, CBinOp::BitAnd, _, mask, _, _) => {
+                            match integer_literal(ast, mask) {
+                                Some(SEOF) => Some("feof"),
+                                Some(SERR) => Some("ferror"),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+                CExprKind::ExplicitCast(_, inner, CastKind::ToVoid, _, _)
+                    if field == "_flags"
+                        && matches!(
+                            ast.index_unwrap_parens(inner).kind,
+                            CExprKind::Binary(_, CBinOp::AssignBitAnd, ..)
+                        ) =>
+                {
+                    Some("clearerr")
+                }
+                _ => None,
+            };
+            if let Some(target) = target {
+                break Some((node, target));
+            }
+            match parents.get(&node).filter(|parent| same_span(parent)) {
+                Some(&parent) => node = parent,
+                None => break None,
+            }
+        };
+        let Some((mut root, target)) = found else {
+            continue;
+        };
+        // Include the expansion's enclosing parentheses.
+        while let Some(&parent) = parents
+            .get(&root)
+            .filter(|p| same_span(p) && matches!(ast[**p].kind, CExprKind::Paren(..)))
+        {
+            root = parent;
+        }
+        result
+            .entry(root)
+            .or_insert((target, ast.unwrap_parens(base)));
+    }
+    result
+}
+
+fn integer_literal(ast: &TypedAstContext, expr: CExprId) -> Option<u64> {
+    match ast.index_unwrap_parens(expr).kind {
+        CExprKind::Literal(_, CLiteral::Integer(value, _)) => Some(value),
+        CExprKind::ImplicitCast(_, inner, ..) => integer_literal(ast, inner),
+        _ => None,
+    }
+}
+
+impl Translation<'_> {
+    /// Translate a macOS FILE field macro (see [`discover_field_macros`]) as
+    /// the equivalent xj_cio call.
+    pub(crate) fn convert_cio_field_macro(
+        &self,
+        ctx: ExprContext,
+        expr_id: CExprId,
+        override_ty: Option<CQualTypeId>,
+    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        let Some(&(target, stream)) = self.cio_replacements.field_macros.get(&expr_id) else {
+            return Ok(None);
+        };
+        let ty = override_ty
+            .or_else(|| self.ast_context[expr_id].kind.get_qual_type())
+            .ok_or_else(|| format_err!("Expansion of stdio macro {target} has no type"))?;
+        let stream = self.convert_expr(ctx.used(), stream, None)?;
+        self.use_crate(ExternCrate::XjCio);
+        let call =
+            |stream| mk().call_expr(mk().abs_path_expr(vec!["xj_cio", target]), vec![stream]);
+        // The macros' own result types can differ from the functions'
+        // (fileno's is FILE's short field), so convert to the C type.
+        let rust_ty = match self.ast_context.resolve_type(ty.ctype).kind {
+            CTypeKind::Void | CTypeKind::Int => None,
+            _ => Some(self.convert_type(ty.ctype)?),
+        };
+        let val = stream.map(|stream| match rust_ty {
+            Some(rust_ty) => mk().cast_expr(call(stream), rust_ty),
+            None => call(stream),
+        });
+        Ok(Some(self.convert_side_effects_expr(
+            ctx,
+            val,
+            "Function call expression is not supposed to be used",
+        )))
     }
 }

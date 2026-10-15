@@ -520,3 +520,49 @@ fn scanf_conflicting_literal_keeps_the_destination_width() {
     assert!(!rust.contains("OutArg::Int("), "{rust}");
     assert!(rust.contains("OutArg::Str("), "{rust}");
 }
+
+#[test]
+fn unlocked_stream_macros_use_the_stream_backend() {
+    // macOS defines these as macros over FILE's private fields; glibc declares
+    // functions. Either way, the replaced FILE must be reached through xj_cio.
+    let dir = tempfile::tempdir().unwrap();
+    let rust = translated_text(
+        dir.path(),
+        r#"
+        #include <stdio.h>
+        int demo(FILE *f, FILE **fs) {
+            int c = getc_unlocked(*fs++);
+            long fd = fileno_unlocked(f);
+            putc_unlocked(c, f);
+            putchar_unlocked(getchar_unlocked());
+            if (feof_unlocked(f) || ferror_unlocked(f)) clearerr_unlocked(f);
+            return c + (int)fd;
+        }
+        "#,
+        serde_json::json!({}),
+    );
+    for name in ["getc", "putc", "feof", "ferror", "clearerr", "fileno"] {
+        assert!(rust.contains(&format!("xj_cio::{name}(")), "{name}\n{rust}");
+    }
+    // The stream argument is evaluated once, as in a call.
+    assert_eq!(rust.matches(".offset(1)").count(), 1, "{rust}");
+    for field in ["_flags", "_file", "_r", "_p", "_w"] {
+        assert!(!rust.contains(&format!(").{field}")), "{field}\n{rust}");
+    }
+    fs::write(dir.path().join("translated/Cargo.toml"),
+        "[package]\nname = \"cio-unlocked-macros\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[lib]\npath = \"src/case.rs\"\n[dependencies]\nxj_cio = \"0.1.1\"\nxj_cfmt = \"0.1.0\"\nlibc = \"0.2\"\n").unwrap();
+    let output = Command::new("cargo")
+        .env(
+            "CARGO_TARGET_DIR",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/cio-runtime-tests"),
+        )
+        .current_dir(dir.path().join("translated"))
+        .args([Edition2024.toolchain(), "check", "--offline", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{rust}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
