@@ -98,7 +98,9 @@ fn stdio_and_formatting_check() {
             if (fread(buf, 1, 3, f) != 3 || (unsigned char)buf[0] != 0xc2 || (unsigned char)buf[1] != 0xa9 || buf[2] != 0) return 27;
             if (fprintf(f, "%lc", (wint_t)0xd800) != -1) return 28;
             if (!setlocale(LC_CTYPE, "C")) return 29;
-            if (fprintf(f, "%lc", (wint_t)0xa9) != -1) return 30;
+            // The C locale rejects U+0100 on both glibc (ASCII only) and macOS
+            // (which encodes U+0000..U+00FF as single bytes).
+            if (fprintf(f, "%lc", (wint_t)0x100) != -1) return 30;
             if (!setlocale(LC_CTYPE, "C.UTF-8") || fclose(f)) return 31;
             if (snprintf(NULL, 0, "%d", 123) != 3) return 12;
             char out[5];
@@ -123,7 +125,11 @@ fn stdio_and_formatting_check() {
             const char *count_fmt = "abc%hhn%hn%ln%lln%jn%zn%tn";
             if (runtime_buffer(dynamic, sizeof dynamic, count_fmt, &n1, &n2, &n3, &n4, &n5, &n6, &n7) != 3) return 40;
             if (n1 != 3 || n2 != 3 || n3 != 3 || n4 != 3 || n5 != 3 || n6 != 3 || n7 != 3) return 41;
-            if (runtime_buffer(dynamic, 1, "%") != -1 || destination_calls != 3) return 42;
+            // A malformed format's result is libc-specific (glibc -1, macOS 0), so it is
+            // reported on stderr, which is not compared with the native run.
+            int malformed = runtime_buffer(dynamic, 1, "%");
+            if (destination_calls != 3) return 42;
+            fprintf(stderr, "malformed:%d\n", malformed);
             const char *fmt = "%s:%d\n";
             if (printf(fmt, "runtime", 3 + 4) != 10) return 10;
             if (printf("\xff%5.3s|%c\n", "\xc3\xa9\xf0\x9f\x91\xa8", 255) != 9) return 11;
@@ -179,6 +185,8 @@ fn stdio_and_formatting_check() {
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("malformed:-1\n"), "{stderr}");
     assert_eq!(output.stdout, reference.stdout);
     assert_eq!(
         output.stdout,
