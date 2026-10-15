@@ -90,7 +90,9 @@ fn trusted_stdio_roots(tcfg: &TranspilerConfig) -> Vec<PathBuf> {
         .filter_map(|r| r.as_str())
         .map(PathBuf::from);
     let mut roots = Vec::new();
+    let macos_sdk = crate::macos_sdk_include_dir().map(Path::to_path_buf);
     for root in std::iter::once(PathBuf::from("/usr/include"))
+        .chain(macos_sdk)
         .chain(sysroot)
         .chain(configured)
     {
@@ -109,6 +111,10 @@ fn system_stdio_header(ast: &TypedAstContext, decl: &CDecl, roots: &[PathBuf]) -
         roots.iter().any(|root| path.starts_with(root))
             && (path.ends_with("stdio.h")
                 || path.ends_with("bits/stdio.h")
+                // Recent macOS SDKs split stdio.h: FILE, the streams, and most
+                // functions live in _stdio.h, and printf in _printf.h.
+                || path.ends_with("_stdio.h")
+                || path.ends_with("_printf.h")
                 || path.ends_with("bits/types/struct_FILE.h")
                 || path.ends_with("bits/types/FILE.h")
                 || path.ends_with("bits/alltypes.h"))

@@ -648,25 +648,34 @@ pub fn transpile(mut tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&
 fn get_extra_args_macos() -> Vec<String> {
     let mut args = vec![];
     if cfg!(target_os = "macos") {
-        let usr_incl = Path::new("/usr/include");
-        if !usr_incl.exists() {
-            let output = Command::new("xcrun")
-                .args(["--show-sdk-path"])
-                .output()
-                .expect("failed to run `xcrun` subcommand");
-            let mut sdk_path = String::from_utf8(output.stdout).unwrap();
-            let olen = sdk_path.len();
-            sdk_path.truncate(olen - 1);
-            sdk_path.push_str("/usr/include");
-
+        if let Some(sdk_include) = macos_sdk_include_dir() {
             args.push("-isystem".to_owned());
-            args.push(sdk_path);
+            args.push(sdk_include.display().to_string());
         }
 
         // disable Apple's blocks extension; see https://github.com/immunant/c2rust/issues/229
         args.push("-fno-blocks".to_owned());
     }
     args
+}
+
+/// The macOS SDK include directory passed to clang as `-isystem`, when
+/// `/usr/include` is absent. Cached so `xcrun` runs at most once per process.
+pub(crate) fn macos_sdk_include_dir() -> Option<&'static Path> {
+    static SDK_INCLUDE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    SDK_INCLUDE
+        .get_or_init(|| {
+            if !cfg!(target_os = "macos") || Path::new("/usr/include").exists() {
+                return None;
+            }
+            let output = Command::new("xcrun")
+                .args(["--show-sdk-path"])
+                .output()
+                .expect("failed to run `xcrun` subcommand");
+            let sdk_path = String::from_utf8(output.stdout).unwrap();
+            Some(Path::new(sdk_path.trim_end()).join("usr/include"))
+        })
+        .as_deref()
 }
 
 fn invoke_refactor(build_dir: &Path) -> Result<(), Error> {
