@@ -190,6 +190,11 @@ pub enum ExternCrate {
     Hexfloat2,
     XjCtime,
     XjCmath,
+    XjZstr,
+    XjCio,
+    /// xj_cio with its `c_variadic` feature, for the `va_list` entry points.
+    XjCioVariadic,
+    XjCfmt,
     LibzRsSys,
     Libbz2RsSys,
     Bytemuck,
@@ -257,6 +262,13 @@ impl ExternCrate {
             Hexfloat2 => ExternCrateDetails::external("xj_hexfloat", "0.1.1", false),
             XjCtime => ExternCrateDetails::external("xj_ctime", "0.1.1", false),
             XjCmath => ExternCrateDetails::external("xj_cmath", "0.1.0", false),
+            XjZstr => {
+                ExternCrateDetails::external("xj_zstr", "0.1", false).with_features(vec!["cfmt"])
+            }
+            XjCio => ExternCrateDetails::external("xj_cio", "0.1.1", false),
+            XjCioVariadic => ExternCrateDetails::external("xj_cio", "0.1.1", false)
+                .with_features(vec!["c_variadic"]),
+            XjCfmt => ExternCrateDetails::external("xj_cfmt", "0.1", false),
             LibzRsSys => ExternCrateDetails::external("libz-rs-sys", "0.6.8", false),
             Libbz2RsSys => ExternCrateDetails::external("libbz2-rs-sys", "0.2.5", false),
             Bytemuck => ExternCrateDetails::external("bytemuck", "1.23.2", false)
@@ -434,31 +446,51 @@ pub fn transpile(mut tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&
         .filter(|path| !path.starts_with("/c2rust/link/"))
         .collect();
     let mut prepared_inputs = HashMap::new();
-    if inputs.len() > 1
-        && tcfg.guidance_json.get("use_libc").and_then(|v| v.as_bool()) != Some(false)
-    {
-        let mut fallback = false;
-        for input in inputs {
-            let prepared = prepare_translation(&tcfg, &input, cc_db, &clang_args);
-            match &prepared {
-                Ok(prepared) => {
+    let check_stat = inputs.len() > 1
+        && tcfg.guidance_json.get("use_libc").and_then(|v| v.as_bool()) != Some(false);
+    let mut fallback = false;
+    for input in inputs {
+        let prepared = prepare_translation(&tcfg, &input, cc_db, &clang_args);
+        match &prepared {
+            Ok(prepared) => {
+                if check_stat {
                     let mut ast = prepared.ast.clone();
                     ast.bypass_typedefs();
                     ast.prune_unwanted_items(tcfg.preserve_unused_functions);
                     ast.bubble_expr_types();
                     fallback |= translator::libc_stat_requires_fallback(ast, &tcfg, &input);
                 }
-                Err(()) => fallback = true,
             }
-            prepared_inputs.insert(input, prepared);
+            Err(()) => fallback = true,
         }
-        if fallback {
-            warn!("Keeping generated sys/stat.h bindings for this batch: a translation unit cannot use libc::stat");
-            if !tcfg.guidance_json.is_object() {
-                tcfg.guidance_json = serde_json::json!({});
-            }
-            tcfg.guidance_json["use_libc"] = serde_json::json!(false);
+        prepared_inputs.insert(input, prepared);
+    }
+    // C external linkage binds a project definition across translation units.
+    // Establish these bindings before any caller can replace its system prototype.
+    let project_stdio: std::collections::HashSet<_> = prepared_inputs
+        .values()
+        .filter_map(|p| p.as_ref().ok())
+        .flat_map(|p| translator::stdio_project_definitions(&p.ast, &tcfg))
+        .collect();
+    if !project_stdio.is_empty() {
+        if !tcfg.guidance_json.is_object() {
+            tcfg.guidance_json = serde_json::json!({});
         }
+        let mut names: Vec<_> = project_stdio.into_iter().collect();
+        names.sort();
+        tcfg.guidance_json["xj_stdio_project_definitions"] = serde_json::json!(names);
+    }
+    for prepared in prepared_inputs.values().filter_map(|p| p.as_ref().ok()) {
+        if let Some(message) = translator::stdio_discovery_error(&prepared.ast, &tcfg) {
+            panic!("{message}");
+        }
+    }
+    if check_stat && fallback {
+        warn!("Keeping generated sys/stat.h bindings for this batch: a translation unit cannot use libc::stat");
+        if !tcfg.guidance_json.is_object() {
+            tcfg.guidance_json = serde_json::json!({});
+        }
+        tcfg.guidance_json["use_libc"] = serde_json::json!(false);
     }
 
     let mut top_level_ccfg = None;
@@ -616,25 +648,34 @@ pub fn transpile(mut tcfg: TranspilerConfig, cc_db: &Path, extra_clang_args: &[&
 fn get_extra_args_macos() -> Vec<String> {
     let mut args = vec![];
     if cfg!(target_os = "macos") {
-        let usr_incl = Path::new("/usr/include");
-        if !usr_incl.exists() {
-            let output = Command::new("xcrun")
-                .args(["--show-sdk-path"])
-                .output()
-                .expect("failed to run `xcrun` subcommand");
-            let mut sdk_path = String::from_utf8(output.stdout).unwrap();
-            let olen = sdk_path.len();
-            sdk_path.truncate(olen - 1);
-            sdk_path.push_str("/usr/include");
-
+        if let Some(sdk_include) = macos_sdk_include_dir() {
             args.push("-isystem".to_owned());
-            args.push(sdk_path);
+            args.push(sdk_include.display().to_string());
         }
 
         // disable Apple's blocks extension; see https://github.com/immunant/c2rust/issues/229
         args.push("-fno-blocks".to_owned());
     }
     args
+}
+
+/// The macOS SDK include directory passed to clang as `-isystem`, when
+/// `/usr/include` is absent. Cached so `xcrun` runs at most once per process.
+pub(crate) fn macos_sdk_include_dir() -> Option<&'static Path> {
+    static SDK_INCLUDE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    SDK_INCLUDE
+        .get_or_init(|| {
+            if !cfg!(target_os = "macos") || Path::new("/usr/include").exists() {
+                return None;
+            }
+            let output = Command::new("xcrun")
+                .args(["--show-sdk-path"])
+                .output()
+                .expect("failed to run `xcrun` subcommand");
+            let sdk_path = String::from_utf8(output.stdout).unwrap();
+            Some(Path::new(sdk_path.trim_end()).join("usr/include"))
+        })
+        .as_deref()
 }
 
 fn invoke_refactor(build_dir: &Path) -> Result<(), Error> {

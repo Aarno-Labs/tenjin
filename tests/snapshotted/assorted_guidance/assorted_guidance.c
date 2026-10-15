@@ -1,17 +1,15 @@
-// To avoid cross-platform output differences from `printf` argument names,
-// we'll just declare printf and other libc functions ourselves.
-int printf(const char *fmt, ...);
-int snprintf(char *buf, unsigned long, const char *fmt, ...);
-int sprintf(char *buf, const char *fmt, ...);
-typedef unsigned long size_t;
+// Stdio replacement requires declarations from a trusted system header.
+// Generated printing macros keep platform-specific parameter names out of the output.
+#include <stdio.h>
 size_t strlen(const char *s);
-void *memset(void *s, int c, long n);
+void *memset(void *s, int c, unsigned long n);
 unsigned long strcspn(const char *, const char *);
 // These are macros in <ctype.h> but Tenjin can translate the un-expanded form.
 int isalnum(int c);
 char tolower(int c);
 void exit(int status);
-int putchar(int c);
+int strcmp(const char *s1, const char *s2);
+int strncmp(const char *s1, const char *s2, size_t n);
 
 extern int extern_int_unguided;
 // XREF:extern_var_nonmutbl
@@ -34,6 +32,7 @@ void print_owned_String(const char *ostr)
 // void print_shared_str(const char* rstr) { printf("%s\n", rstr); }
 // void print_exclusive_str(const char* xstr) { printf("%s\n", xstr); }
 void print_unguided_ptr(const char *ptr) { printf("%s\n", ptr); }
+void forward_unguided_ptr(const char *ptr) { print_unguided_ptr(ptr); }
 
 void print_shared_vec_u8(const char *rvu8)
 {
@@ -129,7 +128,7 @@ void guided_c_assignment_string_pop(char *ostr)
     ostr[strlen(ostr) - 1] = '\0';
 }
 
-unsigned long guided_c_strlen(char *ostr)
+size_t guided_c_strlen(char *ostr)
 {
     // XREF:guided_c_strlen
     return strlen(ostr);
@@ -350,4 +349,35 @@ void pass_slice_offset(int idx)
 {
     char unsigned arr[72] = {0};
     receive_slice(&arr[idx + 2]);
+}
+
+
+_Bool strncmp_idiom_01(const char* rsu8) {
+    return strncmp(rsu8, "prefix", 6) != 0;
+}
+
+_Bool strncmp_idiom_02(const char* rsu8) {
+    return strncmp(rsu8, "prefix", strlen("prefix")) != 0;
+}
+
+char strlen_idiom_01(const char* rsu8) {
+    return rsu8[strlen(rsu8) - 1];
+}
+
+char strlen_idiom_02(const char* rsu8) {
+    if (strlen(rsu8) < 2) {
+        return '\0';
+    }
+    return rsu8[strlen(rsu8) - 2];
+}
+
+_Bool snprintf_example_01(int x) {
+    unsigned char buf[9] = {0};
+    return snprintf(buf, 9, "%08d", x) >= 0;
+}
+
+void snprintf_example_02(int x) {
+    unsigned char buf[9] = {0};
+    snprintf(buf, 9, "%08d", x);
+    printf("%s\n", buf);
 }

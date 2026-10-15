@@ -32,7 +32,11 @@ fn main() -> Result<()> {
     let mut rw = Rewriter::new();
 
     rw.add_expr_rewrite(Rewriter::rewrite_errno_access);
-    rw.add_expr_rewrite(Rewriter::rewrite_getchar_variants);
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_buffers);
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_destination);
+    rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
+    rw.add_macro_rewrite(Rewriter::rewrite_c_printf_safe);
+    rw.add_macro_rewrite(Rewriter::rewrite_byte_view_macro_literals);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_initialization);
     rw.add_expr_rewrite(Rewriter::rewrite_atomic_intrinsic);
     rw.add_expr_rewrite(Rewriter::rewrite_null_pointer_offsetof);
@@ -42,26 +46,33 @@ fn main() -> Result<()> {
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_subscript);
     rw.add_expr_rewrite(Rewriter::rewrite_usize_array_subscript_literal);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_deref);
+    rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_zstr);
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
     rw.add_expr_rewrite(Rewriter::rewrite_atone_of_slice);
     rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
-    rw.add_expr_rewrite(Rewriter::rewrite_printf_with_lone_offset_fmt);
     rw.add_expr_rewrite(Rewriter::rewrite_usleep);
     rw.add_expr_rewrite(Rewriter::strip_as_c_float_of_int_literals);
-    rw.add_expr_rewrite(Rewriter::rewrite_fgets_stdin_is_null);
     rw.add_expr_rewrite(Rewriter::rewrite_cstr_ctor_over_if);
     rw.add_expr_rewrite(Rewriter::rewrite_memset_on_slice_or_array);
     rw.add_expr_rewrite(Rewriter::rewrite_memcmp_float_comparison);
+    rw.add_expr_rewrite(Rewriter::rewrite_strcmp_zstr_eq_literal);
+    rw.add_expr_rewrite(Rewriter::rewrite_byte_view_calls);
     rw.add_expr_rewrite(Rewriter::rewrite_libm_call_to_cmath);
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
     rw.add_expr_rewrite(Rewriter::rewrite_ctime_time);
+    rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
+    rw.add_expr_rewrite(Rewriter::rewrite_str_from_ptr_of_zstr);
     rw.add_expr_rewrite(Rewriter::rewrite_casted_literal_comparison);
+    rw.add_expr_rewrite(Rewriter::rewrite_bool_cast_nonzero);
+    rw.add_expr_rewrite(Rewriter::rewrite_u8_char_comparison);
     rw.add_expr_rewrite(Rewriter::rewrite_decayed_array_redundant_borrow);
 
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_outer_parens);
+    rw.add_stmt_rewrite(Rewriter::rewrite_stmt_fprintf_stderr);
     rw.add_stmt_rewrite(Rewriter::rewrite_stmt_print_byte);
     rw.add_stmt_rewrite(Rewriter::rewrite_local);
     rw.add_stmt_rewrite(Rewriter::rewrite_string_pop_trailing_nul);
+    rw.add_stmt_rewrite(Rewriter::rewrite_zstring_local_init);
 
     let depth = match args.depth {
         Some(n) => Depth::Limited(n),
@@ -132,14 +143,15 @@ fn add_deps_to_manifest(
 
 fn dep_version(crate_name: &str) -> &'static str {
     match crate_name {
-        "xj_ctime" => "0.1.1",
+        "xj_ctime" | "xj_cio" => "0.1.1",
+        "xj_cstat" | "xj_cfmt" | "xj_bytes" => "0.1.0",
         "xj_cstr" => "0.1.4",
-        "xj_atone" => "0.1.0",
+        "xj_atone" => "0.1.1",
         "errno" => "0.3.14",
-        "xj_scanf" => "0.2.6",
+        "xj_scanf" => "0.3.0",
         "atty" => "0.2.14",
         "bytemuck" => "1.25.0",
-        "xj_cmath" => "0.1.0",
+        "xj_cmath" => "0.1.1",
         _ => "*",
     }
 }

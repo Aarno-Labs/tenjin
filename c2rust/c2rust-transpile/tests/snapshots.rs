@@ -189,7 +189,17 @@ fn transpile_snapshot(
         .edition(edition)
         .crate_name(crate_name)
         .expect_error(expect_compile_error)
-        .expect_unresolved_imports(imported_crates)
+        .expect_unresolved_imports(
+            &imported_crates
+                .iter()
+                .copied()
+                .chain(
+                    ["xj_cio", "xj_cfmt"]
+                        .into_iter()
+                        .filter(|name| !expect_compile_error && rs.contains(name)),
+                )
+                .collect::<Vec<_>>(),
+        )
         .run();
 }
 

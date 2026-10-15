@@ -49,17 +49,17 @@ pub unsafe extern "C" fn seven() -> ::core::ffi::c_int {
     return 7 as ::core::ffi::c_int;
 }
 unsafe fn main_0() -> ::core::ffi::c_int {
-    println!(
-        "{:} {:} {:} {:} {:}",
-        scale(6 as ::core::ffi::c_int, 7 as ::core::ffi::c_int) as core::ffi::c_int,
-        blend('A' as ::core::ffi::c_int, 2.0f64) as core::ffi::c_int,
+    printf(
+        b"%d %d %d %d %d\n\0".as_ptr(),
+        scale(6 as ::core::ffi::c_int, 7 as ::core::ffi::c_int),
+        blend('A' as ::core::ffi::c_int, 2.0f64),
         total(
             1 as ::core::ffi::c_int,
             2 as ::core::ffi::c_int,
-            b"z\0".as_ptr() as *mut u8
-        ) as core::ffi::c_int,
-        first_of(b"xyz\0".as_ptr() as *mut u8, 1 as ::core::ffi::c_int) as core::ffi::c_int,
-        seven() as core::ffi::c_int
+            b"z\0".as_ptr() as *mut u8,
+        ),
+        first_of(b"xyz\0".as_ptr() as *mut u8, 1 as ::core::ffi::c_int),
+        seven(),
     );
     return 0 as ::core::ffi::c_int;
 }

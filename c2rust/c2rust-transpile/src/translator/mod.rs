@@ -24,8 +24,8 @@ use syn::{
     ExprParen, ExprReturn, ExprUnary, Fields, FnArg, ForeignItem, ForeignItemFn, ForeignItemMacro,
     ForeignItemStatic, ForeignItemType, Ident, Item, ItemConst, ItemEnum, ItemExternCrate, ItemFn,
     ItemForeignMod, ItemImpl, ItemMacro, ItemMod, ItemStatic, ItemStruct, ItemTrait,
-    ItemTraitAlias, ItemType, ItemUnion, ItemUse, Lit, Macro, MacroDelimiter, PathSegment,
-    ReturnType, Stmt, Type, TypeTuple, UnOp, UseTree, Visibility,
+    ItemTraitAlias, ItemType, ItemUnion, ItemUse, Lit, MacroDelimiter, PathSegment, ReturnType,
+    Stmt, Type, TypeTuple, UnOp, UseTree, Visibility,
 };
 
 use crate::diagnostics::TranslationResult;
@@ -52,6 +52,7 @@ use c2rust_ast_exporter::clang_ast::LRValue;
 mod assembly;
 mod atomics;
 mod builtins;
+mod cio;
 mod comments;
 mod enums;
 mod functions;
@@ -636,6 +637,10 @@ impl ParsedGuidance {
             };
             return Some(tenjin::GuidedType::from_type(element_type.clone()));
         }
+        if let CExprKind::Call(_, callee, _) = t.ast_context[id].kind {
+            let function = t.ast_context.fn_declref_decl(callee)?;
+            return self.query_fn_return_type(function.get_name()?);
+        }
         None
     }
 
@@ -701,6 +706,7 @@ pub struct Translation<'c> {
     pub parsed_guidance: RefCell<ParsedGuidance>,
     type_overrides: RefCell<HashMap<CTypeId, tenjin::GuidedType>>,
     libc_replacements: libc::LibcReplacements,
+    cio_replacements: cio::CioReplacements,
 
     // Accumulated outputs
     pub features: RefCell<IndexSet<&'static str>>,
@@ -1299,6 +1305,21 @@ pub(crate) fn libc_stat_requires_fallback(
     t.libc_replacements.requires_stat_fallback || t.libc_guidance_requires_fallback()
 }
 
+pub(crate) fn stdio_project_definitions(
+    ast: &TypedAstContext,
+    tcfg: &TranspilerConfig,
+) -> HashSet<String> {
+    cio::stdio_project_definitions(ast, tcfg)
+}
+
+/// Batch-wide check; every input is checked before output is emitted.
+pub(crate) fn stdio_discovery_error(
+    ast: &TypedAstContext,
+    tcfg: &TranspilerConfig,
+) -> Option<String> {
+    cio::stdio_discovery_error(ast, tcfg)
+}
+
 pub fn translate(
     ast_context: TypedAstContext,
     tcfg: &TranspilerConfig,
@@ -1341,6 +1362,17 @@ pub fn translate(
         // binary and unary operators' expr types agree with their argument types
         // in the presence of typedefs.
         t.ast_context.bubble_expr_types();
+
+        t.cio_replacements = cio::CioReplacements::discover(&t.ast_context, tcfg);
+        t.type_converter.borrow_mut().cio_file_records = t.cio_replacements.records.clone();
+        t.cio_replacements.field_macros = cio::discover_field_macros(
+            &t.ast_context,
+            &t.cio_replacements.records,
+            &t.parent_expr_map,
+        );
+        if !t.cio_replacements.functions.is_empty() || !t.cio_replacements.streams.is_empty() {
+            t.use_crate(ExternCrate::XjCio);
+        }
 
         t.libc_replacements = libc::LibcReplacements::discover(
             &t.ast_context,
@@ -2122,765 +2154,8 @@ struct ConvertedVariable {
 
 #[allow(clippy::vec_box)]
 enum RecognizedCallForm {
-    Puts,
-    PrintfOut {
-        fmt_string_idx: usize,
-    },
-    PrintfErr {
-        fmt_string_idx: usize,
-    },
-    PrintfS {
-        fmt_string_idx: usize,
-        opt_size: Option<Box<Expr>>,
-        dest: Box<Expr>,
-    },
     RetargetedCallee(Box<Expr>),
     OtherCall,
-}
-
-enum LitStrOrByteStr<'a> {
-    LitStr(&'a syn::LitStr),
-    ByteStr(&'a syn::LitByteStr),
-}
-
-mod refactor_format {
-    use syn::__private::ToTokens;
-
-    use super::*;
-    use std::str::FromStr;
-
-    fn expr_as_lit_str<'a>(expr: &'a Expr) -> Option<LitStrOrByteStr<'a>> {
-        match *expr {
-            Expr::MethodCall(ref call) => expr_as_lit_str(&call.receiver),
-            Expr::Lit(syn::ExprLit {
-                lit: Lit::Str(ref s),
-                ..
-            }) => Some(LitStrOrByteStr::LitStr(s)),
-            Expr::Lit(syn::ExprLit {
-                lit: Lit::ByteStr(ref b),
-                ..
-            }) => Some(LitStrOrByteStr::ByteStr(b)),
-            _ => None,
-        }
-    }
-
-    pub fn build_format_macro(
-        x: &Translation,
-        macro_name: &str,
-        ln_macro_name: &str,
-        fmt_args: &[Box<Expr>],
-        cargs: &[CExprId],
-        span: Option<Span>,
-        fmt_string_span: Option<DisplaySrcSpan>,
-    ) -> Macro {
-        let old_fmt_str_expr = fmt_args[0].clone();
-
-        trace!("  found fmt str {:?}", old_fmt_str_expr);
-
-        let ep = &old_fmt_str_expr;
-        let s = match expr_as_lit_str(tenjin::expr_strip_casts(ep)) {
-            Some(LitStrOrByteStr::LitStr(s)) => s.value(),
-            Some(LitStrOrByteStr::ByteStr(b)) => std::str::from_utf8(b.value().as_slice())
-                .unwrap()
-                .to_owned(),
-            None => panic!("TENJIN expected format string to be a string literal: {ep:?}"),
-        };
-        build_format_macro_from(
-            x,
-            s,
-            macro_name,
-            ln_macro_name,
-            &fmt_args[1..],
-            &cargs[1..],
-            span,
-            Some(old_fmt_str_expr.span()),
-            fmt_string_span,
-        )
-    }
-
-    pub fn build_format_macro_from(
-        x: &Translation,
-        fmt_literal: String,
-        macro_name: &str,
-        ln_macro_name: &str,
-        args_after_fmt: &[Box<Expr>],
-        cargs_after_fmt: &[CExprId],
-        span: Option<Span>,
-        old_fmt_str_span: Option<Span>,
-        fmt_string_span: Option<DisplaySrcSpan>,
-    ) -> Macro {
-        let mut new_s = String::with_capacity(fmt_literal.len());
-        let mut casts = HashMap::new();
-
-        // In C, dynamic widths anonymously come before the value they apply to.
-        // In Rust, they are conventionally referenced by name and passed at the
-        // end of the argument list. We will track indexes and use them to generate
-        // labels of the form vvN for the Nth argument.
-        let mut labeled = Vec::new(); // arg indices of dynamic exprs
-
-        let mut idx = 0;
-        Parser::new(&fmt_literal, |piece| match piece {
-            Piece::Text(s) => {
-                // Find all occurrences of brace characters in `s`
-                let mut brace_indices = s
-                    .match_indices('{')
-                    .chain(s.match_indices('}'))
-                    .collect::<Vec<_>>();
-                brace_indices.sort();
-
-                // Replace all "{" with "{{" and "}" with "}}"
-                let mut last = 0;
-                for (idx, brace) in brace_indices.into_iter() {
-                    new_s.push_str(&s[last..idx]);
-                    if brace == "{" {
-                        new_s.push_str("{{");
-                    } else {
-                        assert_eq!(brace, "}");
-                        new_s.push_str("}}");
-                    }
-                    last = idx + 1;
-                }
-                new_s.push_str(&s[last..]);
-            }
-            Piece::Conv(c) => {
-                c.push_spec(&mut new_s, idx);
-                c.add_casts(&mut idx, &mut casts, &mut labeled);
-            }
-        })
-        .parse();
-
-        while new_s.ends_with('\0') {
-            new_s.pop();
-        }
-        let macro_name = if new_s.ends_with('\n') {
-            // Format string ends with "\n", call println!/eprintln! versions instead
-            new_s.pop();
-            ln_macro_name
-        } else {
-            macro_name
-        };
-
-        let new_fmt_str_expr = match old_fmt_str_span {
-            Some(span) => mk().span(span).lit_expr(&new_s),
-            None => mk().lit_expr(&new_s),
-        };
-
-        trace!("new fmt str expr: {:?}", new_fmt_str_expr);
-
-        let mut macro_tts: Vec<TokenTree> = Vec::new();
-        let expr_tt = |e: Box<Expr>| {
-            TokenTree::Group(proc_macro2::Group::new(
-                proc_macro2::Delimiter::None,
-                e.to_token_stream(),
-            ))
-        };
-
-        macro_tts.push(expr_tt(new_fmt_str_expr));
-
-        // Add non-dynamic width arguments
-        for (i, arg) in args_after_fmt.iter().enumerate() {
-            if labeled.contains(&i) {
-                continue;
-            }
-            if let Some(cast) = casts.get(&i) {
-                let cexpr = cargs_after_fmt
-                    .get(i)
-                    .expect("missing CExprId for format argument");
-                let tt = expr_tt(cast.apply(x, arg.clone(), *cexpr, &fmt_string_span));
-                //macro_tts.push(TokenTree::Token(Token {kind: TokenKind::Comma, span: DUMMY_SP}));
-                macro_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
-                macro_tts.push(tt);
-            }
-        }
-
-        // Add dynamic width arguments at the end
-        for (i, arg) in args_after_fmt.iter().enumerate() {
-            if !labeled.contains(&i) {
-                continue;
-            }
-            if let Some(cast) = casts.get(&i) {
-                let cexpr = cargs_after_fmt
-                    .get(i)
-                    .expect("missing CExprId for format argument");
-                let tt = expr_tt(cast.apply(x, arg.clone(), *cexpr, &fmt_string_span));
-                //macro_tts.push(TokenTree::Token(Token {kind: TokenKind::Comma, span: DUMMY_SP}));
-                macro_tts.push(TokenTree::Punct(Punct::new(',', Alone)));
-                macro_tts.push(TokenTree::Ident(Ident::new(
-                    &format!("vv{}", i),
-                    Span::call_site(),
-                )));
-                macro_tts.push(TokenTree::Punct(Punct::new('=', Alone)));
-                macro_tts.push(tt);
-            }
-        }
-
-        let b = if let Some(span) = span {
-            mk().span(span)
-        } else {
-            mk()
-        };
-        b.mac(
-            mk().path(macro_name),
-            macro_tts,
-            MacroDelimiter::Paren(Default::default()),
-        )
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum CastType {
-        Int(Length),
-        Uint(Length),
-        Usize,
-        Char,
-        Str,
-        Float,
-        HexFloat,
-        GFloat,
-        Pointer,
-        None(char),
-    }
-
-    impl CastType {
-        fn apply(
-            &self,
-            x: &Translation,
-            e: Box<Expr>,
-            cexpr: CExprId,
-            fmt_string_span: &Option<DisplaySrcSpan>,
-        ) -> Box<Expr> {
-            // Since these get passed to the new print! macros, they need to have spans,
-            // and the spans need to match the original expressions
-            // FIXME: should all the inner nodes have spans too???
-            let span = e.span();
-            let get_ty_elts = || {
-                let ty_elts = self.as_rust_ty();
-                if ty_elts.first() == Some(&"libc") {
-                    x.use_crate(ExternCrate::Libc);
-                }
-                ty_elts
-            };
-            //e.span = DUMMY_SP;
-            match *self {
-                CastType::Int(_) => mk().span(span).cast_expr(e, mk().path_ty(get_ty_elts())),
-                CastType::Uint(_) => mk().span(span).cast_expr(e, mk().path_ty(get_ty_elts())),
-                CastType::Usize => mk().span(span).cast_expr(e, mk().ident_ty("usize")),
-                CastType::Float => mk().span(span).cast_expr(e, mk().ident_ty("f64")),
-                CastType::HexFloat => {
-                    // xj_hexfloat::HexFloat::from(e)
-                    x.use_crate(ExternCrate::Hexfloat2);
-                    mk().call_expr(
-                        mk().path_expr(vec!["xj_hexfloat", "HexFloat", "from"]),
-                        vec![e],
-                    )
-                }
-                CastType::GFloat => {
-                    // GPoint(e)
-                    x.use_crate(ExternCrate::GPoint);
-                    x.with_cur_file_item_store(|item_store| {
-                        item_store.add_use(false, vec!["gpoint".into()], "GPoint");
-                    });
-                    mk().call_expr(mk().path_expr(vec!["GPoint"]), vec![e])
-                }
-                CastType::Char => {
-                    // e as u8 as char
-                    let e = mk().cast_expr(e, mk().ident_ty("u8"));
-                    mk().span(span).cast_expr(e, mk().ident_ty("char"))
-                }
-                CastType::Str => {
-                    if let Some(CLiteral::String(ref val, width)) =
-                        x.get_string_lit(x.strip_implicit_array_to_pointer_cast(cexpr))
-                    {
-                        // If the expression is a string literal, we'll re-translate it directly,
-                        // without needing to have it start as a byte string.
-                        if let Some(str_expr) = x.convert_literal_to_rust_str(val, *width) {
-                            return str_expr;
-                        } else {
-                            log::warn!(
-                                "failed to convert string literal '{:?}' to Rust str @ {:?}",
-                                val,
-                                fmt_string_span
-                            );
-                        }
-                    }
-
-                    if let Some(g) = x.parsed_guidance.borrow_mut().query_expr_type(x, cexpr) {
-                        if tenjin::type_is_string(&g.parsed) || tenjin::type_is_str_ref(&g.parsed) {
-                            // For a variable that's already type String, we can leave it as is.
-                            // XREF:guided_cast_str_of_owned_string
-                            return e;
-                        }
-
-                        if tenjin::type_is_vec_of_1_path(g.strip_refs(), "u8") {
-                            // For a variable that's type Vec<u8>, we can convert it to String directly.
-                            // XREF:guided_cast_str_of_shared_vec_u8
-                            return mk().call_expr(
-                                mk().path_expr(vec!["String", "from_utf8_lossy"]),
-                                vec![mk().borrow_expr(e)],
-                            );
-                        }
-                    }
-
-                    Self::cast_str(x, e)
-                }
-                CastType::Pointer => e,
-                CastType::None(c) => {
-                    log::warn!(
-                        "unrecognized format specifier '{}' within format string @ {:?}",
-                        c,
-                        fmt_string_span
-                    );
-                    e
-                }
-            }
-        }
-
-        fn cast_str(x: &Translation, e: Box<Expr>) -> Box<Expr> {
-            if let Some(tm) = tenjin::expr_is_call_of_ctime_with_raw_addr(&e) {
-                // Special case: `ctime(&raw mut tm)` produces a `*const c_char`
-                // but `xj_ctime::ctime(&xj_ctime::Time::from_raw(tm)).unwrap()` produces a String
-                x.use_crate(ExternCrate::XjCtime);
-                let arg = mk().call_expr(
-                    mk().path_expr(vec!["xj_ctime", "Time", "from_raw"]),
-                    vec![tm],
-                );
-                let ctime_call = mk().call_expr(
-                    mk().path_expr(vec!["xj_ctime", "ctime"]),
-                    vec![mk().borrow_expr(arg)],
-                );
-                mk().method_call_expr(ctime_call, "unwrap", Vec::new())
-            } else {
-                x.with_cur_file_item_store(|item_store| {
-                    // TODO(brk): handle emission of bytes
-                    item_store.add_item_str_once(
-                        r#"unsafe fn xj_str_from_ptr<'a>(ptr: *const u8) -> &'a str {
-                          if ptr.is_null() {
-                              "(null)"
-                          } else {
-                              core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char).to_str().unwrap()
-                          }
-                        }"#,
-                    );
-                });
-
-                let span = e.span();
-
-                let e = mk().cast_expr(e, mk().ptr_ty(mk().ident_ty("u8")));
-                let cs = mk().call_expr(mk().path_expr(vec!["xj_str_from_ptr"]), vec![e]);
-                let b = mk().unsafe_().block(vec![mk().expr_stmt(cs)]);
-                mk().span(span).block_expr(b)
-            }
-        }
-
-        fn as_rust_ty(&self) -> Vec<&str> {
-            match *self {
-                CastType::Int(Length::None) => vec!["core", "ffi", "c_int"],
-                CastType::Uint(Length::None) => vec!["core", "ffi", "c_uint"],
-                CastType::Int(Length::Char) => vec!["core", "ffi", "c_schar"],
-                CastType::Uint(Length::Char) => vec!["core", "ffi", "c_uchar"],
-                CastType::Int(Length::Short) => vec!["core", "ffi", "c_short"],
-                CastType::Uint(Length::Short) => vec!["core", "ffi", "c_ushort"],
-                CastType::Int(Length::Long) => vec!["core", "ffi", "c_long"],
-                CastType::Uint(Length::Long) => vec!["core", "ffi", "c_ulong"],
-                CastType::Int(Length::LongLong) => vec!["core", "ffi", "c_longlong"],
-                CastType::Uint(Length::LongLong) => vec!["core", "ffi", "c_ulonglong"],
-                // FIXME: should we use the types emitted by the transpiler instead?
-                CastType::Int(Length::IntMax) => vec!["libc", "intmax_t"],
-                CastType::Uint(Length::IntMax) => vec!["libc", "uintmax_t"],
-                CastType::Int(Length::Size) => vec!["libc", "ssize_t"],
-                CastType::Uint(Length::Size) => vec!["libc", "size_t"],
-                CastType::Int(Length::PtrDiff) => vec!["libc", "ptrdiff_t"],
-                _ => panic!("invalid length modifier type: {self:?}"),
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum Length {
-        None,
-        Char,
-        Short,
-        Long,
-        LongLong,
-        IntMax,
-        Size,
-        PtrDiff,
-        //TODO
-        //LongDouble,
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum ConvType {
-        Int(Length),
-        Uint(Length),
-        /// Hexadecimal uint, maybe capitalized.
-        Hex(Length, bool),
-        Char,
-        Str,
-        Float,
-        HexFloat,
-        GFloat,
-        Pointer,
-        Unknown(char),
-    }
-
-    impl ConvType {
-        fn is_numeric(&self) -> bool {
-            matches!(
-                *self,
-                ConvType::Int(_)
-                    | ConvType::Uint(_)
-                    | ConvType::Hex(_, _)
-                    | ConvType::Float
-                    | ConvType::GFloat
-            )
-        }
-
-        fn is_char(&self) -> bool {
-            matches!(*self, ConvType::Char)
-        }
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum Amount {
-        Number(usize),
-        NextArg,
-    }
-
-    #[derive(Clone, PartialEq, Eq, Debug, Default)]
-    struct ConvFlags {
-        left_justified: bool, // `-`
-        show_sign: bool,      // `+`
-        space_sign: bool,     // ` `
-        alternate_form: bool, // `#`
-        zero_padding: bool,   // `0`
-    }
-
-    #[derive(Clone, PartialEq, Eq, Debug)]
-    struct Conv {
-        ty: ConvType,
-        flags: ConvFlags,
-        width: Option<Amount>,
-        prec: Option<Amount>,
-    }
-
-    impl Conv {
-        fn new() -> Conv {
-            Conv {
-                ty: ConvType::Int(Length::None),
-                flags: ConvFlags::default(),
-                width: None,
-                prec: None,
-            }
-        }
-
-        fn add_casts(
-            &self,
-            idx: &mut usize,
-            casts: &mut HashMap<usize, CastType>,
-            labeled: &mut Vec<usize>,
-        ) {
-            if self.width == Some(Amount::NextArg) {
-                casts.insert(*idx, CastType::Usize);
-                labeled.push(*idx);
-                *idx += 1;
-            }
-            if self.prec == Some(Amount::NextArg) {
-                casts.insert(*idx, CastType::Usize);
-                labeled.push(*idx);
-                *idx += 1;
-            }
-
-            let cast = match self.ty {
-                ConvType::Int(len) => CastType::Int(len),
-                ConvType::Uint(len) | ConvType::Hex(len, _) => CastType::Uint(len),
-                ConvType::Char => CastType::Char,
-                ConvType::Str => CastType::Str,
-                ConvType::Float => CastType::Float,
-                ConvType::HexFloat => CastType::HexFloat,
-                ConvType::GFloat => CastType::GFloat,
-                ConvType::Pointer => CastType::Pointer,
-                ConvType::Unknown(c) => CastType::None(c),
-            };
-
-            casts.insert(*idx, cast);
-            *idx += 1;
-        }
-
-        fn push_spec(&self, buf: &mut String, base_idx: usize) {
-            let mut curr_idx = base_idx;
-            buf.push_str("{:");
-
-            // See https://doc.rust-lang.org/std/fmt/#syntax
-
-            if self.flags.left_justified {
-                // In C, the default is right-justified.
-                // In Rust, the default is left-justified for non-numeric types,
-                // and right-justified for numeric types.
-                if self.ty.is_numeric() {
-                    buf.push('<');
-                }
-            } else if !self.ty.is_numeric() {
-                // For characters, use of precision results in UB, so we only need
-                // explicit justification if the width is specified.
-                if self.ty.is_char() {
-                    if self.width.is_some() {
-                        buf.push('>');
-                    }
-                } else {
-                    buf.push('>');
-                }
-            }
-
-            if self.flags.show_sign {
-                buf.push('+');
-            }
-            if self.flags.space_sign {
-                log::error!("Space-sign flag is not supported in Rust format strings");
-            }
-            if self.flags.alternate_form {
-                buf.push('#');
-            }
-            if self.flags.zero_padding {
-                buf.push('0');
-            }
-
-            if let Some(amt) = self.width {
-                match amt {
-                    Amount::Number(n) => buf.push_str(&n.to_string()),
-                    Amount::NextArg => {
-                        buf.push_str(&format!("vv{}$", curr_idx));
-                        curr_idx += 1;
-                    }
-                }
-            }
-
-            if let Some(amt) = self.prec {
-                buf.push('.');
-                match amt {
-                    Amount::Number(n) => buf.push_str(&n.to_string()),
-                    Amount::NextArg => {
-                        buf.push_str(&format!("vv{}$", curr_idx));
-                    }
-                }
-            } else if matches!(self.ty, ConvType::Float | ConvType::GFloat) {
-                // In C, the default precision for floats is 6. In Rust, it's infinite.
-                // To match C's behavior, we need to explicitly set the default precision to 6.
-                buf.push_str(".6");
-            }
-
-            match self.ty {
-                ConvType::Hex(_, false) => buf.push('x'),
-                ConvType::Hex(_, true) => buf.push('X'),
-                ConvType::Pointer => buf.push('?'),
-                _ => {}
-            }
-
-            buf.push('}');
-        }
-    }
-
-    #[derive(Clone, PartialEq, Eq, Debug)]
-    enum Piece<'a> {
-        Text(&'a str),
-        Conv(Box<Conv>),
-    }
-
-    struct Parser<'a, F: FnMut(Piece)> {
-        s: &'a str,
-        sb: &'a [u8],
-        pos: usize,
-        callback: F,
-    }
-
-    impl<'a, F: FnMut(Piece)> Parser<'a, F> {
-        fn new(s: &'a str, callback: F) -> Parser<'a, F> {
-            Parser {
-                s,
-                sb: s.as_bytes(),
-                pos: 0,
-                callback,
-            }
-        }
-
-        fn peek(&self) -> u8 {
-            self.sb[self.pos]
-        }
-        fn skip(&mut self) {
-            self.pos += 1;
-        }
-
-        /// Check if the next character is `c` and, if true, consume it
-        fn eat(&mut self, c: u8) -> bool {
-            if self.peek() == c {
-                self.skip();
-                true
-            } else {
-                false
-            }
-        }
-
-        /// Try to advance to the next conversion specifier.  Return `true` if a conversion was found.
-        fn next_conv(&mut self) -> bool {
-            if let Some(conv_offset) = self.s[self.pos..].find('%') {
-                if conv_offset > 0 {
-                    let conv_pos = self.pos + conv_offset;
-                    (self.callback)(Piece::Text(&self.s[self.pos..conv_pos]));
-                    self.pos = conv_pos;
-                }
-                true
-            } else {
-                false
-            }
-        }
-
-        fn parse(&mut self) {
-            while self.next_conv() {
-                self.skip();
-                let mut conv = Conv::new();
-
-                if self.eat(b'%') {
-                    (self.callback)(Piece::Text("%"));
-                    continue;
-                }
-
-                if self.eat(b'-') {
-                    conv.flags.left_justified = true;
-                }
-                if self.eat(b'+') {
-                    conv.flags.show_sign = true;
-                }
-                if self.eat(b' ') {
-                    conv.flags.space_sign = true;
-                }
-                if self.eat(b'#') {
-                    conv.flags.alternate_form = true;
-                }
-                if self.eat(b'0') {
-                    conv.flags.zero_padding = true;
-                }
-
-                if b'1' <= self.peek() && self.peek() <= b'9' || self.peek() == b'*' {
-                    conv.width = self.parse_amount();
-                }
-                if self.eat(b'.') {
-                    conv.prec = self.parse_amount();
-                }
-                conv.ty = self.parse_conv_type();
-                (self.callback)(Piece::Conv(Box::new(conv)));
-            }
-
-            if self.pos < self.s.len() {
-                (self.callback)(Piece::Text(&self.s[self.pos..]));
-            }
-        }
-
-        fn parse_amount(&mut self) -> Option<Amount> {
-            if self.eat(b'*') {
-                return Some(Amount::NextArg);
-            }
-
-            let start = self.pos;
-            while b'0' <= self.peek() && self.peek() <= b'9' {
-                self.skip();
-            }
-            let end = self.pos;
-
-            if start == end {
-                return None;
-            }
-
-            usize::from_str(&self.s[start..end])
-                .ok()
-                .map(Amount::Number)
-        }
-
-        fn parse_length(&mut self) -> Length {
-            match self.peek() {
-                b'h' => {
-                    self.skip();
-                    if self.eat(b'h') {
-                        // %hhd
-                        Length::Char
-                    } else {
-                        Length::Short
-                    }
-                }
-                b'l' => {
-                    self.skip();
-                    if self.eat(b'l') {
-                        // %lld
-                        Length::LongLong
-                    } else {
-                        Length::Long
-                    }
-                }
-                b'j' => {
-                    self.skip();
-                    Length::IntMax
-                }
-                b'z' => {
-                    self.skip();
-                    Length::Size
-                }
-                b't' => {
-                    self.skip();
-                    Length::PtrDiff
-                }
-                _ => Length::None,
-            }
-        }
-
-        fn parse_conv_type(&mut self) -> ConvType {
-            let len = self.parse_length();
-            let c = self.peek() as char;
-            self.skip();
-
-            match c {
-                'd' => ConvType::Int(len),
-                'u' => ConvType::Uint(len),
-                'x' => ConvType::Hex(len, false),
-                'X' => ConvType::Hex(len, true),
-                'c' => ConvType::Char,
-                's' => ConvType::Str,
-                'f' => ConvType::Float,
-                'a' => ConvType::HexFloat,
-                'g' => ConvType::GFloat,
-                'p' => ConvType::Pointer,
-                _ => ConvType::Unknown(c),
-            }
-        }
-    }
-
-    mod tests {
-        #[test]
-        fn test_parser() {
-            let mut pieces = vec![];
-            super::Parser::new("Hello %s %2x", |p| pieces.push(format!("{:?}", p))).parse();
-            assert_eq!(
-                pieces,
-                vec![
-                    "Text(\"Hello \")",
-                    "Conv(Conv { ty: Str, flags: ConvFlags { left_justified: false, show_sign: false, space_sign: false, alternate_form: false, zero_padding: false }, width: None, prec: None })",
-                    "Text(\" \")",
-                    "Conv(Conv { ty: Hex(None, false), flags: ConvFlags { left_justified: false, show_sign: false, space_sign: false, alternate_form: false, zero_padding: false }, width: Some(Number(2)), prec: None })"
-                ]
-            );
-        }
-
-        #[test]
-        fn test_parser_flag_0() {
-            let mut pieces = vec![];
-            super::Parser::new("%2x %02x", |p| pieces.push(format!("{:?}", p))).parse();
-            assert_eq!(
-                pieces,
-                vec![
-                    "Conv(Conv { ty: Hex(None, false), flags: ConvFlags { left_justified: false, show_sign: false, space_sign: false, alternate_form: false, zero_padding: false }, width: Some(Number(2)), prec: None })",
-                    "Text(\" \")",
-                    "Conv(Conv { ty: Hex(None, false), flags: ConvFlags { left_justified: false, show_sign: false, space_sign: false, alternate_form: false, zero_padding: true }, width: Some(Number(2)), prec: None })"
-                ]
-            );
-        }
-    }
 }
 
 impl<'c> Translation<'c> {
@@ -2908,6 +2183,7 @@ impl<'c> Translation<'c> {
             parsed_guidance: RefCell::new(ParsedGuidance::new(tcfg.guidance_json.clone())),
             type_overrides: RefCell::new(HashMap::new()),
             libc_replacements: Default::default(),
+            cio_replacements: Default::default(),
             renamer,
             zero_inits: RefCell::new(IndexMap::new()),
             function_context: RefCell::new(FuncContext::new()),
@@ -3593,6 +2869,21 @@ impl<'c> Translation<'c> {
         let mut span = self
             .get_span(SomeId::Decl(decl_id))
             .unwrap_or_else(Span::call_site);
+
+        if self.cio_replacements.streams.contains_key(&decl_id) {
+            return Ok(ConvertedDecl::NoItem);
+        }
+        if self.cio_replacements.records.contains(&decl_id) {
+            let name = self
+                .type_converter
+                .borrow()
+                .resolve_decl_name(decl_id)
+                .unwrap();
+            let name = Ident::new(&name, span);
+            return Ok(ConvertedDecl::Item(Box::new(
+                syn::parse_quote! { pub type #name = ::xj_cio::_File; },
+            )));
+        }
 
         log::trace!("TENJIN convert_decl: {:?} ({:?})", decl.kind, decl_id);
 
@@ -4684,13 +3975,29 @@ impl<'c> Translation<'c> {
         guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<ConvertedVariable> {
         let init = match initializer {
-            Some(x) => self.convert_expr_guided(ctx.used(), x, Some(typ), guided_type),
+            Some(x) => {
+                self.convert_expr_with_guided_coercion(ctx.used(), x, Some(typ), guided_type)
+            }
             None => self.implicit_default_expr_guided(guided_type, ctx, typ.ctype),
         };
 
         let mutbl = guided_mutbl.unwrap_or_else(|| typ.mutability());
 
         if let Some(guided_type) = guided_type {
+            let zstr_types = guided_type.required_xj_zstr_types();
+            if !zstr_types.is_empty() {
+                self.use_crate(ExternCrate::XjZstr);
+                self.with_cur_file_item_store(|store| {
+                    for name in zstr_types {
+                        store.add_use_with_attr(
+                            true,
+                            vec!["xj_zstr".into()],
+                            name,
+                            mk().call_attr("allow", vec!["unused_imports"]),
+                        );
+                    }
+                });
+            }
             // If we have a type override, we use it instead of the converted type
             return Ok(ConvertedVariable {
                 ty: Box::new(guided_type.parsed.clone()),
@@ -5009,6 +4316,7 @@ impl<'c> Translation<'c> {
         let mut current = expr;
         loop {
             match self.ast_context[current].kind {
+                CExprKind::Paren(_, target) => current = target,
                 CExprKind::ImplicitCast(_, target, kind, _, _)
                 | CExprKind::ExplicitCast(_, target, kind, _, _)
                     if self.c_cast_kind_effect_free(kind) =>
@@ -5113,6 +4421,10 @@ impl<'c> Translation<'c> {
             expr_id,
             self.ast_context[expr_id]
         );
+
+        if let Some(converted) = self.convert_cio_field_macro(ctx, expr_id, override_ty)? {
+            return Ok(converted);
+        }
 
         if let Some(converted) = self.convert_const_macro_expansion(ctx, expr_id, override_ty)? {
             return Ok(converted);
@@ -5581,6 +4893,7 @@ impl<'c> Translation<'c> {
     #[allow(clippy::vec_box)]
     fn convert_call(
         &self,
+        callee: Option<CDeclId>,
         call_expr_ty: CQualTypeId,
         func: Box<Expr>,
         ctx: ExprContext,
@@ -5591,7 +4904,7 @@ impl<'c> Translation<'c> {
         arg_guidances: Option<Vec<Option<tenjin::GuidedType>>>,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         // First do selective call conversion, which may not need to convert all subexpressions.
-        match self.call_form_cases_preconversion(call_expr_ty.ctype, ctx, &func, cargs)? {
+        match self.call_form_cases_preconversion(callee, call_expr_ty.ctype, ctx, &func, cargs)? {
             Some(converted) => Ok(converted),
             None => {
                 let args = self.convert_call_args(
@@ -5602,7 +4915,15 @@ impl<'c> Translation<'c> {
                     arg_guidances,
                 )?;
                 args.and_then_try(|args| {
-                    self.convert_call_with_args(ctx, call_expr_ty, override_ty, func, args, cargs)
+                    self.convert_call_with_args(
+                        callee,
+                        ctx,
+                        call_expr_ty,
+                        override_ty,
+                        func,
+                        args,
+                        cargs,
+                    )
                 })
             }
         }
@@ -5706,6 +5027,54 @@ impl<'c> Translation<'c> {
             ));
         }
 
+        if self
+            .cio_replacements
+            .functions
+            .get(&decl_id)
+            .is_some_and(|name| {
+                matches!(
+                    name.as_str(),
+                    "printf"
+                        | "fprintf"
+                        | "sprintf"
+                        | "snprintf"
+                        | "vprintf"
+                        | "vfprintf"
+                        | "vsprintf"
+                        | "vsnprintf"
+                        | "scanf"
+                        | "fscanf"
+                        | "sscanf"
+                        | "vscanf"
+                        | "vfscanf"
+                        | "vsscanf"
+                )
+            })
+        {
+            let mut current = expr_id;
+            let mut direct = false;
+            while let Some(&parent) = self.parent_expr_map.get(&current) {
+                match self.ast_context[parent].kind {
+                    CExprKind::ImplicitCast(..) | CExprKind::Paren(..) => current = parent,
+                    CExprKind::Call(_, function, _) => {
+                        direct = self.c_strip_implicit_casts(function) == expr_id;
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            if !direct {
+                return Err(TranslationError::generic("An indirect libc formatted-I/O binding is incompatible with the xj_cio stream backend. Use a direct call or provide an explicit supported adapter; a function identifier alone cannot select formatting semantics."));
+            }
+        }
+
+        if let Some(name) = self.cio_replacements.streams.get(&decl_id) {
+            self.use_crate(ExternCrate::XjCio);
+            return Ok(WithStmts::new_val(
+                mk().call_expr(mk().abs_path_expr(vec!["xj_cio", name]), vec![]),
+            ));
+        }
+
         let varname = decl.get_name().expect("expected variable name").to_owned();
 
         let rustname = self
@@ -5715,13 +5084,21 @@ impl<'c> Translation<'c> {
             .ok_or_else(|| format_err!("name not declared: '{}'", varname))?;
 
         // Import the referenced global decl into our submodule
-        self.add_import(decl_id, &rustname);
+        if !self.cio_replacements.functions.contains_key(&decl_id) {
+            self.add_import(decl_id, &rustname);
+        }
         // match decl {
         //     CDeclKind::Variable { is_defn: false, .. } => {}
         //     _ => self.add_import(decl_id, &rustname),
         // }
 
         let mut val = mk().path_expr(vec![rustname]);
+        if ctx.needs_address {
+            if let Some(target) = self.cio_replacements.functions.get(&decl_id) {
+                self.use_crate(ExternCrate::XjCio);
+                val = mk().abs_path_expr(vec!["xj_cio", "c_abi", target]);
+            }
+        }
         let mut set_unsafe = false;
 
         match decl {
@@ -5729,7 +5106,11 @@ impl<'c> Translation<'c> {
                 // If we are referring to a function and need its address, we
                 // need to cast it to fn() to ensure that it has a real address.
                 if ctx.needs_address {
-                    let ty = self.convert_type(result_type_id.ctype)?;
+                    let function_type = |ty| match self.cio_replacements.functions.get(&decl_id) {
+                        Some(target) => cio::cio_function_type(target, ty),
+                        None => ty,
+                    };
+                    let ty = function_type(self.convert_type(result_type_id.ctype)?);
                     let actual_ty = self
                         .type_converter
                         .borrow_mut()
@@ -5740,6 +5121,7 @@ impl<'c> Translation<'c> {
                             &self.parsed_guidance.borrow(),
                         )?;
                     if let Some(actual_ty) = actual_ty {
+                        let actual_ty = function_type(actual_ty);
                         if actual_ty != ty {
                             // If we're casting a concrete function to
                             // a K&R function pointer type, use transmute
@@ -5758,7 +5140,7 @@ impl<'c> Translation<'c> {
                             .try_type_for_kind(&kind_with_declared_args)
                             .map(CQualTypeId::new)
                         {
-                            let ty = self.convert_type(ty.ctype)?;
+                            let ty = function_type(self.convert_type(ty.ctype)?);
                             val = mk().cast_expr(val, ty);
                         } else {
                             val = mk().cast_expr(val, ty);

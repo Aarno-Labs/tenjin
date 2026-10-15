@@ -12,6 +12,7 @@ name = "tenjinized"
 path = "lib.rs"
 crate-type = ["staticlib", "rlib"]
 [dependencies]
+xj_cio = { version = "0.1.1" }
 bytemuck = { version = "1.23.2", features = ["derive", "extern_crate_alloc"] }
 
 

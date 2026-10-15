@@ -20,6 +20,282 @@ fn check(rw: &Rewriter, input: &str, expected: Expect) {
 }
 
 #[test]
+fn stat_calls_on_zstring_paths_use_cstat() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
+    check(
+        &rw,
+        r#"fn demo(path: ZString, qualified: xj_zstr::ZString, mut info: libc::stat, mut info64: libc::stat64) {
+            stat(path.as_ptr(), &raw mut info);
+            libc::lstat(qualified.as_ptr(), &mut info);
+            stat(&path, &mut info);
+            stat64(path.as_ptr(), &raw mut info64);
+            libc::lstat64(qualified.as_ptr(), &mut info64);
+            fstat(3, &mut info);
+            fstat64(3, &mut info64);
+        }"#,
+        expect![[r#"
+            fn demo(
+                path: ZString,
+                qualified: xj_zstr::ZString,
+                mut info: libc::stat,
+                mut info64: libc::stat64,
+            ) {
+                xj_cstat::c::stat(&path, &mut info);
+                xj_cstat::c::lstat(&qualified, &mut info);
+                xj_cstat::c::stat(&path, &mut info);
+                xj_cstat::c::stat64(&path, &mut info64);
+                xj_cstat::c::lstat64(&qualified, &mut info64);
+                fstat(3, &mut info);
+                fstat64(3, &mut info64);
+            }
+        "#]],
+    );
+    assert!(rw.deps().contains("xj_cstat"));
+}
+
+#[test]
+fn stat_calls_on_indexed_zstring_paths_use_cstat() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
+    check(
+        &rw,
+        r#"fn demo(paths: Vec<ZString>, slice: &[ZString], array: [xj_zstr::ZString; 2], mut info: libc::stat) {
+            stat(paths[0].as_ptr(), &raw mut info);
+            lstat(slice[1].as_ptr(), &mut info);
+            libc::stat(array[0].as_ptr(), &mut info);
+        }"#,
+        expect![[r#"
+            fn demo(
+                paths: Vec<ZString>,
+                slice: &[ZString],
+                array: [xj_zstr::ZString; 2],
+                mut info: libc::stat,
+            ) {
+                xj_cstat::c::stat(&paths[0], &mut info);
+                xj_cstat::c::lstat(&slice[1], &mut info);
+                xj_cstat::c::stat(&array[0], &mut info);
+            }
+        "#]],
+    );
+    assert!(rw.deps().contains("xj_cstat"));
+}
+
+#[test]
+fn stat_rewrite_requires_zstring_path_and_safe_output_borrow() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_stat_of_zstring);
+    check(
+        &rw,
+        r#"fn demo(path: *const i8, owned: ZString, info: *mut libc::stat, info64: *mut libc::stat64) {
+            stat(path, info);
+            lstat(owned.as_ptr(), info);
+            other::stat(owned.as_ptr(), &mut *info);
+            stat64(path, info64);
+            lstat64(owned.as_ptr(), info64);
+            other::stat64(owned.as_ptr(), &mut *info64);
+        }"#,
+        expect![[r#"
+            fn demo(
+                path: *const i8,
+                owned: ZString,
+                info: *mut libc::stat,
+                info64: *mut libc::stat64,
+            ) {
+                stat(path, info);
+                lstat(owned.as_ptr(), info);
+                other::stat(owned.as_ptr(), &mut *info);
+                stat64(path, info64);
+                lstat64(owned.as_ptr(), info64);
+                other::stat64(owned.as_ptr(), &mut *info64);
+            }
+        "#]],
+    );
+    assert!(!rw.deps().contains("xj_cstat"));
+}
+
+#[test]
+fn u8_char_comparisons_remove_c_int_casts() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_u8_char_comparison);
+    check(
+        &rw,
+        r#"struct Byte { value: u8 }
+        fn demo(byte: u8, values: &[u8], ptr: *const u8, record: Byte, n: i32) {
+            let local: u8 = byte;
+            let _ = byte as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int != 'z' as ::core::ffi::c_int;
+            let _ = (byte as ::core::ffi::c_int) < '0' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int <= '9' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int > '\0' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int >= '\u{ff}' as ::core::ffi::c_int;
+            let _ = ((values[0]) as core::ffi::c_int) == (('b') as core::ffi::c_int);
+            let _ = (*ptr) as ::core::ffi::c_int == 'c' as ::core::ffi::c_int;
+            let _ = record.value as ::core::ffi::c_int == 'd' as ::core::ffi::c_int;
+            let _ = local as ::core::ffi::c_int == '\n' as ::core::ffi::c_int;
+            let _ = (n as u8) as ::core::ffi::c_int == 'e' as ::core::ffi::c_int;
+            let _ = ((n as u8) as ::core::ffi::c_int) < 'f' as ::core::ffi::c_int;
+        }"#,
+        expect![[r#"
+            struct Byte {
+                value: u8,
+            }
+            fn demo(byte: u8, values: &[u8], ptr: *const u8, record: Byte, n: i32) {
+                let local: u8 = byte;
+                let _ = byte == 'a' as u8;
+                let _ = byte != 'z' as u8;
+                let _ = byte < '0' as u8;
+                let _ = byte <= '9' as u8;
+                let _ = byte > '\0' as u8;
+                let _ = byte >= '\u{ff}' as u8;
+                let _ = values[0] == 'b' as u8;
+                let _ = *ptr == 'c' as u8;
+                let _ = record.value == 'd' as u8;
+                let _ = local == '\n' as u8;
+                let _ = (n as u8) == 'e' as u8;
+                let _ = (n as u8) < 'f' as u8;
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn u8_char_comparison_rejects_unsafe_or_unknown_cases() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_u8_char_comparison);
+    check(
+        &rw,
+        r#"fn demo(byte: u8, signed: i8, n: i32) {
+            let _ = byte as ::core::ffi::c_int + 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int - 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int | 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int == '\u{100}' as ::core::ffi::c_int;
+            let _ = signed as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            let _ = n as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            let _ = unknown() as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            let _ = byte as i32 == 'a' as ::core::ffi::c_int;
+            let _ = byte as ::core::ffi::c_int == 'a' as i32;
+            let _ = byte as ::core::ffi::c_int == 97 as ::core::ffi::c_int;
+            {
+                let byte = n;
+                let _ = byte as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+            }
+        }"#,
+        expect![[r#"
+            fn demo(byte: u8, signed: i8, n: i32) {
+                let _ = byte as ::core::ffi::c_int + 'a' as ::core::ffi::c_int;
+                let _ = byte as ::core::ffi::c_int - 'a' as ::core::ffi::c_int;
+                let _ = byte as ::core::ffi::c_int | 'a' as ::core::ffi::c_int;
+                let _ = byte as ::core::ffi::c_int == '\u{100}' as ::core::ffi::c_int;
+                let _ = signed as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+                let _ = n as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+                let _ = unknown() as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+                let _ = byte as i32 == 'a' as ::core::ffi::c_int;
+                let _ = byte as ::core::ffi::c_int == 'a' as i32;
+                let _ = byte as ::core::ffi::c_int == 97 as ::core::ffi::c_int;
+                {
+                    let byte = n;
+                    let _ = byte as ::core::ffi::c_int == 'a' as ::core::ffi::c_int;
+                }
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn bool_cast_nonzero_uses_boolean_expression() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_bool_cast_nonzero);
+    check(
+        &rw,
+        r#"struct Flags { enabled: bool }
+        fn demo(b: bool, other: bool, n: i32, flags: Flags, ptr: *const bool, values: [bool; 2]) {
+            let local: bool = true;
+            let _ = b as ::core::ffi::c_int != 0;
+            let _ = (b as core::ffi::c_int) != (0 as ::core::ffi::c_int);
+            let _ = (n > 0) as ::core::ffi::c_int != 0;
+            let _ = (b && other) as ::core::ffi::c_int != 0;
+            let _ = (!b) as ::core::ffi::c_int != 0;
+            let _ = (b ^ other) as ::core::ffi::c_int != 0;
+            let _ = true as ::core::ffi::c_int != 0;
+            let _ = flags.enabled as ::core::ffi::c_int != 0;
+            let _ = (*ptr) as ::core::ffi::c_int != 0;
+            let _ = values[0] as ::core::ffi::c_int != 0;
+            let _ = local as ::core::ffi::c_int != 0;
+            let _ = ((n > 0) as ::core::ffi::c_int != 0) && other;
+            let _ = (read() > 0) as ::core::ffi::c_int != 0;
+        }"#,
+        expect![[r#"
+            struct Flags {
+                enabled: bool,
+            }
+            fn demo(
+                b: bool,
+                other: bool,
+                n: i32,
+                flags: Flags,
+                ptr: *const bool,
+                values: [bool; 2],
+            ) {
+                let local: bool = true;
+                let _ = b;
+                let _ = b;
+                let _ = (n > 0);
+                let _ = (b && other);
+                let _ = (!b);
+                let _ = (b ^ other);
+                let _ = true;
+                let _ = flags.enabled;
+                let _ = (*ptr);
+                let _ = values[0];
+                let _ = local;
+                let _ = ((n > 0)) && other;
+                let _ = (read() > 0);
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn bool_cast_nonzero_requires_bool_and_matching_comparison() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_bool_cast_nonzero);
+    check(
+        &rw,
+        r#"fn demo(b: bool, n: i32) {
+            let _ = n as ::core::ffi::c_int != 0;
+            let _ = (!n) as ::core::ffi::c_int != 0;
+            let _ = (b as u8) as ::core::ffi::c_int != 0;
+            let _ = unknown() as ::core::ffi::c_int != 0;
+            let _ = b as ::core::ffi::c_int == 0;
+            let _ = b as ::core::ffi::c_int != 1;
+            let _ = b as i8 != 0;
+            {
+                let b = n;
+                let _ = b as ::core::ffi::c_int != 0;
+            }
+            let _ = b as ::core::ffi::c_int != 0;
+        }"#,
+        expect![[r#"
+            fn demo(b: bool, n: i32) {
+                let _ = n as ::core::ffi::c_int != 0;
+                let _ = (!n) as ::core::ffi::c_int != 0;
+                let _ = (b as u8) as ::core::ffi::c_int != 0;
+                let _ = unknown() as ::core::ffi::c_int != 0;
+                let _ = b as ::core::ffi::c_int == 0;
+                let _ = b as ::core::ffi::c_int != 1;
+                let _ = b as i8 != 0;
+                {
+                    let b = n;
+                    let _ = b as ::core::ffi::c_int != 0;
+                }
+                let _ = b;
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn errno_reads_and_writes() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_errno_access);
@@ -918,6 +1194,166 @@ fn null_pointer_offsetof_rejects_mismatched_types_and_nonbyte_offsets() {
 }
 
 #[test]
+fn str_from_ptr_of_zstr_uses_to_string_lossy() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_str_from_ptr_of_zstr);
+    check(
+        &rw,
+        r#"fn demo(p: &xj_zstr::ZStr, q: &mut ZStr, r: &ZString, raw: *mut u8, mut man: xj_zstr::ZString) {
+            println!("{}", { xj_str_from_ptr(&raw mut man as *mut u8 as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(&raw const man as *const u8 as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(p as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(q as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(r as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(&raw mut p as *mut u8 as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr(raw as *const core::ffi::c_char) });
+            println!("{}", { xj_str_from_ptr((&raw mut man as *mut u8).offset(0 as isize) as *const core::ffi::c_char) });
+        }"#,
+        expect![[r#"
+            fn demo(
+                p: &xj_zstr::ZStr,
+                q: &mut ZStr,
+                r: &ZString,
+                raw: *mut u8,
+                mut man: xj_zstr::ZString,
+            ) {
+                println!("{}", { man.to_string_lossy() });
+                println!("{}", { man.to_string_lossy() });
+                println!("{}", { p.to_string_lossy() });
+                println!("{}", { q.to_string_lossy() });
+                println!("{}", { r.to_string_lossy() });
+                println!(
+                    "{}", { xj_str_from_ptr(& raw mut p as * mut u8 as * const core::ffi::c_char) }
+                );
+                println!("{}", { xj_str_from_ptr(raw as * const core::ffi::c_char) });
+                println!(
+                    "{}", { xj_str_from_ptr((& raw mut man as * mut u8).offset(0 as isize) as * const
+                    core::ffi::c_char) }
+                );
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn strlen_of_zstr_uses_len() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_zstr);
+    check(
+        &rw,
+        r#"fn demo(p: &xj_zstr::ZStr, q: &mut ZStr, r: &ZString, mut s: ZString, raw: *const i8) -> size_t {
+            let a = strlen(p);
+            let b = strlen(q as *const ::core::ffi::c_char);
+            let c = strlen(r) + 1;
+            let d = strlen(&raw mut s as *mut u8 as *const ::core::ffi::c_char);
+            let e = strlen(&raw const p as *const ::core::ffi::c_char);
+            let f = strlen(raw);
+            let g = strlen(p).wrapping_add(1);
+            a + b + c + d + e + f + g
+        }"#,
+        expect![[r#"
+            fn demo(
+                p: &xj_zstr::ZStr,
+                q: &mut ZStr,
+                r: &ZString,
+                mut s: ZString,
+                raw: *const i8,
+            ) -> size_t {
+                let a = p.len() as size_t;
+                let b = q.len() as size_t;
+                let c = r.len() as size_t + 1;
+                let d = s.len() as size_t;
+                let e = strlen(&raw const p as *const ::core::ffi::c_char);
+                let f = strlen(raw);
+                let g = (p.len() as size_t).wrapping_add(1);
+                a + b + c + d + e + f + g
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn strcmp_of_zstr_and_literal_compares_bytes() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_strcmp_zstr_eq_literal);
+    check(
+        &rw,
+        r#"fn demo(p: &xj_zstr::ZStr, q: &mut ZStr, r: &ZString, s: ZString, args: Vec<ZString>, raw: *const i8) {
+            if strcmp(p.as_bytes_with_nul(), b"append\0") as ::core::ffi::c_int == 0 {}
+            if libc::strcmp(q.as_buffer_mut().as_mut_ptr().cast(), b"hey\0".as_ptr()) != 0 as ::core::ffi::c_int {}
+            if 0 == ::xj_cstr::strcmp("hey", r.as_c_str()) as i32 {}
+            if ::xj_zstr::strcmp(s.as_bytes_with_nul(), b"a\0b\0") == 0 {}
+            if ::xj_cstr::strcmp(args[1].as_z_str().as_bytes_with_nul(), &*b"\0") == 0 as ::core::ffi::c_int {}
+            if strcmp(raw, b"hey\0".as_ptr()) == 0 as ::core::ffi::c_int {}
+            if strcmp(p, b"hey".as_ptr()) == 0 as ::core::ffi::c_int {}
+            if strcmp(p, q) == 0 as ::core::ffi::c_int {}
+            if strcmp(p, b"hey\0".as_ptr()) < 0 as ::core::ffi::c_int {}
+            if strcmp(p, b"hey\0".as_ptr()) == 1 as ::core::ffi::c_int {}
+        }"#,
+        expect![[r#"
+            fn demo(
+                p: &xj_zstr::ZStr,
+                q: &mut ZStr,
+                r: &ZString,
+                s: ZString,
+                args: Vec<ZString>,
+                raw: *const i8,
+            ) {
+                if p.as_bytes() == b"append" {}
+                if q.as_bytes() != b"hey" {}
+                if r.as_bytes() == b"hey" {}
+                if s.as_bytes() == b"a" {}
+                if args[1].as_bytes() == b"" {}
+                if strcmp(raw, b"hey\0".as_ptr()) == 0 as ::core::ffi::c_int {}
+                if strcmp(p, b"hey".as_ptr()) == 0 as ::core::ffi::c_int {}
+                if strcmp(p, q) == 0 as ::core::ffi::c_int {}
+                if strcmp(p, b"hey\0".as_ptr()) < 0 as ::core::ffi::c_int {}
+                if strcmp(p, b"hey\0".as_ptr()) == 1 as ::core::ffi::c_int {}
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn zstring_local_init_from_byte_arrays() {
+    let mut rw = Rewriter::new();
+    rw.add_stmt_rewrite(Rewriter::rewrite_zstring_local_init);
+    check(
+        &rw,
+        r#"fn demo() {
+            let mut man: xj_zstr::ZString = [0xf0u8, 0x9fu8, 0x91u8, 0xa8u8];
+            let mut listnul: xj_zstr::ZString = ['h' as u8, 'i' as u8, 0u8];
+            let mut unsuffixed: ZString = [0x68, 0x69];
+            let mut zeros: xj_zstr::ZString = [0u8, 0, 0, 0];
+            let mut repeated: xj_zstr::ZString = [0u8; 16];
+            let mut lit: xj_zstr::ZString = *b"\xF0\x9F\x91\xA8\0";
+            let mut exact: xj_zstr::ZString = *b"\xF0\x9F\x91\xA8";
+            let mut partial: xj_zstr::ZString = *b"ab\0\0\0";
+            let mut empty: xj_zstr::ZString = *b"\0\0\0";
+            let mut other: other::ZString = [0u8, 1u8];
+            let mut arr: [u8; 2] = [1u8, 0];
+        }"#,
+        expect![[r#"
+            fn demo() {
+                let mut man: xj_zstr::ZString = xj_zstr::ZString::new([
+                    0xf0u8, 0x9fu8, 0x91u8, 0xa8u8,
+                ]);
+                let mut listnul: xj_zstr::ZString = xj_zstr::ZString::new(['h' as u8, 'i' as u8]);
+                let mut unsuffixed: ZString = ZString::new([0x68u8, 0x69]);
+                let mut zeros: xj_zstr::ZString = xj_zstr::ZString::with_capacity(3);
+                let mut repeated: xj_zstr::ZString = xj_zstr::ZString::with_capacity(15);
+                let mut lit: xj_zstr::ZString = xj_zstr::ZString::new(b"\xF0\x9F\x91\xA8");
+                let mut exact: xj_zstr::ZString = xj_zstr::ZString::new(b"\xF0\x9F\x91\xA8");
+                let mut partial: xj_zstr::ZString = xj_zstr::ZString::new(b"ab\0\0");
+                let mut empty: xj_zstr::ZString = xj_zstr::ZString::with_capacity(2);
+                let mut other: other::ZString = [0u8, 1u8];
+                let mut arr: [u8; 2] = [1u8, 0];
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn string_pop_trailing_nul_on_string() {
     let mut rw = Rewriter::new();
     rw.add_stmt_rewrite(Rewriter::rewrite_string_pop_trailing_nul);
@@ -954,16 +1390,12 @@ fn strlen_of_slice_adds_use_item() {
     rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
     check(
         &rw,
-        "fn demo(buf: &[u16]) { let _ = strlen(buf.as_mut_ptr()); let _ = strlen(buf.as_mut_ptr()); }",
+        "fn demo(buf: &[i8]) { let _ = strlen(buf.as_mut_ptr()); let _ = strlen(buf.as_mut_ptr()); }",
         expect![[r#"
             use ::xj_cstr::ByteSlice;
-            fn demo(buf: &[u16]) {
-                let _ = (::std::ffi::CStr::from_bytes_until_nul(buf.as_u8_slice())
-                    .unwrap()
-                    .count_bytes()) as size_t;
-                let _ = (::std::ffi::CStr::from_bytes_until_nul(buf.as_u8_slice())
-                    .unwrap()
-                    .count_bytes()) as size_t;
+            fn demo(buf: &[i8]) {
+                let _ = ::xj_zstr::strlen(buf.as_u8_slice()) as size_t;
+                let _ = ::xj_zstr::strlen(buf.as_u8_slice()) as size_t;
             }
         "#]],
     );
@@ -979,8 +1411,7 @@ fn strlen_of_u8_array_borrows_slice() {
         expect![[r#"
             fn demo() {
                 let mut buf: [u8; 100] = [0; 100];
-                let _ = (::std::ffi::CStr::from_bytes_until_nul(&buf[..]).unwrap().count_bytes())
-                    as size_t;
+                let _ = ::xj_zstr::strlen(&buf) as size_t;
             }
         "#]],
     );
@@ -1015,29 +1446,24 @@ fn atone_rewrites_all_null_endptr_and_simple_calls() {
     rw.rewrite_file(&mut file, Depth::Unlimited);
     let output = prettyplease::unparse(&file);
     for call in [
-        "::xj_atone::atof(bytes.as_u8_slice())",
+        "::xj_atone::atof(bytes)",
         "::xj_atone::atof(vector.as_u8_slice())",
         "::xj_atone::atoi(chars.as_u8_slice())",
-        "::xj_atone::atoi(string.as_bytes())",
-        "::xj_atone::atoi(\"17\".as_bytes())",
+        "::xj_atone::atoi(&string)",
+        "::xj_atone::atoi(\"17\")",
         "::xj_atone::atol(chars.as_u8_slice())",
-        "::xj_atone::atol(bytes[1..].as_u8_slice())",
-        "::xj_atone::atoll(b\"42\")",
+        "::xj_atone::atol(&bytes[1..])",
+        "::xj_atone::atoll(\"42\\0\")",
         "::xj_atone::strtod_n(chars.as_u8_slice())",
-        "::xj_atone::strtof_n(text.as_bytes())",
-        "::xj_atone::strtol_n(bytes.as_u8_slice(), 10)",
-        "::xj_atone::strtoul_n(bytes.as_u8_slice(), 16)",
+        "::xj_atone::strtof_n(text)",
+        "::xj_atone::strtol_n(bytes, 10)",
+        "::xj_atone::strtoul_n(bytes, 16)",
         "::xj_atone::strtoll_n(chars.as_u8_slice(), 0)",
         "::xj_atone::strtoull_n(chars.as_u8_slice(), 8)",
     ] {
         assert!(output.contains(call), "missing {call} in {output}");
     }
-    assert_eq!(
-        output
-            .matches("::xj_atone::strtof_n(text.as_bytes())")
-            .count(),
-        2
-    );
+    assert_eq!(output.matches("::xj_atone::strtof_n(text)").count(), 2);
     assert_eq!(output.matches("use ::xj_cstr::ByteSlice;").count(), 1);
     assert_eq!(
         rw.deps(),
@@ -1071,28 +1497,18 @@ fn atone_adapts_non_null_endptr_and_preserves_raw_pointer_calls() {
         "strtod", "strtof", "strtol", "strtoul", "strtoll", "strtoull",
     ] {
         assert!(
-            output.contains(&format!("fn xj_synsub_{function}_with_endptr(")),
-            "missing adapter for {function}: {output}"
-        );
-        assert!(
-            output.contains(&format!(
-                "xj_synsub_{function}_with_endptr(input.as_u8_slice()"
-            )),
+            output.contains(&format!("::xj_atone::{function}_ptr(input.as_u8_slice()")),
             "missing call for {function}: {output}"
         );
     }
-    assert_eq!(
-        output.matches("fn xj_synsub_strtod_with_endptr(").count(),
-        1
-    );
-    assert!(output.contains("::xj_atone::strtod_u_e(input, &mut endoff)"));
-    assert!(output.contains("::errno::set_errno(error)"));
-    assert!(output.contains("::xj_atone::strtol(input, &mut endoff, base)"));
+    assert_eq!(output.matches("::xj_atone::strtod_ptr(").count(), 2);
+    assert!(!output.contains("xj_synsub_"));
+    assert!(!output.contains("::errno::"));
     assert!(output.contains("atoi(raw)"));
     assert!(output.contains("strtod(raw, ::core::ptr::null_mut())"));
     assert_eq!(
         rw.deps(),
-        ["errno", "xj_atone", "xj_cstr"].map(str::to_string).into()
+        ["xj_atone", "xj_cstr"].map(str::to_string).into()
     );
 }
 
@@ -1305,7 +1721,7 @@ fn sscanf_with_raw_addr_buffer() {
         expect![[r#"
             use ::xj_cstr::ByteSlice;
             fn demo(mut input: [::core::ffi::c_char; 256], mut choice: ::core::ffi::c_int) -> bool {
-                if xj_scanf::bscanf!(input.as_u8_slice(), "%d", & mut choice)
+                if xj_scanf::bscanf!(input.as_u8_slice(), "%d\0", & mut choice)
                     != 1 as ::core::ffi::c_int
                 {
                     return false;
@@ -1362,6 +1778,285 @@ fn deref_on_slice() {
         expect![[r#"
             fn test(s: *const u8) -> u8 {
                 *s
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn cio_macros_keep_zstr_bytes_and_bounded_destinations() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_destination);
+    let mut file = syn::parse_file(r#"
+        fn demo(s: &ZStr, f: xj_cio::FILE_ptr, mut buf: [u8; 8], raw: *mut u8) {
+            xj_cio::cfprintf!(f, b"{:>5}", unsafe { xj_cstr_from_ptr(s as *const u8) });
+            xj_cfmt::csnprintf!(unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr(), 4usize) }, "{}", s);
+            xj_cfmt::csnprintf!(unsafe { core::slice::from_raw_parts_mut(raw, 4usize) }, "{}", s);
+        }
+    "#).unwrap();
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+    assert!(output.contains("s.as_c_str()"), "{output}");
+    assert!(!output.contains("to_string_lossy"), "{output}");
+    assert!(output.contains("buf[..4usize as usize]"), "{output}");
+    assert!(!output.contains("from_raw_parts_mut(buf"), "{output}");
+    assert!(
+        output.contains("from_raw_parts_mut(raw, 4usize)"),
+        "{output}"
+    );
+}
+
+#[test]
+fn cio_bulk_io_preserves_item_counts_and_zero_sizes() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_buffers);
+    let mut file = syn::parse_file(
+        r#"
+        fn fread(p: *mut core::ffi::c_void, size: usize, n: usize, f: xj_cio::FILE_ptr) -> core::ffi::c_ulong { 0 }
+        fn demo(mut buf: [u8; 8], f: xj_cio::FILE_ptr, size: usize, n: usize, raw: *mut u8) {
+            let read = fread(buf.as_mut_ptr() as *mut core::ffi::c_void, size, n, stream(f));
+            let written = xj_cio::fwrite_raw(buf.as_ptr(), size, n, f);
+            fread(raw, size, n, f);
+        }
+    "#,
+    )
+    .unwrap();
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+    let compact = output.split_whitespace().collect::<String>();
+    assert!(
+        compact.contains("xj_cio::fread_items(buf.as_mut_u8_slice(),size,n,stream(f))"),
+        "{output}"
+    );
+    assert!(
+        compact.contains("xj_cio::fwrite_items(&buf,size,n,f)"),
+        "{output}"
+    );
+    assert!(output.contains("as core::ffi::c_ulong"), "{output}");
+    assert!(output.contains("fread(raw, size, n, f)"), "{output}");
+    assert!(rw.deps().contains("xj_cio"));
+}
+
+#[test]
+fn c_printf_borrows_byte_storage_without_implicit_autorefs() {
+    let mut rw = Rewriter::new();
+    rw.add_macro_rewrite(Rewriter::rewrite_c_printf_safe);
+    check(
+        &rw,
+        r#"struct Globals {
+            outfile: xj_cio::FILE_ptr,
+            info: [u8; 512],
+        }
+        unsafe fn demo(xjg: *mut Globals, mut array: [u8; 8], slice: &[u8], vec: Vec<u8>) {
+            xj_cio::fprintf_raw!((*xjg).outfile, "%s  ", (*xjg).info.as_ptr());
+            xj_cio::fprintf_raw!((*xjg).outfile, "%s", (*xjg).info.as_mut_ptr());
+            xj_cio::fprintf_raw!((*xjg).outfile, "%s", (&raw const (*xjg).info).cast::<u8>());
+            xj_cio::printf_raw!("%s %s %s", array.as_mut_ptr(), slice.as_ptr(), vec.as_ptr());
+        }"#,
+        expect![[r#"
+            struct Globals {
+                outfile: xj_cio::FILE_ptr,
+                info: [u8; 512],
+            }
+            unsafe fn demo(xjg: *mut Globals, mut array: [u8; 8], slice: &[u8], vec: Vec<u8>) {
+                xj_cio::fprintf!((* xjg).outfile, "%s  ", & ((* xjg).info));
+                xj_cio::fprintf!((* xjg).outfile, "%s", & ((* xjg).info));
+                xj_cio::fprintf!((* xjg).outfile, "%s", & ((* xjg).info));
+                xj_cio::printf!("%s %s %s", & (array), & (slice), & (vec));
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn c_format_macros_rewrite_arguments_and_destinations() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_cstr_from_ptr_of_zstr);
+    rw.add_expr_rewrite(Rewriter::rewrite_cio_destination);
+    rw.add_macro_rewrite(Rewriter::rewrite_byte_view_macro_literals);
+    let mut file = syn::parse_file(r#"
+        fn demo(mut out: [u8; 8], raw: *mut u8, s: &ZStr) {
+            unsafe { xj_cio::snprintf_raw!(out.as_mut_ptr(), 4, b"%s", core::ffi::CStr::from_ptr(s.as_ptr())); }
+            unsafe { xj_cio::sprintf_raw!(raw, b"%s", core::ffi::CStr::from_ptr(s.as_ptr())); }
+            xj_cio::printf!(b"%s", unsafe { core::ffi::CStr::from_ptr(s.as_ptr()) });
+        }
+    "#).unwrap();
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let output = prettyplease::unparse(&file);
+    assert!(
+        output
+            .split_whitespace()
+            .collect::<String>()
+            .contains("snprintf_unchecked!(out,4,\"%s\",s.as_c_str())"),
+        "{output}"
+    );
+    assert!(
+        output.contains("sprintf_raw!(raw, \"%s\", s.as_c_str())"),
+        "{output}"
+    );
+    assert!(
+        output.contains("printf!(\"%s\", unsafe { s.as_c_str() })"),
+        "{output}"
+    );
+}
+
+#[test]
+fn cio_raw_scanf_with_provable_destinations_becomes_safe() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
+    check(
+        &rw,
+        r#"pub type size_t = usize;
+        unsafe fn demo(stream: ::xj_cio::FILE_ptr) -> ::core::ffi::c_int {
+            let mut n: ::core::ffi::c_int = 0;
+            let mut word: [::core::ffi::c_char; 16] = [0; 16];
+            let mut bytes: [u8; 8] = [0; 8];
+            let mut c: u8 = 0;
+            let mut z: size_t = 0;
+            let mut d: f64 = 0.0;
+            {
+                let xj_cio_fmt = b"%d %15s %7s %c %zu %lf";
+                ::xj_cio::fscanf_raw(stream, xj_cio_fmt, &mut [
+                    ::xj_cio::OutArg::Int((&raw mut n) as _),
+                    ::xj_cio::OutArg::Str((&raw mut word as *mut u8) as _),
+                    ::xj_cio::OutArg::Str((bytes.as_mut_ptr()) as _),
+                    ::xj_cio::OutArg::Str((&raw mut c) as _),
+                    ::xj_cio::OutArg::Size((&raw mut z) as _),
+                    ::xj_cio::OutArg::Double((&raw mut d) as _),
+                ])
+            }
+        }
+        unsafe fn input(line: [u8; 32]) -> ::core::ffi::c_int {
+            let mut x: ::core::ffi::c_long = 0;
+            { let xj_cio_fmt = b"%ld"; ::xj_cio::sscanf_raw(&line, xj_cio_fmt, &mut [::xj_cio::OutArg::Long((&raw mut x) as _)]) }
+        }
+        unsafe fn standard() -> ::core::ffi::c_int {
+            let mut x: i32 = 0;
+            { let xj_cio_fmt = b"%d"; ::xj_cio::scanf_raw(xj_cio_fmt, &mut [::xj_cio::OutArg::Int((&raw mut x) as _)]) }
+        }"#,
+        expect![[r#"
+            use ::xj_cstr::ByteSlice;
+            pub type size_t = usize;
+            unsafe fn demo(stream: ::xj_cio::FILE_ptr) -> ::core::ffi::c_int {
+                let mut n: ::core::ffi::c_int = 0;
+                let mut word: [::core::ffi::c_char; 16] = [0; 16];
+                let mut bytes: [u8; 8] = [0; 8];
+                let mut c: u8 = 0;
+                let mut z: size_t = 0;
+                let mut d: f64 = 0.0;
+                {
+                    let xj_cio_fmt = b"%d %15s %7s %c %zu %lf";
+                    ::xj_cio::fscanf(
+                        stream,
+                        xj_cio_fmt,
+                        &mut [
+                            &mut n,
+                            &mut word.as_mut_u8_slice(),
+                            &mut bytes,
+                            &mut c,
+                            &mut z,
+                            &mut d,
+                        ],
+                    )
+                }
+            }
+            unsafe fn input(line: [u8; 32]) -> ::core::ffi::c_int {
+                let mut x: ::core::ffi::c_long = 0;
+                {
+                    let xj_cio_fmt = b"%ld";
+                    ::xj_scanf::sscanf(&line, xj_cio_fmt, &mut [&mut x])
+                }
+            }
+            unsafe fn standard() -> ::core::ffi::c_int {
+                let mut x: i32 = 0;
+                {
+                    let xj_cio_fmt = b"%d";
+                    ::xj_cio::scanf(xj_cio_fmt, &mut [&mut x])
+                }
+            }
+        "#]],
+    );
+}
+
+#[test]
+fn cio_raw_scanf_keeps_unproven_destinations_raw() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_scanf_variants);
+    check(
+        &rw,
+        r#"static mut COUNT: ::core::ffi::c_int = 0;
+        unsafe fn demo(p: *mut ::core::ffi::c_int) -> ::core::ffi::c_int {
+            let mut word: [u8; 4] = [0; 4];
+            let mut name: [::core::ffi::c_char; 8] = [0; 8];
+            let mut x: ::core::ffi::c_int = 0;
+            let mut buf: [u8; 8] = [0; 8];
+            {
+                let xj_cio_fmt = b"%d %3s %7s";
+                ::xj_cio::scanf_raw(xj_cio_fmt, &mut [
+                    ::xj_cio::OutArg::Int((p) as _),
+                    ::xj_cio::OutArg::Str((&raw mut word as *mut u8) as _),
+                    ::xj_cio::OutArg::Str((&raw mut name as *mut u8) as _),
+                ])
+            };
+            // The same storage twice, a static and an array element.
+            { let xj_cio_fmt = b"%d %d"; ::xj_cio::scanf_raw(xj_cio_fmt, &mut [::xj_cio::OutArg::Int((&raw mut x) as _), ::xj_cio::OutArg::Int((&raw mut x) as _)]) };
+            { let xj_cio_fmt = b"%d"; ::xj_cio::scanf_raw(xj_cio_fmt, &mut [::xj_cio::OutArg::Int((&raw mut COUNT) as _)]) };
+            { let xj_cio_fmt = b"%s"; ::xj_cio::scanf_raw(xj_cio_fmt, &mut [::xj_cio::OutArg::Str((&raw mut buf[1]) as _)]) };
+            // Input and destination share storage.
+            { let xj_cio_fmt = b"%s"; ::xj_cio::sscanf_raw(::core::ffi::CStr::from_ptr((buf.as_ptr()) as _), xj_cio_fmt, &mut [::xj_cio::OutArg::Str((&raw mut buf as *mut u8) as _)]) }
+        }"#,
+        expect![[r#"
+            use ::xj_cstr::ByteSlice;
+            static mut COUNT: ::core::ffi::c_int = 0;
+            unsafe fn demo(p: *mut ::core::ffi::c_int) -> ::core::ffi::c_int {
+                let mut word: [u8; 4] = [0; 4];
+                let mut name: [::core::ffi::c_char; 8] = [0; 8];
+                let mut x: ::core::ffi::c_int = 0;
+                let mut buf: [u8; 8] = [0; 8];
+                {
+                    let xj_cio_fmt = b"%d %3s %7s";
+                    ::xj_cio::scanf_raw(
+                        xj_cio_fmt,
+                        &mut [
+                            ::xj_cio::OutArg::Int((p) as _),
+                            ::xj_cio::OutArg::Buf(::xj_cio::CStrDest::from(&mut word)),
+                            ::xj_cio::OutArg::Buf(::xj_cio::CStrDest::from(name.as_mut_u8_slice())),
+                        ],
+                    )
+                };
+                {
+                    let xj_cio_fmt = b"%d %d";
+                    ::xj_cio::scanf_raw(
+                        xj_cio_fmt,
+                        &mut [
+                            ::xj_cio::OutArg::Int((&raw mut x) as _),
+                            ::xj_cio::OutArg::Int((&raw mut x) as _),
+                        ],
+                    )
+                };
+                {
+                    let xj_cio_fmt = b"%d";
+                    ::xj_cio::scanf_raw(
+                        xj_cio_fmt,
+                        &mut [::xj_cio::OutArg::Int((&raw mut COUNT) as _)],
+                    )
+                };
+                {
+                    let xj_cio_fmt = b"%s";
+                    ::xj_cio::scanf_raw(
+                        xj_cio_fmt,
+                        &mut [::xj_cio::OutArg::Str((&raw mut buf[1]) as _)],
+                    )
+                };
+                {
+                    let xj_cio_fmt = b"%s";
+                    ::xj_cio::sscanf_raw(
+                        ::core::ffi::CStr::from_ptr((buf.as_ptr()) as _),
+                        xj_cio_fmt,
+                        &mut [::xj_cio::OutArg::Str((&raw mut buf as *mut u8) as _)],
+                    )
+                }
             }
         "#]],
     );

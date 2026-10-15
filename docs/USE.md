@@ -76,17 +76,6 @@ zlib are retargeted to the pure-Rust `libz_rs_sys`) and
 point is retargeted, `libbz2-rs-sys` also drops `-lbz2` from the
 generated `build.rs`; `libz-rs-sys` covers only part of zlib's API,
 so `-lz` is still emitted.
-* `use_libc` - On applicable platforms, use
-selected functions, constants, and types from the `libc` crate.
-Defaults to `true`.
-Set this to `false` to keep generated bindings.
-For now, this is only  `libc::stat` and libc's supported `sys/stat.h`
-functions and mode constants on Linux x86-64 GNU.
-Unsupported layouts or uses (such as accessing reserved fields
-or taking the address of a whole timestamp subobject) keep the generated
-bindings for the entire input batch.
-Substitution uses declaration provenance,
-so project-defined declarations with matching names are left alone.
 * `ffi` - a dict whose keys are function names. Each entry is a dict from
 argument names (or the special `$return` string, which denotes the return value)
 to an ffi conversion specifier. When any argument or the return value of a
@@ -137,7 +126,32 @@ See FFI Guidance below for more information and examples.
     (`mutable: true`).
   * `{ "method": "from-ref", "mutable": <bool> }` lowers a reference back to a
     raw pointer via a cast (`as *const _` / `as *mut _`).
-* `no_math_errno` - mostly for debugging/testing. Currently asserts
+
+### Internal/debugging guidance
+
+These elements shouldn't usually be needed, but may be useful to
+fine-tune Tenjin's behavior in corner cases.
+
+* `use_libc` - On applicable platforms, use
+selected functions, constants, and types from the `libc` crate.
+Defaults to `true`.
+Set this to `false` to keep generated bindings.
+For now, this is only  `libc::stat` and libc's supported `sys/stat.h`
+functions and mode constants on Linux x86-64 GNU.
+Unsupported layouts or uses (such as accessing reserved fields
+or taking the address of a whole timestamp subobject) keep the generated
+bindings for the entire input batch.
+Substitution uses declaration provenance,
+so project-defined declarations with matching names are left alone.
+* `stdio_header_roots` - a list of trusted system include directories for
+stdio declarations, in addition to `/usr/include` and the Clang sysroot.
+For example, `{"stdio_header_roots": ["/opt/musl/include"]}` permits stdio
+replacement from that sysroot. Ordinary project include paths do not grant
+this trust. Tenjin checks all translation units before replacing `FILE`,
+streams, or functions; unrecognized stdio headers stop translation with a
+diagnostic requesting explicit trusted roots. Project definitions with libc
+names retain their identity across the input batch.
+* `no_math_errno` - Currently asserts
 that no functions in the entire translated codebase make of use
 `errno` in the math stdlib.
 
@@ -198,6 +212,56 @@ We need to be able to generate different wrappers for the following cases
 - `a1` is an array of length `len1` and `a2` and `a3` are arrays of length `l2`
 
 Examples of applying ffi guidance can be found [here](../tests/snapshotted/ffi_guidance/).
+
+## C compatibility crates
+
+A barrier to translating C code to safe Rust is that the Rust ecosystem doesn't
+have safe implementations of some core functionality from `libc`. Examples:
+
+- In simple cases, C's `printf` can be translated to Rust's `print!` macro. But
+not in general:
+  - `printf` returns an integer count, but `print!` returns unit.
+  - `printf` can output non-UTF8 bytes, but not `print!`.
+  - `printf` computes alignment etc in terms of bytes; `print!` uses Unicode scalar values.
+- There is also no exact analogue of `scanf` -- there is a crate of the same name,
+but it does not implement the same functionality.
+- C strings can be trimmed by writing a null byte in the middle, but `core::ffi::CStr` forbids interior null bytes.
+
+One way Tenjin bridges this gap is to supply (and use) shim crates.
+
+So far we have:
+
+- [xj_atone](https://docs.rs/xj_atone/latest/xj_atone/) for `atoi`, `strtod`, etc.
+- [xj_scanf](https://docs.rs/xj_scanf/latest/xj_scanf/) for `scanf` etc.
+- [xj_zstr](https://docs.rs/xj_zstr/latest/xj_zstr/) for a safe equivalent to C string semantics: binary data with
+dynamic null byte termination.
+- [xj_cio](https://docs.rs/xj_cio/latest/xj_cio/) for a mirror of the `FILE*`-based stdio subsystem, with adapters
+for Rust-style formatting. Since [static I/O API translation](https://arxiv.org/abs/2506.01427) is limited to ~80% coverage in practice, this is needed to provide
+correct buffering behavior in code that mixes Rust-style formatted output with C APIs.
+- [xj_cfmt](https://docs.rs/xj_cfmt/latest/xj_cfmt/) - provides byte-oriented formatting macros (vs Rust counting Unicode scalars)
+- [xj_cstat](https://docs.rs/xj_cstat/latest/xj_cstat/) for a safe Rust implementation matching the `<sys/stat.h>` API
+- [xj_ctime](https://docs.rs/xj_ctime/latest/xj_ctime/) for functionality from `time.h`
+  - the main module has an idiomatic Rust interface, the `compat` module has a C-ish API, with e.g. `Option<&mut libc::time_t>` instead of `*mut libc::time_t`.
+- [xj_hexfloat](https://docs.rs/xj_hexfloat/latest/xj_hexfloat/) - a tiny wrapper around [hexfloat2](https://docs.rs/hexfloat2/0.2.0/hexfloat2/index.html) with tweaked output formatting
+- [xj_bytes](https://docs.rs/xj_bytes/latest/xj_bytes/) - provides a `ByteView` trait for abstracting over `&[u8]`, `&CStr`, `&str`, `&ZStr`, etc.
+
+Here is a layer-cake dependency diagram:
+
+```
+  ┌─────────┬──────────┬────────────────────┬──────────┬──────────┐
+  │ xj_...  │ xj_cstat │       xj_cio       │          │          │
+  ├─────────┴──────────┴─────────┬──────────┤          │          │
+  │           xj_zstr            │          │ xj_ctime │ xj_atone │
+  ├──(opt)───────────────────────┤ xj_scanf │          │          │
+  │           xj_cfmt            │          │          │          │
+  ├──────────────────────────────┴──────────┴──────────┴──────────┤
+  │                           xj_bytes                            │
+  └───────────────────────────────────────────────────────────────┘
+
+  ┌──────────┐ ┌─────────────┐
+  │ xj_cmath │ │ xj_hexfloat │   standalone (no xj deps)
+  └──────────┘ └─────────────┘
+```
 
 ## Preparatory Refactoring and Improvement Passes
 
@@ -517,8 +581,6 @@ Either disable refolding or modify the source and build to use regular `#include
   "local" shared objects. The former induce cargo link flag directives
   in `build.rs` and the latter give rise to inter-crate dependencies
   in `Cargo.toml`.
-
-- Tenjin [doesn't yet handle calls to printf/puts which need to return a count](https://github.com/Aarno-Labs/tenjin/issues/264)
 
 - Tenjin doesn't yet handle codebases which build multiple distinct
   libraries with the same initial stem (e.g. `libfoo.so.1.2.3` and also `libfoo.so.1.7.9`, which share the initial stem `libfoo`) at the same time.

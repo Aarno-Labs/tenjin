@@ -13,7 +13,10 @@
 //! (statics and consts) are collected in a pre-pass, then function
 //! arguments and let-bindings are added as the visitor enters scopes.
 
+mod byte_input;
+mod printf;
 pub mod rewrites;
+mod scanf;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -68,12 +71,18 @@ pub struct SymbolTable {
     pub items: HashMap<String, syn::Type>,
     /// Maps a named struct type to its named field types.
     pub fields: HashMap<String, HashMap<String, syn::Type>>,
+    /// Named type aliases, including `size_t`; conflicting definitions are unknown.
+    pub type_aliases: HashMap<String, Option<syn::Type>>,
+    /// Original return types of translated function adapters.
+    pub fn_outputs: HashMap<String, syn::Type>,
     /// Maps the name of each function declared in an `extern` block to its signature.
     pub foreign_fns: HashMap<String, syn::Signature>,
     /// Names of functions the crate defines, including their exported symbol names.
     pub defined_fns: HashSet<String>,
     /// Names of `static mut` items that are not shadowed by a local binding.
     pub mutable_statics: HashSet<String>,
+    /// Constants are values, not persistent storage; local bindings shadow them.
+    pub constants: HashSet<String>,
 }
 
 impl SymbolTable {
@@ -103,6 +112,7 @@ impl SymbolTable {
     /// Insert a name -> type mapping.
     pub fn insert(&mut self, name: String, ty: syn::Type) {
         self.mutable_statics.remove(&name);
+        self.constants.remove(&name);
         self.items.insert(name, ty);
     }
 
@@ -111,6 +121,7 @@ impl SymbolTable {
     /// remain visible.
     pub fn remove(&mut self, name: &str) {
         self.mutable_statics.remove(name);
+        self.constants.remove(name);
         self.items.remove(name);
     }
 
@@ -169,8 +180,19 @@ impl SymbolTable {
     fn collect_globals(&mut self, items: &[syn::Item]) {
         for item in items {
             match item {
+                syn::Item::Fn(i) => {
+                    if let syn::ReturnType::Type(_, ty) = &i.sig.output {
+                        self.fn_outputs
+                            .insert(i.sig.ident.to_string(), (**ty).clone());
+                    }
+                    self.defined_fns.insert(i.sig.ident.to_string());
+                    if let Some(name) = export_name(&i.attrs) {
+                        self.defined_fns.insert(name);
+                    }
+                }
                 syn::Item::Const(i) => {
                     self.insert(i.ident.to_string(), (*i.ty).clone());
+                    self.constants.insert(i.ident.to_string());
                 }
                 syn::Item::Static(i) => {
                     self.insert(i.ident.to_string(), (*i.ty).clone());
@@ -187,6 +209,16 @@ impl SymbolTable {
                     }
                     self.fields.insert(i.ident.to_string(), fields);
                 }
+                syn::Item::Type(i) if i.generics.params.is_empty() => {
+                    self.type_aliases
+                        .entry(i.ident.to_string())
+                        .and_modify(|ty| {
+                            if ty.as_ref() != Some(&*i.ty) {
+                                *ty = None;
+                            }
+                        })
+                        .or_insert_with(|| Some((*i.ty).clone()));
+                }
                 syn::Item::Mod(i) => {
                     if let Some((_, ref inner)) = i.content {
                         self.collect_globals(inner);
@@ -198,12 +230,6 @@ impl SymbolTable {
                             self.foreign_fns
                                 .insert(f.sig.ident.to_string(), f.sig.clone());
                         }
-                    }
-                }
-                syn::Item::Fn(i) => {
-                    self.defined_fns.insert(i.sig.ident.to_string());
-                    if let Some(name) = export_name(&i.attrs) {
-                        self.defined_fns.insert(name);
                     }
                 }
                 _ => {}
@@ -302,6 +328,10 @@ pub type ExprRewrite = fn(&Rewriter, &SymbolTable, &syn::Expr) -> Option<(syn::E
 /// Same contract as [`ExprRewrite`] but for statements.
 pub type StmtRewrite = fn(&Rewriter, &SymbolTable, &syn::Stmt) -> Option<(syn::Stmt, Depth)>;
 
+/// A rewrite of a complete macro invocation, after rewriting its arguments.
+/// Applies to both expression and statement macros.
+pub type MacroRewrite = fn(&Rewriter, &SymbolTable, &syn::Macro) -> Option<syn::Macro>;
+
 #[derive(Debug, Default)]
 struct UseItems(BTreeMap<(bool, Vec<String>), BTreeSet<String>>);
 
@@ -393,6 +423,7 @@ pub struct Rewriter {
     deps: RefCell<BTreeSet<String>>,
     expr_rewrites: Vec<ExprRewrite>,
     stmt_rewrites: Vec<StmtRewrite>,
+    macro_rewrites: Vec<MacroRewrite>,
     item_stores: RefCell<HashMap<PathBuf, ItemStore>>,
     root_file: RefCell<Option<PathBuf>>,
     cur_file: RefCell<Option<PathBuf>>,
@@ -411,6 +442,7 @@ impl Rewriter {
             deps: RefCell::new(BTreeSet::new()),
             expr_rewrites: Vec::new(),
             stmt_rewrites: Vec::new(),
+            macro_rewrites: Vec::new(),
             item_stores: RefCell::new(HashMap::new()),
             root_file: RefCell::new(None),
             cur_file: RefCell::new(None),
@@ -425,6 +457,11 @@ impl Rewriter {
     /// Register a statement rewrite.
     pub fn add_stmt_rewrite(&mut self, rewrite: StmtRewrite) {
         self.stmt_rewrites.push(rewrite);
+    }
+
+    /// Register a rewrite of a complete macro invocation.
+    pub fn add_macro_rewrite(&mut self, rewrite: MacroRewrite) {
+        self.macro_rewrites.push(rewrite);
     }
 
     /// Record a crate dependency required by rewritten code.
@@ -727,6 +764,15 @@ impl RewriteVisitor<'_> {
 
     /// Add bindings introduced by a local `let` statement.
     fn add_local_bindings(&mut self, local: &syn::Local) {
+        if let syn::Pat::Ident(pat) = &local.pat
+            && pat.by_ref.is_none()
+            && pat.subpat.is_none()
+            && let Some(init) = &local.init
+            && let Some(ty) = byte_array_initializer_type(&init.expr, &self.symbols)
+        {
+            self.symbols.insert(pat.ident.to_string(), ty);
+            return;
+        }
         collect_pat_bindings(&local.pat, &mut self.symbols);
     }
 }
@@ -784,6 +830,16 @@ impl VisitMut for RewriteVisitor<'_> {
     /// symbol table is restored when leaving the block.
     fn visit_block_mut(&mut self, block: &mut syn::Block) {
         let saved = self.symbols.clone();
+        // Item constants are in scope throughout the block, including before
+        // their declaration. Track them so an owned constant cannot be mistaken
+        // for an outer binding with persistent storage.
+        for stmt in &block.stmts {
+            if let syn::Stmt::Item(syn::Item::Const(item)) = stmt {
+                self.symbols
+                    .insert(item.ident.to_string(), (*item.ty).clone());
+                self.symbols.constants.insert(item.ident.to_string());
+            }
+        }
         for stmt in &mut block.stmts {
             self.visit_stmt_mut(stmt);
             // After the statement has been (potentially) rewritten,
@@ -825,13 +881,52 @@ impl VisitMut for RewriteVisitor<'_> {
     /// Rewrite the arguments of formatting macros, whose bodies are otherwise
     /// opaque token streams. The tokens are replaced only if a rewrite applied.
     fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+        self.rewrite_macro_args(mac);
+        if let Some(replacement) = self
+            .rewriter
+            .macro_rewrites
+            .iter()
+            .find_map(|rewrite| rewrite(self.rewriter, &self.symbols, mac))
+        {
+            *mac = replacement;
+            // Visit newly emitted arguments, as we do for expression and
+            // statement replacements (including redundant borrow/paren rules).
+            self.rewrite_macro_args(mac);
+        }
+    }
+}
+
+impl RewriteVisitor<'_> {
+    fn rewrite_macro_args(&mut self, mac: &mut syn::Macro) {
         use quote::ToTokens;
         use syn::parse::Parser;
 
         let is_format_macro = mac.path.segments.last().is_some_and(|seg| {
             matches!(
                 seg.ident.to_string().as_str(),
-                "print" | "println" | "eprint" | "eprintln" | "format" | "write" | "writeln"
+                "print"
+                    | "println"
+                    | "eprint"
+                    | "eprintln"
+                    | "format"
+                    | "write"
+                    | "writeln"
+                    | "cprintf"
+                    | "ceprintf"
+                    | "cfprintf"
+                    | "cemit"
+                    | "cwrite"
+                    | "csnprintf"
+                    | "printf"
+                    | "fprintf"
+                    | "sprintf"
+                    | "snprintf"
+                    | "printf_raw"
+                    | "fprintf_raw"
+                    | "sprintf_raw"
+                    | "snprintf_raw"
+                    | "sprintf_unchecked"
+                    | "snprintf_unchecked"
             )
         });
         if !is_format_macro {
@@ -842,6 +937,29 @@ impl VisitMut for RewriteVisitor<'_> {
             return;
         };
         let before = args.to_token_stream().to_string();
+        let path = &mac.path;
+        if path.segments.len() == 2
+            && matches!(
+                path.segments[0].ident.to_string().as_str(),
+                "xj_cio" | "xj_cfmt"
+            )
+            && matches!(
+                path.segments[1].ident.to_string().as_str(),
+                "snprintf_raw" | "sprintf_raw"
+            )
+        {
+            // Treat the whole invocation as a call while rewriting, so a
+            // bounded destination can change its macro name as well as its args.
+            let mut call: syn::Expr = syn::parse_quote! { #path(#args) };
+            self.visit_expr_mut(&mut call);
+            if let syn::Expr::Call(call) = call {
+                if let syn::Expr::Path(path) = *call.func {
+                    mac.path = path.path;
+                    mac.tokens = call.args.to_token_stream();
+                    return;
+                }
+            }
+        }
         for arg in args.iter_mut() {
             self.visit_expr_mut(arg);
         }
@@ -853,6 +971,55 @@ impl VisitMut for RewriteVisitor<'_> {
 }
 
 // ── Binding extraction helpers ───────────────────────────────────────
+
+/// Recover arrays with explicit byte-type evidence after c2rust omits their
+/// annotations. Unsuffixed integer literals alone are insufficient: later
+/// uses may infer a different element type.
+fn byte_array_initializer_type(expr: &syn::Expr, symbols: &SymbolTable) -> Option<syn::Type> {
+    use syn::{Expr, Lit, parse_quote};
+
+    let byte_element = |expr: &Expr| {
+        printf::expr_type(expr, symbols).is_some_and(|ty| byte_input::is_u8_type(&ty))
+    };
+    match expr {
+        Expr::Paren(p) => byte_array_initializer_type(&p.expr, symbols),
+        Expr::Group(g) => byte_array_initializer_type(&g.expr, symbols),
+        Expr::Reference(r) => {
+            let inner = byte_array_initializer_type(&r.expr, symbols)?;
+            Some(if r.mutability.is_some() {
+                parse_quote!(&mut #inner)
+            } else {
+                parse_quote!(&#inner)
+            })
+        }
+        Expr::Repeat(r) if byte_element(&r.expr) => {
+            let len = &r.len;
+            Some(parse_quote!([u8; #len]))
+        }
+        Expr::Array(a)
+            if a.elems.iter().any(byte_element)
+                && a.elems.iter().all(|e| {
+                    byte_element(e)
+                        || matches!(e, Expr::Lit(lit) if matches!(&lit.lit,
+                            Lit::Int(i) if i.suffix().is_empty()))
+                }) =>
+        {
+            let len = a.elems.len();
+            Some(parse_quote!([u8; #len]))
+        }
+        Expr::Unary(u) if matches!(u.op, syn::UnOp::Deref(_)) => {
+            let Expr::Lit(lit) = &*u.expr else {
+                return None;
+            };
+            let Lit::ByteStr(bytes) = &lit.lit else {
+                return None;
+            };
+            let len = bytes.value().len();
+            Some(parse_quote!([u8; #len]))
+        }
+        _ => None,
+    }
+}
 
 /// Extract a (name, type) pair from a function argument.
 fn binding_from_fn_arg(arg: &syn::FnArg) -> Option<(String, syn::Type)> {
@@ -1271,7 +1438,8 @@ mod tests {
 
         let mut file = syn::parse_file(
             r#"fn demo(values: &mut [i32; 2]) {
-                scanf(
+                sscanf(
+                    b"7\0" as *const u8 as *const i8,
                     b"%d\0" as *const u8 as *const i8,
                     &raw mut values[isatty(1) as usize],
                 );
@@ -1329,7 +1497,7 @@ mod tests {
             (
                 PathBuf::from("src/uses_trait.rs"),
                 syn::parse_file(
-                    "fn demo(buf: &[u16]) { let _ = strlen(buf.as_mut_ptr()); let _ = strlen(buf.as_mut_ptr()); }",
+                    "fn demo(buf: &[i8]) { let _ = strlen(buf.as_mut_ptr()); let _ = strlen(buf.as_mut_ptr()); }",
                 )
                 .unwrap(),
             ),
@@ -1385,7 +1553,7 @@ mod tests {
         rw.add_expr_rewrite(Rewriter::rewrite_strlen_of_slice);
 
         let mut file =
-            syn::parse_file("fn demo(buf: &[u16]) { let _ = strlen(buf.as_mut_ptr()); }").unwrap();
+            syn::parse_file("fn demo(buf: &[i8]) { let _ = strlen(buf.as_mut_ptr()); }").unwrap();
 
         rw.rewrite_file(&mut file, Depth::Unlimited);
 

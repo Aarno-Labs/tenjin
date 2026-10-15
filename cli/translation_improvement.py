@@ -27,7 +27,13 @@ import static_measurements_rust
 
 
 def run_built_workspace_binary(
-    root: Path, workspace_dir: str, binary_name: str, args: list[str], dir: Path
+    root: Path,
+    workspace_dir: str,
+    binary_name: str,
+    args: list[str],
+    dir: Path,
+    *,
+    env_ext: dict[str, str | bytes] | None = None,
 ) -> CompletedProcess:
     default_profile = "debug" if binary_name != "xj-improve-lift-call-args" else "release"
     target_subdir = os.environ.get("XJ_BUILD_RS_PROFILE", default_profile)
@@ -35,6 +41,7 @@ def run_built_workspace_binary(
         [binary_name, *args, dir],
         cwd=dir,
         env_ext={
+            **(env_ext or {}),
             "PATH": os.pathsep.join([
                 str(root / workspace_dir / "target" / target_subdir),
                 os.environ["PATH"],
@@ -81,6 +88,22 @@ PRINT_MACRO_REWRITES = (
     ("print!($$$ARGS)", "xj_astgrep_print($$$ARGS)"),
     ("eprintln!($$$ARGS)", "xj_astgrep_eprintln($$$ARGS)"),
     ("eprint!($$$ARGS)", "xj_astgrep_eprint($$$ARGS)"),
+    ("::xj_cio::printf!($$$ARGS)", "xj_astgrep_printf($$$ARGS)"),
+    ("::xj_cio::fprintf!($$$ARGS)", "xj_astgrep_fprintf($$$ARGS)"),
+    ("::xj_cio::sprintf!($$$ARGS)", "xj_astgrep_sprintf($$$ARGS)"),
+    ("::xj_cio::snprintf!($$$ARGS)", "xj_astgrep_snprintf($$$ARGS)"),
+    ("::xj_cio::printf_raw!($$$ARGS)", "xj_astgrep_printf_raw($$$ARGS)"),
+    ("::xj_cio::fprintf_raw!($$$ARGS)", "xj_astgrep_fprintf_raw($$$ARGS)"),
+    ("::xj_cio::sprintf_raw!($$$ARGS)", "xj_astgrep_sprintf_raw($$$ARGS)"),
+    ("::xj_cio::snprintf_raw!($$$ARGS)", "xj_astgrep_snprintf_raw($$$ARGS)"),
+    ("::xj_cio::sprintf_unchecked!($$$ARGS)", "xj_astgrep_sprintf_unchecked($$$ARGS)"),
+    ("::xj_cio::snprintf_unchecked!($$$ARGS)", "xj_astgrep_snprintf_unchecked($$$ARGS)"),
+    ("::xj_cio::cprintf!($$$ARGS)", "xj_astgrep_cprintf($$$ARGS)"),
+    ("::xj_cio::ceprintf!($$$ARGS)", "xj_astgrep_ceprintf($$$ARGS)"),
+    ("::xj_cio::cfprintf!($$$ARGS)", "xj_astgrep_cfprintf($$$ARGS)"),
+    ("::xj_cfmt::cemit!($$$ARGS)", "xj_astgrep_cemit($$$ARGS)"),
+    ("::xj_cfmt::cwrite!($$$ARGS)", "xj_astgrep_cwrite($$$ARGS)"),
+    ("::xj_cfmt::csnprintf!($$$ARGS)", "xj_astgrep_csnprintf($$$ARGS)"),
 )
 
 
@@ -119,6 +142,9 @@ def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> Comple
     #
     # This produces, as an ephemeral intermediate state, code that does not
     # type check, but the lifted calls within the arguments can still be analyzed.
+    # Match the subsequent translated-code Cargo check so rust-analyzer's
+    # dependency builds can be reused rather than rebuilt with different flags.
+    rustflags = os.environ.get("RUSTFLAGS_FOR_TRANSLATED_CODE", "")
     try:
         rewrite_print_macros_as_calls(dir)
         lift_cp = run_built_workspace_binary(
@@ -127,6 +153,10 @@ def run_improve_lift_call_args(root: Path, args: list[str], dir: Path) -> Comple
             "xj-improve-lift-call-args",
             args,
             dir,
+            env_ext={
+                "RUSTFLAGS": rustflags,
+                **hermetic.cargo_encoded_rustflags_env_ext(dir, rustflags),
+            },
         )
     finally:
         restore_print_macros(dir)
@@ -294,20 +324,28 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
                 for span in message.get("spans", []):
                     if not span.get("is_primary"):
                         continue
-                    file_name = span.get("file_name")
-                    byte_start = span.get("byte_start")
-                    if file_name is None or byte_start is None:
-                        continue
-                    path = (dir / file_name).resolve()
-                    containing = [
-                        key
-                        for key in remaining
-                        if key[0] == path and key[1] <= int(byte_start) <= key[2]
-                    ]
-                    if containing:
-                        restore.add(
-                            min(containing, key=lambda key: (key[2] - key[1], key[1], key[2]))
-                        )
+                    # Unsafe macro operations can point into the dependency's
+                    # definition. Follow nested expansions to the translated
+                    # invocation before deciding which function needs unsafe.
+                    while span is not None:
+                        file_name = span.get("file_name")
+                        byte_start = span.get("byte_start")
+                        if file_name is not None and byte_start is not None:
+                            path = (dir / file_name).resolve()
+                            containing = [
+                                key
+                                for key in remaining
+                                if key[0] == path and key[1] <= int(byte_start) <= key[2]
+                            ]
+                            if containing:
+                                restore.add(
+                                    min(
+                                        containing,
+                                        key=lambda key: (key[2] - key[1], key[1], key[2]),
+                                    )
+                                )
+                                break
+                        span = (span.get("expansion") or {}).get("span")
 
             if not restore:
                 if not remaining:

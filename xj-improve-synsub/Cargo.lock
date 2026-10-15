@@ -341,6 +341,23 @@ dependencies = [
  "serde_json",
  "syn",
  "toml_edit",
+ "xj_bytes",
+ "xj_cfmt_core",
+]
+
+[[package]]
+name = "xj_bytes"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eab63c6b6a9a3677d4ab91bd0ffd30b16911f7b7beeb36c960ab68a5d5ee5b1b"
+
+[[package]]
+name = "xj_cfmt_core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "923e3d3cb4a64024d216abe7c33c4c8495f46e3e1f1847a31daf657e76de2f7d"
+dependencies = [
+ "xj_bytes",
 ]
 
 [[package]]

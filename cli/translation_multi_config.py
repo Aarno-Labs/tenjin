@@ -566,6 +566,16 @@ def run_merge(
 
     merged_dir.mkdir(parents=True, exist_ok=True)
 
+    # Cargo reads workspace configuration from the workspace root. Keep the
+    # translated projects' linker settings and local dependency patches there.
+    cargo_configs = [p / ".cargo" / "config.toml" for p in abs_dirs]
+    config_contents = [p.read_bytes() if p.exists() else None for p in cargo_configs]
+    if len(set(config_contents)) > 1:
+        raise UserFacingError(".cargo/config.toml files differ across configurations")
+    if config_contents[0] is not None:
+        (merged_dir / ".cargo").mkdir(exist_ok=True)
+        (merged_dir / ".cargo" / "config.toml").write_bytes(config_contents[0])
+
     for member in all_members:
         member_inputs = member_map[member]
         member_ws_abs = [entry_to_ws_abs[id(entry)] for entry, _ in member_inputs]

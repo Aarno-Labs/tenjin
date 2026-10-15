@@ -2,6 +2,7 @@ use super::*;
 use quote::ToTokens; // for to_token_stream()
 use serde_derive::Deserialize;
 use std::str::FromStr;
+use syn::visit_mut::{self, VisitMut};
 use syn::{AngleBracketedGenericArguments, Expr, GenericArgument, Path, Type};
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,36 @@ impl FromStr for GuidedType {
 }
 
 impl GuidedType {
+    pub fn required_xj_zstr_types(&self) -> IndexSet<&'static str> {
+        #[derive(Default)]
+        struct FindZstrTypes(IndexSet<&'static str>);
+
+        impl VisitMut for FindZstrTypes {
+            fn visit_type_path_mut(&mut self, ty: &mut syn::TypePath) {
+                let segments = &ty.path.segments;
+                if ty.qself.is_none()
+                    && (segments.len() == 1
+                        || (segments.len() == 2 && segments[0].ident == "xj_zstr"))
+                {
+                    match segments.last().unwrap().ident.to_string().as_str() {
+                        "ZString" => {
+                            self.0.insert("ZString");
+                        }
+                        "ZStr" => {
+                            self.0.insert("ZStr");
+                        }
+                        _ => {}
+                    }
+                }
+                visit_mut::visit_type_path_mut(self, ty);
+            }
+        }
+
+        let mut visitor = FindZstrTypes::default();
+        visitor.visit_type_mut(&mut self.parsed.clone());
+        visitor.0
+    }
+
     pub fn new(pretty: String, parsed: Type) -> Self {
         GuidedType { pretty, parsed }
     }
@@ -402,6 +433,16 @@ pub fn type_is_string(ty: &Type) -> bool {
 
 pub fn type_is_str_ref(ty: &Type) -> bool {
     type_of_ref(ty).is_some_and(|inner| type_is_exactly_1_path(inner, "str"))
+}
+
+pub fn type_is_zstr_ref(ty: &Type) -> bool {
+    type_of_ref(ty).is_some_and(|inner| type_is_xj_zstr(inner, "ZStr"))
+}
+
+pub(crate) fn type_is_xj_zstr(ty: &Type, name: &str) -> bool {
+    type_get_bare_path(ty).is_some_and(|path| {
+        is_path_exactly_1(path, name) || is_path_exactly_2(path, "xj_zstr", name)
+    })
 }
 
 pub fn try_type_vec_of(ty: &Type) -> Option<&Type> {
@@ -906,70 +947,9 @@ impl Translation<'_> {
         &self,
         func: &Expr,
         args: &[Box<Expr>],
-        cargs: &[CExprId],
-        ctx: ExprContext,
+        _cargs: &[CExprId],
+        _ctx: ExprContext,
     ) -> RecognizedCallForm {
-        if tenjin::expr_is_ident(func, "puts") && ctx.is_unused() && !args.is_empty() {
-            return RecognizedCallForm::Puts;
-        }
-
-        if tenjin::expr_is_ident(func, "printf")
-            && ctx.is_unused()
-            && !args.is_empty()
-            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[0]))
-        {
-            return RecognizedCallForm::PrintfOut { fmt_string_idx: 0 };
-        }
-
-        if tenjin::expr_is_ident(func, "snprintf")
-            && ctx.is_unused()
-            && args.len() >= 3
-            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[2]))
-            && self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, cargs[0])
-                .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
-        {
-            // XREF:sprint_into_mutref_vec_u8
-            return RecognizedCallForm::PrintfS {
-                fmt_string_idx: 2,
-                opt_size: Some(expr_in_usize(args[1].clone())),
-                dest: Box::new(tenjin::expr_strip_casts(&args[0]).clone()),
-            };
-        }
-
-        if tenjin::expr_is_ident(func, "sprintf")
-            && ctx.is_unused()
-            && args.len() >= 2
-            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
-            && self
-                .parsed_guidance
-                .borrow_mut()
-                .query_expr_type(self, cargs[0])
-                .is_some_and(|g| type_is_vec_of_1_path(g.strip_refs(), "u8"))
-        {
-            // XREF:sprint_into_mutref_vec_u8
-            return RecognizedCallForm::PrintfS {
-                fmt_string_idx: 1,
-                opt_size: None,
-                dest: Box::new(tenjin::expr_strip_casts(&args[0]).clone()),
-            };
-        }
-
-        if tenjin::expr_is_ident(func, "fprintf")
-            && ctx.is_unused()
-            && args.len() >= 2
-            && tenjin::expr_is_lit_str_or_bytes(tenjin::expr_strip_casts(&args[1]))
-        {
-            if tenjin::expr_is_stderr(&args[0]) {
-                return RecognizedCallForm::PrintfErr { fmt_string_idx: 1 };
-            }
-            if tenjin::expr_is_stdout(&args[0]) {
-                return RecognizedCallForm::PrintfOut { fmt_string_idx: 1 };
-            }
-        }
-
         if tenjin::expr_is_ident(func, "abort") && args.is_empty() {
             // TENJIN-TODO: guidance to allow mapping `abort()` to `panic!()`?
             return RecognizedCallForm::RetargetedCallee(
@@ -991,6 +971,7 @@ impl Translation<'_> {
     #[allow(clippy::vec_box)]
     pub fn convert_call_with_args(
         &self,
+        callee: Option<CDeclId>,
         ctx: ExprContext,
         call_expr_ty: CQualTypeId,
         override_ty: Option<CQualTypeId>,
@@ -1008,102 +989,21 @@ impl Translation<'_> {
                 &None,
             )
         };
+        if let Some(call) = self.convert_cio_variadic(callee, &args, cargs)? {
+            return Ok(WithStmts::new_val(call));
+        }
+        if let Some((call, source_type)) =
+            self.convert_cio_fixed_call(callee, &args, cargs, call_expr_ty)?
+        {
+            return self.make_cast(
+                ctx,
+                source_type,
+                override_ty.unwrap_or(call_expr_ty),
+                WithStmts::new_val(call),
+                &None,
+            );
+        }
         match self.call_form_cases(&func, &args, cargs, ctx) {
-            RecognizedCallForm::Puts => Ok(WithStmts::new_val(mk().mac_expr(
-                refactor_format::build_format_macro_from(
-                    self,
-                    "%s\n".into(),
-                    "println",
-                    "println",
-                    &args,
-                    cargs,
-                    None,
-                    None,
-                    None,
-                ),
-            ))),
-            RecognizedCallForm::PrintfOut { fmt_string_idx } => {
-                let fmt_string_span = self.ast_context.display_loc(
-                    &self
-                        .ast_context
-                        .index_unwrap_parens(cargs[fmt_string_idx])
-                        .loc,
-                );
-                Ok(WithStmts::new_val(mk().mac_expr(
-                    refactor_format::build_format_macro(
-                        self,
-                        "print",
-                        "println",
-                        &args[fmt_string_idx..],
-                        &cargs[fmt_string_idx..],
-                        None,
-                        fmt_string_span,
-                    ),
-                )))
-            }
-            RecognizedCallForm::PrintfErr { fmt_string_idx } => {
-                let fmt_string_span = self.ast_context.display_loc(
-                    &self
-                        .ast_context
-                        .index_unwrap_parens(cargs[fmt_string_idx])
-                        .loc,
-                );
-                Ok(WithStmts::new_val(mk().mac_expr(
-                    refactor_format::build_format_macro(
-                        self,
-                        "eprint",
-                        "eprintln",
-                        &args[fmt_string_idx..],
-                        &cargs[fmt_string_idx..],
-                        None,
-                        fmt_string_span,
-                    ),
-                )))
-            }
-            RecognizedCallForm::PrintfS {
-                fmt_string_idx,
-                opt_size,
-                dest,
-            } => {
-                let fmt_string_span = self.ast_context.display_loc(
-                    &self
-                        .ast_context
-                        .index_unwrap_parens(cargs[fmt_string_idx])
-                        .loc,
-                );
-                let formatted_string = mk().mac_expr(refactor_format::build_format_macro(
-                    self,
-                    "format",
-                    "format",
-                    &args[fmt_string_idx..],
-                    &cargs[fmt_string_idx..],
-                    None,
-                    fmt_string_span,
-                ));
-                let size_expr = if let Some(size_expr) = opt_size {
-                    mk().call_expr(mk().path_expr(vec!["Some"]), vec![size_expr])
-                } else {
-                    mk().path_expr(vec!["None"])
-                };
-
-                self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once("fn xj_sprintf_Vec_u8(dest: &mut Vec<u8>, lim: Option<usize>, val: String) -> usize {
-                        if lim == Some(0) { return 0; }
-                        let bytes = val.as_bytes();
-                        // We copy at most lim-1 bytes, to leave room for a NUL terminator.
-                        let to_copy = if let Some(lim) = lim { std::cmp::min(lim - 1, bytes.len()) } else { bytes.len() };
-                        dest.clear();
-                        dest.extend_from_slice(&bytes[..to_copy]);
-                        to_copy
-                    }",
-                );
-            });
-
-                Ok(WithStmts::new_val(mk().call_expr(
-                    mk().path_expr(vec!["xj_sprintf_Vec_u8"]),
-                    vec![mk().mutbl().borrow_expr(dest), size_expr, formatted_string],
-                )))
-            }
             RecognizedCallForm::RetargetedCallee(func) => mk_call_with(func, args),
             RecognizedCallForm::OtherCall => mk_call_with(func, args),
         }
@@ -1112,12 +1012,34 @@ impl Translation<'_> {
     #[allow(clippy::borrowed_box)]
     pub fn call_form_cases_preconversion(
         &self,
+        callee: Option<CDeclId>,
         call_type_id: CTypeId,
         ctx: ExprContext,
         func: &Box<Expr>,
         cargs: &[CExprId],
     ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
+        // Stdio optimizations share the declaration registry with normal calls.
+        if ["fputs", "fputc", "putchar", "fgets"]
+            .iter()
+            .any(|name| tenjin::expr_is_ident(func, name))
+            && !callee.is_some_and(|id| self.cio_replacements.functions.contains_key(&id))
+        {
+            return Ok(None);
+        }
         if let Some(path) = tenjin::expr_get_path(func) {
+            if path.segments.len() == 1
+                && self
+                    .cio_replacements
+                    .functions
+                    .values()
+                    .any(|name| path.is_ident(name))
+                && !matches!(
+                    path.segments[0].ident.to_string().as_str(),
+                    "putchar" | "fputc" | "fputs"
+                )
+            {
+                return Ok(None);
+            }
             match () {
                 _ if tenjin::is_path_exactly_1(path, "exit") => {
                     // TODO: should check source of symbol to ensure it's the C standard library exit()
@@ -1644,18 +1566,9 @@ impl Translation<'_> {
                     .is_some_and(|g| type_is_string(&g.parsed))
                 {
                     let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
-                    let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
-                        self,
-                        "%s".to_string(),
-                        "print",
-                        "println",
-                        &[expr.to_expr()],
-                        &[cargs[0]],
-                        None,
-                        None,
-                        self.ast_context
-                            .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
-                    ));
+                    let value = expr.to_expr();
+                    let print_call =
+                        Box::new(syn::parse_quote! { ::xj_cio::printf!(b"%s", #value) });
                     return Ok(Some(WithStmts::new_val(print_call)));
                 }
             }
@@ -1685,18 +1598,8 @@ impl Translation<'_> {
             }
 
             let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
-            let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
-                self,
-                "%c".to_string(),
-                "print",
-                "println",
-                &[expr.to_expr()],
-                &[cargs[0]],
-                None,
-                None,
-                self.ast_context
-                    .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
-            ));
+            let value = expr.to_expr();
+            let print_call = Box::new(syn::parse_quote! { ::xj_cio::printf!(b"%c", #value) });
             return Ok(Some(WithStmts::new_val(print_call)));
         }
         Ok(None)
@@ -1715,18 +1618,8 @@ impl Translation<'_> {
             // should be translated to
             // print!("{}", FOO)
             let expr = self.convert_expr(ctx.used(), cargs[0], None)?;
-            let print_call = mk().mac_expr(refactor_format::build_format_macro_from(
-                self,
-                "%c".to_string(),
-                "print",
-                "println",
-                &[expr.to_expr()],
-                &[cargs[0]],
-                None,
-                None,
-                self.ast_context
-                    .display_loc(&self.ast_context.index_unwrap_parens(cargs[0]).loc),
-            ));
+            let value = expr.to_expr();
+            let print_call = Box::new(syn::parse_quote! { ::xj_cio::printf!(b"%c", #value) });
             return Ok(Some(WithStmts::new_val(print_call)));
         }
         Ok(None)
@@ -2578,6 +2471,101 @@ impl Translation<'_> {
         Ok(None)
     }
 
+    /// Convert a value flowing into a parameter, initializer, or assignment.
+    /// Guidance can change the Rust representation even when the C types match.
+    pub fn convert_expr_with_guided_coercion(
+        &self,
+        ctx: ExprContext,
+        cexpr: CExprId,
+        target_cty: Option<CQualTypeId>,
+        target_guidance: &Option<GuidedType>,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        let source_guidance = self
+            .parsed_guidance
+            .borrow_mut()
+            .query_expr_type(self, cexpr);
+        if source_guidance
+            .as_ref()
+            .is_some_and(|source| type_is_xj_zstr(&source.parsed, "ZString"))
+            && target_guidance
+                .as_ref()
+                .is_some_and(|target| target.is_shared_borrow() && type_is_zstr_ref(&target.parsed))
+        {
+            // Keep the owned representation through C casts, then let Rust's
+            // deref coercion turn the shared ZString borrow into &ZStr.
+            let source_expr = self.c_strip_noop_casts(cexpr);
+            let val = self.convert_expr_guided(ctx, source_expr, None, &source_guidance)?;
+            return Ok(val.map(|expr| mk().borrow_expr(expr)));
+        }
+        let coercion = source_guidance
+            .as_ref()
+            .zip(target_cty)
+            .and_then(|(source, target_cty)| {
+                let source_is_owned = type_is_xj_zstr(&source.parsed, "ZString");
+                let source_is_zstr = source_is_owned
+                    || type_is_zstr_ref(&source.parsed)
+                    || type_of_ref(&source.parsed)
+                        .is_some_and(|inner| type_is_xj_zstr(inner, "ZString"));
+                if !source_is_zstr {
+                    return None;
+                }
+                let CTypeKind::Pointer(pointee) =
+                    self.ast_context.resolve_type(target_cty.ctype).kind
+                else {
+                    return None;
+                };
+                let pointee_kind = &self.ast_context.resolve_type(pointee.ctype).kind;
+                if !matches!(pointee_kind, CTypeKind::Char | CTypeKind::Void) {
+                    return None;
+                }
+                let (mutable, to_void) = match target_guidance {
+                    Some(guided) => match &guided.parsed {
+                        Type::Ptr(pointer) if type_is_exactly_1_path(&pointer.elem, "u8") => {
+                            (pointer.mutability.is_some(), false)
+                        }
+                        Type::Ptr(pointer)
+                            if pointer.mutability.is_none()
+                                && type_get_bare_path(&pointer.elem).is_some_and(|path| {
+                                    is_path_exactly_3(path, "core", "ffi", "c_void")
+                                }) =>
+                        {
+                            (false, true)
+                        }
+                        _ => return None,
+                    },
+                    // Resolve C typedefs above, rather than inspecting a Rust alias's name.
+                    None => (
+                        !pointee.qualifiers.is_const,
+                        matches!(pointee_kind, CTypeKind::Void),
+                    ),
+                };
+                if mutable {
+                    (source_is_owned && !to_void).then_some(("as_bytes_mut", "as_mut_ptr", false))
+                } else {
+                    Some(("as_bytes_with_nul", "as_ptr", to_void))
+                }
+            });
+        if let Some((bytes_method, pointer_method, to_void)) = coercion {
+            // Remove the C representation casts before translation;
+            // casting the guided string itself to a raw pointer is invalid.
+            let source_expr = self.c_strip_noop_casts(cexpr);
+            let val = self.convert_expr_guided(ctx, source_expr, None, &source_guidance)?;
+            return Ok(val.map(|expr| {
+                let bytes = mk().method_call_expr(expr, bytes_method, vec![]);
+                let pointer = mk().method_call_expr(bytes, pointer_method, vec![]);
+                if to_void {
+                    mk().cast_expr(
+                        pointer,
+                        mk().ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_void"])),
+                    )
+                } else {
+                    pointer
+                }
+            }));
+        }
+        self.convert_expr_guided(ctx, cexpr, target_cty, target_guidance)
+    }
+
     pub fn coerce_borrow_guided(
         &self,
         expr: Box<Expr>,
@@ -2591,7 +2579,10 @@ impl Translation<'_> {
                 .borrow_mut()
                 .query_expr_type(self, cexpr)
             {
-                if target_guided_type.is_shared_borrow() && !expr_guided_type.is_borrow() {
+                if target_guided_type.is_shared_borrow()
+                    && !expr_guided_type.is_borrow()
+                    && !tenjin::expr_is_borrow(&expr)
+                {
                     return mk().borrow_expr(expr);
                 }
 
@@ -2866,6 +2857,27 @@ impl Translation<'_> {
 #[cfg(test)]
 mod guided_type_tests {
     use super::*;
+
+    #[test]
+    fn find_nested_zstr_types() {
+        let t = GuidedType::from_str(
+            "(Vec<xj_zstr::ZString>, Option<&'a mut ::xj_zstr::ZStr>, [ZString; 2])",
+        )
+        .unwrap();
+        assert_eq!(
+            t.required_xj_zstr_types().into_iter().collect::<Vec<_>>(),
+            vec!["ZString", "ZStr"]
+        );
+    }
+
+    #[test]
+    fn other_crates_zstr_names_do_not_require_xj_zstr() {
+        let t = GuidedType::from_str(
+            "(other::ZString, &other::ZStr, my::xj_zstr::ZString, xj_zstr::Other)",
+        )
+        .unwrap();
+        assert!(t.required_xj_zstr_types().is_empty());
+    }
 
     #[test]
     fn parse_vec() {

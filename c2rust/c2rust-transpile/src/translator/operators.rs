@@ -246,8 +246,16 @@ impl Translation<'_> {
             .ok_or_else(|| format_err!("bad initial lhs type"))?;
 
         // First, translate the rhs. Then, if it must match the lhs but doesn't, add a cast.
-        let mut rhs_translation =
-            self.convert_expr_guided(ctx.used(), rhs, Some(rhs_type_id), &lhs_guidance)?;
+        let mut rhs_translation = if op == CBinOp::Assign {
+            self.convert_expr_with_guided_coercion(
+                ctx.used(),
+                rhs,
+                Some(rhs_type_id),
+                &lhs_guidance,
+            )?
+        } else {
+            self.convert_expr_guided(ctx.used(), rhs, Some(rhs_type_id), &lhs_guidance)?
+        };
         let lhs_rhs_types_must_match = {
             let lhs_resolved_ty = &self.ast_context.resolve_type(lhs_type_id.ctype);
             let rhs_resolved_ty = &self.ast_context.resolve_type(rhs_type_id.ctype);

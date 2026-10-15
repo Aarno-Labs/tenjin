@@ -20,14 +20,10 @@ pub unsafe extern "C" fn isatty_stdin() -> ::core::ffi::c_int {
 }
 #[no_mangle]
 pub unsafe extern "C" fn string_cond_1(mut cond: ::core::ffi::c_int) {
-    println!("{:>}", {
-        xj_str_from_ptr(
-            (if cond != 0 {
-                b"true\0".as_ptr()
-            } else {
-                b"false\0".as_ptr()
-            }) as *const u8,
-        )
+    puts(if cond != 0 {
+        b"true\0".as_ptr()
+    } else {
+        b"false\0".as_ptr()
     });
 }
 #[no_mangle]
@@ -48,13 +44,4 @@ pub unsafe extern "C" fn assert_msg_chained(mut x: ::core::ffi::c_int, mut y: ::
 #[no_mangle]
 pub unsafe extern "C" fn assert_msg_braces(mut x: ::core::ffi::c_int) {
     assert!(x > 0 as ::core::ffi::c_int, "x must not be {{0}}");
-}
-unsafe fn xj_str_from_ptr<'a>(ptr: *const u8) -> &'a str {
-    if ptr.is_null() {
-        "(null)"
-    } else {
-        core::ffi::CStr::from_ptr(ptr as *const ::core::ffi::c_char)
-            .to_str()
-            .unwrap()
-    }
 }

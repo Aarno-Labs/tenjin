@@ -44,6 +44,8 @@ def test_single_c_file(test_dir, test_tmp_dir, tenjin_fixtures):
     )
 
     assert (tmp_resultsdir / "final" / "Cargo.toml").exists()
+    assert not (tmp_resultsdir / "00_out" / "target").exists()
+    assert not (tmp_resultsdir / "final" / "target").exists()
 
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
     rs_prog_output = run_cargo_on_final(tmp_resultsdir / "final", ["run"], capture_output=True)

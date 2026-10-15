@@ -6,6 +6,7 @@ import platform
 import re
 import subprocess
 import sys
+import textwrap
 
 import pytest
 
@@ -74,7 +75,7 @@ def test_nhjschulz_cfsm(tenjin_fixtures: TenjinFixtures):
         b"OK",
         b"",
     ], f"Got: {rs_prog_output.stdout!r}"
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 70
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 69
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
@@ -124,7 +125,7 @@ def test_cmatsuoka_figlet(tenjin_fixtures: TenjinFixtures):
         b"                ",
         b"",
     ], f"Got: {rs_prog_output.stdout!r}"
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 66
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 65
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
@@ -165,7 +166,7 @@ Points	4/4
 Failed	0
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 17
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 16
 
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
@@ -173,7 +174,7 @@ Failed	0
 
 @pytest.mark.slow  # expected runtime: 30 s
 def test_envyen__libbmp_g0(tenjin_fixtures: TenjinFixtures):
-    eval_envyen__libbmp(tenjin_fixtures, guidance="{}", expected_unsafe_fns_count=32)
+    eval_envyen__libbmp(tenjin_fixtures, guidance="{}", expected_unsafe_fns_count=31)
     # future guidance will need to handle the malloc within `bmp_create`.
 
 
@@ -296,7 +297,7 @@ def test_rupertwh__bmplib(tenjin_fixtures: TenjinFixtures):
                 f"Failed on {binname} with args {args!r}; got return code: {rs_prog_output.returncode}, expected: {c_prog_output.returncode}"
             )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 644
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 627
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -503,7 +504,7 @@ def test_url_h_aka_urlparser(
     )
 
     # url.c's two extern inline declarations export the definitions from url.h.
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 29
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 28
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -544,7 +545,7 @@ def test_fribidi_g0(tenjin_fixtures: TenjinFixtures):
     # with (tmp_resultsdir / "final" / "target" / "debug" / "libfribidi_0_4_0.so")
     # then run `top_builddir=$PWD/_builddir ./test/run.tests`
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 67
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 65
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -588,7 +589,7 @@ def test_libusb_shared_g0(tenjin_fixtures: TenjinFixtures):
     # Re-run the test suite against the Rust code
     hermetic.run("./.libs/stress", cwd=str(tmp_resultsdir / "_build_1" / "tests"), check=True)
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 338
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 339
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -635,7 +636,7 @@ def test_lua_5_4_0_immunant(tenjin_fixtures: TenjinFixtures):
         f"Rust and C output differed; Rust output was: {rs_prog_output.stdout!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 1002
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 998
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -685,7 +686,7 @@ def test_ronomon_pure_cli_g0(tenjin_fixtures: TenjinFixtures):
 
     print(f"ronomon_pure_cli passed {n_tests_passed} test vectors.")
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 53
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 52
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -740,7 +741,7 @@ def test_uxnmin(tenjin_fixtures: TenjinFixtures):
     ).hexdigest()
     assert tictactoe_rom_hash == "15d387e1d8568d53cf996190aabf7f5119d5bcd9a5f775711c8a8b1e6cbe4d4e"
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 4
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 1
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -799,7 +800,7 @@ def test_pkhuong_ppb__picoscope(tenjin_fixtures: TenjinFixtures):
         f"Different exit codes; Rust got {rs_prog_output.returncode} vs C {c_prog_output.returncode}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 32
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 31
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -867,7 +868,7 @@ def test_libtom_libtommath(tenjin_fixtures: TenjinFixtures):
         f" C: {summary_line(c_prog_output.stdout)!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 238
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 236
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -958,7 +959,7 @@ def test_howerj_dbcc(tenjin_fixtures: TenjinFixtures):
                     f"{label}: generated file {name!r} differed between Rust and C"
                 )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 384
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 383
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1135,7 +1136,7 @@ def test_blackle_megalania(tenjin_fixtures: TenjinFixtures):
         f"Rust and C usage-path output differed; Rust output was: {rs_usage.stdout!r}"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 93
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 91
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -1172,7 +1173,7 @@ def test_lsof_exe(tenjin_fixtures: TenjinFixtures):
     revision: 4.99.7
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 662
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 636
 
 
 @pytest.mark.slow  # expected runtime: 25 seconds
@@ -1197,7 +1198,7 @@ def test_piotrl__c_markdown_exe(tenjin_fixtures: TenjinFixtures):
     run_cargo_on_final(tmp_resultsdir / "final", ["build"])
 
     lists_output: bytes = hermetic.run(
-        ["target/debug/main", tmp_codebase / "tests" / "lists.txt"],
+        ["target/debug/main", tmp_codebase / "tests" / "lists.txt", "."],
         capture_output=True,
         cwd=tmp_resultsdir / "final",
     ).stdout
@@ -1254,7 +1255,7 @@ def test_itsjustme27__dns_tool_exe(tenjin_fixtures: TenjinFixtures):
 
     assert cp.returncode == 0
     assert b"Answer section starts at offset" in cp.stdout
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 7
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 6
 
 
 @pytest.mark.slow  # expected runtime: 15 minutes
@@ -1346,7 +1347,7 @@ def test_socat_exe(tenjin_fixtures: TenjinFixtures):
         b"   options (general command line options):",
         b"      -V     print version and feature information to stdout, and exit",
     ]
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 516
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 515
 
 
 @pytest.mark.slow  # expected runtime: 220 seconds
@@ -1414,7 +1415,7 @@ def test_zopfli_exe(tenjin_fixtures: TenjinFixtures):
         sha256hex(tmp_codebase / "COPYING.gz")
         == "c7d0f6d70256238349e9f682d7d1362a832cc955b653cee712b8a1db92a15acd"
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 100
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 99
 
 
 @pytest.mark.slow  # expected runtime: 80 seconds
@@ -1472,7 +1473,7 @@ def test_Orc__discount(tenjin_fixtures: TenjinFixtures):
 </html>
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 235
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 234
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
@@ -1543,7 +1544,7 @@ def test_silentbicycle__guff(tenjin_fixtures: TenjinFixtures):
         "|                                     # ",
         "+----+----+----+----+----+----+----+----",
     ]
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 51
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 48
 
 
 @pytest.mark.slow  # expected runtime: 9 seconds
@@ -1595,7 +1596,7 @@ def test_silentbicycle__rollavg(tenjin_fixtures: TenjinFixtures):
 2589.633301
 """
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 4
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 3
 
 
 @pytest.mark.slow  # expected runtime: 9 seconds
@@ -1630,7 +1631,7 @@ def test_silentbicycle__skel(tenjin_fixtures: TenjinFixtures):
         capture_output=True,
     )
     assert cp.stdout == b"...................tests complete\n"
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 20
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 17
 
 
 @pytest.mark.slow  # expected runtime: 120 seconds
@@ -1659,7 +1660,7 @@ def test_atomicobject__odo(tenjin_fixtures: TenjinFixtures):
 
     cp = hermetic.run(["./test_odo"], capture_output=True, check=True, cwd=tmp_codebase)
     assert cp.stdout.decode("utf-8") == "all tests passed\n"
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 16
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 14
 
 
 @pytest.mark.slow  # expected runtime: 700 seconds (~12 minutes, up to the xfail below)
@@ -1917,7 +1918,7 @@ def test_xiph_speex_speexenc_only(tenjin_fixtures: TenjinFixtures):
         "Rust and C outputs for speexenc differ"
     )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 22
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 21
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -2108,7 +2109,7 @@ def test_maandree_libzahl(tenjin_fixtures: TenjinFixtures):
     libzahl_translate(tenjin_fixtures)
     libzahl_check_examples(tmp_resultsdir, "release")
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 949
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 941
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
@@ -2752,12 +2753,18 @@ def test_howerj_lisp(tenjin_fixtures: TenjinFixtures):
 
     assert not problems, "The Rust lisp diverged from the C lisp:\n" + "\n".join(problems)
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 85
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 83
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-def brotli_run_upstream_tests(brotli_bin: Path, codebase: Path, workdir: Path) -> dict[str, bytes]:
+def brotli_run_upstream_tests(
+    brotli_bin: Path,
+    codebase: Path,
+    workdir: Path,
+    *,
+    exclude_fclose_swap: bool = False,
+) -> dict[str, bytes]:
     """Run brotli's own tests against the CLI binary `brotli_bin`, reading inputs
     from the pristine clone `codebase` and writing only under `workdir`.
     Returns the compressed output of each roundtrip test, keyed by test name."""
@@ -2874,12 +2881,42 @@ def brotli_run_upstream_tests(brotli_bin: Path, codebase: Path, workdir: Path) -
 
     # tests/regression/t01 is a unittest suite that takes the CLI binary as its argument.
     # It works in its own temporary directories.
+    regression_cmd = [
+        sys.executable,
+        str(codebase / "tests" / "regression" / "t01" / "copystat_regression_test.py"),
+        str(brotli_bin),
+    ]
+    if exclude_fclose_swap:
+        # These two cases inject their attack by interposing libc fclose.
+        # xj_cio closes Rust-owned file descriptors without calling fclose,
+        # so the attack never fires. Run every other case without changing
+        # the upstream sources or treating unexpected skips as successes.
+        regression_cmd[1:1] = [
+            "-c",
+            textwrap.dedent(
+                """\
+                from pathlib import Path
+                import runpy
+                import sys
+                import unittest
+
+                namespace = runpy.run_path(sys.argv[1])
+                case = namespace["CopyStatRegressionTest"]
+                case.brotli = Path(sys.argv[2]).resolve()
+                excluded = {
+                    "test_fclose_swap_does_not_redirect_copystat",
+                    "test_fclose_swap_with_no_copy_stat_leaves_target_unchanged",
+                }
+                names = unittest.defaultTestLoader.getTestCaseNames(case)
+                assert excluded <= set(names), "upstream fclose-swap cases changed"
+                suite = unittest.TestSuite(case(name) for name in names if name not in excluded)
+                result = unittest.TextTestRunner().run(suite)
+                sys.exit(0 if result.wasSuccessful() else 1)
+                """
+            ),
+        ]
     cp = hermetic.run(
-        [
-            sys.executable,
-            str(codebase / "tests" / "regression" / "t01" / "copystat_regression_test.py"),
-            str(brotli_bin),
-        ],
+        regression_cmd,
         check=False,
         capture_output=True,
     )
@@ -2943,7 +2980,9 @@ def test_google_brotli(tenjin_fixtures: TenjinFixtures):
 
     # The C binary must pass first, which also validates the single-`cc` build.
     c_outputs = brotli_run_upstream_tests(c_brotli, codebase, tmp_resultsdir / "xj_upstream_c")
-    rs_outputs = brotli_run_upstream_tests(rs_brotli, codebase, tmp_resultsdir / "xj_upstream_rs")
+    rs_outputs = brotli_run_upstream_tests(
+        rs_brotli, codebase, tmp_resultsdir / "xj_upstream_rs", exclude_fclose_swap=True
+    )
 
     # The encoder is deterministic, so beyond round-tripping through itself,
     # the Rust build should produce exactly the bytes the C build does.

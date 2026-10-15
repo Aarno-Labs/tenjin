@@ -7,7 +7,7 @@ use syn::{
 
 use crate::{
     AtomicKind, Depth, Rewriter, SymbolTable, atomic_kind, atomic_kind_from_name,
-    c_atomic_rust_name,
+    byte_input::is_u8_type, c_atomic_rust_name,
 };
 
 fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
@@ -19,6 +19,83 @@ fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
 }
 
 impl Rewriter {
+    /// Compare a byte and a byte-sized character without promoting them to C integers.
+    pub fn rewrite_u8_char_comparison(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(binary) = expr else {
+            return None;
+        };
+        // Other operators can change the result type or overflow behavior.
+        if !is_comparison_op(&binary.op) {
+            return None;
+        }
+        let (Expr::Cast(left), Expr::Cast(right)) = (
+            expr_strip_parens(&binary.left),
+            expr_strip_parens(&binary.right),
+        ) else {
+            return None;
+        };
+        let is_c_int = |ty: &Type| {
+            matches!(ty, Type::Path(path)
+                if path.qself.is_none() && is_path_exactly_3(&path.path, "core", "ffi", "c_int"))
+        };
+        if !is_c_int(&left.ty) || !is_c_int(&right.ty) {
+            return None;
+        }
+        let byte = expr_strip_parens(&left.expr);
+        let byte_ty = match byte {
+            Expr::Cast(cast) => (*cast.ty).clone(),
+            _ => symbols.type_of_expr(byte)?,
+        };
+        if !matches!(&byte_ty, Type::Path(path) if path.qself.is_none()) || !is_u8_type(&byte_ty) {
+            return None;
+        }
+        let Expr::Lit(ExprLit {
+            lit: syn::Lit::Char(character),
+            ..
+        }) = expr_strip_parens(&right.expr)
+        else {
+            return None;
+        };
+        // A wider Unicode character would be truncated by the replacement cast.
+        if u32::from(character.value()) > u32::from(u8::MAX) {
+            return None;
+        }
+        let op = &binary.op;
+        let byte = paren_if_cast(byte);
+        Some((
+            syn::parse_quote! { #byte #op #character as u8 },
+            Depth::Unlimited,
+        ))
+    }
+
+    /// Remove the C integer round trip from a known boolean condition.
+    pub fn rewrite_bool_cast_nonzero(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(binary) = expr else {
+            return None;
+        };
+        if !matches!(binary.op, syn::BinOp::Ne(_)) || !is_zero_integer_expr(&binary.right) {
+            return None;
+        }
+        let Expr::Cast(cast) = expr_strip_parens(&binary.left) else {
+            return None;
+        };
+        if !matches!(&*cast.ty, Type::Path(path)
+            if path.qself.is_none() && is_path_exactly_3(&path.path, "core", "ffi", "c_int"))
+            || !is_bool_expr(&cast.expr, symbols)
+        {
+            return None;
+        }
+        Some(((*cast.expr).clone(), Depth::Unlimited))
+    }
+
     /// Replace accesses to glibc's errno storage with the errno crate's API.
     pub fn rewrite_errno_access(
         &self,
@@ -526,6 +603,57 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
+    /// Use the safe stat wrappers for paths backed by a ByteView.
+    pub fn rewrite_stat_of_zstring(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(function) = &*call.func else {
+            return None;
+        };
+        let segments = &function.path.segments;
+        let name = match segments.len() {
+            1 => &segments[0].ident,
+            2 if segments[0].ident == "libc" => &segments[1].ident,
+            _ => return None,
+        };
+        if !(name == "stat" || name == "lstat" || name == "stat64" || name == "lstat64")
+            || call.args.len() != 2
+        {
+            return None;
+        }
+
+        if symbols.defined_fns.contains(&name.to_string()) {
+            return None;
+        }
+        let path = self.coerce_byte_view_path_input(&call.args[0], symbols)?;
+
+        let output = match expr_strip_parens(&call.args[1]) {
+            Expr::Reference(reference) if reference.mutability.is_some() => {
+                Expr::Reference(reference.clone())
+            }
+            Expr::RawAddr(raw) if matches!(raw.mutability, syn::PointerMutability::Mut(_)) => {
+                // A named local is an addressable place that can be borrowed.
+                let Expr::Path(place) = expr_strip_parens(&raw.expr) else {
+                    return None;
+                };
+                place.path.get_ident()?;
+                syn::parse_quote! { &mut #place }
+            }
+            _ => return None,
+        };
+
+        self.add_dep("xj_cstat");
+        let replacement: Expr = syn::parse_quote! {
+            xj_cstat::c::#name(#path, #output)
+        };
+        Some((replacement, Depth::Unlimited))
+    }
+
     /// Rewrite `getchar()` and `fgetc(stdin)`
     pub fn rewrite_getchar_variants(
         &self,
@@ -674,7 +802,7 @@ impl Rewriter {
         Some((replacement, Depth::Unlimited))
     }
 
-    /// Rewrite `strstr(e1, e2)` into `xj_cstr::strstr_mut_ptr(e1, e2)` when
+    /// Rewrite `strstr(e1, e2)` into `xj_zstr::strstr_mut_ptr(e1, e2)` when
     /// both arguments can be coerced to byte slices.
     pub fn rewrite_strstr(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else {
@@ -693,10 +821,10 @@ impl Rewriter {
         let e1 = self.coerce_u8s(&call.args[0], symbols, true)?;
         let e2 = self.coerce_u8s(&call.args[1], symbols, false)?;
 
-        self.add_dep("xj_cstr");
+        self.add_dep("xj_zstr");
 
         let replacement: Expr = syn::parse_quote! {
-            xj_cstr::strstr_mut_ptr(#e1, #e2)
+            xj_zstr::strstr_mut_ptr(#e1, #e2)
         };
 
         Some((replacement, Depth::Unlimited))
@@ -1002,105 +1130,6 @@ impl Rewriter {
         None
     }
 
-    /// Rewrite `scanf(...)` and `fscanf(stdin, ...)` into `xj_scanf::scanf!(...)`
-    /// and likewise for `sscanf(...)`.
-    pub fn rewrite_scanf_variants(
-        &self,
-        symbols: &SymbolTable,
-        expr: &Expr,
-    ) -> Option<(Expr, Depth)> {
-        let Expr::Call(call) = expr else {
-            return None;
-        };
-        let Expr::Path(ref func) = *call.func else {
-            return None;
-        };
-        if !(func.path.is_ident("scanf")
-            || func.path.is_ident("fscanf")
-            || func.path.is_ident("sscanf"))
-        {
-            return None;
-        }
-
-        if func.path.is_ident("fscanf") {
-            if call.args.len() < 2 {
-                return None;
-            }
-            let first_arg = &call.args[0];
-            if !matches!(first_arg, Expr::Path(fp) if fp.path.is_ident("stdin")) {
-                return None;
-            }
-        } else if func.path.is_ident("sscanf") && call.args.len() < 2 {
-            return None;
-        }
-
-        let fmt_arg_zero_terminated = if func.path.is_ident("scanf") {
-            call.args
-                .get(0)
-                .expect("scanf should have at least 1 argument")
-        } else {
-            call.args
-                .get(1)
-                .expect("s/fscanf should have at least 2 arguments")
-        };
-
-        let Some(fmt_arg) = coerce_str_of_cast_byte_str(fmt_arg_zero_terminated) else {
-            eprintln!(
-                "synsub: rewrite_scanf_and_fscanf_and_sscanf: unsupported format string argument {fmt_arg_zero_terminated:?}"
-            );
-            return None;
-        };
-
-        let value_args = if func.path.is_ident("scanf") {
-            // skip fmt string
-            &call.args.iter().skip(1).collect::<Vec<_>>()
-        } else {
-            // skip input (FILE*/char*) arg and fmt string
-            &call.args.iter().skip(2).collect::<Vec<_>>()
-        };
-
-        let mut scanf_compatible_args = vec![];
-        for arg in value_args {
-            if let Some(coerced) = self.coerce_scanf_arg(arg, symbols) {
-                let mut coerced = *coerced;
-                self.rewrite_expr_fully(symbols, &mut coerced);
-                scanf_compatible_args.push(coerced);
-            } else {
-                eprintln!(
-                    "synsub: rewrite_scanf_and_fscanf_and_sscanf: unsupported target argument {arg:?}"
-                );
-                return None;
-            }
-        }
-
-        let comma_punctuated_args: Punctuated<Expr, Comma> =
-            Punctuated::from_iter(scanf_compatible_args);
-
-        let scanf_call: Expr = if func.path.is_ident("scanf") || func.path.is_ident("fscanf") {
-            self.add_dep("xj_scanf");
-            self.with_cur_file_item_store(|item_store| {
-                item_store.add_use(false, vec!["xj_scanf".into()], "scanf");
-            });
-            syn::parse_quote! {
-                xj_scanf::scanf!(#fmt_arg, #comma_punctuated_args)
-            }
-        } else if let Some(input_u8s) = self.coerce_u8s(&call.args[0], symbols, false) {
-            self.add_dep("xj_scanf");
-            let mut input_u8s = *input_u8s;
-            self.rewrite_expr_fully(symbols, &mut input_u8s);
-            // self.with_cur_file_item_store(|item_store| {
-            //     item_store.add_use(false, vec!["xj_scanf".into()], "bscanf");
-            // });
-            syn::parse_quote! {
-                xj_scanf::bscanf!(#input_u8s, #fmt_arg, #comma_punctuated_args)
-            }
-        } else {
-            return None;
-        };
-
-        Some((scanf_call, Depth::Limited(0)))
-    }
-
     /// Rewrite code like
     ///   ```ignore
     ///     xj_str_from_ptr((if COND { THN } else { ELS }) as *const core::ffi::c_char)
@@ -1232,16 +1261,235 @@ impl Rewriter {
         Some((replacement, Depth::Limited(0)))
     }
 
-    /// Rewrite `strlen(e1.as_mut_ptr())` into:
-    ///   * `(e1.len() - 1) as size_t` when `e1` is a `u8` slice (with the trailing NUL kept)
-    ///     and we've determined that e1 will never have its length changed by having
-    ///     a null byte written into its interior. (NOT YET IMPLEMENTED)
-    ///   * `CStr::from_bytes_until_nul(&e1[..]).count_bytes() as size_t` when e1 is a `u8`
-    ///     array, slice, or `Vec`.
-    ///   * `CStr::from_bytes_until_nul(e1.as_u8_slice()).count_bytes() as size_t` otherwise.
-    pub fn rewrite_strlen_of_slice(
+    /// Rewrite `xj_str_from_ptr(&raw mut s as *mut u8 as *const c_char)` (for `s: ZString`)
+    /// or `xj_str_from_ptr(s as *const c_char)` (for `s` a `ZString`, `&ZStr`, or `&mut ZStr`)
+    /// into `s.to_string_lossy()`.
+    pub fn rewrite_str_from_ptr_of_zstr(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        if !func.path.is_ident("xj_str_from_ptr") || call.args.len() != 1 {
+            return None;
+        }
+
+        let place = zstr_place_of_c_str_arg(&call.args[0], symbols)?;
+        let replacement: Expr = syn::parse_quote! { #place.to_string_lossy() };
+        Some((replacement, Depth::Limited(0)))
+    }
+
+    /// Rewrite `strlen(s)` into `s.len()`, for the same forms of `s`
+    /// accepted by [`Rewriter::rewrite_str_from_ptr_of_zstr`].
+    /// Also recognize pointer decay through an explicit ZStr view. Keep a cast
+    /// only when the C result type is not known to be `usize`.
+    pub fn rewrite_strlen_of_zstr(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else {
+            return None;
+        };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        if !func.path.is_ident("strlen") || call.args.len() != 1 {
+            return None;
+        }
+
+        let mut arg = strlen_pointer_base(&call.args[0]);
+        if let Expr::MethodCall(view) = arg {
+            if view.args.is_empty()
+                && matches!(
+                    view.method.to_string().as_str(),
+                    "as_bytes"
+                        | "as_bytes_mut"
+                        | "as_bytes_with_nul"
+                        | "as_buffer"
+                        | "as_buffer_mut"
+                        | "as_c_str"
+                )
+            {
+                arg = &view.receiver;
+            }
+        }
+        let place = zstr_place_of_c_str_arg(arg, symbols)?;
+        let replacement = strlen_result(syn::parse_quote! { #place.len() }, symbols);
+        Some((replacement, Depth::Limited(0)))
+    }
+
+    /// Rewrite `strcmp(s, b"lit\0".as_ptr()) == 0` (or `!= 0`, with the operands
+    /// of either the call or the comparison in either order) into
+    /// `s.as_bytes() == b"lit"` when `s` is a `ZString`, `&ZString`, `&ZStr`, or `&mut ZStr`.
+    /// `ZStr::as_bytes` stops at the first NUL, as does `strcmp`.
+    /// Recognize explicit ZStr views, pointer decay, and C int result casts,
+    /// including calls already lowered to the xj ByteView APIs.
+    pub fn rewrite_strcmp_zstr_eq_literal(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Binary(binary) = expr else {
+            return None;
+        };
+        if !matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
+            return None;
+        }
+        let call = if is_zero_integer_expr(&binary.right) {
+            strcmp_result_base(&binary.left)
+        } else if is_zero_integer_expr(&binary.left) {
+            strcmp_result_base(&binary.right)
+        } else {
+            return None;
+        };
+        let Expr::Call(call) = call else {
+            return None;
+        };
+        let Expr::Path(function) = expr_strip_parens(&call.func) else {
+            return None;
+        };
+        if function.qself.is_some() || call.args.len() != 2 {
+            return None;
+        }
+        let bounded = is_path_exactly_2(&function.path, "xj_cstr", "strcmp")
+            || is_path_exactly_2(&function.path, "xj_zstr", "strcmp")
+            || is_path_exactly_3(&function.path, "xj_zstr", "c", "strcmp");
+        if !bounded
+            && !function.path.is_ident("strcmp")
+            && !is_path_exactly_2(&function.path, "libc", "strcmp")
+        {
+            return None;
+        }
+        if function.path.is_ident("strcmp")
+            && (symbols.has("strcmp") || symbols.defined_fns.contains("strcmp"))
+        {
+            return None;
+        }
+
+        let (place, literal) = match (
+            strcmp_byte_literal(&call.args[0]),
+            strcmp_byte_literal(&call.args[1]),
+        ) {
+            (None, Some(literal)) => (&call.args[0], literal),
+            (Some(literal), None) => (&call.args[1], literal),
+            _ => return None,
+        };
+        let place = strcmp_zstr_place(place, symbols)?;
+
+        // Bounded xj inputs have a virtual terminator at the view's end.
+        // Raw C literals need a stored NUL to keep the read within bounds.
+        let bytes = literal.value();
+        let nul = match bytes.iter().position(|&b| b == 0) {
+            Some(nul) => nul,
+            None if bounded => bytes.len(),
+            None => return None,
+        };
+        let literal = LitByteStr::new(&bytes[..nul], literal.span());
+
+        let op = &binary.op;
+        let replacement: Expr = syn::parse_quote! { #place.as_bytes() #op #literal };
+        Some((replacement, Depth::Unlimited))
+    }
+
+    /// Rewrite the `char`-array initializer of a `ZString`-typed local, which c2rust
+    /// emits as a (mistyped) byte array, into a `ZString` constructor:
+    ///   * `let s: ZString = *b"ab\0\0";` => `let s: ZString = ZString::new(b"ab\0");`
+    ///   * `let s: ZString = [0xf0u8, 0x9fu8];` => `let s: ZString = ZString::new([0xf0u8, 0x9fu8]);`
+    ///   * `let s: ZString = [0u8, 0, 0, 0];` or `[0u8; 4]` => `let s: ZString = ZString::with_capacity(3);`
+    ///
+    /// One trailing NUL is dropped because `ZString` supplies its own terminator,
+    /// so the `ZString`'s buffer is the same size as the C array.
+    pub fn rewrite_zstring_local_init(
         &self,
         _symbols: &SymbolTable,
+        stmt: &Stmt,
+    ) -> Option<(Stmt, Depth)> {
+        let Stmt::Local(local) = stmt else {
+            return None;
+        };
+        let Pat::Type(pat_type) = &local.pat else {
+            return None;
+        };
+        if !is_zstring_type(&pat_type.ty) {
+            return None;
+        }
+        let localinit = local.init.as_ref()?;
+        if localinit.diverge.is_some() {
+            return None;
+        }
+
+        let ty = &pat_type.ty;
+        let with_capacity = |n: usize| -> Expr {
+            let n = proc_macro2::Literal::usize_unsuffixed(n);
+            syn::parse_quote! { #ty::with_capacity(#n) }
+        };
+        let init: Expr = match expr_strip_parens(&localinit.expr) {
+            Expr::Unary(ExprUnary {
+                op: syn::UnOp::Deref(_),
+                expr: inner,
+                ..
+            }) => {
+                let Expr::Lit(ExprLit {
+                    lit: syn::Lit::ByteStr(byte_str),
+                    ..
+                }) = &**inner
+                else {
+                    return None;
+                };
+                let bytes = bytes_strip_trailing_zero(byte_str.value());
+                if bytes.iter().all(|&b| b == 0) {
+                    with_capacity(bytes.len())
+                } else {
+                    let trimmed = LitByteStr::new(&bytes, byte_str.span());
+                    syn::parse_quote! { #ty::new(#trimmed) }
+                }
+            }
+            Expr::Array(array) => {
+                let mut elems: Vec<Expr> = array.elems.iter().cloned().collect();
+                if elems.last().is_some_and(is_zero_byte_expr) {
+                    elems.pop();
+                }
+                if elems.iter().all(is_zero_byte_expr) {
+                    with_capacity(elems.len())
+                } else {
+                    // c2rust suffixes only the first element; keep the element type
+                    // pinned to `u8` so that `ZString::new`'s generic argument is inferable.
+                    if let Some(Expr::Lit(ExprLit {
+                        lit: syn::Lit::Int(first),
+                        ..
+                    })) = elems.first_mut()
+                    {
+                        if first.suffix().is_empty() {
+                            *first = LitInt::new(&format!("{first}u8"), first.span());
+                        }
+                    }
+                    syn::parse_quote! { #ty::new([#(#elems),*]) }
+                }
+            }
+            Expr::Repeat(repeat) if is_zero_byte_expr(&repeat.expr) => {
+                let n: usize = expr_get_int_literal(&repeat.len)?.base10_parse().ok()?;
+                with_capacity(n.checked_sub(1)?)
+            }
+            _ => return None,
+        };
+
+        let mut replacement = local.clone();
+        replacement.init.as_mut()?.expr = Box::new(init);
+        Some((Stmt::Local(replacement), Depth::Unlimited))
+    }
+
+    /// Rewrite `strlen(b"text\0".as_ptr())` into `b"text".len()`, trimming
+    /// at the first NUL. Keep a result cast only when needed by the C type.
+    /// Other bounded inputs use `xj_zstr::strlen`, with a virtual end terminator.
+    pub fn rewrite_strlen_of_slice(
+        &self,
+        symbols: &SymbolTable,
         expr: &Expr,
     ) -> Option<(Expr, Depth)> {
         let Expr::Call(call) = expr else {
@@ -1258,30 +1506,32 @@ impl Rewriter {
         }
 
         let arg = &call.args[0];
-        if let Some(decayed) = Self::peek_array_decay_coercion(arg, _symbols) {
-            if is_u8_sliceable_expr(decayed, _symbols) {
-                let replacement: Expr = syn::parse_quote! {
-                    (::std::ffi::CStr::from_bytes_until_nul(&#decayed[..]).unwrap().count_bytes()) as size_t
-                };
-                Some((replacement, Depth::Unlimited))
-            } else {
-                self.add_dep("xj_cstr");
-                self.with_cur_file_item_store(|item_store| {
-                    item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
-                });
-                let replacement: Expr = syn::parse_quote! {
-                    (::std::ffi::CStr::from_bytes_until_nul(#decayed.as_u8_slice()).unwrap().count_bytes()) as size_t
-                };
-                Some((replacement, Depth::Unlimited))
-            }
-        } else {
-            None
+        if let Expr::Lit(ExprLit {
+            lit: syn::Lit::ByteStr(literal),
+            ..
+        }) = strlen_pointer_base(arg)
+        {
+            let bytes = literal.value();
+            // Without a NUL, strlen could read beyond this literal's allocation.
+            let nul = bytes.iter().position(|&byte| byte == 0)?;
+            let trimmed = LitByteStr::new(&bytes[..nul], literal.span());
+            return Some((
+                strlen_result(syn::parse_quote! { #trimmed.len() }, symbols),
+                Depth::Limited(0),
+            ));
         }
+        let input = self.coerce_byte_view_input(arg, symbols)?;
+        self.add_dep("xj_zstr");
+        Some((
+            strlen_result(syn::parse_quote! { ::xj_zstr::strlen(#input) }, symbols),
+            Depth::Unlimited,
+        ))
     }
 
-    /// Replace C numeric parsers when their input is backed by a byte slice.
-    /// `xj_atone` reports an end offset rather than a C end pointer, so the
-    /// non-null `endptr` forms use a small per-file adapter.
+    /// Replace C numeric parsers when their input is backed by a ByteView.
+    /// Null `endptr` forms use the safe `_n` variants; other forms use the
+    /// crate's unsafe `_ptr` variants in the original call's unsafe context.
+    /// End-pointer forms require storage that survives the call statement.
     pub fn rewrite_atone_of_slice(
         &self,
         symbols: &SymbolTable,
@@ -1304,7 +1554,15 @@ impl Rewriter {
             return None;
         }
 
-        let input = self.coerce_atone_input(&call.args[0], symbols)?;
+        if expected_args > 1
+            && !is_null_pointer_expr(&call.args[1])
+            && !crate::printf::live_storage_for_endptr(&call.args[0], symbols)
+        {
+            // Check before recovering the input: recovery may add imports and
+            // dependencies, and a rejected rewrite must not add either.
+            return None;
+        }
+        let input = self.coerce_byte_view_input(&call.args[0], symbols)?;
         self.add_dep("xj_atone");
         let replacement: Expr = if expected_args == 1 {
             let function = syn::Ident::new(&name, func.span());
@@ -1320,61 +1578,15 @@ impl Rewriter {
                     syn::parse_quote! { ::xj_atone::#function(#input) }
                 }
             } else {
-                let helper = syn::Ident::new(&format!("xj_synsub_{name}_with_endptr"), func.span());
-                let helper_src = atone_endptr_helper_source(&name);
-                self.with_cur_file_item_store(|item_store| {
-                    item_store.add_item_str_once(&helper_src);
-                });
-                if matches!(name.as_str(), "strtod" | "strtof") {
-                    self.add_dep("errno");
-                }
+                let function = syn::Ident::new(&format!("{name}_ptr"), func.span());
                 if let Some(base) = base {
-                    syn::parse_quote! { #helper(#input, #endptr, #base) }
+                    syn::parse_quote! { ::xj_atone::#function(#input, #endptr, #base) }
                 } else {
-                    syn::parse_quote! { #helper(#input, #endptr) }
+                    syn::parse_quote! { ::xj_atone::#function(#input, #endptr) }
                 }
             }
         };
         Some((replacement, Depth::Unlimited))
-    }
-
-    fn coerce_atone_input(&self, expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> {
-        let expr = expr_strip_parens(expr);
-        if let Some(bytes) = coerce_cast_byte_str(expr) {
-            return Some(bytes);
-        }
-
-        let expr = expr_strip_refs(expr_strip_parens(expr_strip_casts(expr)));
-        if let Some(bytes) = coerce_str_as_bytes(expr, symbols) {
-            return Some(bytes);
-        }
-
-        if is_string_expr(expr, symbols) {
-            return Some(Box::new(syn::parse_quote! { #expr.as_bytes() }));
-        }
-
-        let slice = if is_atone_byte_slice_expr(expr, symbols) {
-            expr
-        } else if let Some(decayed) = Self::peek_array_decay_coercion(expr, symbols) {
-            if let Some(bytes) = coerce_str_as_bytes(decayed, symbols) {
-                return Some(bytes);
-            }
-            if is_string_expr(decayed, symbols) {
-                return Some(Box::new(syn::parse_quote! { #decayed.as_bytes() }));
-            }
-            if !is_atone_byte_slice_expr(decayed, symbols) {
-                return None;
-            }
-            decayed
-        } else {
-            return None;
-        };
-
-        self.add_dep("xj_cstr");
-        self.with_cur_file_item_store(|item_store| {
-            item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
-        });
-        Some(Box::new(syn::parse_quote! { #slice.as_u8_slice() }))
     }
 
     /// Rewrite let-bound expressions when simpler forms exist.
@@ -1503,20 +1715,6 @@ impl Rewriter {
             #receiver.#method()
         };
         Some(Box::new(coerced))
-    }
-
-    fn coerce_scanf_arg(&self, expr: &Expr, symbols: &SymbolTable) -> Option<Box<Expr>> {
-        match categorize_scanf_arg(expr, symbols) {
-            ScanfArgCategory::Borrow(e) => Some(Box::new(syn::parse_quote! { &mut #e })),
-            ScanfArgCategory::AsMutPtr(e) => {
-                self.add_dep("xj_cstr");
-                self.with_cur_file_item_store(|item_store| {
-                    item_store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
-                });
-                Some(Box::new(syn::parse_quote! { &mut #e.as_mut_u8_slice() }))
-            }
-            ScanfArgCategory::Other => None,
-        }
     }
 }
 
@@ -1706,36 +1904,6 @@ fn atomic_intrinsic_method(
     None
 }
 
-enum ScanfArgCategory {
-    Borrow(Box<Expr>),
-    AsMutPtr(Box<Expr>),
-    Other,
-}
-
-fn categorize_scanf_arg(mut expr: &Expr, symbols: &SymbolTable) -> ScanfArgCategory {
-    expr = strip_casts(expr);
-    if let Expr::Reference(reference) = expr {
-        return ScanfArgCategory::Borrow(reference.expr.clone());
-    }
-    if let Expr::RawAddr(reference) = expr {
-        // Raw borrows of arrays should be treated as if we used .as_mut_ptr()
-        if is_array_typed(&reference.expr, symbols) {
-            return ScanfArgCategory::AsMutPtr(reference.expr.clone());
-        }
-        return ScanfArgCategory::Borrow(reference.expr.clone());
-    }
-
-    if let Expr::MethodCall(method_call) = expr {
-        if method_call.method == "as_mut_ptr" {
-            return ScanfArgCategory::AsMutPtr(method_call.receiver.clone());
-        }
-    }
-
-    // Probably a direct raw pointer; can't safely convert that.
-
-    ScanfArgCategory::Other
-}
-
 fn as_usize(expr: &Expr) -> Box<Expr> {
     Box::new(syn::parse_quote! { #expr as usize })
 }
@@ -1834,7 +2002,7 @@ fn is_null_pointer_expr(expr: &Expr) -> bool {
     }
 }
 
-fn is_atone_byte_slice_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
+pub(crate) fn is_atone_byte_slice_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
     if let Expr::Index(index) = expr_strip_parens(expr) {
         return matches!(&*index.index, Expr::Range(_))
             && is_atone_byte_slice_expr(&index.expr, symbols);
@@ -1864,51 +2032,24 @@ fn is_byte_vec_type(ty: &Type) -> bool {
     }
 }
 
-fn atone_endptr_helper_source(name: &str) -> String {
-    let (return_type, base_arg, parse_body) = match name {
-        "strtod" => (
-            "f64",
-            "",
-            "let (value, error) = ::xj_atone::strtod_u_e(input, &mut endoff);\n    if let Some(error) = error { ::errno::set_errno(error); }",
-        ),
-        "strtof" => (
-            "f32",
-            "",
-            "let (value, error) = ::xj_atone::strtof_u_e(input, &mut endoff);\n    if let Some(error) = error { ::errno::set_errno(error); }",
-        ),
-        "strtol" => (
-            "::core::ffi::c_long",
-            ", base: ::core::ffi::c_int",
-            "let value = ::xj_atone::strtol(input, &mut endoff, base);",
-        ),
-        "strtoul" => (
-            "::core::ffi::c_ulong",
-            ", base: ::core::ffi::c_int",
-            "let value = ::xj_atone::strtoul(input, &mut endoff, base);",
-        ),
-        "strtoll" => (
-            "::core::ffi::c_longlong",
-            ", base: ::core::ffi::c_int",
-            "let value = ::xj_atone::strtoll(input, &mut endoff, base);",
-        ),
-        "strtoull" => (
-            "::core::ffi::c_ulonglong",
-            ", base: ::core::ffi::c_int",
-            "let value = ::xj_atone::strtoull(input, &mut endoff, base);",
-        ),
-        _ => unreachable!("only strto* functions use an endptr adapter"),
-    };
-    format!(
-        "fn xj_synsub_{name}_with_endptr(\n    input: &[u8],\n    endptr: *mut *mut u8{base_arg}\n) -> {return_type} {{\n    let mut endoff = 0usize;\n    {parse_body}\n    if !endptr.is_null() {{\n        unsafe {{ *endptr = input.as_ptr().add(endoff) as *mut u8; }}\n    }}\n    value\n}}"
-    )
-}
-
 fn extract_slice_ptr_base<'e>(expr: &'e Expr, symbols: &SymbolTable) -> Option<&'e Expr> {
     match expr {
+        Expr::Paren(p) => extract_slice_ptr_base(&p.expr, symbols),
+        Expr::Group(g) => extract_slice_ptr_base(&g.expr, symbols),
+        Expr::Cast(c) if matches!(&*c.ty, Type::Ptr(_) | Type::Infer(_)) => {
+            extract_slice_ptr_base(&c.expr, symbols)
+        }
+        Expr::MethodCall(call) if call.method == "cast" && call.args.is_empty() => {
+            extract_slice_ptr_base(&call.receiver, symbols)
+        }
         Expr::MethodCall(call) if call.method == "as_mut_ptr" && call.args.is_empty() => {
             Some(&call.receiver)
         }
-        Expr::RawAddr(raw_addr) if is_array_typed(&raw_addr.expr, symbols) => Some(&raw_addr.expr),
+        Expr::RawAddr(raw_addr)
+            if matches!(symbols.type_of_expr(&raw_addr.expr), Some(Type::Array(_))) =>
+        {
+            Some(&raw_addr.expr)
+        }
         _ => None,
     }
 }
@@ -1999,6 +2140,30 @@ fn is_comparison_op(op: &syn::BinOp) -> bool {
     )
 }
 
+fn is_bool_expr(expr: &Expr, symbols: &SymbolTable) -> bool {
+    let is_bool_type = |ty: &Type| matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("bool"));
+    match expr_strip_parens(expr) {
+        Expr::Lit(lit) => matches!(lit.lit, syn::Lit::Bool(_)),
+        Expr::Binary(binary) => {
+            is_comparison_op(&binary.op)
+                || matches!(binary.op, syn::BinOp::And(_) | syn::BinOp::Or(_))
+                || (matches!(
+                    binary.op,
+                    syn::BinOp::BitAnd(_) | syn::BinOp::BitOr(_) | syn::BinOp::BitXor(_)
+                ) && is_bool_expr(&binary.left, symbols)
+                    && is_bool_expr(&binary.right, symbols))
+        }
+        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Not(_)) => {
+            is_bool_expr(&unary.expr, symbols)
+        }
+        Expr::Cast(cast) => is_bool_type(&cast.ty),
+        expr => symbols
+            .type_of_expr(expr)
+            .as_ref()
+            .is_some_and(is_bool_type),
+    }
+}
+
 fn expr_ident(expr: &Expr) -> Option<&syn::Ident> {
     let Expr::Path(ref ep) = *expr_strip_parens(expr) else {
         return None;
@@ -2078,10 +2243,6 @@ fn is_u8_or_i8_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(path) if is_u8_or_i8_path(&path.path))
 }
 
-fn is_u8_type(ty: &syn::Type) -> bool {
-    matches!(ty, syn::Type::Path(path) if path.path.is_ident("u8"))
-}
-
 fn is_ref_str_type(ty: &syn::Type) -> bool {
     let syn::Type::Reference(reference) = ty else {
         return false;
@@ -2091,6 +2252,222 @@ fn is_ref_str_type(ty: &syn::Type) -> bool {
 
 fn is_string_type(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "String"))
+}
+
+/// Strip parentheses, pointer casts, and pointer decay without discarding any
+/// argument expressions that would otherwise be evaluated.
+fn strlen_pointer_base(mut expr: &Expr) -> &Expr {
+    loop {
+        expr = expr_strip_parens(expr);
+        match expr {
+            Expr::Cast(cast) if matches!(&*cast.ty, Type::Ptr(_)) => expr = &cast.expr,
+            Expr::MethodCall(call)
+                if call.args.is_empty()
+                    && matches!(
+                        call.method.to_string().as_str(),
+                        "as_ptr" | "as_mut_ptr" | "cast"
+                    ) =>
+            {
+                expr = &call.receiver;
+            }
+            _ => return expr,
+        }
+    }
+}
+
+/// Remove only result casts that preserve a C int's zero/nonzero value.
+fn strcmp_result_base(mut expr: &Expr) -> &Expr {
+    loop {
+        expr = expr_strip_parens(expr);
+        match expr {
+            Expr::Cast(cast) if c_scalar_of_type(&cast.ty) == Some(CScalar::Int) => {
+                expr = &cast.expr;
+            }
+            _ => return expr,
+        }
+    }
+}
+
+/// Recover the literal without dropping evaluated pointer-method arguments.
+fn strcmp_byte_literal(expr: &Expr) -> Option<LitByteStr> {
+    match strlen_pointer_base(expr) {
+        Expr::Reference(reference) => strcmp_byte_literal(&reference.expr),
+        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            strcmp_byte_literal(&unary.expr)
+        }
+        Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::ByteStr(bytes) => Some(bytes.clone()),
+            syn::Lit::Str(text) => Some(LitByteStr::new(text.value().as_bytes(), text.span())),
+            syn::Lit::CStr(text) => Some(LitByteStr::new(
+                text.value().as_bytes_with_nul(),
+                text.span(),
+            )),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Recover a guided string only through views of its complete effective contents.
+/// Sub-slices and arbitrary method calls retain their original comparisons.
+fn strcmp_zstr_place<'a>(mut expr: &'a Expr, symbols: &SymbolTable) -> Option<&'a Expr> {
+    loop {
+        expr = strlen_pointer_base(expr);
+        match expr {
+            Expr::Reference(reference) => expr = &reference.expr,
+            Expr::RawAddr(_) => return zstr_place_of_c_str_arg(expr, symbols),
+            Expr::MethodCall(view)
+                if view.args.is_empty()
+                    && matches!(
+                        view.method.to_string().as_str(),
+                        "as_bytes"
+                            | "as_bytes_mut"
+                            | "as_bytes_with_nul"
+                            | "as_buffer"
+                            | "as_buffer_mut"
+                            | "as_c_str"
+                            | "as_z_str"
+                            | "as_z_str_mut"
+                            | "view_bytes"
+                    ) =>
+            {
+                expr = &view.receiver;
+            }
+            _ => break,
+        }
+    }
+    // Restrict to places that can be method receivers without parenthesization.
+    if !matches!(expr, Expr::Path(_) | Expr::Field(_) | Expr::Index(_)) {
+        return None;
+    }
+    is_zstr_like_type(&symbols.type_of_expr(expr)?).then_some(expr)
+}
+
+/// Preserve strlen's declared return type while avoiding a redundant usize cast.
+fn strlen_result(length: Expr, symbols: &SymbolTable) -> Expr {
+    let result_ty = symbols
+        .foreign_fns
+        .get("strlen")
+        .and_then(|signature| match &signature.output {
+            syn::ReturnType::Type(_, ty) => Some((**ty).clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| syn::parse_quote! { size_t });
+    usize_result(length, &result_ty, symbols)
+}
+
+fn is_usize_type<'a>(mut ty: &'a Type, symbols: &'a SymbolTable) -> bool {
+    // Bound alias traversal to also handle recursive or unresolved aliases.
+    for _ in 0..=symbols.type_aliases.len() {
+        match ty {
+            Type::Paren(paren) => ty = &paren.elem,
+            Type::Group(group) => ty = &group.elem,
+            Type::Path(path) if path.qself.is_none() => {
+                if path.path.is_ident("usize") {
+                    return true;
+                }
+                let Some(ident) = path.path.get_ident() else {
+                    break;
+                };
+                let Some(alias) = symbols
+                    .type_aliases
+                    .get(&ident.to_string())
+                    .and_then(Option::as_ref)
+                else {
+                    break;
+                };
+                ty = alias;
+            }
+            _ => break,
+        }
+    }
+    false
+}
+
+/// Keep the declared result type when it differs from the bounded API's usize.
+fn usize_result(value: Expr, ty: &Type, symbols: &SymbolTable) -> Expr {
+    if is_usize_type(ty, symbols) {
+        value
+    } else {
+        syn::parse_quote! { #value as #ty }
+    }
+}
+
+/// Avoid redundant conversions for counts already known to be usize.
+fn usize_argument(expr: &Expr, symbols: &SymbolTable) -> Expr {
+    let expr = expr_strip_parens(expr);
+    if let Expr::Cast(cast) = expr
+        && is_usize_type(&cast.ty, symbols)
+        && let Expr::Lit(lit) = expr_strip_parens(&cast.expr)
+        && let syn::Lit::Int(int) = &lit.lit
+        && matches!(int.suffix(), "" | "usize")
+    {
+        return Expr::Lit(lit.clone());
+    }
+    if matches!(expr, Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Int(int) if matches!(int.suffix(), "" | "usize")))
+        || crate::printf::expr_type(expr, symbols).is_some_and(|ty| is_usize_type(&ty, symbols))
+    {
+        expr.clone()
+    } else {
+        syn::parse_quote! { (#expr) as usize }
+    }
+}
+
+/// Given a C string argument `s` or `&raw mut s` (each perhaps cast to a pointer),
+/// return `s` if it names a `ZString`, `&ZString`, `&ZStr`, or `&mut ZStr`.
+/// Raw addresses are accepted only of an owned `ZString`, because taking the
+/// address of a reference would point at the reference, not the string.
+fn zstr_place_of_c_str_arg<'e>(arg: &'e Expr, symbols: &SymbolTable) -> Option<&'e Expr> {
+    let arg = expr_strip_parens(expr_strip_casts(expr_strip_parens(arg)));
+    let (place, owned_only) = match arg {
+        Expr::RawAddr(raw) => (expr_strip_parens(&raw.expr), true),
+        other => (other, false),
+    };
+    // Restrict to places that can be method receivers without parenthesization.
+    if !matches!(place, Expr::Path(_) | Expr::Field(_)) {
+        return None;
+    }
+    let ty = symbols.type_of_expr(place)?;
+    let is_match = if owned_only {
+        is_zstring_type(&ty)
+    } else {
+        is_zstr_like_type(&ty)
+    };
+    is_match.then_some(place)
+}
+
+fn is_zstring_type(ty: &Type) -> bool {
+    is_xj_zstr_type(ty, "ZString")
+}
+
+/// Returns `true` for `ZString`, `&ZString`, `&ZStr`, and `&mut ZStr` (bare or `xj_zstr::`-qualified).
+fn is_zstr_like_type(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(reference) => {
+            is_xj_zstr_type(&reference.elem, "ZStr") || is_xj_zstr_type(&reference.elem, "ZString")
+        }
+        _ => is_zstring_type(ty),
+    }
+}
+
+/// Returns `true` for `name` or `xj_zstr::name`.
+fn is_xj_zstr_type(ty: &Type, name: &str) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    if path.qself.is_some() {
+        return false;
+    }
+    let segments = &path.path.segments;
+    let correct_name = match segments.len() {
+        1 => segments[0].ident == name,
+        2 => segments[0].ident == "xj_zstr" && segments[1].ident == name,
+        _ => false,
+    };
+    correct_name
+        && segments
+            .iter()
+            .all(|segment| matches!(segment.arguments, syn::PathArguments::None))
 }
 
 fn is_c_float_type(ty: &syn::Type) -> bool {
@@ -2706,6 +3083,12 @@ fn is_nul_char_expr(expr: &Expr) -> bool {
     matches!(expr_strip_parens(expr_strip_casts(expr)), Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Char(ch) if ch.value() == '\0'))
 }
 
+/// Matches `0`, `0u8`, `'\0'`, and casts thereof.
+fn is_zero_byte_expr(expr: &Expr) -> bool {
+    is_nul_char_expr(expr)
+        || matches!(expr_strip_parens(expr_strip_casts(expr)), Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Int(int) if int.base10_digits() == "0"))
+}
+
 fn is_one_expr(expr: &Expr) -> bool {
     matches!(expr_strip_parens(expr_strip_casts(expr)), Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Int(int) if int.base10_digits() == "1"))
 }
@@ -2751,14 +3134,9 @@ pub fn is_path_exactly_1(path: &Path, a: &str) -> bool {
     }
 }
 
-// fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
-//     if path.segments.len() == 2 {
-//         path.segments[0].ident.to_string().as_str() == a
-//             && path.segments[1].ident.to_string().as_str() == b
-//     } else {
-//         false
-//     }
-// }
+fn is_path_exactly_2(path: &Path, a: &str, b: &str) -> bool {
+    path.segments.len() == 2 && path.segments[0].ident == a && path.segments[1].ident == b
+}
 
 fn is_path_exactly_3(path: &Path, a: &str, b: &str, c: &str) -> bool {
     if path.segments.len() == 3 {
@@ -2819,4 +3197,199 @@ fn expr_strip_refs(expr: &Expr) -> &Expr {
     } else {
         expr
     }
+}
+
+impl Rewriter {
+    /// Preserve bytes when formatting guided zero-terminated strings.
+    pub fn rewrite_cstr_from_ptr_of_zstr(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else { return None };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        let c_str_constructor = func.path.segments.len() == 4
+            && matches!(
+                func.path.segments[0].ident.to_string().as_str(),
+                "core" | "std"
+            )
+            && func.path.segments[1].ident == "ffi"
+            && func.path.segments[2].ident == "CStr"
+            && func.path.segments[3].ident == "from_ptr";
+        if !(func.path.is_ident("xj_cstr_from_ptr") || c_str_constructor) || call.args.len() != 1 {
+            return None;
+        }
+        let mut argument = expr_strip_parens(expr_strip_casts(&call.args[0]));
+        if let Expr::MethodCall(method) = argument {
+            if method.method == "as_ptr" && method.args.is_empty() {
+                argument = expr_strip_parens(expr_strip_casts(&method.receiver));
+            }
+        }
+        let place = zstr_place_of_c_str_arg(argument, symbols)?;
+        Some((syn::parse_quote! { #place.as_c_str() }, Depth::Limited(0)))
+    }
+
+    /// Use bounded item APIs when translated stdio arguments retain their storage.
+    pub fn rewrite_cio_buffers(&self, symbols: &SymbolTable, expr: &Expr) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else { return None };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        let name = func.path.segments.last()?.ident.to_string();
+        if func.path.segments.len() > 1
+            && !(func.path.segments.len() == 2 && func.path.segments[0].ident == "xj_cio")
+            && !(func.path.segments.len() == 3
+                && func.path.segments[0].ident == "xj_cio"
+                && func.path.segments[1].ident == "c_abi")
+        {
+            return None;
+        }
+        if matches!(
+            name.as_str(),
+            "fread" | "fwrite" | "fread_raw" | "fwrite_raw"
+        ) && call.args.len() == 4
+        {
+            let exclusive = matches!(name.as_str(), "fread" | "fread_raw");
+            let pointer = expr_strip_casts(&call.args[0]);
+            let buffer = if exclusive {
+                extract_slice_ptr_base(pointer, symbols)?
+            } else {
+                &call.args[0]
+            };
+            let read_view = if exclusive {
+                None
+            } else {
+                self.coerce_byte_view_path_input(&call.args[0], symbols)
+            };
+            if exclusive && !is_u8_or_i8_sliceable_expr(buffer, symbols) {
+                return None;
+            }
+            if !exclusive && read_view.is_none() {
+                return None;
+            }
+            let size = usize_argument(&call.args[1], symbols);
+            let count = usize_argument(&call.args[2], symbols);
+            let stream = &call.args[3];
+            let result_type = if func.path.segments.len() == 1 {
+                symbols
+                    .fn_outputs
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| syn::parse_quote!(usize))
+            } else {
+                syn::parse_quote!(usize)
+            };
+            self.add_dep("xj_cio");
+            let input: Expr = if let Some(input) = read_view {
+                *input
+            } else {
+                self.add_dep("xj_cstr");
+                self.with_cur_file_item_store(|store| {
+                    store.add_use(true, vec!["xj_cstr".into()], "ByteSlice");
+                });
+                syn::parse_quote! { #buffer.as_mut_u8_slice() }
+            };
+            let target = syn::Ident::new(
+                if exclusive {
+                    "fread_items"
+                } else {
+                    "fwrite_items"
+                },
+                proc_macro2::Span::call_site(),
+            );
+            let result = syn::parse_quote! {
+                xj_cio::#target(#input, #size, #count, #stream)
+            };
+            return Some((
+                usize_result(result, &result_type, symbols),
+                Depth::Limited(0),
+            ));
+        }
+        None
+    }
+}
+
+impl Rewriter {
+    /// Replace raw views of known byte buffers with their bounded views.
+    pub fn rewrite_cio_destination(
+        &self,
+        symbols: &SymbolTable,
+        expr: &Expr,
+    ) -> Option<(Expr, Depth)> {
+        let Expr::Call(call) = expr else { return None };
+        let Expr::Path(func) = &*call.func else {
+            return None;
+        };
+        let format_operation = if func.path.is_ident("xj_astgrep_snprintf_raw")
+            || is_path_exactly_2(&func.path, "xj_cio", "snprintf_raw")
+            || is_path_exactly_2(&func.path, "xj_cfmt", "snprintf_raw")
+        {
+            Some("snprintf")
+        } else if func.path.is_ident("xj_astgrep_sprintf_raw")
+            || is_path_exactly_2(&func.path, "xj_cio", "sprintf_raw")
+            || is_path_exactly_2(&func.path, "xj_cfmt", "sprintf_raw")
+        {
+            Some("sprintf")
+        } else {
+            None
+        };
+        if let Some(operation) = format_operation {
+            let minimum = if operation == "snprintf" { 3 } else { 2 };
+            if call.args.len() < minimum {
+                return None;
+            }
+            let buffer = extract_slice_ptr_base(expr_strip_casts(&call.args[0]), symbols)?;
+            if !is_u8_type_of_buffer(buffer, symbols) {
+                return None;
+            }
+            let mut call = call.clone();
+            call.args[0] = syn::parse_quote! { #buffer };
+            let mut path = func.path.clone();
+            let name = if path.segments.len() == 1 {
+                format!("xj_astgrep_{operation}_unchecked")
+            } else {
+                format!("{operation}_unchecked")
+            };
+            path.segments.last_mut()?.ident =
+                syn::Ident::new(&name, proc_macro2::Span::call_site());
+            call.func = Box::new(syn::parse_quote! { #path });
+            return Some((Expr::Call(call), Depth::Unlimited));
+        }
+        if !(func.path.is_ident("xj_cfmt_dest")
+            || is_path_exactly_3(&func.path, "core", "slice", "from_raw_parts_mut")
+            || is_path_exactly_3(&func.path, "std", "slice", "from_raw_parts_mut"))
+            || call.args.len() != 2
+        {
+            return None;
+        }
+        let size = &call.args[1];
+        let buffer = extract_slice_ptr_base(expr_strip_casts(&call.args[0]), symbols)?;
+        if !is_u8_type_of_buffer(buffer, symbols) {
+            return None;
+        }
+        Some((
+            syn::parse_quote! { &mut #buffer[..#size as usize] },
+            Depth::Limited(0),
+        ))
+    }
+}
+
+fn is_u8_type_of_buffer(expr: &Expr, symbols: &SymbolTable) -> bool {
+    fn byte_elements(ty: &Type) -> bool {
+        match ty {
+            Type::Reference(r) => byte_elements(&r.elem),
+            Type::Slice(s) => is_u8_type(&s.elem),
+            Type::Array(a) => is_u8_type(&a.elem),
+            Type::Path(p) => p.path.segments.last().is_some_and(|seg| {
+                seg.ident == "Vec" && matches!(&seg.arguments, syn::PathArguments::AngleBracketed(args)
+                    if args.args.first().is_some_and(|arg| matches!(arg, syn::GenericArgument::Type(ty) if is_u8_type(ty))))
+            }),
+            _ => false,
+        }
+    }
+    symbols
+        .type_of_expr(expr)
+        .is_some_and(|ty| byte_elements(&ty))
 }

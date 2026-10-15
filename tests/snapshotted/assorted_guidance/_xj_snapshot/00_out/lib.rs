@@ -8,6 +8,7 @@
 #![feature(raw_ref_op)]
 
 extern crate bytemuck;
+extern crate xj_cio;
 
 pub mod src {
     pub mod assorted_guidance;
