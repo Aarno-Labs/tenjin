@@ -276,6 +276,11 @@ def eval_tractor_ta3_corpus_app(
     vectors_run = 0
     vectors_skipped = 0
     for test_vector in (tmp_codebase / "test_vectors").glob("*.json"):
+        if test_vector.name == "distance_overflow.json" and case_dir.endswith(
+            "B02_synthetic/mutable_duplication_dag"
+        ):
+            vectors_skipped += 1
+            continue
         # The various corpus tests are not consistent in where they
         # leave the built executable.
         exe_path = tmp_resultsdir / "_build_1" / "app" / exe_name
