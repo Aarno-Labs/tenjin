@@ -265,8 +265,8 @@ impl ExternCrate {
             XjZstr => {
                 ExternCrateDetails::external("xj_zstr", "0.1", false).with_features(vec!["cfmt"])
             }
-            XjCio => ExternCrateDetails::external("xj_cio", "0.1", false),
-            XjCioVariadic => ExternCrateDetails::external("xj_cio", "0.1", false)
+            XjCio => ExternCrateDetails::external("xj_cio", "0.1.1", false),
+            XjCioVariadic => ExternCrateDetails::external("xj_cio", "0.1.1", false)
                 .with_features(vec!["c_variadic"]),
             XjCfmt => ExternCrateDetails::external("xj_cfmt", "0.1", false),
             LibzRsSys => ExternCrateDetails::external("libz-rs-sys", "0.6.8", false),

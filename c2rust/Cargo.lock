@@ -3284,10 +3284,11 @@ dependencies = [
 
 [[package]]
 name = "xj_cio"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e452e05aba3a5b1c10bb0b88f93f1dcaa6636a85fbcacc0053e1f8de7a4c73d2"
+checksum = "23293a6ef10eb8388c583a4ff1927519acb0233e2285d8518f004464e3c884a8"
 dependencies = [
+ "errno",
  "libc",
  "parking_lot",
  "slotmap",
