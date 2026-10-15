@@ -43,7 +43,7 @@ def test_exceptional_lift_restores_temporarily_rewritten_print_macros(
         lambda _dir, pattern, rewrite: rewrites.append((pattern, rewrite)),
     )
 
-    def fail(*_args):
+    def fail(*_args, **_kwargs):
         raise OSError("could not launch lift-call-args")
 
     monkeypatch.setattr(translation_improvement, "run_built_workspace_binary", fail)
