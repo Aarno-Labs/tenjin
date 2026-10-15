@@ -1552,6 +1552,26 @@ fn isinf_isnan_strips_f64_cast() {
 }
 
 #[test]
+fn isinf_isnan_keeps_narrowing_and_integer_casts() {
+    let mut rw = Rewriter::new();
+    rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);
+    check(
+        &rw,
+        "fn demo(x: f64, i: i32) -> bool {
+            ::xj_cmath::isinf(1.7976931348623157e+308f64 as ::core::ffi::c_float as ::core::ffi::c_double as f64) != 0
+                && ::xj_cmath::isinf(x as f32 as f64) != 0
+                && ::xj_cmath::isnan(i as ::core::ffi::c_double as f64) == 0
+        }",
+        expect![[r#"
+            fn demo(x: f64, i: i32) -> bool {
+                (1.7976931348623157e+308f64 as ::core::ffi::c_float).is_infinite()
+                    && (x as f32).is_infinite() && !(i as ::core::ffi::c_double).is_nan()
+            }
+        "#]],
+    );
+}
+
+#[test]
 fn isinf_isnan_without_cast() {
     let mut rw = Rewriter::new();
     rw.add_expr_rewrite(Rewriter::rewrite_isinf_isnan_comparisons);

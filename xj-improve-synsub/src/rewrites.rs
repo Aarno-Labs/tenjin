@@ -7,7 +7,7 @@ use syn::{
 
 use crate::{
     AtomicKind, Depth, Rewriter, SymbolTable, atomic_kind, atomic_kind_from_name,
-    byte_input::is_u8_type, c_atomic_rust_name,
+    byte_input::is_u8_type, c_atomic_rust_name, printf::expr_type,
 };
 
 fn paren_if_cast(expr: &Expr) -> proc_macro2::TokenStream {
@@ -744,7 +744,7 @@ impl Rewriter {
     /// Rewrite `::xj_cmath::isinf(e as f64) == 0` into `!e.is_infinite()`, and similarly for `isnan`.
     pub fn rewrite_isinf_isnan_comparisons(
         &self,
-        _symbols: &SymbolTable,
+        symbols: &SymbolTable,
         expr: &Expr,
     ) -> Option<(Expr, Depth)> {
         let Expr::Binary(bin) = expr else {
@@ -778,10 +778,7 @@ impl Rewriter {
         };
         let method_ident = syn::Ident::new(method, func.path.span());
 
-        // Stripping casts is valid because (A) isinf/isnan (at least the versions from math.h)
-        // cannot be given arguments of non-floating-point type, and (B) floating point casts
-        // do not change the value's isinf/isnan-ness.
-        let receiver = expr_strip_casts(&call.args[0]);
+        let receiver = strip_widening_float_casts(&call.args[0], symbols);
 
         // Build the method call as a syntax tree, rather than by splicing
         // tokens, so that a receiver like `-x` keeps its parentheses.
@@ -2880,6 +2877,27 @@ fn expr_strip_casts(expr: &Expr) -> &Expr {
             _ => break ep,
         }
     }
+}
+
+/// Strip the casts that convert a float to a float of the same or greater
+/// width, which preserve its value and so its classification.  Stops at a
+/// narrowing cast, which can overflow a finite value to infinity, and at a
+/// cast from a non-float or unknown type, which would change the receiver's type.
+fn strip_widening_float_casts<'a>(expr: &'a Expr, symbols: &SymbolTable) -> &'a Expr {
+    let mut ep = expr;
+    while let Expr::Cast(cast) = ep {
+        let Some(to) = float_width(&cast.ty) else {
+            break;
+        };
+        let from = expr_type(&cast.expr, symbols).and_then(|ty| float_width(&ty));
+        match (from, to) {
+            (Some(FloatWidth::F32), _) | (Some(FloatWidth::F64), FloatWidth::F64) => {
+                ep = &cast.expr;
+            }
+            _ => break,
+        }
+    }
+    ep
 }
 
 fn is_errno_deref(expr: &Expr) -> bool {
