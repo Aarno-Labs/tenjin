@@ -1026,6 +1026,33 @@ impl Translation<'_> {
         {
             return Ok(None);
         }
+        // The type-generic cmath markers are declared overloadable, so the
+        // renamer gives all but one overload a suffixed Rust name (`isless_0`, ...).
+        // Dispatch on the C declaration's name so that every overload is recognized.
+        let c_callee_name = callee.and_then(|id| match &self.ast_context[id].kind {
+            CDeclKind::Function { name, .. } => Some(name.as_str()),
+            _ => None,
+        });
+        match c_callee_name {
+            Some("isnormal") => {
+                return self.recognize_preconversion_call_float_predicate(ctx, cargs, "is_normal")
+            }
+            Some("isfinite") => {
+                return self.recognize_preconversion_call_float_predicate(ctx, cargs, "is_finite")
+            }
+            Some("signbit") => {
+                return self.recognize_preconversion_call_float_predicate(
+                    ctx,
+                    cargs,
+                    "is_sign_negative",
+                )
+            }
+            Some(
+                name @ ("isgreater" | "isgreaterequal" | "isless" | "islessequal" | "islessgreater"
+                | "isunordered"),
+            ) => return self.recognize_preconversion_call_float_comparison(ctx, cargs, name),
+            _ => {}
+        }
         if let Some(path) = tenjin::expr_get_path(func) {
             if path.segments.len() == 1
                 && self
@@ -1137,32 +1164,6 @@ impl Translation<'_> {
                 }
                 _ if tenjin::is_path_exactly_1(path, "isnan") => {
                     self.recognize_preconversion_call_cmath_classify(ctx, cargs, "isnan")
-                }
-                _ if tenjin::is_path_exactly_1(path, "isnormal") => {
-                    self.recognize_preconversion_call_float_predicate(ctx, cargs, "is_normal")
-                }
-                _ if tenjin::is_path_exactly_1(path, "isfinite") => {
-                    self.recognize_preconversion_call_float_predicate(ctx, cargs, "is_finite")
-                }
-                _ if tenjin::is_path_exactly_1(path, "signbit") => self
-                    .recognize_preconversion_call_float_predicate(ctx, cargs, "is_sign_negative"),
-                _ if tenjin::is_path_exactly_1(path, "isgreater") => {
-                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "isgreater")
-                }
-                _ if tenjin::is_path_exactly_1(path, "isgreaterequal") => {
-                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "isgreaterequal")
-                }
-                _ if tenjin::is_path_exactly_1(path, "isless") => {
-                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "isless")
-                }
-                _ if tenjin::is_path_exactly_1(path, "islessequal") => {
-                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "islessequal")
-                }
-                _ if tenjin::is_path_exactly_1(path, "islessgreater") => {
-                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "islessgreater")
-                }
-                _ if tenjin::is_path_exactly_1(path, "isunordered") => {
-                    self.recognize_preconversion_call_float_comparison(ctx, cargs, "isunordered")
                 }
                 _ if (tenjin::is_path_exactly_1(path, "fmin")
                     || tenjin::is_path_exactly_1(path, "fminf")
@@ -2103,7 +2104,7 @@ impl Translation<'_> {
             let e1 = self.convert_expr(ctx.used(), cargs[0], None)?;
             let e2 = self.convert_expr(ctx.used(), cargs[1], None)?;
             let difftime_call = mk().call_expr(
-                mk().path_expr(vec!["xj_ctime", "compat", "difftime"]),
+                mk().path_expr(vec!["xj_ctime", "c_abi", "difftime"]),
                 vec![e1.to_expr(), e2.to_expr()],
             );
             return Ok(Some(WithStmts::new_val(difftime_call)));

@@ -194,7 +194,7 @@ fn transpile_snapshot(
                 .iter()
                 .copied()
                 .chain(
-                    ["xj_cio", "xj_cfmt"]
+                    ["xj_cio", "xj_cfmt", "xj_bytes"]
                         .into_iter()
                         .filter(|name| !expect_compile_error && rs.contains(name)),
                 )

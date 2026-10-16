@@ -1662,15 +1662,6 @@ def test_atomicobject__odo(tenjin_fixtures: TenjinFixtures):
 
 
 @pytest.mark.slow  # expected runtime: 700 seconds (~12 minutes, up to the xfail below)
-@pytest.mark.skip(
-    reason="file(1) does not yet translate end-to-end: refold emits valid C for all 27 "
-    "TUs, but xj-c2rust's raw output (00_out) fails `cargo check` because compress.c "
-    "calls FD_ZERO, which glibc implements as x86-64 inline asm; the translation "
-    "passes `&raw mut` locals (*mut i32) to c2rust_asm_casts::AsmCast::cast_in/cast_out, "
-    "which expect `&mut _` -> 4x E0308 in compress.rs. The `cargo check` gate after "
-    "improvement_pass_02_lift-call-args then raises CalledProcessError, so no final/ "
-    "crate is produced.",
-)
 def test_file_file(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(

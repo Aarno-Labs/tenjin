@@ -5,6 +5,34 @@ use syn::{Expr, Type, parse_quote};
 
 use crate::{Depth, Rewriter, SymbolTable};
 
+fn byte_view_bytes_path() -> syn::Path {
+    parse_quote!(::xj_bytes::ByteView::view_bytes)
+}
+
+/// Known re-exports share xj_bytes' trait. Do not infer identity from the
+/// `ByteView` suffix alone: this pass does not resolve arbitrary Rust imports.
+pub(crate) fn is_byte_view_bytes(function: &syn::ExprPath) -> bool {
+    let segments = &function.path.segments;
+    function.qself.is_none()
+        && segments.len() == 3
+        && segments.iter().all(|segment| segment.arguments.is_none())
+        && segments[1].ident == "ByteView"
+        && segments[2].ident == "view_bytes"
+        && matches!(
+            segments[0].ident.to_string().as_str(),
+            "xj_bytes"
+                | "xj_cfmt"
+                | "xj_zstr"
+                | "xj_cio"
+                | "xj_cstr"
+                | "xj_atone"
+                | "xj_scanf"
+                | "xj_cstat"
+                | "xj_ctime"
+                | "xj_cmath"
+        )
+}
+
 /// Recognize byte types whose unsignedness does not depend on the target.
 /// In particular, `c_char` is not necessarily a `u8` alias.
 pub(crate) fn is_u8_type(ty: &Type) -> bool {
@@ -200,6 +228,13 @@ fn view_type(ty: &Type, symbols: &SymbolTable, depth: usize, allow_os: bool) -> 
 }
 
 impl Rewriter {
+    /// Generate the canonical shared-trait call and its direct dependency.
+    pub(crate) fn byte_view_bytes(&self, input: &Expr) -> Expr {
+        self.add_dep("xj_bytes");
+        let function = byte_view_bytes_path();
+        parse_quote!(#function(#input))
+    }
+
     /// Retarget borrowed inputs only when their complete storage is known.
     /// Function references and raw pointers keep their existing ABI adapters.
     pub fn rewrite_byte_view_calls(
@@ -255,25 +290,6 @@ impl Rewriter {
                 result.receiver = Box::new(prefer_string_literal(&method.receiver)?);
                 return Some((Expr::MethodCall(result), Depth::Unlimited));
             }
-            if method.method == "format"
-                && method.args.len() == 1
-                && method.turbofish.is_none()
-                && let Some(ty) = symbols.type_of_expr(&method.receiver)
-            {
-                let mut ty = &ty;
-                while let Type::Reference(reference) = ty {
-                    ty = &reference.elem;
-                }
-                if matches!(ty, Type::Path(p) if p.qself.is_none()
-                    && (p.path.is_ident("Tm") || (p.path.segments.len() == 2
-                        && p.path.segments[0].ident == "xj_ctime" && p.path.segments[1].ident == "Tm")))
-                {
-                    let mut result = method.clone();
-                    result.args[0] = prefer_string_literal(&method.args[0])?;
-                    return Some((Expr::MethodCall(result), Depth::Unlimited));
-                }
-            }
-            return None;
         }
         let Expr::Call(call) = expr else { return None };
         let Expr::Path(function) = &*call.func else {
@@ -289,26 +305,20 @@ impl Rewriter {
         }
         let name = segments.last()?.ident.to_string();
         let namespace = segments.first()?.ident.to_string();
-        if segments.len() == 3
-            && segments[1].ident == "ByteView"
-            && name == "view_bytes"
-            && matches!(
-                namespace.as_str(),
-                "xj_bytes"
-                    | "xj_cfmt"
-                    | "xj_zstr"
-                    | "xj_cio"
-                    | "xj_cstr"
-                    | "xj_atone"
-                    | "xj_scanf"
-                    | "xj_cstat"
-                    | "xj_ctime"
-                    | "xj_cmath"
-            )
-            && call.args.len() == 1
-        {
+        if is_byte_view_bytes(function) && call.args.len() == 1 {
+            self.add_dep("xj_bytes");
+            let input = prefer_string_literal(&call.args[0]);
+            let canonical = byte_view_bytes_path();
+            if function.path == canonical && input.is_none() {
+                return None;
+            }
             let mut result = call.clone();
-            result.args[0] = prefer_string_literal(&call.args[0])?;
+            let mut function = function.clone();
+            function.path = canonical;
+            result.func = Box::new(Expr::Path(function));
+            if let Some(input) = input {
+                result.args[0] = input;
+            }
             return Some((Expr::Call(result), Depth::Unlimited));
         }
         let native = segments.len() == 1 || (segments.len() == 2 && namespace == "libc");
@@ -417,8 +427,12 @@ impl Rewriter {
             ("xj_atone", "atof" | "atoi" | "atol" | "atoll") => &[0],
             ("xj_atone", name) if name.starts_with("strto") => &[0],
             ("xj_cstat", "stat" | "lstat" | "stat64" | "lstat64") => &[0],
-            ("xj_ctime", "strftime") if segments.len() == 3 && segments[1].ident == "compat" => {
-                &[1]
+            ("xj_ctime", "strftime") if segments.len() == 3 && segments[1].ident == "c" => &[1],
+            ("xj_ctime", "strftime_raw") if segments.len() == 3 && segments[1].ident == "c" => &[2],
+            ("xj_ctime", "strptime" | "strptime_raw")
+                if segments.len() == 3 && segments[1].ident == "c" =>
+            {
+                &[0, 1]
             }
             (
                 "xj_zstr",
@@ -457,7 +471,7 @@ impl Rewriter {
         let qualified_module = segments.len() == 3
             && matches!(
                 (namespace, segments[1].ident.to_string().as_str()),
-                ("xj_cstat", "c") | ("xj_zstr", "c") | ("xj_ctime", "compat")
+                ("xj_cstat", "c") | ("xj_zstr", "c") | ("xj_ctime", "c")
             );
         if !cio_adapter && segments.len() != 2 && !qualified_module {
             return None;

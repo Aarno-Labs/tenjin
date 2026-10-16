@@ -874,6 +874,7 @@ impl Translation<'_> {
         }
         self.use_crate(ExternCrate::XjCio);
         if operation.starts_with('v') {
+            self.use_crate(ExternCrate::XjBytes);
             self.use_feature("c_variadic");
             self.with_cur_file_item_store(|store| {
                 store.add_item_str_once(include_str!("cio_va.rs"))
@@ -944,7 +945,7 @@ impl Translation<'_> {
                 { #(#bindings)*
                   let #fmt_name = &#format;
                   let #ap_name = #ap;
-                  match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(#fmt_name)) {
+                  match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(#fmt_name)) {
                     Ok(#plan_name) => {
                         let #args_name = xj_cio_varargs::xj_cio_vargs(&#plan_name, #ap_name);
                         ::xj_cio::#target(#(#prefix_names,)* &#plan_name, &#args_name)

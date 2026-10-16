@@ -6,7 +6,7 @@ use xj_cfmt_core::{Piece, Plan, Requirement};
 
 use crate::{
     Depth, Rewriter, SymbolTable,
-    byte_input::{is_u8_type, prefer_string_literal},
+    byte_input::{is_byte_view_bytes, is_u8_type, prefer_string_literal},
 };
 
 impl Rewriter {
@@ -223,7 +223,7 @@ fn unparen(mut expr: &Expr) -> &Expr {
     }
 }
 
-fn literal_bytes(expr: &Expr) -> Option<Vec<u8>> {
+pub(crate) fn literal_bytes(expr: &Expr) -> Option<Vec<u8>> {
     match unparen(expr) {
         Expr::Lit(lit) => match &lit.lit {
             syn::Lit::ByteStr(s) => Some(s.value()),
@@ -323,6 +323,9 @@ pub(crate) fn expr_type(expr: &Expr, symbols: &SymbolTable) -> Option<Type> {
             let Expr::Path(p) = unparen(&c.func) else {
                 return None;
             };
+            if is_byte_view_bytes(p) && c.args.len() == 1 {
+                return Some(parse_quote!(&[u8]));
+            }
             if p.qself.is_none()
                 && p.path.segments.len() == 1
                 && !symbols.has(&p.path.segments[0].ident.to_string())
