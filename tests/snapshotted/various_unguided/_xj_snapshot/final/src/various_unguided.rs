@@ -1,7 +1,6 @@
 extern "C" {
 
     fn puts(_: *const u8) -> ::core::ffi::c_int;
-
 }
 pub const STDIN_FILENO: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 pub const STDOUT_FILENO: ::core::ffi::c_int = 1 as ::core::ffi::c_int;

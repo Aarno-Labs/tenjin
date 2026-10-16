@@ -1,7 +1,12 @@
 extern "C" {
+    fn __assert_fail(
+        __assertion: *const u8,
+        __file: *const u8,
+        __line: ::core::ffi::c_uint,
+        __function: *const u8,
+    ) -> !;
     fn isatty(_: ::core::ffi::c_int) -> ::core::ffi::c_int;
     fn puts(_: *const u8) -> ::core::ffi::c_int;
-    fn assert(_: bool);
 }
 pub const STDIN_FILENO: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 pub const STDOUT_FILENO: ::core::ffi::c_int = 1 as ::core::ffi::c_int;

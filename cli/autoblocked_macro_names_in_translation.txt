@@ -6,9 +6,6 @@
 # standard definition. We could address that case by requiring a
 # definition to originate via a particular file name.
 
-# assumed to be from <assert.h>
-assert
-
 # assumed to be from <sys/select.h>
 FD_ZERO
 FD_SET
