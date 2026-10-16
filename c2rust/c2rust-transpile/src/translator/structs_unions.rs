@@ -510,6 +510,35 @@ impl<'a> Translation<'a> {
         Ok(WithStmts::new_val(mk().block_expr(mk().block(stmts))).set_unsafe())
     }
 
+    fn struct_expr_with_guidance(
+        &self,
+        record_id: CRecordId,
+        name_path: syn::Path,
+        mut fields: Vec<syn::FieldValue>,
+    ) -> Box<Expr> {
+        // Resolve the record itself: default initializers may use a typedef
+        // name (z_stream) instead of the record name (z_stream_s).
+        let record_name = self.resolve_decl_inner_name(record_id);
+        let record_path = crate::translator::tenjin::guide_type_name_path(
+            &self.parsed_guidance.borrow(),
+            &record_name,
+        );
+        if record_path == mk().path(vec!["libz_rs_sys", "z_stream"]) {
+            // The replacement struct's message is a c_char pointer,
+            // whereas the translated C initializer uses a u8 pointer.
+            for field in &mut fields {
+                if field.member == syn::Member::Named(mk().ident("msg")) {
+                    field.expr = *mk().cast_expr(
+                        Box::new(field.expr.clone()),
+                        mk().mutbl()
+                            .ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_char"])),
+                    );
+                }
+            }
+        }
+        mk().struct_expr(name_path, fields)
+    }
+
     pub fn convert_struct_literal(
         &self,
         ctx: ExprContext,
@@ -669,7 +698,8 @@ impl<'a> Translation<'a> {
         let fields = fields
             .into_iter()
             .collect::<WithStmts<Vec<syn::FieldValue>>>();
-        let mut val = fields.map(|fields| mk().struct_expr(name_path, fields));
+        let mut val =
+            fields.map(|fields| self.struct_expr_with_guidance(struct_id, name_path, fields));
 
         if !bitfield_inits.is_empty() {
             val = val.and_then(|val| {
@@ -849,7 +879,7 @@ impl<'a> Translation<'a> {
         Ok(fields
             .into_iter()
             .collect::<WithStmts<Vec<syn::FieldValue>>>()
-            .map(|fields| mk().struct_expr(name_path, fields)))
+            .map(|fields| self.struct_expr_with_guidance(decl_id, name_path, fields)))
     }
 
     /// This method handles conversion of assignment operators on bitfields.

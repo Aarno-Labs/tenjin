@@ -1,8 +1,12 @@
 use super::tenjin::*;
 use super::*;
 
-#[allow(clippy::borrowed_box)]
-pub fn libz_rs_sys_call_form_cases(t: &Translation, func: &Expr) -> Option<RecognizedCallForm> {
+#[allow(clippy::vec_box)]
+pub fn libz_rs_sys_call_form_cases(
+    t: &Translation,
+    func: &Expr,
+    args: &[Box<Expr>],
+) -> Option<RecognizedCallForm> {
     fn libz_rs_sys_fn_pred(ident: &str) -> bool {
         // See https://docs.rs/libz-sys/latest/libz_sys/
         matches!(
@@ -75,9 +79,44 @@ pub fn libz_rs_sys_call_form_cases(t: &Translation, func: &Expr) -> Option<Recog
         if let Some(ident) = expr_get_ident(func) {
             if libz_rs_sys_fn_pred(&ident) {
                 t.use_crate(ExternCrate::LibzRsSys);
-                return Some(RecognizedCallForm::RetargetedCallee(
-                    mk().path_expr(vec!["libz_rs_sys", &ident]),
-                ));
+                // Tenjin translates C char pointers to u8 pointers, while
+                // libz-rs-sys uses c_char, which is signed on some targets.
+                let string_args: &[usize] = match ident.as_str() {
+                    "deflateInit_" | "inflateInit2_" => &[2],
+                    "deflateInit2_" => &[6],
+                    "inflateInit_" | "gzdopen" | "gzputs" | "gzgets" => &[1],
+                    "inflateBackInit_" => &[3],
+                    "gzopen" => &[0, 1],
+                    _ => &[],
+                };
+                let args = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, arg)| {
+                        if string_args.contains(&i) {
+                            let builder = if ident == "gzgets" {
+                                mk().mutbl()
+                            } else {
+                                mk()
+                            };
+                            mk().cast_expr(
+                                arg.clone(),
+                                builder.ptr_ty(mk().abs_path_ty(vec!["core", "ffi", "c_char"])),
+                            )
+                        } else {
+                            arg.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let call = mk().call_expr(mk().path_expr(vec!["libz_rs_sys", &ident]), args);
+                let call = match ident.as_str() {
+                    "zlibVersion" | "gzerror" => {
+                        mk().cast_expr(call, mk().ptr_ty(mk().path_ty(vec!["u8"])))
+                    }
+                    "gzgets" => mk().cast_expr(call, mk().mutbl().ptr_ty(mk().path_ty(vec!["u8"]))),
+                    _ => call,
+                };
+                return Some(RecognizedCallForm::RewrittenCall(call));
             }
         }
     }
