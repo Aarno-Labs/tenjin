@@ -52,7 +52,7 @@ pub unsafe extern "C" fn my_vprintf(mut format: *const u8, mut ap: ::core::ffi::
     {
         let c2rust_xj_cio_fmt = &::core::ffi::CStr::from_ptr((format) as _);
         let c2rust_xj_cio_ap = ap.as_va_list();
-        match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
+        match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
             Ok(c2rust_xj_cio_plan) => {
                 let c2rust_xj_cio_args =
                     xj_cio_varargs::xj_cio_vargs(&c2rust_xj_cio_plan, c2rust_xj_cio_ap);
@@ -107,7 +107,7 @@ pub unsafe extern "C" fn simple_vacopy(mut fmt: *const u8, mut c2rust_args: ...)
     {
         let c2rust_xj_cio_fmt = &::core::ffi::CStr::from_ptr((fmt) as _);
         let c2rust_xj_cio_ap = ap.as_va_list();
-        match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
+        match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
             Ok(c2rust_xj_cio_plan) => {
                 let c2rust_xj_cio_args =
                     xj_cio_varargs::xj_cio_vargs(&c2rust_xj_cio_plan, c2rust_xj_cio_ap);
@@ -119,7 +119,7 @@ pub unsafe extern "C" fn simple_vacopy(mut fmt: *const u8, mut c2rust_args: ...)
     {
         let c2rust_xj_cio_fmt_0 = &::core::ffi::CStr::from_ptr((fmt) as _);
         let c2rust_xj_cio_ap_0 = aq.as_va_list();
-        match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(c2rust_xj_cio_fmt_0)) {
+        match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(c2rust_xj_cio_fmt_0)) {
             Ok(c2rust_xj_cio_plan_0) => {
                 let c2rust_xj_cio_args_0 =
                     xj_cio_varargs::xj_cio_vargs(&c2rust_xj_cio_plan_0, c2rust_xj_cio_ap_0);
@@ -159,7 +159,7 @@ pub unsafe extern "C" fn valist_struct_member(mut fmt: *const u8, mut c2rust_arg
     {
         let c2rust_xj_cio_fmt = &::core::ffi::CStr::from_ptr((fmt) as _);
         let c2rust_xj_cio_ap = a.args.as_va_list();
-        match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
+        match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
             Ok(c2rust_xj_cio_plan) => {
                 let c2rust_xj_cio_args =
                     xj_cio_varargs::xj_cio_vargs(&c2rust_xj_cio_plan, c2rust_xj_cio_ap);
@@ -171,7 +171,7 @@ pub unsafe extern "C" fn valist_struct_member(mut fmt: *const u8, mut c2rust_arg
     {
         let c2rust_xj_cio_fmt_0 = &::core::ffi::CStr::from_ptr((fmt) as _);
         let c2rust_xj_cio_ap_0 = b.args.as_va_list();
-        match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(c2rust_xj_cio_fmt_0)) {
+        match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(c2rust_xj_cio_fmt_0)) {
             Ok(c2rust_xj_cio_plan_0) => {
                 let c2rust_xj_cio_args_0 =
                     xj_cio_varargs::xj_cio_vargs(&c2rust_xj_cio_plan_0, c2rust_xj_cio_ap_0);
@@ -196,7 +196,7 @@ pub unsafe extern "C" fn valist_struct_pointer_member(mut fmt: *const u8, mut c2
     {
         let c2rust_xj_cio_fmt = &::core::ffi::CStr::from_ptr((fmt) as _);
         let c2rust_xj_cio_ap = (*p).args.as_va_list();
-        match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
+        match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
             Ok(c2rust_xj_cio_plan) => {
                 let c2rust_xj_cio_args =
                     xj_cio_varargs::xj_cio_vargs(&c2rust_xj_cio_plan, c2rust_xj_cio_ap);
@@ -208,7 +208,7 @@ pub unsafe extern "C" fn valist_struct_pointer_member(mut fmt: *const u8, mut c2
     {
         let c2rust_xj_cio_fmt_0 = &::core::ffi::CStr::from_ptr((fmt) as _);
         let c2rust_xj_cio_ap_0 = (*q).args.as_va_list();
-        match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(c2rust_xj_cio_fmt_0)) {
+        match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(c2rust_xj_cio_fmt_0)) {
             Ok(c2rust_xj_cio_plan_0) => {
                 let c2rust_xj_cio_args_0 =
                     xj_cio_varargs::xj_cio_vargs(&c2rust_xj_cio_plan_0, c2rust_xj_cio_ap_0);
@@ -225,7 +225,7 @@ pub unsafe extern "C" fn restart_valist(mut fmt: *const u8, mut c2rust_args: ...
     {
         let c2rust_xj_cio_fmt = &::core::ffi::CStr::from_ptr((fmt) as _);
         let c2rust_xj_cio_ap = ap.as_va_list();
-        match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
+        match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(c2rust_xj_cio_fmt)) {
             Ok(c2rust_xj_cio_plan) => {
                 let c2rust_xj_cio_args =
                     xj_cio_varargs::xj_cio_vargs(&c2rust_xj_cio_plan, c2rust_xj_cio_ap);
@@ -238,7 +238,7 @@ pub unsafe extern "C" fn restart_valist(mut fmt: *const u8, mut c2rust_args: ...
     {
         let c2rust_xj_cio_fmt_0 = &::core::ffi::CStr::from_ptr((fmt) as _);
         let c2rust_xj_cio_ap_0 = ap.as_va_list();
-        match ::xj_cio::cformat::Plan::new(::xj_cio::ByteView::view_bytes(c2rust_xj_cio_fmt_0)) {
+        match ::xj_cio::cformat::Plan::new(::xj_bytes::ByteView::view_bytes(c2rust_xj_cio_fmt_0)) {
             Ok(c2rust_xj_cio_plan_0) => {
                 let c2rust_xj_cio_args_0 =
                     xj_cio_varargs::xj_cio_vargs(&c2rust_xj_cio_plan_0, c2rust_xj_cio_ap_0);

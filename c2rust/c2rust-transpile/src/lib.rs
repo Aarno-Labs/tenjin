@@ -191,6 +191,7 @@ pub enum ExternCrate {
     XjCtime,
     XjCmath,
     XjZstr,
+    XjBytes,
     XjCio,
     /// xj_cio with its `c_variadic` feature, for the `va_list` entry points.
     XjCioVariadic,
@@ -265,6 +266,7 @@ impl ExternCrate {
             XjZstr => {
                 ExternCrateDetails::external("xj_zstr", "0.1", false).with_features(vec!["cfmt"])
             }
+            XjBytes => ExternCrateDetails::external("xj_bytes", "0.1.0", false),
             XjCio => ExternCrateDetails::external("xj_cio", "0.1.1", false),
             XjCioVariadic => ExternCrateDetails::external("xj_cio", "0.1.1", false)
                 .with_features(vec!["c_variadic"]),

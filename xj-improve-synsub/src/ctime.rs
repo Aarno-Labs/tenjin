@@ -872,14 +872,16 @@ impl VisitMut for Mapper<'_> {
                     let mut f = f.clone();
                     f.member = parse_quote!(tm_zone);
                     self.visit_expr_mut(&mut f.base);
-                    *arg = parse_quote!(::xj_ctime::ByteView::view_bytes(&(#f)));
+                    *arg = self.rw.byte_view_bytes(&parse_quote!(&(#f)));
                     continue;
                 }
                 if let Expr::Index(idx) = base(arg)
                     && self.global(&idx.expr, "tzname")
                 {
                     let index = &idx.index;
-                    *arg = parse_quote!(::xj_ctime::ByteView::view_bytes(&::xj_ctime::c::tzname()[#index]));
+                    *arg = self
+                        .rw
+                        .byte_view_bytes(&parse_quote!(&::xj_ctime::c::tzname()[#index]));
                     continue;
                 }
             }
@@ -1195,10 +1197,11 @@ impl Lifter<'_> {
                 let input = a[0];
                 let fmt = a[1];
                 let tm = a[2];
+                let bytes = self.rw.byte_view_bytes(&parse_quote!(xj_time_input));
                 return Some(parse_quote!({
                     let xj_time_input = #input;
                     ::xj_ctime::c::strptime(xj_time_input, #fmt, #tm).map_or(::core::ptr::null_mut(), |offset| {
-                        ::xj_ctime::ByteView::view_bytes(xj_time_input).as_ptr().wrapping_add(offset).cast_mut()
+                        (#bytes).as_ptr().wrapping_add(offset).cast_mut()
                     })
                 }));
             }

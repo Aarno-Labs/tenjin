@@ -6,7 +6,7 @@ use xj_cfmt_core::{Piece, Plan, Requirement};
 
 use crate::{
     Depth, Rewriter, SymbolTable,
-    byte_input::{is_u8_type, prefer_string_literal},
+    byte_input::{is_byte_view_bytes, is_u8_type, prefer_string_literal},
 };
 
 impl Rewriter {
@@ -323,12 +323,7 @@ pub(crate) fn expr_type(expr: &Expr, symbols: &SymbolTable) -> Option<Type> {
             let Expr::Path(p) = unparen(&c.func) else {
                 return None;
             };
-            if p.qself.is_none()
-                && p.path.segments.len() == 3
-                && p.path.segments[0].ident == "xj_ctime"
-                && p.path.segments[1].ident == "ByteView"
-                && p.path.segments[2].ident == "view_bytes"
-            {
+            if is_byte_view_bytes(p) && c.args.len() == 1 {
                 return Some(parse_quote!(&[u8]));
             }
             if p.qself.is_none()

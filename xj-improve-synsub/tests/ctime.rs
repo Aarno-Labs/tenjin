@@ -192,11 +192,33 @@ fn globals_and_zone_printing_use_interned_names() {
     assert!(
         out.split_whitespace()
             .collect::<String>()
-            .contains("::xj_ctime::ByteView::view_bytes(&(t.tm_zone))"),
+            .contains("::xj_bytes::ByteView::view_bytes(&(t.tm_zone))"),
         "{out}"
     );
     assert!(!out.contains("static mut tzname"));
     assert_eq!(rewrite(&out, true), out, "time rewrites must be idempotent");
+}
+
+#[test]
+fn lifted_strptime_uses_the_shared_trait_and_records_its_dependency() {
+    let mut rw = Rewriter::new();
+    rw.enable_ctime(true);
+    let mut file = syn::parse_file(
+        r#"
+        unsafe fn demo(input: &[u8], mut tm: xj_ctime::Tm) {
+            xj_ctime::c_abi::strptime(input.as_ptr(), b"%Y\0".as_ptr(), &raw mut tm);
+        }
+    "#,
+    )
+    .unwrap();
+    rw.rewrite_file(&mut file, Depth::Unlimited);
+    let out = prettyplease::unparse(&file);
+    assert!(out.contains("::xj_ctime::c::strptime("), "{out}");
+    assert!(
+        out.contains("::xj_bytes::ByteView::view_bytes(xj_time_input)"),
+        "{out}"
+    );
+    assert!(rw.deps().contains("xj_bytes"));
 }
 #[test]
 fn unrelated_foreign_signatures_are_not_time_apis() {
@@ -288,7 +310,15 @@ fn cli_records_the_release_version() {
     let root = std::env::temp_dir().join(format!("synsub-time-{}-{unique}", std::process::id()));
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("Cargo.toml"), "[package]\nname=\"time_fixture\"\nversion=\"0.0.0\"\nedition=\"2021\"\n[dependencies]\nxj_ctime=\"0.1.1\"\n").unwrap();
-    std::fs::write(root.join("src/lib.rs"), RECORD).unwrap();
+    std::fs::write(
+        root.join("src/lib.rs"),
+        format!(
+            r#"{RECORD}
+        fn demo(t: &tm) {{ xj_cio::printf!("%s", t.__tm_zone); }}
+    "#
+        ),
+    )
+    .unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_xj-improve-synsub"))
         .arg(&root)
         .arg("--modify-in-place")
@@ -304,6 +334,7 @@ fn cli_records_the_release_version() {
         .parse()
         .unwrap();
     assert_eq!(manifest["dependencies"]["xj_ctime"].as_str(), Some("0.2.0"));
+    assert_eq!(manifest["dependencies"]["xj_bytes"].as_str(), Some("0.1.0"));
     std::fs::remove_dir_all(root).unwrap();
 }
 
