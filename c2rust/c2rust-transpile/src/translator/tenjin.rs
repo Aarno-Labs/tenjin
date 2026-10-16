@@ -1072,9 +1072,6 @@ impl Translation<'_> {
                     // TODO: should check source of symbol to ensure it's the C standard library exit()
                     self.recognize_preconversion_call_exit(ctx, cargs)
                 }
-                _ if tenjin::is_path_exactly_1(path, "assert") => {
-                    self.recognize_preconversion_call_assert(ctx, cargs)
-                }
                 _ if tenjin::is_path_exactly_1(path, "FD_ZERO") => {
                     self.recognize_preconversion_call_fd_zero(ctx, cargs)
                 }
@@ -1315,42 +1312,42 @@ impl Translation<'_> {
     }
 
     #[allow(clippy::borrowed_box)]
-    fn recognize_preconversion_call_assert(
+    pub(super) fn convert_assert_condition(
         &self,
         ctx: ExprContext,
-        cargs: &[CExprId],
-    ) -> TranslationResult<Option<WithStmts<Box<Expr>>>> {
-        if cargs.len() == 1 {
-            // assert(FOO)
-            //    when FOO is a simple variable
-            // should be translated to
-            // assert!(FOO)
-            //
-            // The C idiom of tacking a message onto the condition,
-            // assert(FOO && "message")
-            // becomes the two-argument form,
-            // assert!(FOO, "message")
-            //
-            // Note that in C the asserted expression must have integral type,
-            // but in Rust the asserted expression is of boolean type. That mismatch
-            // is why we recognize this case pre-conversion.
-            let (ccond, opt_message) = match self.recognize_assert_condition_message(cargs[0]) {
-                Some((ccond, message)) => (ccond, Some(message)),
-                None => (cargs[0], None),
-            };
-            let expr = self.convert_condition(ctx.used(), true, ccond)?;
-            return Ok(Some(expr.and_then(|expr| {
-                let mut mac_args = vec![expr];
-                mac_args.extend(opt_message);
-                WithStmts::new_val(mk().mac_expr(mk().mac(
-                    mk().path("assert"),
-                    mac_call_exprs_tt(mac_args),
-                    MacroDelimiter::Paren(Default::default()),
-                )))
-            })));
-        }
-
-        Ok(None)
+        ccond: CExprId,
+        expected: bool,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        // assert(FOO)
+        //    when FOO is a simple variable
+        // should be translated to
+        // assert!(FOO)
+        //
+        // The C idiom of tacking a message onto the condition,
+        // assert(FOO && "message")
+        // becomes the two-argument form,
+        // assert!(FOO, "message")
+        //
+        // Note that in C the asserted expression must have scalar type,
+        // but in Rust the asserted expression is of boolean type. That mismatch
+        // is why we recognize this case pre-conversion.
+        let (ccond, opt_message) = match expected
+            .then(|| self.recognize_assert_condition_message(ccond))
+            .flatten()
+        {
+            Some((ccond, message)) => (ccond, Some(message)),
+            None => (ccond, None),
+        };
+        let expr = self.convert_condition(ctx.used(), expected, ccond)?;
+        Ok(expr.and_then(|expr| {
+            let mut mac_args = vec![expr];
+            mac_args.extend(opt_message);
+            WithStmts::new_val(mk().mac_expr(mk().mac(
+                mk().path("assert"),
+                mac_call_exprs_tt(mac_args),
+                MacroDelimiter::Paren(Default::default()),
+            )))
+        }))
     }
 
     fn recognize_preconversion_call_fd_zero(

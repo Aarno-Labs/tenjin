@@ -50,6 +50,7 @@ use crate::{ExternCrate, TranspilerConfig};
 use c2rust_ast_exporter::clang_ast::LRValue;
 
 mod assembly;
+mod asserts;
 mod atomics;
 mod builtins;
 mod cio;
@@ -4456,6 +4457,9 @@ impl<'c> Translation<'c> {
         }
 
         use CExprKind::*;
+        if let Some(assertion) = self.convert_expanded_assert(ctx, expr_id)? {
+            return Ok(assertion);
+        }
         match *expr_kind {
             DesignatedInitExpr(..) => {
                 Err(TranslationError::generic("Unexpected designated init expr"))
