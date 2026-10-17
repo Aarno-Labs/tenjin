@@ -2304,7 +2304,7 @@ def test_snort3_libdaq(tenjin_fixtures: TenjinFixtures):
             f" Rust gave {rs_unit_tests[program]!r}, C gave {c_result!r}"
         )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 173
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 93
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
