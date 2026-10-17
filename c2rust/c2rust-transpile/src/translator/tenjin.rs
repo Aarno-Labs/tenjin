@@ -957,7 +957,7 @@ impl Translation<'_> {
             );
         }
 
-        if let Some(call_form) = tenjin_use_crates::libz_rs_sys_call_form_cases(self, func) {
+        if let Some(call_form) = tenjin_use_crates::libz_rs_sys_call_form_cases(self, func, args) {
             return call_form;
         }
 
@@ -979,8 +979,7 @@ impl Translation<'_> {
         args: Vec<Box<Expr>>,
         cargs: &[CExprId],
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
-        let mk_call_with = |func: Box<Expr>, args: Vec<Box<Expr>>| {
-            let call_expr = mk().call_expr(func, args);
+        let cast_call = |call_expr: Box<Expr>| {
             self.make_cast(
                 ctx,
                 call_expr_ty,
@@ -1004,8 +1003,9 @@ impl Translation<'_> {
             );
         }
         match self.call_form_cases(&func, &args, cargs, ctx) {
-            RecognizedCallForm::RetargetedCallee(func) => mk_call_with(func, args),
-            RecognizedCallForm::OtherCall => mk_call_with(func, args),
+            RecognizedCallForm::RetargetedCallee(func) => cast_call(mk().call_expr(func, args)),
+            RecognizedCallForm::RewrittenCall(call) => cast_call(call),
+            RecognizedCallForm::OtherCall => cast_call(mk().call_expr(func, args)),
         }
     }
 

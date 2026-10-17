@@ -2156,6 +2156,7 @@ struct ConvertedVariable {
 #[allow(clippy::vec_box)]
 enum RecognizedCallForm {
     RetargetedCallee(Box<Expr>),
+    RewrittenCall(Box<Expr>),
     OtherCall,
 }
 

@@ -39,6 +39,22 @@ def test_errno_global(test_dir, tenjin_fixtures):
     single_file_check_translation("errno_global", "main.c", test_dir, tenjin_fixtures)
 
 
+def test_libz_strings(test_dir, tenjin_fixtures):
+    translation.do_translate(
+        TranslationFlags.simple(
+            tenjin_fixtures.root,
+            test_dir / "libz_strings",
+            tenjin_fixtures.tmp_resultsdir,
+            cratename="libz_strings",
+            buildcmd="clang main.c -lz -o main",
+        ),
+        guidance_path_or_literal='{"use_crates": ["libz-rs-sys"]}',
+    )
+    run_cargo_on_final(tenjin_fixtures.tmp_resultsdir / "final", ["run"])
+    clean_up_resultsdir(tenjin_fixtures.tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
 def test_float_classification_macros(test_dir, tenjin_fixtures):
     if platform.system() == "Darwin":
         return pytest.skip("mac currently exposes a refolder bug")
