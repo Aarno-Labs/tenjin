@@ -2852,21 +2852,7 @@ def test_kgabis_parson(tenjin_fixtures: TenjinFixtures):
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 
 
-@pytest.mark.slow  # expected runtime: ~170 s, up to the first failure below
-@pytest.mark.xfail(
-    reason="mquickjs does not yet translate end-to-end; it hits two blockers, in pipeline order. "
-    "(1) `pangs analyze --validate` rejects mquickjs.c's forward declaration "
-    "`static JSParseFunc *parse_func_table[];` vs its later definition "
-    "`static JSParseFunc *parse_func_table[] = {...12 entries...};` as 'incompatible source "
-    "declarations' (`int (*[])(struct JSParseState *, int, int)` vs `int (*[12])(...)`), "
-    "even though an incomplete array type is compatible with, and completed by, the later "
-    "sized definition in the same TU. "
-    "(2) With (1) worked around by sizing the forward declaration, localize_mutable_globals "
-    "blanks the definition `static __maybe_unused const char *js_mtag_name[JS_MTAG_COUNT] = "
-    "{...};` (mquickjs.c:75), and clang-refold then fails on mquickjs.c with 'no admissible "
-    "refold' (obligation=OwnerClosedCover reason=NoOwnerClosedCover for that hunk), "
-    "apparently because the blanked region begins inside the `__maybe_unused` macro expansion.",
-)
+@pytest.mark.slow  # expected runtime: ~170 s
 def test_bellard_mquickjs(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
