@@ -1817,6 +1817,8 @@ pub enum CDeclKind {
         is_global: bool,
         is_inline: bool,
         is_implicit: bool,
+        /// Clang recognizes a library builtin normally declared in a header.
+        is_library_builtin: bool,
         is_extern: bool,
         is_inline_externally_visible: bool,
         typ: CFuncTypeId,

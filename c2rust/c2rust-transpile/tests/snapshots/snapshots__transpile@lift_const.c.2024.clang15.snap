@@ -12,9 +12,6 @@ expression: cat tests/snapshots/lift_const.2024.clang15.rs
     unused_assignments,
     unused_mut
 )]
-unsafe extern "C" {
-    unsafe fn printf(format: *const u8, ...) -> ::core::ffi::c_int;
-}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lift_const(mut argc: ::core::ffi::c_int, mut argv: *mut *mut u8) {
     let mut starts_with_a: ::core::ffi::c_int = 0;
@@ -22,10 +19,10 @@ pub unsafe extern "C" fn lift_const(mut argc: ::core::ffi::c_int, mut argv: *mut
         starts_with_a = (**argv.offset(0 as isize) as ::core::ffi::c_int
             == 'a' as ::core::ffi::c_int) as ::core::ffi::c_int;
         if starts_with_a != 0 {
-            printf(b"  (arg 0 starts with 'a')\n\0".as_ptr());
+            ::xj_cio::printf!(b"  (arg 0 starts with 'a')\n");
         }
     }
     if argc == 3 as ::core::ffi::c_int {
-        printf(b"  (argc was 3)\n\0".as_ptr());
+        ::xj_cio::printf!(b"  (argc was 3)\n");
     }
 }

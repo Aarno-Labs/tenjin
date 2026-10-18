@@ -1,4 +1,4 @@
-//! Bind system stdio declarations to xj_cio, independently of type guidance.
+//! Bind system stdio declarations and recognized libc printf to xj_cio.
 use super::*;
 
 #[derive(Default)]
@@ -156,6 +156,36 @@ fn project_stdio_binding(tcfg: &TranspilerConfig, name: &str) -> bool {
         .is_some_and(|names| names.iter().any(|n| n.as_str() == Some(name)))
 }
 
+/// A hand-written printf prototype needs no FILE layout or header provenance.
+/// Require Clang's builtin recognition and the standard ABI, allowing char*
+/// as well as const char* for the format, as used by headerless C programs.
+fn headerless_libc_printf(ast: &TypedAstContext, decl: &CDecl) -> bool {
+    let CDeclKind::Function {
+        name,
+        typ,
+        attrs,
+        body: None,
+        is_global: true,
+        is_library_builtin: true,
+        ..
+    } = &decl.kind
+    else {
+        return false;
+    };
+    if name != "printf" || attrs.iter().any(|a| matches!(a, Attribute::Alias(_))) {
+        return false;
+    }
+    let CTypeKind::Function(ret, params, true, false, true) = &ast.resolve_type(*typ).kind else {
+        return false;
+    };
+    let [format] = params.as_slice() else {
+        return false;
+    };
+    matches!(ast.resolve_type(ret.ctype).kind, CTypeKind::Int)
+        && matches!(ast.resolve_type(format.ctype).kind,
+            CTypeKind::Pointer(pointee) if matches!(ast.resolve_type(pointee.ctype).kind, CTypeKind::Char))
+}
+
 /// Preflight before any stdio types or bindings are replaced. Unknown stdio
 /// provenance cannot safely share streams with xj_cio, so require explicit
 /// roots instead of attempting a per-call fallback.
@@ -185,7 +215,7 @@ impl CioReplacements {
         let mut result = Self::default();
         let roots = trusted_stdio_roots(tcfg);
         for (&id, decl) in ast.iter_decls() {
-            if !system_stdio_header(ast, decl, &roots) {
+            if !system_stdio_header(ast, decl, &roots) && !headerless_libc_printf(ast, decl) {
                 continue;
             }
             let id = canonical_stdio_decl(ast, id);

@@ -247,6 +247,58 @@ fn translated_text(dir: &std::path::Path, source: &str, guidance: serde_json::Va
 }
 
 #[test]
+fn headerless_libc_printf_uses_cio() {
+    for format_type in ["char *", "const char *"] {
+        let dir = tempfile::tempdir().unwrap();
+        let rust = translated_text(
+            dir.path(),
+            &format!(
+                r#"
+                int printf({format_type}fmt, ...);
+                void demo(char *fmt) {{
+                    printf("Error: Not enough memory!\n");
+                    printf("%d\n", 42);
+                    printf(fmt, 42);
+                }}
+            "#
+            ),
+            serde_json::json!({}),
+        );
+        assert!(
+            rust.contains("xj_cio::printf!(b\"Error: Not enough memory!\\n\")"),
+            "{rust}"
+        );
+        assert!(rust.contains("xj_cio::printf!(b\"%d\\n\", 42"), "{rust}");
+        assert!(rust.contains("xj_cio::printf_raw!("), "{rust}");
+        assert!(!rust.contains("fn printf("), "{rust}");
+    }
+}
+
+#[test]
+fn headerless_non_libc_printf_bindings_are_preserved() {
+    for declaration in [
+        r#"int printf(char *fmt, ...) __asm__("project_printf");"#,
+        "long printf(char *fmt, ...);",
+        "int printf(char *fmt, int extra, ...);",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let rust = translated_text(
+            dir.path(),
+            &format!(
+                r#"{declaration}
+                void demo(void) {{ printf("message\n", 1); }}"#
+            ),
+            serde_json::json!({}),
+        );
+        assert!(rust.contains("fn printf("), "{rust}");
+        assert!(!rust.contains("xj_cio::printf"), "{rust}");
+        if declaration.contains("__asm__") {
+            assert!(rust.contains("link_name = \"project_printf\""), "{rust}");
+        }
+    }
+}
+
+#[test]
 fn project_stdio_definitions_keep_their_identity() {
     let dir = tempfile::tempdir().unwrap();
     let rust = translated_text(
@@ -390,7 +442,7 @@ fn project_stdio_bindings_apply_across_translation_units() {
         "#include <stdio.h>\nint printf(const char *f, ...) { return 17; }\n",
     )
     .unwrap();
-    fs::write(&caller, "#include <stdio.h>\nint main(void) { const char *f = \"%d\"; return printf(\"%d\", 1) + printf(f, 1) - 34; }\n").unwrap();
+    fs::write(&caller, "int printf(const char *, ...);\nint main(void) { const char *f = \"%d\"; return printf(\"%d\", 1) + printf(f, 1) - 34; }\n").unwrap();
     let mut cfg = common::config(Edition2024, serde_json::json!({}));
     cfg.output_dir = Some(dir.path().join("translated"));
     let (_commands_dir, commands) =

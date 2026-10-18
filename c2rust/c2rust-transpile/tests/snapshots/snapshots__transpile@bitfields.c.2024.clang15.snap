@@ -13,9 +13,6 @@ expression: cat tests/snapshots/bitfields.2024.clang15.rs
     unused_mut
 )]
 use ::c2rust_bitfields::BitfieldStruct;
-unsafe extern "C" {
-    unsafe fn printf(_: *const u8, ...) -> ::core::ffi::c_int;
-}
 #[derive(Copy, Clone, ::c2rust_bitfields::BitfieldStruct)]
 #[repr(C)]
 pub struct PacketHeader {
@@ -50,10 +47,10 @@ pub unsafe extern "C" fn test_bitfields() {
     };
     h.set_version(5 as ::core::ffi::c_uchar);
     h.set_sequence(513 as ::core::ffi::c_ushort);
-    printf(
-        b"version=%u sequence=%u\n\0".as_ptr(),
-        h.version() as ::core::ffi::c_int,
-        h.sequence() as ::core::ffi::c_int,
+    ::xj_cio::printf!(
+        b"version=%u sequence=%u\n",
+        (h.version() as ::core::ffi::c_int) as ::core::ffi::c_uint,
+        (h.sequence() as ::core::ffi::c_int) as ::core::ffi::c_uint
     );
     let mut s: SingleRawIdent = {
         let mut init = SingleRawIdent { r#as: [0; 1] };
