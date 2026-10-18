@@ -2345,6 +2345,8 @@ impl ConversionContext {
                     let attributes = from_value::<Vec<Value>>(node.extras[6].clone())
                         .expect("Expected attribute array on var decl");
                     let attrs = self.parse_attributes(attributes);
+                    let manual_alignment = from_value(node.extras[7].clone())
+                        .expect("Expected optional variable alignment");
 
                     assert!(
                         has_static_duration || has_thread_duration || !is_externally_visible,
@@ -2370,6 +2372,7 @@ impl ConversionContext {
                         is_externally_visible,
                         is_defn,
                         has_global_storage,
+                        manual_alignment,
                         ident,
                         initializer,
                         typ,

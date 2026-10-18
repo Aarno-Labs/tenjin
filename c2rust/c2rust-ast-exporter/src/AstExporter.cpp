@@ -2393,6 +2393,14 @@ class TranslateASTVisitor final
                 }
 
                 cbor_encoder_close_container(array, &attr_array);
+
+                // Alignment belongs to this variable's storage, not its type.
+                auto alignment = def->getMaxAlignment();
+                if (alignment) {
+                    cbor_encode_uint(array, Context->getDeclAlign(def).getQuantity());
+                } else {
+                    cbor_encode_null(array);
+                }
             });
 
         typeEncoder.VisitQualTypeOf(T, def);

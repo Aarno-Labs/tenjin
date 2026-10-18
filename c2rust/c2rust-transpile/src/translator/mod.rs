@@ -49,6 +49,7 @@ use crate::{c_ast, format_translation_err};
 use crate::{ExternCrate, TranspilerConfig};
 use c2rust_ast_exporter::clang_ast::LRValue;
 
+mod alignment;
 mod assembly;
 mod asserts;
 mod atomics;
@@ -732,6 +733,7 @@ pub struct Translation<'c> {
     /// causes an additional set to be pushed onto the `deferred_imports` vector.
     deferred_imports: RefCell<Vec<IndexSet<Import>>>,
     cleanup_guard_emitted: Cell<bool>,
+    variable_alignment_types: RefCell<HashMap<(FileId, u64), Ident>>,
 
     // Comment support
     pub comment_context: CommentContext,      // Incoming comments
@@ -2193,6 +2195,7 @@ impl<'c> Translation<'c> {
             macro_expansions: RefCell::new(IndexMap::new()),
             deferred_imports: RefCell::new(Vec::new()),
             cleanup_guard_emitted: Cell::new(false),
+            variable_alignment_types: RefCell::new(HashMap::new()),
             comment_context,
             comment_store: RefCell::new(CommentStore::new()),
             spans: HashMap::new(),
@@ -2509,6 +2512,7 @@ impl<'c> Translation<'c> {
     fn add_static_initializer_to_section(
         &self,
         ctx: ExprContext,
+        decl_id: CDeclId,
         name: &str,
         typ: CQualTypeId,
         init: &mut Box<Expr>,
@@ -2517,7 +2521,7 @@ impl<'c> Translation<'c> {
 
         std::mem::swap(init, &mut default_init);
 
-        let root_lhs_expr = mk().path_expr(vec![name]);
+        let root_lhs_expr = self.aligned_variable_access(decl_id, mk().path_expr(vec![name]));
         let assign_expr = mk().assign_expr(root_lhs_expr, default_init);
         let stmt = mk().expr_stmt(assign_expr);
 
@@ -3036,13 +3040,15 @@ impl<'c> Translation<'c> {
                     .query_decl_type(self, decl_id);
                 // XREF:extern_var_nonmutbl
                 let guided_mutbl = self.parsed_guidance.borrow().query_decl_mut(self, decl_id);
-                let ConvertedVariable { ty, mutbl, init: _ } = self.convert_variable(
+                let variable = self.convert_variable(
                     ctx.static_().const_(),
                     None,
                     typ,
                     &guided_type,
                     guided_mutbl,
                 )?;
+                let ConvertedVariable { ty, mutbl, init: _ } =
+                    self.align_variable(decl_id, variable)?;
 
                 let mut extern_item = mk_linkage(true, &new_name, ident, self.tcfg.edition)
                     .span(span)
@@ -3162,7 +3168,16 @@ impl<'c> Translation<'c> {
                         .map(pos_to_span)
                         .unwrap_or(span);
 
-                    self.add_static_initializer_to_section(ctx, new_name, typ, &mut init)?;
+                    self.add_static_initializer_to_section(ctx, decl_id, new_name, typ, &mut init)?;
+                    let ConvertedVariable { ty, init, .. } = self.align_variable(
+                        decl_id,
+                        ConvertedVariable {
+                            ty,
+                            mutbl: rust_mutbl,
+                            init: Ok(WithStmts::new_val(init)),
+                        },
+                    )?;
+                    let init = init?.to_expr();
 
                     Ok(ConvertedDecl::Item(
                         static_def.span(span).static_item(new_name, ty, init),
@@ -3170,6 +3185,7 @@ impl<'c> Translation<'c> {
                 } else {
                     let items = self.convert_compilable_static(
                         ctx,
+                        decl_id,
                         static_def.span(span),
                         new_name,
                         initializer,
@@ -3532,6 +3548,7 @@ impl<'c> Translation<'c> {
     fn convert_compilable_static(
         &self,
         ctx: ExprContext,
+        decl_id: CDeclId,
         static_def: Builder,
         name: &str,
         initializer: Option<CExprId>,
@@ -3539,8 +3556,9 @@ impl<'c> Translation<'c> {
         guided_type: &Option<tenjin::GuidedType>,
         guided_mutbl: Option<Mutability>,
     ) -> TranslationResult<Vec<Box<Item>>> {
-        let ConvertedVariable { ty, mutbl: _, init } =
+        let variable =
             self.convert_variable(ctx.const_(), initializer, typ, guided_type, guided_mutbl)?;
+        let ConvertedVariable { ty, mutbl: _, init } = self.align_variable(decl_id, variable)?;
         let mut init = init?;
         let mut items = init
             .stmts_to_items()
@@ -3592,6 +3610,19 @@ impl<'c> Translation<'c> {
                 let ConvertedVariable { ty, mutbl: _, init } =
                     self.convert_variable(ctx, initializer, typ, &guided_type, guided_mutbl)?;
                 let default_init = self.implicit_default_expr(ctx, typ.ctype)?.to_expr();
+                let ConvertedVariable {
+                    ty,
+                    init: default_init,
+                    ..
+                } = self.align_variable(
+                    decl_id,
+                    ConvertedVariable {
+                        ty,
+                        mutbl: Mutability::Mutable,
+                        init: Ok(WithStmts::new_val(default_init)),
+                    },
+                )?;
+                let default_init = default_init?.to_expr();
                 let comment = String::from("// Initialized in c2rust_run_static_initializers");
                 let span = self
                     .comment_store
@@ -3605,7 +3636,7 @@ impl<'c> Translation<'c> {
                     .static_item(&ident2, ty, default_init);
                 let mut init = init?.set_unsafe().to_expr();
 
-                self.add_static_initializer_to_section(ctx, &ident2, typ, &mut init)?;
+                self.add_static_initializer_to_section(ctx, decl_id, &ident2, typ, &mut init)?;
                 self.items.borrow_mut()[&self.main_file].add_item(static_item);
 
                 return Ok(cfg::DeclStmtInfo::empty());
@@ -3626,6 +3657,7 @@ impl<'c> Translation<'c> {
                     .unwrap_or_else(Span::call_site);
                 let items = self.convert_compilable_static(
                     ctx.static_(),
+                    decl_id,
                     mk().span(span).mutbl(),
                     &ident2,
                     initializer,
@@ -3679,6 +3711,11 @@ impl<'c> Translation<'c> {
                     .unwrap_or_else(|| panic!("Failed to insert variable '{ident}'"));
 
                 if self.ast_context.is_va_list(typ.ctype) {
+                    if self.variable_alignment(decl_id).is_some() {
+                        return Err(TranslationError::generic(
+                            "Explicit alignment on a va_list variable is not supported",
+                        ));
+                    }
                     // Translate `va_list` variables to the current Rust `va_list` type and omit the initializer.
                     let pat_mut = mk().mutbl().ident_pat(rust_name);
                     let ty = mk_va_list_ty(self.tcfg.edition, None);
@@ -3702,8 +3739,10 @@ impl<'c> Translation<'c> {
                 let mut stmts = self.compute_variable_array_sizes(ctx, typ.ctype)?;
 
                 // XREF:guided_local_nonmut
-                let ConvertedVariable { ty, mutbl, init } =
+                let variable =
                     self.convert_variable(ctx, initializer, typ, &guided_type, guided_mutbl)?;
+                let ConvertedVariable { ty, mutbl, init } =
+                    self.align_variable(decl_id, variable)?;
                 let mut init = init?;
 
                 log::trace!(
@@ -3743,6 +3782,7 @@ impl<'c> Translation<'c> {
                     zeroed.to_pure_expr()
                 }
                 .expect("Expected decl initializer to not have any statements");
+                let zeroed = self.aligned_variable_init(decl_id, zeroed);
 
                 let cleanup_guard_stmt: Option<Stmt> = attrs
                     .iter()
@@ -3759,7 +3799,8 @@ impl<'c> Translation<'c> {
                             .get(&fn_id)
                             .expect("cleanup function not registered with renamer");
                         let cleanup_ident = mk().ident(&cleanup_name);
-                        let var_ident = mk().ident(&rust_name);
+                        let var_ident =
+                            self.aligned_variable_access(decl_id, mk().ident_expr(&rust_name));
                         let guard_ident = mk().ident(format!("_cleanup_{}", rust_name));
                         syn::parse_quote! {
                             let #guard_ident = CleanupGuard(
@@ -3800,7 +3841,9 @@ impl<'c> Translation<'c> {
 
                     let pat = mk().set_mutbl(mutbl).ident_pat(rust_name.clone());
 
-                    let type_annotation = if let Some(g) = guided_type {
+                    let type_annotation = if self.variable_alignment(decl_id).is_some() {
+                        Some(ty)
+                    } else if let Some(g) = guided_type {
                         Some(Box::new(g.parsed))
                     } else if self.tcfg.reduce_type_annotations
                         && !self.should_assign_type_annotation(typ.ctype, initializer)
@@ -4479,12 +4522,21 @@ impl<'c> Translation<'c> {
             ConvertVector(..) => Err(TranslationError::generic("convert vector not supported")),
 
             UnaryType(result_type_id, kind, opt_expr, arg_ty) => {
-                // `__alignof__`/`_Alignof` applied directly to a struct
-                // field (e.g. `__alignof__(s->f)`) should reflect that
-                // field's own manual `__attribute__((aligned(N)))`, if any,
-                // rather than its type's natural alignment.
+                // Expression-form alignment queries reflect explicit alignment
+                // on variables and fields, rather than just their C types.
                 if matches!(kind, CUnTypeOp::AlignOf | CUnTypeOp::PreferredAlignOf) {
                     if let Some(field_expr) = opt_expr {
+                        if let CExprKind::DeclRef(_, decl_id, _) =
+                            self.ast_context.index_unwrap_parens(field_expr).kind
+                        {
+                            if let Some(alignment) = self.variable_alignment(decl_id) {
+                                let ty = self.convert_type(result_type_id.ctype)?;
+                                return Ok(WithStmts::new_val(mk().cast_expr(
+                                    mk().lit_expr(mk().int_unsuffixed_lit(alignment)),
+                                    ty,
+                                )));
+                            }
+                        }
                         if let CExprKind::Member(_, _, decl_id, _, _) =
                             self.ast_context.index_unwrap_parens(field_expr).kind
                         {
@@ -5097,7 +5149,7 @@ impl<'c> Translation<'c> {
         //     _ => self.add_import(decl_id, &rustname),
         // }
 
-        let mut val = mk().path_expr(vec![rustname]);
+        let mut val = self.aligned_variable_access(decl_id, mk().path_expr(vec![rustname]));
         if ctx.needs_address {
             if let Some(target) = self.cio_replacements.functions.get(&decl_id) {
                 self.use_crate(ExternCrate::XjCio);

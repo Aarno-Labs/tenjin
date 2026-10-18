@@ -1833,6 +1833,8 @@ pub enum CDeclKind {
         is_externally_visible: bool,
         is_defn: bool,
         has_global_storage: bool,
+        /// Explicit storage alignment in bytes (`aligned` or `_Alignas`).
+        manual_alignment: Option<u64>,
         ident: String,
         initializer: Option<CExprId>,
         typ: CQualTypeId,
