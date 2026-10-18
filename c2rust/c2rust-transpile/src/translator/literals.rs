@@ -6,6 +6,39 @@ use super::*;
 use failure::format_err;
 use syn::{Path, TypePath};
 
+fn float_literal_spelling(value: f64, spelling: &str) -> String {
+    if spelling.is_empty() {
+        dtoa::Buffer::new().format(value).to_owned()
+    } else {
+        spelling.to_owned()
+    }
+}
+
+/// Whether reparsing a literal at the target precision preserves C's conversion.
+pub(super) fn can_retype_float_literal(
+    value: f64,
+    spelling: &str,
+    source: &CTypeKind,
+    target: &CTypeKind,
+) -> bool {
+    if source == target {
+        return true;
+    }
+    // The exporter supplies the value already rounded to the literal's C type.
+    // Compare bits to preserve signed zero, and parse directly at the target
+    // precision to account for double rounding during narrowing conversions.
+    let spelling = float_literal_spelling(value, spelling);
+    match (source, target) {
+        (CTypeKind::Float, CTypeKind::Double) => spelling
+            .parse::<f64>()
+            .is_ok_and(|direct| direct.to_bits() == value.to_bits()),
+        (CTypeKind::Double, CTypeKind::Float) => spelling
+            .parse::<f32>()
+            .is_ok_and(|direct| direct.to_bits() == (value as f32).to_bits()),
+        _ => false,
+    }
+}
+
 impl Translation<'_> {
     /// Generate an integer literal corresponding to the given type, value, and base.
     pub fn mk_int_lit(
@@ -129,12 +162,7 @@ impl Translation<'_> {
             }
 
             CLiteral::Floating(val, ref c_str) => {
-                let str = if c_str.is_empty() {
-                    let mut buffer = dtoa::Buffer::new();
-                    buffer.format(val).to_string()
-                } else {
-                    c_str.to_owned()
-                };
+                let str = float_literal_spelling(val, c_str);
                 let val = match self.ast_context.resolve_type(ty.ctype).kind {
                     CTypeKind::LongDouble | CTypeKind::Float128 => {
                         if ctx.is_const {

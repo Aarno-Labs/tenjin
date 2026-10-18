@@ -5607,7 +5607,17 @@ impl<'c> Translation<'c> {
             is_negated = true;
         }
 
-        if let CExprKind::Literal(_, lit) = literal_expr_kind {
+        if let CExprKind::Literal(source_type_id, lit) = literal_expr_kind {
+            if let CLiteral::Floating(value, spelling) = lit {
+                if !literals::can_retype_float_literal(
+                    *value,
+                    spelling,
+                    &self.ast_context.resolve_type(source_type_id.ctype).kind,
+                    &self.ast_context.resolve_type(target_type_id.ctype).kind,
+                ) {
+                    return false;
+                }
+            }
             // Does the inner literal fit in the type we're casting to?
             if self.literal_matches_ty(lit, target_type_id, is_negated) {
                 return true;
