@@ -317,7 +317,7 @@ pub enum GenTerminator<Lbl> {
     /// Multi-way branch. The patterns are expected to match the type of the expression.
     Switch {
         expr: Box<Expr>,
-        cases: Vec<(Pat, Lbl)>, // TODO: support ranges of expressions
+        cases: Vec<(Pat, Lbl)>,
     },
 }
 
@@ -1172,7 +1172,7 @@ impl CfgBuilder {
                 .iter()
                 .any(|&decl_id| Self::decl_has_cleanup_attr(translator, decl_id)),
             CStmtKind::Label(sub_stmt)
-            | CStmtKind::Case(_, sub_stmt, _)
+            | CStmtKind::Case(_, sub_stmt, _, _)
             | CStmtKind::Default(sub_stmt)
             | CStmtKind::Attributed {
                 substatement: sub_stmt,
@@ -1925,7 +1925,7 @@ impl CfgBuilder {
                 Ok(None)
             }
 
-            CStmtKind::Case(case_expr, sub_stmt, cie) => {
+            CStmtKind::Case(case_expr, sub_stmt, cie, end) => {
                 self.last_per_stmt_mut().saw_unmatched_case = true;
                 let this_label = Label::FromC(stmt_id, None);
                 self.add_wip_block(wip, Jump(this_label.clone()));
@@ -1938,33 +1938,24 @@ impl CfgBuilder {
                     )
                 })?;
 
-                let pat = translator
-                    .convert_expr_with_optional_cast(
-                        ctx.const_().pattern().used(),
-                        switch_case.expected_type_id,
-                        case_expr,
-                    )
-                    .map_err(|err| ("convert_expr", err.to_string()))
-                    .and_then(|val| {
-                        val.to_pure_expr()
-                            .ok_or_else(|| ("to_pure_expr", "".to_string()))
-                    })
-                    .and_then(|expr| {
-                        rust_ast::expr_to_pat(*expr).map_err(|err| ("expr_to_pat", err))
-                    })
-                    .unwrap_or_else(|(src, err)| {
-                        log::trace!(
-                            "Converting `case` {:?} failed in {}: {}",
-                            case_expr,
-                            src,
-                            err
-                        );
-
-                        let mut pat = match cie {
-                            ConstIntExpr::U(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
-                            ConstIntExpr::I(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
+                let pat = if let Some((_, end)) = end {
+                    // Use Clang's evaluated endpoints: arbitrary C constant expressions
+                    // (and enum constructors) are not valid Rust range endpoints.
+                    let value = |n| match n {
+                        ConstIntExpr::U(n) => i128::from(n),
+                        ConstIntExpr::I(n) => i128::from(n),
+                    };
+                    if value(cie) <= value(end) {
+                        let expr = |n| match n {
+                            ConstIntExpr::U(n) => mk().lit_expr(mk().int_unsuffixed_lit(n)),
+                            ConstIntExpr::I(n) => mk().lit_expr(mk().int_unsuffixed_lit(n)),
                         };
-
+                        let mut pat = Pat::Range(syn::ExprRange {
+                            attrs: vec![],
+                            start: Some(expr(cie)),
+                            limits: syn::RangeLimits::Closed(Default::default()),
+                            end: Some(expr(end)),
+                        });
                         if let Some(expected_type_id) = switch_case.expected_type_id {
                             if let CTypeKind::Enum(enum_id) = translator
                                 .ast_context
@@ -1974,11 +1965,59 @@ impl CfgBuilder {
                                 pat = translator.enum_constructor_pat(enum_id, pat);
                             }
                         }
+                        Some(pat)
+                    } else {
+                        // Clang accepts empty ranges. Their statements can still be
+                        // reached by fallthrough, but no switch value selects them.
+                        None
+                    }
+                } else {
+                    Some(
+                        translator
+                            .convert_expr_with_optional_cast(
+                                ctx.const_().pattern().used(),
+                                switch_case.expected_type_id,
+                                case_expr,
+                            )
+                            .map_err(|err| ("convert_expr", err.to_string()))
+                            .and_then(|val| {
+                                val.to_pure_expr()
+                                    .ok_or_else(|| ("to_pure_expr", "".to_string()))
+                            })
+                            .and_then(|expr| {
+                                rust_ast::expr_to_pat(*expr).map_err(|err| ("expr_to_pat", err))
+                            })
+                            .unwrap_or_else(|(src, err)| {
+                                log::trace!(
+                                    "Converting `case` {:?} failed in {}: {}",
+                                    case_expr,
+                                    src,
+                                    err
+                                );
 
-                        pat
-                    });
+                                let mut pat = match cie {
+                                    ConstIntExpr::U(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
+                                    ConstIntExpr::I(n) => mk().lit_pat(mk().int_unsuffixed_lit(n)),
+                                };
 
-                switch_case.cases.push((pat, this_label.clone()));
+                                if let Some(expected_type_id) = switch_case.expected_type_id {
+                                    if let CTypeKind::Enum(enum_id) = translator
+                                        .ast_context
+                                        .resolve_type(expected_type_id.ctype)
+                                        .kind
+                                    {
+                                        pat = translator.enum_constructor_pat(enum_id, pat);
+                                    }
+                                }
+
+                                pat
+                            }),
+                    )
+                };
+
+                if let Some(pat) = pat {
+                    switch_case.cases.push((pat, this_label.clone()));
+                }
 
                 // Sub stmt
                 let sub_stmt_next = self.convert_stmt_help(

@@ -542,12 +542,13 @@ impl ConversionContext {
                 .typed_context
                 .c_stmts
                 .values()
-                .filter_map(|c| {
-                    if let &CStmtKind::Case(expr, _, _) = &c.kind {
-                        Some(expr)
-                    } else {
-                        None
+                .flat_map(|c| {
+                    match c.kind {
+                        CStmtKind::Case(expr, _, _, end) => [Some(expr), end.map(|(expr, _)| expr)],
+                        _ => [None, None],
                     }
+                    .into_iter()
+                    .flatten()
                 })
                 .collect();
             move |e| case_exprs.contains(&e)
@@ -1259,18 +1260,24 @@ impl ConversionContext {
                     let substmt_old = node.children[1].expect("Case sub-statement not found");
                     let substmt = self.visit_stmt(substmt_old);
 
-                    let is_signed = from_value(node.extras[0].clone())
-                        .expect("Case constant is_signed not found");
-                    let cie = match is_signed {
-                        false => ConstIntExpr::U(
-                            from_value(node.extras[1].clone()).expect("Case constant not found"),
-                        ),
-                        true => ConstIntExpr::I(
-                            from_value(node.extras[1].clone()).expect("Case constant not found"),
-                        ),
+                    let constant = |offset: usize| {
+                        let is_signed = from_value(node.extras[offset].clone())
+                            .expect("Case constant is_signed not found");
+                        match is_signed {
+                            false => ConstIntExpr::U(
+                                from_value(node.extras[offset + 1].clone())
+                                    .expect("Case constant not found"),
+                            ),
+                            true => ConstIntExpr::I(
+                                from_value(node.extras[offset + 1].clone())
+                                    .expect("Case constant not found"),
+                            ),
+                        }
                     };
+                    let cie = constant(0);
+                    let end = node.children[2].map(|end| (self.visit_expr(end), constant(2)));
 
-                    let case_stmt = CStmtKind::Case(expr, substmt, cie);
+                    let case_stmt = CStmtKind::Case(expr, substmt, cie, end);
 
                     self.add_stmt(new_id, located(node, case_stmt));
                     self.processed_nodes.insert(new_id, OTHER_STMT);
@@ -2338,6 +2345,8 @@ impl ConversionContext {
                     let attributes = from_value::<Vec<Value>>(node.extras[6].clone())
                         .expect("Expected attribute array on var decl");
                     let attrs = self.parse_attributes(attributes);
+                    let manual_alignment = from_value(node.extras[7].clone())
+                        .expect("Expected optional variable alignment");
 
                     assert!(
                         has_static_duration || has_thread_duration || !is_externally_visible,
@@ -2363,6 +2372,7 @@ impl ConversionContext {
                         is_externally_visible,
                         is_defn,
                         has_global_storage,
+                        manual_alignment,
                         ident,
                         initializer,
                         typ,

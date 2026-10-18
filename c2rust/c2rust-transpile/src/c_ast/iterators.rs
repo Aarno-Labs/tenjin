@@ -196,7 +196,11 @@ fn immediate_stmt_children(kind: &CStmtKind) -> Vec<SomeId> {
     match *kind {
         Expr(e) => intos![e],
         Label(s) => intos![s],
-        Case(e, s, _) => intos![e, s],
+        Case(e, s, _, end) => {
+            let mut children = intos![e, s];
+            children.extend(end.map(|(e, _)| SomeId::from(e)));
+            children
+        }
         Default(s) => intos![s],
 
         // Compound statements (6.8.2)
