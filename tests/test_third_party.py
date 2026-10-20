@@ -1199,7 +1199,7 @@ def test_piotrl__c_markdown_exe(tenjin_fixtures: TenjinFixtures):
     tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
     codebase = cached_git_clone_at_commit(
         "https://github.com/tenjin-corpus/piotrl__c-markdown.git",
-        "60c376337c17ff0163c90027bb658ca51c7c9e73",
+        "80cf5c9c8ca4d847dc0aece825c87a377be0888a",
     )
     translation_preparation.copy_codebase(codebase, tmp_codebase)
 

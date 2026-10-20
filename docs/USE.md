@@ -558,6 +558,8 @@ Note that, in general, undefined behavior in C code may result in code which suc
 Tenjin strives to support a large subset of C, but there are some
 limitations to its support:
 
+- Translated code treats `char` as unsigned, even on platforms where it would natively be signed. This can alter behavior (such as introducing infinite loops) in non-portable code.
+
 - Using macros to "hide" punctuator tokens (such as `;` or `,`)
   from source-level analysis can produce incorrect results.
 
