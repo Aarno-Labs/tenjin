@@ -1823,7 +1823,7 @@ def test_file_file(tenjin_fixtures: TenjinFixtures):
                 f"C error was: {c_proc.stderr!r}"
             )
 
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 0
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 329
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
 

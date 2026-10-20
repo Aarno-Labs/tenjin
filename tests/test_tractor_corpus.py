@@ -1325,7 +1325,7 @@ def test_tractor_b2_synthetic_gotomach_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_hatch_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/hatch_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 7
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 6
 
 
 @pytest.mark.slow
@@ -1346,7 +1346,7 @@ def test_tractor_b2_synthetic_jumpnode_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_mathop_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/mathop_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 4
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 3
 
 
 @pytest.mark.slow
@@ -1381,7 +1381,7 @@ def test_tractor_b2_synthetic_memchra2_lib(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_modeselect_lib(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/modeselect_lib"
     eval_tractor_ta3_corpus_lib(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 4
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir / Path(case_dir).name) == 3
 
 
 @pytest.mark.slow
@@ -1774,7 +1774,7 @@ def test_tractor_b2_synthetic_memmove_app(tenjin_fixtures: TenjinFixtures):
 def test_tractor_b2_synthetic_mutable_duplication_dag_app(tenjin_fixtures: TenjinFixtures):
     case_dir = "Public-Tests/B02_synthetic/mutable_duplication_dag"
     eval_tractor_ta3_corpus_app(tenjin_fixtures, case_dir)
-    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 14
+    assert get_final_unsafe_fns_count(tenjin_fixtures.tmp_resultsdir) == 12
 
 
 @pytest.mark.slow
