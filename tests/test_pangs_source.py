@@ -261,6 +261,37 @@ def test_failed_materialization_leaves_original_tree_untouched(tmp_path, monkeyp
     assert list(tmp_path.iterdir()) == [root]
 
 
+@pytest.mark.parametrize("joined", [False, True])
+@pytest.mark.parametrize("dependency_mode", ["-M", "-MM", "-MD", "-MMD"])
+def test_c_validation_ignores_build_outputs(tmp_path, joined, dependency_mode):
+    source = tmp_path / "test.i"
+    source.write_text("int main(void){return 0;}\n")
+    outputs = [tmp_path / name for name in ("test.o", "test.json", "test.d")]
+    for path in outputs:
+        path.write_text("original build output\n")
+    args = ["clang", "-c", dependency_mode, "-MP"]
+    for option, value in [
+        ("-o", str(outputs[0])),
+        ("-MJ", str(outputs[1])),
+        ("-MF", str(outputs[2])),
+        ("-MT", "test.o"),
+        ("-MQ", "test target.o"),
+    ]:
+        args.extend([option + value] if joined else [option, value])
+    args.append(str(source))
+    compdb = compilation_database.CompileCommands([
+        compilation_database.CompileCommand(
+            directory=str(tmp_path), file=str(source), arguments=args
+        )
+    ])
+
+    pangs_source.validate_c(compdb)
+    assert all(path.read_text() == "original build output\n" for path in outputs)
+    source.write_text("int main(void){return undeclared;}\n")
+    with pytest.raises(ValueError, match="undeclared"):
+        pangs_source.validate_c(compdb)
+
+
 def test_guidance_forwards_exact_local_static_binding_without_source_policy(tmp_path):
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(

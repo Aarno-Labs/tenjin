@@ -145,9 +145,33 @@ def validation_commands(
         for arg in args[1:]:
             if skip:
                 skip = False
-            elif arg in {"-o", "--output", "-x", "-D", "-U", "-include", "-imacros"}:
+            elif arg in {
+                "-o",
+                "--output",
+                "-x",
+                "-D",
+                "-U",
+                "-include",
+                "-imacros",
+                "-MF",
+                "-MJ",
+                "-MT",
+                "-MQ",
+            }:
                 skip = True
-            elif arg not in {"-c", "-emit-llvm"} and not arg.startswith(("-o", "-D", "-U")):
+            # Build metadata is irrelevant here: -MJ crashes Clang 14 with
+            # -fsyntax-only, and dependency-only modes can bypass type checking.
+            elif arg not in {
+                "-c",
+                "-emit-llvm",
+                "-M",
+                "-MM",
+                "-MD",
+                "-MMD",
+                "-MG",
+                "-MP",
+                "-MV",
+            } and not arg.startswith(("-o", "-D", "-U", "-MF", "-MJ", "-MT", "-MQ")):
                 filtered.append(arg)
         # Materialization introduces generated #includes. Preprocess these, but
         # do not reapply macros/forced includes to already-preprocessed user code.
