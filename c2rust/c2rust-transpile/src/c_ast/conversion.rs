@@ -2110,6 +2110,13 @@ impl ConversionContext {
                     let attributes = from_value::<Vec<Value>>(node.extras[7].clone())
                         .expect("Expected to find attributes");
                     let attrs = self.parse_attributes(attributes);
+                    let is_library_builtin = node
+                        .extras
+                        .get(8)
+                        .map(|value| {
+                            from_value(value.clone()).expect("Expected library builtin flag")
+                        })
+                        .unwrap_or(false);
 
                     // The always_inline attribute implies inline even if the
                     // inline keyword is not present.
@@ -2141,6 +2148,7 @@ impl ConversionContext {
                         is_extern,
                         is_global,
                         is_implicit,
+                        is_library_builtin,
                         is_inline,
                         is_inline_externally_visible,
                         name,

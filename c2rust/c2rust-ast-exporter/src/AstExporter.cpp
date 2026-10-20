@@ -2301,6 +2301,11 @@ class TranslateASTVisitor final
                 }
 
                 cbor_encoder_close_container(array, &attr_array);
+                // Library builtins can be declared by hand without including
+                // their standard header. Retain Clang's recognition separately
+                // from compiler-only builtins such as __builtin_clz.
+                cbor_encode_boolean(
+                    array, bid && Context->BuiltinInfo.getHeaderName(bid));
             });
         typeEncoder.VisitQualTypeOf(functionType, paramsFD);
 

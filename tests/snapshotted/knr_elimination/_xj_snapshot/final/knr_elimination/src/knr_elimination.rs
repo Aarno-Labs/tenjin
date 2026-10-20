@@ -10,9 +10,6 @@
 #[allow(unused_imports)]
 use ::knr_elimination as _;
 use ::std::process::ExitCode;
-extern "C" {
-    fn printf(_: *const u8, ...) -> ::core::ffi::c_int;
-}
 #[no_mangle]
 pub extern "C" fn scale(
     mut x: ::core::ffi::c_int,
@@ -49,13 +46,13 @@ pub extern "C" fn seven() -> ::core::ffi::c_int {
     7
 }
 unsafe fn main_0() -> ::core::ffi::c_int {
-    printf(
-        b"%d %d %d %d %d\n\0".as_ptr(),
+    ::xj_cio::printf!(
+        "%d %d %d %d %d\n",
         scale(6, 7),
         blend('A' as ::core::ffi::c_int, 2.0f64),
         total(1, 2, b"z\0".as_ptr() as *mut u8),
         first_of(b"xyz\0".as_ptr() as *mut u8, 1),
-        seven(),
+        seven()
     );
     0
 }

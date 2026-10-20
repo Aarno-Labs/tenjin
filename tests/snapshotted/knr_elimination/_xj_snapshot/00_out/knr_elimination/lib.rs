@@ -5,3 +5,5 @@
 #![allow(non_upper_case_globals)]
 #![allow(unused_assignments)]
 #![allow(unused_mut)]
+
+extern crate xj_cio;
