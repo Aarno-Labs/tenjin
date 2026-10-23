@@ -3528,3 +3528,159 @@ def test_google_brotli(tenjin_fixtures: TenjinFixtures):
     assert get_final_unsafe_fns_count(tmp_resultsdir) == 830
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+# The arguments gecko's test/test.sh runs each of its test programs with. test01 and
+# test02 must exit 0; the others' combined stdout and stderr must match test/<name>.out.
+GECKO_TEST_SH_ARGS = {
+    **{f"test{i:02}": ["0"] for i in (1, 2)},
+    **{f"test{i:02}": ["1", "0"] for i in (*range(3, 23), 43)},
+    **{f"test{i}": ["0", "0"] for i in range(23, 40)},
+    **{f"test{i}": [] for i in (41, 42, 44)},
+    "eof_hang": [],
+    "eof_hang2": [],
+}
+
+
+def gecko_run_upstream_tests(
+    libgecko: Path, codebase: Path, workdir: Path, ldflags: list[str]
+) -> tuple[dict[str, tuple[int, bytes]], list[str]]:
+    """Build gecko's test programs against `libgecko` and run them as test/test.sh does.
+
+    Returns each run's exit status and output, and which of test.sh's checks failed.
+    """
+    test_dir = codebase / "test"
+    workdir.mkdir()
+
+    def build(name: str) -> Path:
+        # test.sh compiles each program with `gcc -O0 -w -g`, along with gecko.c.
+        exe = workdir / name
+        hermetic.run(
+            [
+                "cc",
+                "-O0",
+                "-w",
+                "-g",
+                f"-I{codebase}",
+                f"-I{test_dir}",
+                str(test_dir / f"{name}.c"),
+                str(libgecko),
+                *ldflags,
+                "-o",
+                str(exe),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return exe
+
+    results = {}
+    problems = []
+    for name, args in GECKO_TEST_SH_ARGS.items():
+        # test.sh gives the eof_hang tests 4 seconds; leave headroom for slower builds.
+        cp = hermetic.run(
+            [str(build(name)), *args],
+            cwd=workdir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=60,
+        )
+        results[name] = (cp.returncode, cp.stdout)
+        expected = test_dir / f"{name}.out"
+        if expected.exists():
+            # test.sh pipes these into `diff`, so their exit status goes unchecked.
+            if cp.stdout != expected.read_bytes():
+                problems.append(f"{name}: output differed from test/{name}.out: {cp.stdout!r}")
+        elif cp.returncode != 0:
+            problems.append(f"{name}: exited {cp.returncode}: {cp.stdout[-2000:]!r}")
+
+    # test.sh's last test, test40, parses test/test.i with an ANSI C grammar, but only
+    # when flex is around to generate its scanner from test/ansic.l. test_gecko.c, the
+    # driver for the GNUmakefile's leakage-test and test/compare.sh's benchmarks, does
+    # the same with a scanner committed as test/lex.yy.c. Its stdout is timings; at
+    # debug level 1, its stderr has the grammar and parse statistics.
+    exe = build("test_gecko")
+    for input_name in ["test.i", "small_test.i", "gcc.i"]:
+        cp = hermetic.run(
+            [str(exe), "1"],
+            cwd=workdir,
+            input=(test_dir / input_name).read_bytes(),
+            capture_output=True,
+            timeout=600,
+        )
+        name = f"test_gecko < test/{input_name}"
+        results[name] = (cp.returncode, cp.stderr)
+        if cp.returncode != 0:
+            problems.append(f"{name}: exited {cp.returncode}: {cp.stderr[-2000:]!r}")
+
+    return results, problems
+
+
+@pytest.mark.slow  # expected runtime: ~35 s up to the cargo failure below; ~60 s past it
+@pytest.mark.xfail(
+    reason="gecko does not yet translate faithfully; it hits two blockers, in pipeline order. "
+    "(1) c2rust: gecko.c's `size_t ntoks : TOKS_BIT_NUM;` in stack_el_t becomes "
+    '`#[bitfield(name = "ntoks", ty = "size_t", bits = "1..=63")]`, but c2rust-bitfields '
+    "implements FieldType only for bool and the fixed-width integer types, not usize, so the "
+    "crate fails to compile (E0599 no method `set_field` for `usize`, E0277 `usize: "
+    "FieldType`). The translation completes once `ntoks` is `unsigned long`. (2) c2rust "
+    "translates every `FILE *` to `xj_cio::FILE_ptr`, including the parameter of the "
+    "exported `gp_print_translation(struct grammar *, FILE *, struct gp_tree_node *)`. "
+    "xj_cio decodes a FILE_ptr's address bits as a slotmap key, so the glibc `stderr` that "
+    "the C tests pass in matches no stream, and every write to it is silently dropped: "
+    "test23-29, 31-35 and 37-39 exit 0 but print no translation. With (1) worked around, "
+    "the Rust library passes every other check below, including the whole-gcc parse.",
+)
+def test_vnmakarov_gecko(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/vnmakarov/gecko.git", "3d11518e542cc2fdebb7d4cc83090fe5b6f7c65a"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # gecko.c #includes sgramm.c, the parser for gecko's grammar description language,
+    # which the GNUmakefile generates from sgramm.y with yacc. Its default target then
+    # builds libgecko.a, which is Tenjin's single target. gecko's tests are C programs
+    # that link against the library, so they stay C and are built afterwards against
+    # the C and the Rust libgecko.a in turn.
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="vnmakarov_gecko",
+            prebuildcmd="make sgramm.c",
+            buildcmd="make CC=cc",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    # hash.h hashes a key's tail bytes by loading uint16_t/uint32_t/uint64_t through
+    # unaligned char pointers. x86-64 C tolerates that silently, but the debug Rust
+    # build aborts on its misaligned-pointer-dereference check, so test the release build.
+    run_cargo_on_final(tmp_resultsdir / "final", ["build", "--release"])
+
+    c_results, c_problems = gecko_run_upstream_tests(
+        tmp_resultsdir / "_build_1" / "libgecko.a",
+        codebase,
+        tmp_resultsdir / "xj_upstream_c",
+        [],
+    )
+    # Two identically-wrong builds would agree, so pin the C build's verdicts too.
+    assert not c_problems, "The C build failed gecko's own tests:\n" + "\n".join(c_problems)
+
+    rs_results, rs_problems = gecko_run_upstream_tests(
+        tmp_resultsdir / "final" / "target" / "release" / "libgecko.a",
+        codebase,
+        tmp_resultsdir / "xj_upstream_rs",
+        # What `cargo rustc -- --print native-static-libs` lists for a Rust staticlib.
+        ["-lgcc_s", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl", "-lc"],
+    )
+    problems = rs_problems + [
+        f"{name}: exit status or output differed from the C build's: {rs_results[name]!r}"
+        for name in c_results
+        if rs_results[name] != c_results[name]
+    ]
+    assert not problems, "The Rust libgecko diverged from the C libgecko:\n" + "\n".join(problems)
+
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
