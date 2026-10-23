@@ -3528,3 +3528,152 @@ def test_google_brotli(tenjin_fixtures: TenjinFixtures):
     assert get_final_unsafe_fns_count(tmp_resultsdir) == 830
     clean_up_resultsdir(tmp_resultsdir)
     annotate_pytest_request_with_translation_notes(tenjin_fixtures)
+
+
+UTF8PROC_CHECK_PROGRAMS = {
+    "normtest": ["NormalizationTest.txt"],
+    "graphemetest": ["GraphemeBreakTest.txt"],
+    "charwidth": [],
+    "misc": [],
+    "valid": [],
+    "iterate": [],
+    "case": [],
+    "iscase": ["Lowercase.txt", "Uppercase.txt"],
+    "custom": [],
+    "maxdecomposition": [],
+}
+
+
+def utf8proc_fetch_unicode_test_data(codebase: Path, datadir: Path) -> str:
+    """Download the Unicode Character Database files that utf8proc's `make check`
+    reads into `datadir`, at the Unicode version that data/Makefile names (which is
+    also the version utf8proc_data.c was generated from). Returns that version."""
+    makefile = (codebase / "data" / "Makefile").read_text(encoding="utf-8")
+    m = re.search(r"^UNICODE_VERSION=(\S+)$", makefile, re.MULTILINE)
+    assert m, "UNICODE_VERSION not found in utf8proc's data/Makefile"
+    unicode_version = m.group(1)
+
+    datadir.mkdir()
+    ucd = f"https://www.unicode.org/Public/{unicode_version}/ucd"
+    download(f"{ucd}/NormalizationTest.txt", datadir / "NormalizationTest.txt")
+    download(f"{ucd}/auxiliary/GraphemeBreakTest.txt", datadir / "GraphemeBreakTest.txt")
+    download(f"{ucd}/DerivedCoreProperties.txt", datadir / "DerivedCoreProperties.txt")
+
+    # data/Makefile carves these two sections out of DerivedCoreProperties.txt with julia.
+    derived = (datadir / "DerivedCoreProperties.txt").read_bytes()
+    for prop in ("Lowercase", "Uppercase"):
+        m = re.search(
+            rb"# Derived Property: " + prop.encode() + rb".*?# Total code points:",
+            derived,
+            re.DOTALL,
+        )
+        assert m, f"no {prop} section in DerivedCoreProperties.txt"
+        (datadir / f"{prop}.txt").write_bytes(m.group(0))
+
+    return unicode_version
+
+
+def utf8proc_run_upstream_tests(
+    libutf8proc: Path, codebase: Path, datadir: Path, unicode_version: str, workdir: Path
+) -> dict[str, tuple[int, bytes, bytes]]:
+    """Build the `make check` programs from the pristine clone `codebase` against the
+    shared library `libutf8proc`, then run each with `datadir` as its working directory.
+    Returns each program's (exit code, stdout, stderr), keyed by program name."""
+    workdir.mkdir()
+    # The C library's soname, which is what the programs record as DT_NEEDED. A
+    # DT_RPATH (rather than a DT_RUNPATH, which LD_LIBRARY_PATH would override) of
+    # $ORIGIN guarantees they load exactly this copy.
+    shutil.copyfile(libutf8proc, workdir / "libutf8proc.so.3")
+
+    results = {}
+    for program, args in UTF8PROC_CHECK_PROGRAMS.items():
+        # The Makefile's flags for test programs, minus the warnings; only misc.c
+        # reads UNICODE_VERSION.
+        hermetic.run(
+            [
+                "cc",
+                "-O2",
+                "-std=c99",
+                f'-DUNICODE_VERSION="{unicode_version}"',
+                str(codebase / "test" / f"{program}.c"),
+                str(codebase / "test" / "tests.c"),
+                f"-L{workdir}",
+                "-l:libutf8proc.so.3",
+                "-Wl,--disable-new-dtags,-rpath,$ORIGIN",
+                "-o",
+                str(workdir / program),
+            ],
+            check=True,
+        )
+        cp = hermetic.run(
+            [str(workdir / program), *args],
+            cwd=str(datadir),
+            check=False,
+            capture_output=True,
+            timeout=300,
+        )
+        results[program] = (cp.returncode, cp.stdout, cp.stderr)
+    return results
+
+
+@pytest.mark.slow  # expected runtime: 15 minutes
+def test_juliastrings_utf8proc(tenjin_fixtures: TenjinFixtures):
+    tmp_codebase, tmp_resultsdir = tenjin_fixtures.tmp_codebase, tenjin_fixtures.tmp_resultsdir
+    codebase = cached_git_clone_at_commit(
+        "https://github.com/JuliaStrings/utf8proc.git", "79cdd5ab40c79afa559f689ffc13b76812dee1ac"
+    )
+    translation_preparation.copy_codebase(codebase, tmp_codebase)
+
+    # Only the shared library is built under interception, so it is Tenjin's single
+    # target. The test programs stay C and are built afterwards against the C and then
+    # the Rust library, so that the same C drivers exercise both.
+    translation.do_translate(
+        translation_types.TranslationFlags.simple(
+            root=tenjin_fixtures.root,
+            codebase=tmp_codebase,
+            resultsdir=tmp_resultsdir,
+            cratename="juliastrings_utf8proc",
+            buildcmd="make CC=cc libutf8proc.so.3.3.0",
+        ),
+        guidance_path_or_literal="{}",
+    )
+    run_cargo_on_final(tmp_resultsdir / "final", ["build"])
+
+    datadir = tmp_resultsdir / "xj_unicode_data"
+    unicode_version = utf8proc_fetch_unicode_test_data(codebase, datadir)
+
+    c_results = utf8proc_run_upstream_tests(
+        tmp_resultsdir / "_build_1" / "libutf8proc.so.3.3.0",
+        codebase,
+        datadir,
+        unicode_version,
+        tmp_resultsdir / "xj_upstream_c",
+    )
+    # Each program exits non-zero on its first failed check, so this both validates
+    # the build above and confirms the C results are a sound oracle.
+    for program, (rc, stdout, stderr) in c_results.items():
+        assert rc == 0, f"{program} failed against the C library: {stdout[-2000:]!r} {stderr!r}"
+
+    rs_results = utf8proc_run_upstream_tests(
+        tmp_resultsdir / "final" / "target" / "debug" / "libutf8proc_3_3_0.so",
+        codebase,
+        datadir,
+        unicode_version,
+        tmp_resultsdir / "xj_upstream_rs",
+    )
+    for program, (c_rc, c_stdout, c_stderr) in c_results.items():
+        rs_rc, rs_stdout, rs_stderr = rs_results[program]
+        assert rs_rc == c_rc, (
+            f"{program}: exit code {rs_rc} with the Rust library, {c_rc} with C;"
+            f" Rust stderr: {rs_stderr[-2000:]!r}"
+        )
+        assert rs_stdout == c_stdout, (
+            f"{program}: stdout differs; Rust: {rs_stdout[-2000:]!r}, C: {c_stdout[-2000:]!r}"
+        )
+        assert rs_stderr == c_stderr, (
+            f"{program}: stderr differs; Rust: {rs_stderr[-2000:]!r}, C: {c_stderr[-2000:]!r}"
+        )
+
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 34
+    clean_up_resultsdir(tmp_resultsdir)
+    annotate_pytest_request_with_translation_notes(tenjin_fixtures)
