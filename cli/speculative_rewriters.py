@@ -1,12 +1,9 @@
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Self, Sequence
 from dataclasses import dataclass
-
-from dataclasses_json import dataclass_json
 
 
 # XREF:CONDENSED_SPAN_GRAPH_REPRESENTATION
-@dataclass_json
 @dataclass
 class ExplicitSpan:
     fileid: int
@@ -14,13 +11,24 @@ class ExplicitSpan:
     hi: int
 
 
-@dataclass_json
 @dataclass
 class CondensedSpanGraph:
     files: list[Path]
     elts: list[ExplicitSpan]  # full spans for functions
     nodes: list[list[int]]  # indices into `elts`
     edges: list[tuple[int, int]]  # indices into `nodes`
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        return cls(
+            files=[Path(path) for path in data["files"]],
+            elts=[
+                ExplicitSpan(fileid=span["fileid"], lo=span["lo"], hi=span["hi"])
+                for span in data["elts"]
+            ],
+            nodes=data["nodes"],
+            edges=[(src, dst) for src, dst in data["edges"]],
+        )
 
 
 class SpeculativeFileRewriter:

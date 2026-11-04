@@ -1,11 +1,10 @@
+import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
-from dataclasses_json import dataclass_json, DataClassJsonMixin
 from tenj_types import PerFilePreprocessorDefinitions, RelativeFilePathStr
 
 
-@dataclass_json
 @dataclass
 class TransformationRecord:
     name: str
@@ -17,7 +16,6 @@ class TransformationRecord:
     stdout_lines: list[str] | None
 
 
-@dataclass_json
 @dataclass
 class IngestedCodebase:
     git_repo_url: str
@@ -25,7 +23,6 @@ class IngestedCodebase:
     relative_path: str
 
 
-@dataclass_json
 @dataclass
 class TranslationInputs:
     codebase: IngestedCodebase | None
@@ -38,7 +35,6 @@ class TranslationInputs:
     do_not_refactor_headers_within: list[RelativeFilePathStr]
 
 
-@dataclass_json
 @dataclass
 class TranslationResults:
     translation_start_unix_timestamp: int
@@ -50,13 +46,17 @@ class TranslationResults:
 
 
 @dataclass
-class TranslationRecord(DataClassJsonMixin):  # mixin for better type inference
+class TranslationRecord:
     translation_uuid: uuid.UUID
     inputs: TranslationInputs
     results: TranslationResults
 
+    def to_json(self, *, indent: int | None = None) -> str:
+        data = asdict(self)
+        data["translation_uuid"] = str(self.translation_uuid)
+        return json.dumps(data, indent=indent)
 
-@dataclass_json
+
 @dataclass
 class SubdirectoryFileSnapshot:
     path: str  # relative to the path of the SubdirectorySnapshot
@@ -64,7 +64,6 @@ class SubdirectoryFileSnapshot:
     sha256: str
 
 
-@dataclass_json
 @dataclass
 class SubdirectorySnapshot:
     path: str
@@ -72,14 +71,18 @@ class SubdirectorySnapshot:
 
 
 @dataclass
-class TranslationResultsSnapshot(DataClassJsonMixin):  # mixin for better type inference
+class TranslationResultsSnapshot:
     for_translation: uuid.UUID
 
     c_versions: list[SubdirectorySnapshot]
     rust_versions: list[SubdirectorySnapshot]
 
+    def to_json(self, *, indent: int | None = None) -> str:
+        data = asdict(self)
+        data["for_translation"] = str(self.for_translation)
+        return json.dumps(data, indent=indent)
 
-@dataclass_json
+
 @dataclass
 class EndpointEvaluationResults:
     """A given codebase can have multiple endpoints (binaries; functions within libraries;
@@ -100,7 +103,6 @@ class EndpointEvaluationResults:
     inputs_converged_count: int  # = len(input_corpus) - inputs_diverged_count
 
 
-@dataclass_json
 @dataclass
 class EvaluationCoverageResult:
     for_translation: uuid.UUID
@@ -116,7 +118,6 @@ class EvaluationCoverageResult:
     coverage_summary_configuration_preprocessor_induced_lines_count: int
 
 
-@dataclass_json
 @dataclass
 class EvaluationResults:
     for_translation: uuid.UUID
