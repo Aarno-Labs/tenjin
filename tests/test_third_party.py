@@ -1223,7 +1223,6 @@ def test_piotrl__c_markdown_exe(tenjin_fixtures: TenjinFixtures):
     assert (
         lists_output
         == b"""
-
 <h1>akapit</h1>
 
 <hr />
@@ -1239,9 +1238,10 @@ kilka linijek</li>
 ######### bledny akapit
 --- bledny hr
 
+
 """  # noqa: W291
     )
-    assert get_final_unsafe_fns_count(tmp_resultsdir) == 7
+    assert get_final_unsafe_fns_count(tmp_resultsdir) == 3
 
 
 @pytest.mark.slow  # expected runtime: 30 seconds
