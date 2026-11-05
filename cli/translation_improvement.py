@@ -281,7 +281,7 @@ def run_un_unsafe_improvement(root: Path, dir: Path):
             if item.is_file() and item.name.endswith(".json"):
                 with item.open("rb") as f:
                     cacg_json = json.load(f)
-                cacg = CondensedSpanGraph.from_dict(cacg_json)  # type:ignore
+                cacg = CondensedSpanGraph.from_dict(cacg_json)
                 for fnspan in cacg.elts:
                     unsafe_span = find_unsafe_span_for_fn_sig(cacg, fnspan)
                     if unsafe_span is None:

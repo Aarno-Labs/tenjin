@@ -5,9 +5,8 @@ import zlib
 import compression.zstd as zstd
 import os
 from pathlib import Path
-from typing import TypedDict, Union, Any, Optional, Literal, cast
+from typing import TypedDict, Union, Any, Optional, Literal, NotRequired, cast
 import hashlib
-from typing_extensions import NotRequired
 import tempfile
 from subprocess import CompletedProcess
 

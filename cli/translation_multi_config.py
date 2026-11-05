@@ -1,12 +1,12 @@
 import copy
 from dataclasses import dataclass, field
-from dataclasses_json import dataclass_json
 import glob
 import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import product
 from pathlib import Path
+from typing import Self
 
 import click
 
@@ -61,18 +61,16 @@ This is all achieved as follows:
 # ---------------------------------------------------------------------------
 # CMakePresets helpers
 # ---------------------------------------------------------------------------
-@dataclass_json
 @dataclass
 class CMakePreset:
     """Specification of CMake project preset"""
 
     name: str
     inherits: str | list[str]
-    cacheVariables: dict[str, str]
+    cacheVariables: dict[str, object]
     hidden: bool = False
 
 
-@dataclass_json
 @dataclass
 class CMakePresetRef:
     """Reference to a CMake preset"""
@@ -81,13 +79,30 @@ class CMakePresetRef:
     configurePreset: str
 
 
-@dataclass_json
 @dataclass
 class CMakePresets:
     """Specification of CMake project presets"""
 
     configurePresets: list[CMakePreset] = field(default_factory=list)
     buildPresets: list[CMakePresetRef] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        return cls(
+            configurePresets=[
+                CMakePreset(
+                    name=preset["name"],
+                    inherits=preset["inherits"],
+                    cacheVariables=preset["cacheVariables"],
+                    hidden=preset.get("hidden", False),
+                )
+                for preset in data.get("configurePresets", [])
+            ],
+            buildPresets=[
+                CMakePresetRef(name=preset["name"], configurePreset=preset["configurePreset"])
+                for preset in data.get("buildPresets", [])
+            ],
+        )
 
 
 def _cmake_cache_var_str(raw_val: object) -> str:
@@ -113,7 +128,7 @@ def load_cmake_presets(presets_path: Path) -> list[dict]:
     inheritance fully resolved.
     """
     with open(presets_path, encoding="utf-8") as f:
-        data = CMakePresets.from_dict(json.load(f))  # type:ignore
+        data = CMakePresets.from_dict(json.load(f))
 
     configure_presets: list[CMakePreset] = data.configurePresets
     preset_by_name: dict[str, CMakePreset] = {p.name: p for p in configure_presets}
@@ -205,17 +220,20 @@ def emit_preset_features(merged_dir: Path, variables: dict, presets: list[dict])
 # ---------------------------------------------------------------------------
 # Combo helpers
 # ---------------------------------------------------------------------------
-@dataclass_json
 @dataclass
 class Configuration:
     """Specification of CMake project cache variables"""
 
     configurable_variables: dict[str, list]
 
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        return cls(configurable_variables=data["configurable_variables"])
+
 
 def load_combinations(config_path: Path) -> tuple[dict, list[dict]]:
     with open(config_path, encoding="utf-8") as f:
-        data = Configuration.from_dict(json.load(f))  # type:ignore
+        data = Configuration.from_dict(json.load(f))
     variables = data.configurable_variables
     names = list(variables.keys())
     value_lists = [variables[n] for n in names]
